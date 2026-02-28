@@ -181,6 +181,50 @@ def main() -> None:
         print("  WARNING: No boundary relation found – park walls will be skipped.")
 
     # -------------------------------------------------------------------
+    # Water bodies
+    # -------------------------------------------------------------------
+    water_out = []
+
+    def _extract_polygon(node_ids: list) -> list:
+        """Project a list of node IDs to [[x,z], …], closing ring removed."""
+        pts = []
+        for nid in node_ids:
+            if nid in nodes_ll:
+                pts.append(list(project(*nodes_ll[nid])))
+        # OSM closed ways repeat first node at end; remove duplicate
+        if len(pts) > 1 and pts[0] == pts[-1]:
+            pts.pop()
+        return pts
+
+    # Closed ways tagged natural=water
+    for wid, tags in ways_tags.items():
+        if tags.get("natural") != "water":
+            continue
+        nids = ways_nodes.get(wid, [])
+        if len(nids) < 4:           # need ≥3 unique + closing node
+            continue
+        if nids[0] != nids[-1]:     # must be a closed ring
+            continue
+        pts = _extract_polygon(nids)
+        if len(pts) >= 3:
+            water_out.append({"name": tags.get("name", ""), "points": pts})
+
+    # Relations tagged natural=water (e.g. the Reservoir)
+    for rel in relations:
+        tags = rel.get("tags", {})
+        if tags.get("natural") != "water":
+            continue
+        members = rel.get("members", [])
+        outer_ids = [m["ref"] for m in members
+                     if m["type"] == "way" and m.get("role") in ("outer", "")]
+        if not outer_ids:
+            outer_ids = [m["ref"] for m in members if m["type"] == "way"]
+        ring_ids = assemble_ring(outer_ids, ways_nodes)
+        pts = _extract_polygon(ring_ids)
+        if len(pts) >= 3:
+            water_out.append({"name": tags.get("name", ""), "points": pts})
+
+    # -------------------------------------------------------------------
     # Write output
     # -------------------------------------------------------------------
     out = {
@@ -190,6 +234,7 @@ def main() -> None:
         "metres_per_deg_lon": round(METRES_PER_DEG_LON, 2),
         "paths":              paths_out,
         "boundary":           boundary_pts,
+        "water":              water_out,
     }
 
     with open("park_data.json", "w") as fh:
@@ -200,10 +245,8 @@ def main() -> None:
     print(f"\nPaths written:    {len(paths_out)}"
           f"  (skipped {skipped_pts} with missing nodes)")
     print(f"Boundary points:  {len(boundary_pts)}")
+    print(f"Water bodies:     {len(water_out)}")
     print(f"\nSaved → park_data.json  ({size_kb:.1f} KB)")
-    print("\nNext steps:")
-    print("  1. Copy park_data.json into your Godot project root (it's already there).")
-    print("  2. Open Godot and press F5 to run.")
 
 
 if __name__ == "__main__":
