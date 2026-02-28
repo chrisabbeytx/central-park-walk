@@ -4,27 +4,34 @@ extends Node3D
 ##   • One StaticBody3D with BoxShape3D collision per boundary segment (invisible walls)
 
 const DATA_PATH := "res://park_data.json"
-const PATH_Y    := 0.06   # metres above ground plane (keeps paths visible above green base)
-
-const PATH_WIDTHS: Dictionary = {
-	"footway":    3.0,
-	"cycleway":   3.5,
-	"pedestrian": 6.0,
-	"path":       2.5,
-	"steps":      2.5,
-	"track":      3.0,
-}
-
-const PATH_COLORS: Dictionary = {
-	"footway":    Color(0.74, 0.69, 0.57),   # warm tan / gravel
-	"cycleway":   Color(0.40, 0.50, 0.65),   # blue-grey asphalt
-	"pedestrian": Color(0.82, 0.78, 0.66),   # pale cream stone
-	"path":       Color(0.55, 0.47, 0.33),   # earthy dirt
-	"steps":      Color(0.60, 0.58, 0.54),   # grey stone
-	"track":      Color(0.48, 0.40, 0.26),   # brown dirt track
-}
+const PATH_Y    := 0.06   # metres above ground plane
 
 
+# ---------------------------------------------------------------------------
+# Typed helpers – avoids Dictionary.get() returning Variant (parse error in 4.6)
+# ---------------------------------------------------------------------------
+func _hw_width(hw: String) -> float:
+	match hw:
+		"pedestrian": return 6.0
+		"footway":    return 3.0
+		"cycleway":   return 3.5
+		"steps":      return 2.5
+		"track":      return 3.0
+		_:            return 2.5   # "path" and unknowns
+
+
+func _hw_color(hw: String) -> Color:
+	match hw:
+		"footway":    return Color(0.74, 0.69, 0.57)   # warm tan / gravel
+		"cycleway":   return Color(0.40, 0.50, 0.65)   # blue-grey asphalt
+		"pedestrian": return Color(0.82, 0.78, 0.66)   # pale cream stone
+		"path":       return Color(0.55, 0.47, 0.33)   # earthy dirt
+		"steps":      return Color(0.60, 0.58, 0.54)   # grey stone
+		"track":      return Color(0.48, 0.40, 0.26)   # brown dirt track
+		_:            return Color(0.68, 0.62, 0.50)
+
+
+# ---------------------------------------------------------------------------
 func _ready() -> void:
 	if not FileAccess.file_exists(DATA_PATH):
 		push_warning("ParkLoader: park_data.json not found – run convert_to_godot.py first")
@@ -48,32 +55,31 @@ func _ready() -> void:
 # Path meshes – one MeshInstance3D per highway type
 # ---------------------------------------------------------------------------
 func _build_paths(paths: Array) -> void:
-	# Group by highway type
 	var groups: Dictionary = {}
-	for path: Dictionary in paths:
-		var hw: String = path.get("highway", "path")
+	for path in paths:
+		var hw: String = str(path.get("highway", "path"))
 		if hw not in groups:
 			groups[hw] = []
 		groups[hw].append(path)
 
-	for hw: String in groups:
-		add_child(_make_path_mesh(groups[hw], hw))
+	for hw in groups:
+		add_child(_make_path_mesh(groups[hw], str(hw)))
 
 
 func _make_path_mesh(paths: Array, hw: String) -> MeshInstance3D:
 	var verts   := PackedVector3Array()
 	var normals := PackedVector3Array()
-	var width   := PATH_WIDTHS.get(hw, 2.5)
+	var width   := _hw_width(hw)   # typed float – no Variant
 
-	for path: Dictionary in paths:
+	for path in paths:
 		var pts: Array = path["points"]
-		for i: int in range(pts.size() - 1):
+		for i in range(pts.size() - 1):
 			_append_quad(verts, normals,
-				Vector2(pts[i][0],     pts[i][1]),
-				Vector2(pts[i+1][0],   pts[i+1][1]),
+				Vector2(float(pts[i][0]),     float(pts[i][1])),
+				Vector2(float(pts[i + 1][0]), float(pts[i + 1][1])),
 				width)
 
-	var arrays := []
+	var arrays: Array = []
 	arrays.resize(Mesh.ARRAY_MAX)
 	arrays[Mesh.ARRAY_VERTEX] = verts
 	arrays[Mesh.ARRAY_NORMAL] = normals
@@ -82,9 +88,9 @@ func _make_path_mesh(paths: Array, hw: String) -> MeshInstance3D:
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 
 	var mat := StandardMaterial3D.new()
-	mat.albedo_color = PATH_COLORS.get(hw, Color(0.68, 0.62, 0.50))
+	mat.albedo_color = _hw_color(hw)   # typed Color – no Variant
 	mat.roughness    = 0.85
-	mat.cull_mode    = BaseMaterial3D.CULL_DISABLED   # visible from both sides
+	mat.cull_mode    = BaseMaterial3D.CULL_DISABLED
 
 	mesh.surface_set_material(0, mat)
 
@@ -101,18 +107,16 @@ func _append_quad(verts: PackedVector3Array, normals: PackedVector3Array,
 		return
 
 	var d  := seg.normalized()
-	var n  := Vector2(-d.y, d.x)   # left-perpendicular
+	var n  := Vector2(-d.y, d.x)
 	var hw := width * 0.5
 
-	# Four corners of the ribbon quad
 	var a  := Vector3(p1.x + n.x * hw,  PATH_Y,  p1.y + n.y * hw)
 	var b  := Vector3(p1.x - n.x * hw,  PATH_Y,  p1.y - n.y * hw)
 	var c  := Vector3(p2.x + n.x * hw,  PATH_Y,  p2.y + n.y * hw)
 	var dd := Vector3(p2.x - n.x * hw,  PATH_Y,  p2.y - n.y * hw)
 
-	# Two triangles; normal = UP for lighting
 	verts.append_array(PackedVector3Array([a, b, c,   b, dd, c]))
-	for _i: int in range(6):
+	for _i in range(6):
 		normals.append(Vector3.UP)
 
 
@@ -129,9 +133,9 @@ func _build_boundary(boundary: Array) -> void:
 	add_child(body)
 
 	var n := boundary.size()
-	for i: int in range(n):
-		var p1 := Vector2(boundary[i][0],           boundary[i][1])
-		var p2 := Vector2(boundary[(i + 1) % n][0], boundary[(i + 1) % n][1])
+	for i in range(n):
+		var p1 := Vector2(float(boundary[i][0]),           float(boundary[i][1]))
+		var p2 := Vector2(float(boundary[(i + 1) % n][0]), float(boundary[(i + 1) % n][1]))
 
 		var seg_len := p1.distance_to(p2)
 		if seg_len < 0.3:
@@ -140,14 +144,12 @@ func _build_boundary(boundary: Array) -> void:
 		var mid := (p1 + p2) * 0.5
 		var dir := (p2 - p1) / seg_len
 
-		var box      := BoxShape3D.new()
-		box.size      = Vector3(seg_len, 12.0, 0.5)   # long × tall × thin
+		var box  := BoxShape3D.new()
+		box.size  = Vector3(seg_len, 12.0, 0.5)
 
 		var col      := CollisionShape3D.new()
 		col.shape     = box
 		col.position  = Vector3(mid.x, 6.0, mid.y)
-		# Align local +X with the segment direction:
-		#   rotation.y = atan2(−dir.y, dir.x)  maps dir → local +X
 		col.rotation.y = atan2(-dir.y, dir.x)
 
 		body.add_child(col)
