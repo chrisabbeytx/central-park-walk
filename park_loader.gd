@@ -50,6 +50,7 @@ func _ready() -> void:
 	_build_paths(data.get("paths", []))
 	_build_water(data.get("water", []))
 	_build_labels(data.get("water", []))
+	_build_trees(data.get("trees", []))
 	_build_boundary(data.get("boundary", []))
 	print("ParkLoader: done")
 
@@ -156,6 +157,70 @@ func _build_water(water: Array) -> void:
 	mi.mesh = mesh
 	mi.name = "WaterBodies"
 	add_child(mi)
+
+
+# ---------------------------------------------------------------------------
+# Trees – two MultiMeshInstance3D nodes (trunks + canopies) for one draw call each
+# ---------------------------------------------------------------------------
+func _build_trees(trees: Array) -> void:
+	if trees.is_empty():
+		return
+
+	var count := trees.size()
+	var rng   := RandomNumberGenerator.new()
+
+	# Trunk: low-poly cylinder, brown
+	var trunk_mesh            := CylinderMesh.new()
+	trunk_mesh.height          = 5.0
+	trunk_mesh.top_radius      = 0.12
+	trunk_mesh.bottom_radius   = 0.20
+	trunk_mesh.radial_segments = 6
+	var trunk_mat              := StandardMaterial3D.new()
+	trunk_mat.albedo_color      = Color(0.32, 0.20, 0.09)
+	trunk_mat.roughness         = 0.95
+	trunk_mesh.surface_set_material(0, trunk_mat)
+
+	var trunk_mm              := MultiMesh.new()
+	trunk_mm.mesh              = trunk_mesh
+	trunk_mm.transform_format  = MultiMesh.TRANSFORM_3D
+	trunk_mm.instance_count    = count
+
+	# Canopy: low-poly sphere, green
+	var canopy_mesh            := SphereMesh.new()
+	canopy_mesh.radius          = 3.0
+	canopy_mesh.height          = 6.0
+	canopy_mesh.radial_segments = 8
+	canopy_mesh.rings           = 5
+	var canopy_mat             := StandardMaterial3D.new()
+	canopy_mat.albedo_color     = Color(0.18, 0.44, 0.14)
+	canopy_mat.roughness        = 0.90
+	canopy_mesh.surface_set_material(0, canopy_mat)
+
+	var canopy_mm             := MultiMesh.new()
+	canopy_mm.mesh             = canopy_mesh
+	canopy_mm.transform_format = MultiMesh.TRANSFORM_3D
+	canopy_mm.instance_count   = count
+
+	for i in count:
+		var pt    := trees[i]
+		var tx    := float(pt[0])
+		var tz    := float(pt[1])
+		rng.seed   = i
+		var scale := rng.randf_range(0.70, 1.35)
+		var basis  := Basis.IDENTITY.scaled(Vector3(scale, scale, scale))
+		# trunk centre at half its height; canopy centre 1.5 m below trunk tip
+		trunk_mm.set_instance_transform(i,  Transform3D(basis, Vector3(tx, scale * 2.5, tz)))
+		canopy_mm.set_instance_transform(i, Transform3D(basis, Vector3(tx, scale * 6.5, tz)))
+
+	var trunk_mmi        := MultiMeshInstance3D.new()
+	trunk_mmi.multimesh   = trunk_mm
+	trunk_mmi.name        = "TreeTrunks"
+	add_child(trunk_mmi)
+
+	var canopy_mmi       := MultiMeshInstance3D.new()
+	canopy_mmi.multimesh  = canopy_mm
+	canopy_mmi.name       = "TreeCanopies"
+	add_child(canopy_mmi)
 
 
 # ---------------------------------------------------------------------------

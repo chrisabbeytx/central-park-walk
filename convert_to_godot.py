@@ -225,6 +225,14 @@ def main() -> None:
             water_out.append({"name": tags.get("name", ""), "points": pts})
 
     # -------------------------------------------------------------------
+    # Trees  (node["natural"="tree"])
+    # -------------------------------------------------------------------
+    trees_out = []
+    for e in elements:
+        if e["type"] == "node" and e.get("tags", {}).get("natural") == "tree" and "lat" in e:
+            trees_out.append(list(project(e["lat"], e["lon"])))
+
+    # -------------------------------------------------------------------
     # Write output
     # -------------------------------------------------------------------
     out = {
@@ -235,6 +243,7 @@ def main() -> None:
         "paths":              paths_out,
         "boundary":           boundary_pts,
         "water":              water_out,
+        "trees":              trees_out,
     }
 
     with open("park_data.json", "w") as fh:
@@ -246,6 +255,7 @@ def main() -> None:
           f"  (skipped {skipped_pts} with missing nodes)")
     print(f"Boundary points:  {len(boundary_pts)}")
     print(f"Water bodies:     {len(water_out)}")
+    print(f"Trees:            {len(trees_out)}")
     print(f"\nSaved → park_data.json  ({size_kb:.1f} KB)")
 
 
