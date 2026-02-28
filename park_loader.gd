@@ -97,8 +97,8 @@ func _build_paths(paths: Array) -> void:
 		groups[key].append(path)
 
 	for key in groups:
-		var parts := key.split("|")
-		add_child(_make_path_mesh(groups[key], parts[0], parts[1]))
+		var parts: PackedStringArray = key.split("|")
+		add_child(_make_path_mesh(groups[key], str(parts[0]), str(parts[1])))
 
 
 func _make_path_mesh(paths: Array, hw: String, surface: String) -> MeshInstance3D:
@@ -311,7 +311,7 @@ func _build_trees(trees: Array) -> void:
 	canopy_mm.instance_count   = count
 
 	for i in count:
-		var pt    := trees[i]
+		var pt: Array = trees[i]
 		var tx    := float(pt[0])
 		var ty    := float(pt[1])   # terrain height baked in by convert_to_godot.py
 		var tz    := float(pt[2])

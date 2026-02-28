@@ -99,14 +99,40 @@ func _compass_label(deg: float) -> String:
 # ---------------------------------------------------------------------------
 # Sky + lighting
 # ---------------------------------------------------------------------------
+func _load_img_tex(path: String) -> ImageTexture:
+	if not FileAccess.file_exists(path):
+		return null
+	var img := Image.load_from_file(path)
+	if not img:
+		return null
+	img.generate_mipmaps()
+	return ImageTexture.create_from_image(img)
+
+
+func _load_sky_material() -> Material:
+	var path := "res://textures/sky.hdr"
+	if FileAccess.file_exists(path):
+		var img := Image.load_from_file(path)
+		if img:
+			img.generate_mipmaps()
+			var tex := ImageTexture.create_from_image(img)
+			var pan := PanoramaSkyMaterial.new()
+			pan.panorama = tex
+			print("Sky: loaded HDR panorama")
+			return pan
+	print("Sky: procedural fallback")
+	var proc := ProceduralSkyMaterial.new()
+	proc.sky_top_color        = Color(0.13, 0.40, 0.82)
+	proc.sky_horizon_color    = Color(0.58, 0.78, 0.96)
+	proc.ground_bottom_color  = Color(0.06, 0.14, 0.04)
+	proc.ground_horizon_color = Color(0.24, 0.42, 0.14)
+	proc.sun_angle_max        = 30.0
+	proc.sun_curve            = 0.06
+	return proc
+
+
 func _setup_environment() -> void:
-	var sky_mat := ProceduralSkyMaterial.new()
-	sky_mat.sky_top_color     = Color(0.13, 0.40, 0.82)
-	sky_mat.sky_horizon_color = Color(0.58, 0.78, 0.96)
-	sky_mat.ground_bottom_color  = Color(0.06, 0.14, 0.04)
-	sky_mat.ground_horizon_color = Color(0.24, 0.42, 0.14)
-	sky_mat.sun_angle_max = 30.0
-	sky_mat.sun_curve     = 0.06
+	var sky_mat: Material = _load_sky_material()
 
 	var sky := Sky.new()
 	sky.sky_material = sky_mat
@@ -132,12 +158,6 @@ func _setup_environment() -> void:
 	sun.shadow_enabled   = true
 	add_child(sun)
 
-	var fill := DirectionalLight3D.new()
-	fill.rotation_degrees = Vector3(-25.0, 150.0, 0.0)
-	fill.light_energy     = 0.35
-	fill.light_color      = Color(0.75, 0.85, 1.00)
-	fill.shadow_enabled   = false
-	add_child(fill)
 
 
 # ---------------------------------------------------------------------------
@@ -145,10 +165,19 @@ func _setup_environment() -> void:
 # Falls back to a flat plane when heightmap.json is absent.
 # ---------------------------------------------------------------------------
 func _setup_ground() -> void:
-	var shader := Shader.new()
-	shader.code = _grid_shader_code()
-	var mat    := ShaderMaterial.new()
-	mat.shader  = shader
+	var tex_alb := _load_img_tex("res://textures/grass_albedo.jpg")
+	var tex_nrm := _load_img_tex("res://textures/grass_normal.jpg")
+	var tex_rgh := _load_img_tex("res://textures/grass_rough.jpg")
+	var shader  := Shader.new()
+	shader.code  = _terrain_shader_textured() if tex_alb != null else _terrain_shader_code()
+	var mat     := ShaderMaterial.new()
+	mat.shader   = shader
+	if tex_alb != null:
+		mat.set_shader_parameter("grass_albedo", tex_alb)
+		mat.set_shader_parameter("grass_normal", tex_nrm)
+		mat.set_shader_parameter("grass_rough",  tex_rgh)
+		mat.set_shader_parameter("tile_m",       3.0)
+		print("Ground: textured grass shader")
 
 	if _hm_data.is_empty():
 		# Flat fallback
@@ -174,9 +203,10 @@ func _setup_ground() -> void:
 	var cell      := _hm_world_size / float(W - 1)
 	var V         := W * H
 
-	var verts   := PackedVector3Array(); verts.resize(V)
-	var normals := PackedVector3Array(); normals.resize(V)
-	var uvs     := PackedVector2Array(); uvs.resize(V)
+	var verts    := PackedVector3Array(); verts.resize(V)
+	var normals  := PackedVector3Array(); normals.resize(V)
+	var uvs      := PackedVector2Array(); uvs.resize(V)
+	var tangents := PackedFloat32Array(); tangents.resize(V * 4)
 
 	for zi in H:
 		for xi in W:
@@ -192,6 +222,7 @@ func _setup_ground() -> void:
 			var hU := float(_hm_data[max(zi - 1, 0)     * W + xi])
 			var hD := float(_hm_data[min(zi + 1, H - 1) * W + xi])
 			normals[idx] = Vector3(hL - hR, 2.0 * cell, hU - hD).normalized()
+			tangents[idx*4] = 1.0; tangents[idx*4+3] = 1.0
 
 	var T       := (W - 1) * (H - 1) * 6
 	var indices := PackedInt32Array(); indices.resize(T)
@@ -210,6 +241,7 @@ func _setup_ground() -> void:
 	arrays[Mesh.ARRAY_VERTEX]  = verts
 	arrays[Mesh.ARRAY_NORMAL]  = normals
 	arrays[Mesh.ARRAY_TEX_UV]  = uvs
+	arrays[Mesh.ARRAY_TANGENT] = tangents
 	arrays[Mesh.ARRAY_INDEX]   = indices
 	var mesh := ArrayMesh.new()
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
@@ -239,7 +271,56 @@ func _setup_ground() -> void:
 	add_child(body)
 
 
-func _grid_shader_code() -> String:
+func _terrain_shader_textured() -> String:
+	return """shader_type spatial;
+render_mode cull_disabled;
+
+uniform sampler2D grass_albedo : source_color,      filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D grass_normal : hint_normal,        filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D grass_rough  : hint_default_white, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform float tile_m = 3.0;
+
+varying vec3 world_pos;
+
+float hash2(vec2 p) {
+	p = fract(p * vec2(127.1, 311.7));
+	p += dot(p, p + 43.21);
+	return fract(p.x * p.y);
+}
+float vnoise(vec2 p) {
+	vec2 i = floor(p); vec2 f = fract(p);
+	vec2 u = f * f * (3.0 - 2.0 * f);
+	return mix(mix(hash2(i), hash2(i+vec2(1.,0.)), u.x),
+	           mix(hash2(i+vec2(0.,1.)), hash2(i+vec2(1.,1.)), u.x), u.y);
+}
+float fbm(vec2 p, int oct) {
+	float v = 0.0, a = 0.5;
+	for (int i = 0; i < oct; i++) { v += a*vnoise(p); p *= 2.13; a *= 0.47; }
+	return v;
+}
+
+void vertex() {
+	world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+}
+
+void fragment() {
+	vec2 uv     = world_pos.xz / tile_m;
+	vec3  alb   = texture(grass_albedo, uv).rgb;
+	float rough = texture(grass_rough,  uv).r;
+
+	// Large-scale tint breaks up tiling repetition
+	float f = clamp(fbm(world_pos.xz * 0.004, 4) * 0.45
+	              + fbm(world_pos.xz * 0.025, 3) * 0.35 + 0.30, 0.55, 1.1);
+
+	ALBEDO     = alb * f;
+	NORMAL_MAP = texture(grass_normal, uv).rgb;
+	ROUGHNESS  = clamp(rough * 0.85 + 0.1, 0.0, 1.0);
+	METALLIC   = 0.0;
+}
+"""
+
+
+func _terrain_shader_code() -> String:
 	return """shader_type spatial;
 render_mode cull_disabled;
 

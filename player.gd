@@ -31,8 +31,6 @@ func _ready() -> void:
 	cam.fov     = 80.0
 	head.add_child(cam)
 
-	position = Vector3(0.0, 0.0, 0.0)
-
 
 func _physics_process(delta: float) -> void:
 	_handle_look(delta)
