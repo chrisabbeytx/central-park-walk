@@ -49,6 +49,7 @@ func _ready() -> void:
 	print("ParkLoader: building path meshes…")
 	_build_paths(data.get("paths", []))
 	_build_water(data.get("water", []))
+	_build_labels(data.get("water", []))
 	_build_boundary(data.get("boundary", []))
 	print("ParkLoader: done")
 
@@ -155,6 +156,50 @@ func _build_water(water: Array) -> void:
 	mi.mesh = mesh
 	mi.name = "WaterBodies"
 	add_child(mi)
+
+
+# ---------------------------------------------------------------------------
+# POI name labels – billboard Label3D above each named water body
+# ---------------------------------------------------------------------------
+func _build_labels(water: Array) -> void:
+	for body in water:
+		var label_text: String = str(body.get("name", ""))
+		if label_text.is_empty():
+			continue
+		var pts: Array = body["points"]
+		if pts.is_empty():
+			continue
+
+		# Centroid and bounding-box diagonal for sizing
+		var cx := 0.0
+		var cz := 0.0
+		var min_x :=  1e9; var max_x := -1e9
+		var min_z :=  1e9; var max_z := -1e9
+		for pt in pts:
+			var px := float(pt[0]); var pz := float(pt[1])
+			cx += px; cz += pz
+			if px < min_x: min_x = px
+			if px > max_x: max_x = px
+			if pz < min_z: min_z = pz
+			if pz > max_z: max_z = pz
+		cx /= pts.size()
+		cz /= pts.size()
+		var diag := Vector2(max_x - min_x, max_z - min_z).length()
+
+		# Taller label for larger features, clamped to a sensible range
+		var height     := clampf(diag * 0.05, 8.0, 40.0)
+		var pixel_size := clampf(diag * 0.00006, 0.03, 0.10)
+
+		var lbl := Label3D.new()
+		lbl.text              = label_text
+		lbl.font_size         = 64
+		lbl.pixel_size        = pixel_size
+		lbl.billboard         = BaseMaterial3D.BILLBOARD_ENABLED
+		lbl.modulate          = Color(1.0, 1.0, 1.0, 0.95)
+		lbl.outline_size      = 8
+		lbl.outline_modulate  = Color(0.0, 0.08, 0.25, 0.85)
+		lbl.position          = Vector3(cx, height, cz)
+		add_child(lbl)
 
 
 func _append_quad(verts: PackedVector3Array, normals: PackedVector3Array,
