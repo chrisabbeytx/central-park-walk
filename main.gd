@@ -10,6 +10,13 @@ const REF_LON            := -73.9654
 const METRES_PER_DEG_LAT := 110_540.0
 const METRES_PER_DEG_LON := 84_264.0   # 111320 × cos(40.7829°)
 
+# Heightmap (loaded once, shared for player spawn positioning)
+var _hm_data:          Array   = []
+var _hm_width:         int     = 0
+var _hm_depth:         int     = 0
+var _hm_world_size:    float   = 5000.0
+var _hm_origin_height: float   = 0.0
+
 # HUD label references kept for per-frame updates
 var _player:        CharacterBody3D
 var _coord_label:   Label
@@ -18,11 +25,48 @@ var _latlon_label:  Label
 
 
 func _ready() -> void:
+	_load_heightmap()
 	_setup_environment()
 	_setup_ground()
 	_setup_park()
 	_player = _setup_player()
 	_setup_hud()
+
+
+# ---------------------------------------------------------------------------
+# Heightmap helpers
+# ---------------------------------------------------------------------------
+func _load_heightmap() -> void:
+	if not FileAccess.file_exists("res://heightmap.json"):
+		return
+	var fa  := FileAccess.open("res://heightmap.json", FileAccess.READ)
+	var hm   = JSON.parse_string(fa.get_as_text())
+	fa.close()
+	if typeof(hm) != TYPE_DICTIONARY:
+		return
+	_hm_width         = int(hm["width"])
+	_hm_depth         = int(hm["depth"])
+	_hm_world_size    = float(hm["world_size"])
+	_hm_origin_height = float(hm["origin_height"])
+	_hm_data          = hm["data"]
+	print("Heightmap loaded: %d×%d  origin_y=%.1f m" % [_hm_width, _hm_depth, _hm_origin_height])
+
+
+func _terrain_height(x: float, z: float) -> float:
+	if _hm_data.is_empty():
+		return 0.0
+	var half := _hm_world_size * 0.5
+	var xi   := (x + half) / _hm_world_size * (_hm_width  - 1)
+	var zi   := (z + half) / _hm_world_size * (_hm_depth  - 1)
+	var xi0  := clampi(int(xi), 0, _hm_width  - 2)
+	var zi0  := clampi(int(zi), 0, _hm_depth  - 2)
+	var fx   := xi - xi0
+	var fz   := zi - zi0
+	var h00  := float(_hm_data[zi0       * _hm_width + xi0    ])
+	var h10  := float(_hm_data[zi0       * _hm_width + xi0 + 1])
+	var h01  := float(_hm_data[(zi0 + 1) * _hm_width + xi0    ])
+	var h11  := float(_hm_data[(zi0 + 1) * _hm_width + xi0 + 1])
+	return h00*(1.0-fx)*(1.0-fz) + h10*fx*(1.0-fz) + h01*(1.0-fx)*fz + h11*fx*fz
 
 
 # ---------------------------------------------------------------------------
@@ -97,30 +141,100 @@ func _setup_environment() -> void:
 
 
 # ---------------------------------------------------------------------------
-# Ground plane with procedural grid shader
-# (5 km × 5 km to cover all of Central Park's ~4 km length)
+# Terrain ground – 256×256 height-mapped mesh + HeightMapShape3D collision
+# Falls back to a flat plane when heightmap.json is absent.
 # ---------------------------------------------------------------------------
 func _setup_ground() -> void:
-	var plane := PlaneMesh.new()
-	plane.size            = Vector2(5000.0, 5000.0)
-	plane.subdivide_width  = 1
-	plane.subdivide_depth  = 1
-
 	var shader := Shader.new()
 	shader.code = _grid_shader_code()
+	var mat    := ShaderMaterial.new()
+	mat.shader  = shader
 
-	var mat := ShaderMaterial.new()
-	mat.shader = shader
+	if _hm_data.is_empty():
+		# Flat fallback
+		var plane            := PlaneMesh.new()
+		plane.size            = Vector2(5000.0, 5000.0)
+		plane.subdivide_width  = 1
+		plane.subdivide_depth  = 1
+		var mi                := MeshInstance3D.new()
+		mi.mesh                = plane
+		mi.material_override   = mat
+		add_child(mi)
+		var body := StaticBody3D.new()
+		var col  := CollisionShape3D.new()
+		col.shape = WorldBoundaryShape3D.new()
+		body.add_child(col)
+		add_child(body)
+		return
 
-	var mi := MeshInstance3D.new()
-	mi.mesh              = plane
-	mi.material_override = mat
+	# ---- Build terrain ArrayMesh ----
+	var W         := _hm_width
+	var H         := _hm_depth
+	var half      := _hm_world_size * 0.5
+	var cell      := _hm_world_size / float(W - 1)
+	var V         := W * H
+
+	var verts   := PackedVector3Array(); verts.resize(V)
+	var normals := PackedVector3Array(); normals.resize(V)
+	var uvs     := PackedVector2Array(); uvs.resize(V)
+
+	for zi in H:
+		for xi in W:
+			var idx := zi * W + xi
+			var xw  := -half + xi * cell
+			var zw  := -half + zi * cell
+			var h   := float(_hm_data[idx])
+			verts[idx]   = Vector3(xw, h, zw)
+			uvs[idx]     = Vector2(float(xi) / float(W - 1), float(zi) / float(H - 1))
+			# Slope-based normal using central differences
+			var hL := float(_hm_data[zi * W + max(xi - 1, 0)    ])
+			var hR := float(_hm_data[zi * W + min(xi + 1, W - 1)])
+			var hU := float(_hm_data[max(zi - 1, 0)     * W + xi])
+			var hD := float(_hm_data[min(zi + 1, H - 1) * W + xi])
+			normals[idx] = Vector3(hL - hR, 2.0 * cell, hU - hD).normalized()
+
+	var T       := (W - 1) * (H - 1) * 6
+	var indices := PackedInt32Array(); indices.resize(T)
+	var t       := 0
+	for zi in (H - 1):
+		for xi in (W - 1):
+			var i00 := zi * W + xi
+			var i10 := zi * W + xi + 1
+			var i01 := (zi + 1) * W + xi
+			var i11 := (zi + 1) * W + xi + 1
+			indices[t]     = i00; indices[t + 1] = i10; indices[t + 2] = i11
+			indices[t + 3] = i00; indices[t + 4] = i11; indices[t + 5] = i01
+			t += 6
+
+	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX]  = verts
+	arrays[Mesh.ARRAY_NORMAL]  = normals
+	arrays[Mesh.ARRAY_TEX_UV]  = uvs
+	arrays[Mesh.ARRAY_INDEX]   = indices
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	mesh.surface_set_material(0, mat)
+
+	var mi       := MeshInstance3D.new()
+	mi.mesh       = mesh
+	mi.name       = "Terrain"
 	add_child(mi)
 
-	# Infinite flat collision floor
-	var body := StaticBody3D.new()
-	var col  := CollisionShape3D.new()
-	col.shape = WorldBoundaryShape3D.new()
+	# ---- HeightMapShape3D collision ----
+	var hm_shape          := HeightMapShape3D.new()
+	hm_shape.map_width     = W
+	hm_shape.map_depth     = H
+	var pf                := PackedFloat32Array(); pf.resize(V)
+	for i in V:
+		pf[i] = float(_hm_data[i])
+	hm_shape.map_data      = pf
+
+	var col               := CollisionShape3D.new()
+	col.shape              = hm_shape
+	col.scale              = Vector3(cell, 1.0, cell)
+
+	var body              := StaticBody3D.new()
+	body.name              = "TerrainBody"
 	body.add_child(col)
 	add_child(body)
 
@@ -206,7 +320,8 @@ func _setup_park() -> void:
 # ---------------------------------------------------------------------------
 func _setup_player() -> CharacterBody3D:
 	var p: CharacterBody3D = load("res://player.gd").new()
-	p.name = "Player"
+	p.name       = "Player"
+	p.position.y = _hm_origin_height + 2.0   # spawn above terrain; physics settles
 	add_child(p)
 	return p
 
