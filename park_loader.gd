@@ -5,6 +5,7 @@ extends Node3D
 
 const DATA_PATH := "res://park_data.json"
 const PATH_Y    := 0.06   # metres above ground plane
+const WATER_Y   := 0.03   # water sits above ground, below path ribbons
 
 
 # ---------------------------------------------------------------------------
@@ -47,6 +48,7 @@ func _ready() -> void:
 
 	print("ParkLoader: building path meshes…")
 	_build_paths(data.get("paths", []))
+	_build_water(data.get("water", []))
 	_build_boundary(data.get("boundary", []))
 	print("ParkLoader: done")
 
@@ -98,6 +100,61 @@ func _make_path_mesh(paths: Array, hw: String) -> MeshInstance3D:
 	mi.mesh = mesh
 	mi.name = "Paths_" + hw
 	return mi
+
+
+# ---------------------------------------------------------------------------
+# Water bodies – filled polygons triangulated with Geometry2D
+# ---------------------------------------------------------------------------
+func _build_water(water: Array) -> void:
+	if water.is_empty():
+		return
+
+	var verts   := PackedVector3Array()
+	var normals := PackedVector3Array()
+
+	for body in water:
+		var pts: Array = body["points"]
+		if pts.size() < 3:
+			continue
+
+		var polygon := PackedVector2Array()
+		for pt in pts:
+			polygon.append(Vector2(float(pt[0]), float(pt[1])))
+
+		var indices := Geometry2D.triangulate_polygon(polygon)
+		if indices.is_empty():
+			continue
+
+		for i in range(0, indices.size(), 3):
+			verts.append(Vector3(polygon[indices[i    ]].x, WATER_Y, polygon[indices[i    ]].y))
+			verts.append(Vector3(polygon[indices[i + 1]].x, WATER_Y, polygon[indices[i + 1]].y))
+			verts.append(Vector3(polygon[indices[i + 2]].x, WATER_Y, polygon[indices[i + 2]].y))
+			for _j in range(3):
+				normals.append(Vector3.UP)
+
+	if verts.is_empty():
+		return
+
+	var arrays: Array = []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts
+	arrays[Mesh.ARRAY_NORMAL] = normals
+
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(0.13, 0.32, 0.62)
+	mat.roughness    = 0.08
+	mat.metallic     = 0.35
+	mat.cull_mode    = BaseMaterial3D.CULL_DISABLED
+
+	mesh.surface_set_material(0, mat)
+
+	var mi := MeshInstance3D.new()
+	mi.mesh = mesh
+	mi.name = "WaterBodies"
+	add_child(mi)
 
 
 func _append_quad(verts: PackedVector3Array, normals: PackedVector3Array,

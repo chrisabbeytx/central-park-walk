@@ -19,12 +19,17 @@ BBOX = "40.7644,-73.9816,40.7994,-73.9492"
 # We want:
 #   • Ways tagged highway=footway/path/pedestrian/steps/cycleway/track
 #   • The Central Park boundary relation
+#   • Water bodies: closed ways and relations with natural=water
 # >;  recursively fetches all nodes referenced by ways and relations.
 QUERY = f"""[out:json][timeout:90];
 (
   way["highway"~"^(footway|path|pedestrian|steps|cycleway|track)$"]
     ({BBOX});
   relation["name"="Central Park"]
+    ({BBOX});
+  way["natural"="water"]
+    ({BBOX});
+  relation["natural"="water"]
     ({BBOX});
 );
 out body;
