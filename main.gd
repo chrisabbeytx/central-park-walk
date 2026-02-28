@@ -59,8 +59,8 @@ func _setup_environment() -> void:
 	var sky_mat := ProceduralSkyMaterial.new()
 	sky_mat.sky_top_color     = Color(0.13, 0.40, 0.82)
 	sky_mat.sky_horizon_color = Color(0.58, 0.78, 0.96)
-	sky_mat.ground_bottom_color  = Color(0.10, 0.10, 0.10)
-	sky_mat.ground_horizon_color = Color(0.32, 0.52, 0.32)
+	sky_mat.ground_bottom_color  = Color(0.06, 0.14, 0.04)
+	sky_mat.ground_horizon_color = Color(0.24, 0.42, 0.14)
 	sky_mat.sun_angle_max = 30.0
 	sky_mat.sun_curve     = 0.06
 
@@ -131,6 +131,33 @@ render_mode cull_disabled;
 
 varying vec3 world_pos;
 
+// ---- value noise helpers ----
+float hash2(vec2 p) {
+	p = fract(p * vec2(127.1, 311.7));
+	p += dot(p, p + 43.21);
+	return fract(p.x * p.y);
+}
+
+float vnoise(vec2 p) {
+	vec2 i = floor(p);
+	vec2 f = fract(p);
+	vec2 u = f * f * (3.0 - 2.0 * f);
+	return mix(
+		mix(hash2(i),                hash2(i + vec2(1.0, 0.0)), u.x),
+		mix(hash2(i + vec2(0.0,1.0)), hash2(i + vec2(1.0, 1.0)), u.x),
+		u.y);
+}
+
+float fbm(vec2 p, int oct) {
+	float v = 0.0, a = 0.5;
+	for (int i = 0; i < oct; i++) {
+		v += a * vnoise(p);
+		p *= 2.13;
+		a *= 0.47;
+	}
+	return v;
+}
+
 void vertex() {
 	world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 }
@@ -138,26 +165,28 @@ void vertex() {
 void fragment() {
 	vec2 pos = world_pos.xz;
 
-	// Fine grid every 10 m
-	vec2 fine_d  = abs(fract(pos / 10.0 + 0.5) - 0.5) * 10.0;
-	float fine_a = 1.0 - smoothstep(0.0, 0.22, min(fine_d.x, fine_d.y));
+	// Three noise scales: large terrain-scale patches, medium lawn variation, fine detail
+	float f_large  = fbm(pos * 0.004, 4);   // ~250 m blobs
+	float f_medium = fbm(pos * 0.028, 4);   // ~35 m patches
+	float f_fine   = fbm(pos * 0.20,  3);   // ~5 m detail
 
-	// Coarse grid every 50 m
-	vec2 coarse_d  = abs(fract(pos / 50.0 + 0.5) - 0.5) * 50.0;
-	float coarse_a = 1.0 - smoothstep(0.0, 0.60, min(coarse_d.x, coarse_d.y));
+	float t = clamp(f_large * 0.45 + f_medium * 0.38 + f_fine * 0.17, 0.0, 1.0);
 
-	// Cardinal axis lines (thicker stripes through origin)
-	float x_axis = 1.0 - smoothstep(0.0, 1.0, abs(pos.y));  // East–West through Z=0
-	float z_axis = 1.0 - smoothstep(0.0, 1.0, abs(pos.x));  // North–South through X=0
+	// Five-stop grass colour ramp
+	vec3 c0 = vec3(0.07, 0.20, 0.05);   // deep shade
+	vec3 c1 = vec3(0.14, 0.34, 0.10);   // shaded grass
+	vec3 c2 = vec3(0.24, 0.50, 0.15);   // typical lawn
+	vec3 c3 = vec3(0.38, 0.60, 0.20);   // sun-lit grass
+	vec3 c4 = vec3(0.52, 0.48, 0.20);   // dry / worn patch
 
-	vec3 color = vec3(0.19, 0.46, 0.19);
-	color = mix(color, vec3(0.34, 0.68, 0.34), fine_a   * 0.55);
-	color = mix(color, vec3(0.82, 0.96, 0.55), coarse_a * 0.82);
-	color = mix(color, vec3(0.95, 0.25, 0.20), x_axis   * 0.90);
-	color = mix(color, vec3(0.25, 0.45, 1.00), z_axis   * 0.90);
+	vec3 color;
+	if      (t < 0.25) color = mix(c0, c1, t / 0.25);
+	else if (t < 0.50) color = mix(c1, c2, (t - 0.25) / 0.25);
+	else if (t < 0.75) color = mix(c2, c3, (t - 0.50) / 0.25);
+	else               color = mix(c3, c4, (t - 0.75) / 0.25);
 
 	ALBEDO    = color;
-	ROUGHNESS = 0.95;
+	ROUGHNESS = 0.92;
 	METALLIC  = 0.0;
 }
 """
