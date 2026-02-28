@@ -109,9 +109,10 @@ func _make_path_mesh(paths: Array, hw: String, surface: String) -> MeshInstance3
 	for path in paths:
 		var pts: Array = path["points"]
 		for i in range(pts.size() - 1):
+			# pts[i] is now [x, terrain_y, z]  (3 elements with terrain height)
 			_append_quad(verts, normals,
-				Vector2(float(pts[i][0]),     float(pts[i][1])),
-				Vector2(float(pts[i + 1][0]), float(pts[i + 1][1])),
+				Vector3(float(pts[i][0]),     float(pts[i][1]),     float(pts[i][2])),
+				Vector3(float(pts[i+1][0]),   float(pts[i+1][1]),   float(pts[i+1][2])),
 				width)
 
 	var arrays: Array = []
@@ -150,6 +151,9 @@ func _build_water(water: Array) -> void:
 		if pts.size() < 3:
 			continue
 
+		# water_y = terrain height at the body centroid (from convert_to_godot.py)
+		var wy: float = float(body.get("water_y", 0.0)) + WATER_Y
+
 		var polygon := PackedVector2Array()
 		for pt in pts:
 			polygon.append(Vector2(float(pt[0]), float(pt[1])))
@@ -159,9 +163,9 @@ func _build_water(water: Array) -> void:
 			continue
 
 		for i in range(0, indices.size(), 3):
-			verts.append(Vector3(polygon[indices[i    ]].x, WATER_Y, polygon[indices[i    ]].y))
-			verts.append(Vector3(polygon[indices[i + 1]].x, WATER_Y, polygon[indices[i + 1]].y))
-			verts.append(Vector3(polygon[indices[i + 2]].x, WATER_Y, polygon[indices[i + 2]].y))
+			verts.append(Vector3(polygon[indices[i    ]].x, wy, polygon[indices[i    ]].y))
+			verts.append(Vector3(polygon[indices[i + 1]].x, wy, polygon[indices[i + 1]].y))
+			verts.append(Vector3(polygon[indices[i + 2]].x, wy, polygon[indices[i + 2]].y))
 			for _j in range(3):
 				normals.append(Vector3.UP)
 
@@ -203,37 +207,39 @@ func _build_buildings(buildings: Array) -> void:
 	var roof_normals := PackedVector3Array()
 
 	for bld in buildings:
-		var pts: Array = bld["points"]
-		var h:   float = float(bld["height"])
-		var n:   int   = pts.size()
+		var pts:  Array = bld["points"]
+		var h:    float = float(bld["height"])
+		var base: float = float(bld.get("base", 0.0))   # terrain height at centroid
+		var top:  float = base + h
+		var n:    int   = pts.size()
 		if n < 3:
 			continue
 
-		# Walls – one quad per polygon edge
+		# Walls – one quad per polygon edge, grounded at terrain height
 		for i in n:
-			var p1 := Vector2(float(pts[i][0]),         float(pts[i][1]))
+			var p1 := Vector2(float(pts[i][0]),           float(pts[i][1]))
 			var p2 := Vector2(float(pts[(i + 1) % n][0]), float(pts[(i + 1) % n][1]))
 			var seg := p2 - p1
 			if seg.length_squared() < 0.01:
 				continue
 			var norm := Vector3(-seg.y, 0.0, seg.x).normalized()
-			var a := Vector3(p1.x, 0.0, p1.y)
-			var b := Vector3(p2.x, 0.0, p2.y)
-			var c := Vector3(p2.x, h,   p2.y)
-			var d := Vector3(p1.x, h,   p1.y)
+			var a := Vector3(p1.x, base, p1.y)
+			var b := Vector3(p2.x, base, p2.y)
+			var c := Vector3(p2.x, top,  p2.y)
+			var d := Vector3(p1.x, top,  p1.y)
 			wall_verts.append_array(PackedVector3Array([a, b, c, a, c, d]))
 			for _j in range(6):
 				wall_normals.append(norm)
 
-		# Flat roof – triangulate footprint at height h
+		# Flat roof at terrain_base + building_height
 		var polygon := PackedVector2Array()
 		for pt in pts:
 			polygon.append(Vector2(float(pt[0]), float(pt[1])))
 		var indices := Geometry2D.triangulate_polygon(polygon)
 		for i in range(0, indices.size(), 3):
-			roof_verts.append(Vector3(polygon[indices[i    ]].x, h, polygon[indices[i    ]].y))
-			roof_verts.append(Vector3(polygon[indices[i + 1]].x, h, polygon[indices[i + 1]].y))
-			roof_verts.append(Vector3(polygon[indices[i + 2]].x, h, polygon[indices[i + 2]].y))
+			roof_verts.append(Vector3(polygon[indices[i    ]].x, top, polygon[indices[i    ]].y))
+			roof_verts.append(Vector3(polygon[indices[i + 1]].x, top, polygon[indices[i + 1]].y))
+			roof_verts.append(Vector3(polygon[indices[i + 2]].x, top, polygon[indices[i + 2]].y))
 			for _j in range(3):
 				roof_normals.append(Vector3.UP)
 
@@ -307,13 +313,13 @@ func _build_trees(trees: Array) -> void:
 	for i in count:
 		var pt    := trees[i]
 		var tx    := float(pt[0])
-		var tz    := float(pt[1])
+		var ty    := float(pt[1])   # terrain height baked in by convert_to_godot.py
+		var tz    := float(pt[2])
 		rng.seed   = i
 		var scale := rng.randf_range(0.70, 1.35)
 		var basis  := Basis.IDENTITY.scaled(Vector3(scale, scale, scale))
-		# trunk centre at half its height; canopy centre 1.5 m below trunk tip
-		trunk_mm.set_instance_transform(i,  Transform3D(basis, Vector3(tx, scale * 2.5, tz)))
-		canopy_mm.set_instance_transform(i, Transform3D(basis, Vector3(tx, scale * 6.5, tz)))
+		trunk_mm.set_instance_transform(i,  Transform3D(basis, Vector3(tx, ty + scale * 2.5, tz)))
+		canopy_mm.set_instance_transform(i, Transform3D(basis, Vector3(tx, ty + scale * 6.5, tz)))
 
 	var trunk_mmi        := MultiMeshInstance3D.new()
 	trunk_mmi.multimesh   = trunk_mm
@@ -366,28 +372,34 @@ func _build_labels(water: Array) -> void:
 		lbl.modulate          = Color(1.0, 1.0, 1.0, 0.95)
 		lbl.outline_size      = 8
 		lbl.outline_modulate  = Color(0.0, 0.08, 0.25, 0.85)
-		lbl.position          = Vector3(cx, height, cz)
+		var water_y: float = float(body.get("water_y", 0.0))
+		lbl.position          = Vector3(cx, water_y + height, cz)
 		add_child(lbl)
 
 
 func _append_quad(verts: PackedVector3Array, normals: PackedVector3Array,
-				  p1: Vector2, p2: Vector2, width: float) -> void:
-	var seg := p2 - p1
-	if seg.length_squared() < 0.0001:
+				  p1: Vector3, p2: Vector3, width: float) -> void:
+	var seg2 := Vector2(p2.x - p1.x, p2.z - p1.z)
+	if seg2.length_squared() < 0.0001:
 		return
 
-	var d  := seg.normalized()
+	var d  := seg2.normalized()
 	var n  := Vector2(-d.y, d.x)
 	var hw := width * 0.5
 
-	var a  := Vector3(p1.x + n.x * hw,  PATH_Y,  p1.y + n.y * hw)
-	var b  := Vector3(p1.x - n.x * hw,  PATH_Y,  p1.y - n.y * hw)
-	var c  := Vector3(p2.x + n.x * hw,  PATH_Y,  p2.y + n.y * hw)
-	var dd := Vector3(p2.x - n.x * hw,  PATH_Y,  p2.y - n.y * hw)
+	var a  := Vector3(p1.x + n.x * hw,  p1.y + PATH_Y,  p1.z + n.y * hw)
+	var b  := Vector3(p1.x - n.x * hw,  p1.y + PATH_Y,  p1.z - n.y * hw)
+	var c  := Vector3(p2.x + n.x * hw,  p2.y + PATH_Y,  p2.z + n.y * hw)
+	var dd := Vector3(p2.x - n.x * hw,  p2.y + PATH_Y,  p2.z - n.y * hw)
+
+	# Compute quad normal from actual geometry so sloped paths light correctly
+	var quad_n := (b - a).cross(c - a).normalized()
+	if quad_n.y < 0.0:
+		quad_n = -quad_n
 
 	verts.append_array(PackedVector3Array([a, b, c,   b, dd, c]))
 	for _i in range(6):
-		normals.append(Vector3.UP)
+		normals.append(quad_n)
 
 
 # ---------------------------------------------------------------------------
