@@ -47,6 +47,7 @@ func _ready() -> void:
 		return
 
 	print("ParkLoader: building path meshes…")
+	_build_buildings(data.get("buildings", []))
 	_build_paths(data.get("paths", []))
 	_build_water(data.get("water", []))
 	_build_labels(data.get("water", []))
@@ -156,6 +157,78 @@ func _build_water(water: Array) -> void:
 	var mi := MeshInstance3D.new()
 	mi.mesh = mesh
 	mi.name = "WaterBodies"
+	add_child(mi)
+
+
+# ---------------------------------------------------------------------------
+# Buildings – extruded footprint polygons; walls + flat roofs batched separately
+# ---------------------------------------------------------------------------
+func _build_buildings(buildings: Array) -> void:
+	if buildings.is_empty():
+		return
+
+	var wall_verts   := PackedVector3Array()
+	var wall_normals := PackedVector3Array()
+	var roof_verts   := PackedVector3Array()
+	var roof_normals := PackedVector3Array()
+
+	for bld in buildings:
+		var pts: Array = bld["points"]
+		var h:   float = float(bld["height"])
+		var n:   int   = pts.size()
+		if n < 3:
+			continue
+
+		# Walls – one quad per polygon edge
+		for i in n:
+			var p1 := Vector2(float(pts[i][0]),         float(pts[i][1]))
+			var p2 := Vector2(float(pts[(i + 1) % n][0]), float(pts[(i + 1) % n][1]))
+			var seg := p2 - p1
+			if seg.length_squared() < 0.01:
+				continue
+			var norm := Vector3(-seg.y, 0.0, seg.x).normalized()
+			var a := Vector3(p1.x, 0.0, p1.y)
+			var b := Vector3(p2.x, 0.0, p2.y)
+			var c := Vector3(p2.x, h,   p2.y)
+			var d := Vector3(p1.x, h,   p1.y)
+			wall_verts.append_array(PackedVector3Array([a, b, c, a, c, d]))
+			for _j in range(6):
+				wall_normals.append(norm)
+
+		# Flat roof – triangulate footprint at height h
+		var polygon := PackedVector2Array()
+		for pt in pts:
+			polygon.append(Vector2(float(pt[0]), float(pt[1])))
+		var indices := Geometry2D.triangulate_polygon(polygon)
+		for i in range(0, indices.size(), 3):
+			roof_verts.append(Vector3(polygon[indices[i    ]].x, h, polygon[indices[i    ]].y))
+			roof_verts.append(Vector3(polygon[indices[i + 1]].x, h, polygon[indices[i + 1]].y))
+			roof_verts.append(Vector3(polygon[indices[i + 2]].x, h, polygon[indices[i + 2]].y))
+			for _j in range(3):
+				roof_normals.append(Vector3.UP)
+
+	_add_batch_mesh(wall_verts, wall_normals, Color(0.76, 0.70, 0.62), 0.82, "BuildingWalls")
+	_add_batch_mesh(roof_verts, roof_normals, Color(0.48, 0.46, 0.44), 0.88, "BuildingRoofs")
+
+
+func _add_batch_mesh(verts: PackedVector3Array, normals: PackedVector3Array,
+					 color: Color, roughness: float, node_name: String) -> void:
+	if verts.is_empty():
+		return
+	var arrays: Array = []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts
+	arrays[Mesh.ARRAY_NORMAL] = normals
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = color
+	mat.roughness    = roughness
+	mat.cull_mode    = BaseMaterial3D.CULL_DISABLED
+	mesh.surface_set_material(0, mat)
+	var mi := MeshInstance3D.new()
+	mi.mesh = mesh
+	mi.name = node_name
 	add_child(mi)
 
 

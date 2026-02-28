@@ -104,6 +104,14 @@ def main() -> None:
 
     elements = raw.get("elements", [])
 
+    # Merge building data if present (downloaded separately due to query size)
+    b_src = "buildings_osm.json"
+    if os.path.exists(b_src):
+        with open(b_src) as fh:
+            b_raw = json.load(fh)
+        elements = elements + b_raw.get("elements", [])
+        print(f"Merged {len(b_raw.get('elements',[]))} elements from {b_src}")
+
     # Index raw data
     nodes_ll:   dict[int, tuple]  = {}   # id → (lat, lon)
     ways_tags:  dict[int, dict]   = {}   # id → tag dict
@@ -225,6 +233,40 @@ def main() -> None:
             water_out.append({"name": tags.get("name", ""), "points": pts})
 
     # -------------------------------------------------------------------
+    # Buildings  (way["building"])
+    # -------------------------------------------------------------------
+    def building_height(tags: dict) -> float:
+        h = tags.get("height", "")
+        if h:
+            try:
+                return float(h.replace("m", "").strip())
+            except ValueError:
+                pass
+        levels = tags.get("building:levels", "")
+        if levels:
+            try:
+                return float(levels) * 3.5
+            except ValueError:
+                pass
+        return 10.0   # default ~3 floors
+
+    buildings_out = []
+    for wid, tags in ways_tags.items():
+        if not tags.get("building"):
+            continue
+        nids = ways_nodes.get(wid, [])
+        if len(nids) < 4:           # need ≥3 unique + closing node
+            continue
+        if nids[0] != nids[-1]:     # must be a closed ring
+            continue
+        pts = _extract_polygon(nids)
+        if len(pts) >= 3:
+            buildings_out.append({
+                "points": pts,
+                "height": round(building_height(tags), 1),
+            })
+
+    # -------------------------------------------------------------------
     # Trees  (node["natural"="tree"])
     # -------------------------------------------------------------------
     trees_out = []
@@ -244,6 +286,7 @@ def main() -> None:
         "boundary":           boundary_pts,
         "water":              water_out,
         "trees":              trees_out,
+        "buildings":          buildings_out,
     }
 
     with open("park_data.json", "w") as fh:
@@ -256,6 +299,7 @@ def main() -> None:
     print(f"Boundary points:  {len(boundary_pts)}")
     print(f"Water bodies:     {len(water_out)}")
     print(f"Trees:            {len(trees_out)}")
+    print(f"Buildings:        {len(buildings_out)}")
     print(f"\nSaved → park_data.json  ({size_kb:.1f} KB)")
 
 

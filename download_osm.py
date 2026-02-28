@@ -21,7 +21,7 @@ BBOX = "40.7644,-73.9816,40.7994,-73.9492"
 #   • The Central Park boundary relation
 #   • Water bodies: closed ways and relations with natural=water
 # >;  recursively fetches all nodes referenced by ways and relations.
-QUERY = f"""[out:json][timeout:120];
+QUERY = f"""[out:json][timeout:180];
 (
   way["highway"~"^(footway|path|pedestrian|steps|cycleway|track)$"]
     ({BBOX});
@@ -33,63 +33,83 @@ QUERY = f"""[out:json][timeout:120];
     ({BBOX});
   node["natural"="tree"]
     ({BBOX});
+  way["building"]
+    ({BBOX});
 );
 out body;
 >;
 out skel qt;
 """
 
-OUTPUT = "central_park_osm.json"
-URL    = "https://overpass-api.de/api/interpreter"
+OUTPUT   = "central_park_osm.json"
+B_OUTPUT = "buildings_osm.json"
+
+# Primary endpoint; de.overpass-api.de used as fallback
+URLS = [
+    "https://overpass.kumi.systems/api/interpreter",
+    "https://overpass-api.de/api/interpreter",
+]
+
+B_QUERY = f"""[out:json][timeout:180];
+way["building"]({BBOX});
+out body;
+>;
+out skel qt;
+"""
 
 
-def fetch(retries: int = 3) -> bytes:
-    data = urllib.parse.urlencode({"data": QUERY}).encode()
-    req  = urllib.request.Request(URL, data=data, method="POST")
-    req.add_header("User-Agent", "central-park-walk-godot/1.0")
+def fetch(query: str, retries: int = 3) -> bytes:
+    data = urllib.parse.urlencode({"data": query}).encode()
+    for url in URLS:
+        for attempt in range(1, retries + 1):
+            try:
+                req = urllib.request.Request(url, data=data, method="POST")
+                req.add_header("User-Agent", "central-park-walk-godot/1.0")
+                print(f"  {url} attempt {attempt}/{retries}…", flush=True)
+                with urllib.request.urlopen(req, timeout=200) as resp:
+                    return resp.read()
+            except urllib.error.HTTPError as exc:
+                print(f"  HTTP {exc.code}: {exc.reason}", file=sys.stderr)
+                if exc.code == 429:
+                    wait = 30 * attempt
+                    print(f"  Rate-limited – waiting {wait}s", flush=True)
+                    time.sleep(wait)
+                else:
+                    break   # try next URL
+            except urllib.error.URLError as exc:
+                print(f"  Network error: {exc.reason}", file=sys.stderr)
+                time.sleep(5)
+        print(f"  Failed on {url}, trying next…", file=sys.stderr)
 
-    for attempt in range(1, retries + 1):
-        try:
-            print(f"  attempt {attempt}/{retries}…", flush=True)
-            with urllib.request.urlopen(req, timeout=120) as resp:
-                return resp.read()
-        except urllib.error.HTTPError as exc:
-            print(f"  HTTP {exc.code}: {exc.reason}", file=sys.stderr)
-            if exc.code == 429:
-                wait = 30 * attempt
-                print(f"  Rate-limited – waiting {wait}s", flush=True)
-                time.sleep(wait)
-            else:
-                sys.exit(1)
-        except urllib.error.URLError as exc:
-            print(f"  Network error: {exc.reason}", file=sys.stderr)
-            if attempt == retries:
-                sys.exit(1)
-            time.sleep(5)
-
-    print("All retries exhausted.", file=sys.stderr)
+    print("All endpoints exhausted.", file=sys.stderr)
     sys.exit(1)
 
 
-def main() -> None:
-    print(f"Querying Overpass API for Central Park paths…")
-    print(f"  bbox: {BBOX}")
-
-    raw    = fetch()
+def save(raw: bytes, path: str) -> dict:
     result = json.loads(raw)
     elems  = result.get("elements", [])
-
     counts = {"node": 0, "way": 0, "relation": 0}
     for e in elems:
         counts[e["type"]] = counts.get(e["type"], 0) + 1
-
-    with open(OUTPUT, "w") as fh:
+    with open(path, "w") as fh:
         json.dump(result, fh)
+    return counts
 
+
+def main() -> None:
+    print(f"Querying Overpass API for Central Park paths + trees…")
+    print(f"  bbox: {BBOX}")
+    counts = save(fetch(QUERY), OUTPUT)
     print(f"\n  nodes:     {counts['node']}")
     print(f"  ways:      {counts['way']}")
     print(f"  relations: {counts['relation']}")
-    print(f"\nSaved → {OUTPUT}")
+    print(f"Saved → {OUTPUT}")
+
+    print(f"\nQuerying buildings…")
+    b_counts = save(fetch(B_QUERY), B_OUTPUT)
+    print(f"\n  nodes:     {b_counts['node']}")
+    print(f"  ways:      {b_counts['way']}")
+    print(f"Saved → {B_OUTPUT}")
 
 
 if __name__ == "__main__":
