@@ -150,7 +150,7 @@ def main() -> None:
             skipped_pts += 1
             continue
 
-        paths_out.append({"highway": hw, "points": pts})
+        paths_out.append({"highway": hw, "surface": tags.get("surface", ""), "points": pts})
 
     # -------------------------------------------------------------------
     # Boundary

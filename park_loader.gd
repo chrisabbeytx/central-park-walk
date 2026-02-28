@@ -21,15 +21,41 @@ func _hw_width(hw: String) -> float:
 		_:            return 2.5   # "path" and unknowns
 
 
-func _hw_color(hw: String) -> Color:
+func _path_color(hw: String, surface: String) -> Color:
+	# Surface tag takes priority; highway type is the fallback
+	match surface:
+		"asphalt":            return Color(0.28, 0.28, 0.30)   # dark grey tarmac
+		"concrete":           return Color(0.68, 0.68, 0.66)   # light grey concrete
+		"concrete:plates":    return Color(0.65, 0.65, 0.63)   # concrete slabs
+		"paving_stones":      return Color(0.78, 0.74, 0.65)   # cream/buff stone pavers
+		"sett":               return Color(0.54, 0.52, 0.48)   # grey stone setts
+		"unhewn_cobblestone": return Color(0.52, 0.50, 0.44)   # rough cobble
+		"pebblestone":        return Color(0.60, 0.57, 0.50)   # pebble stone
+		"stone":              return Color(0.60, 0.58, 0.54)   # cut stone
+		"rock":               return Color(0.56, 0.54, 0.50)   # bare rock
+		"brick":              return Color(0.68, 0.38, 0.26)   # brick red
+		"metal":              return Color(0.62, 0.63, 0.66)   # steel grating
+		"wood":               return Color(0.50, 0.34, 0.16)   # wooden boardwalk
+		"paved":              return Color(0.60, 0.60, 0.58)   # generic paved
+		"compacted":          return Color(0.52, 0.42, 0.28)   # compressed dirt/gravel
+		"fine_gravel":        return Color(0.64, 0.57, 0.44)   # fine gravel
+		"gravel":             return Color(0.60, 0.53, 0.40)   # loose gravel
+		"unpaved":            return Color(0.54, 0.43, 0.28)   # unpaved dirt
+		"dirt":               return Color(0.50, 0.38, 0.22)   # bare dirt
+		"ground":             return Color(0.46, 0.38, 0.26)   # natural ground
+		"grass":              return Color(0.28, 0.52, 0.18)   # grass path
+		"woodchips":          return Color(0.46, 0.32, 0.14)   # woodchip mulch
+		"mulch":              return Color(0.40, 0.28, 0.12)   # dark mulch
+		"sand":               return Color(0.76, 0.70, 0.52)   # sand
+	# Fallback to highway type
 	match hw:
-		"footway":    return Color(0.74, 0.69, 0.57)   # warm tan / gravel
-		"cycleway":   return Color(0.40, 0.50, 0.65)   # blue-grey asphalt
-		"pedestrian": return Color(0.82, 0.78, 0.66)   # pale cream stone
-		"path":       return Color(0.55, 0.47, 0.33)   # earthy dirt
+		"footway":    return Color(0.70, 0.64, 0.52)   # warm tan / gravel
+		"cycleway":   return Color(0.30, 0.30, 0.32)   # asphalt (cycleways are almost always asphalt)
+		"pedestrian": return Color(0.78, 0.74, 0.65)   # pale cream stone
+		"path":       return Color(0.54, 0.44, 0.30)   # earthy dirt
 		"steps":      return Color(0.60, 0.58, 0.54)   # grey stone
 		"track":      return Color(0.48, 0.40, 0.26)   # brown dirt track
-		_:            return Color(0.68, 0.62, 0.50)
+		_:            return Color(0.65, 0.60, 0.48)
 
 
 # ---------------------------------------------------------------------------
@@ -60,21 +86,25 @@ func _ready() -> void:
 # Path meshes – one MeshInstance3D per highway type
 # ---------------------------------------------------------------------------
 func _build_paths(paths: Array) -> void:
+	# Group by (highway, surface) so each material gets one batched mesh
 	var groups: Dictionary = {}
 	for path in paths:
-		var hw: String = str(path.get("highway", "path"))
-		if hw not in groups:
-			groups[hw] = []
-		groups[hw].append(path)
+		var hw:   String = str(path.get("highway", "path"))
+		var surf: String = str(path.get("surface", ""))
+		var key:  String = hw + "|" + surf
+		if key not in groups:
+			groups[key] = []
+		groups[key].append(path)
 
-	for hw in groups:
-		add_child(_make_path_mesh(groups[hw], str(hw)))
+	for key in groups:
+		var parts := key.split("|")
+		add_child(_make_path_mesh(groups[key], parts[0], parts[1]))
 
 
-func _make_path_mesh(paths: Array, hw: String) -> MeshInstance3D:
+func _make_path_mesh(paths: Array, hw: String, surface: String) -> MeshInstance3D:
 	var verts   := PackedVector3Array()
 	var normals := PackedVector3Array()
-	var width   := _hw_width(hw)   # typed float – no Variant
+	var width   := _hw_width(hw)
 
 	for path in paths:
 		var pts: Array = path["points"]
@@ -93,7 +123,7 @@ func _make_path_mesh(paths: Array, hw: String) -> MeshInstance3D:
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 
 	var mat := StandardMaterial3D.new()
-	mat.albedo_color = _hw_color(hw)   # typed Color – no Variant
+	mat.albedo_color = _path_color(hw, surface)
 	mat.roughness    = 0.85
 	mat.cull_mode    = BaseMaterial3D.CULL_DISABLED
 
@@ -101,7 +131,7 @@ func _make_path_mesh(paths: Array, hw: String) -> MeshInstance3D:
 
 	var mi := MeshInstance3D.new()
 	mi.mesh = mesh
-	mi.name = "Paths_" + hw
+	mi.name = "Paths_" + hw + ("_" + surface if surface else "")
 	return mi
 
 
