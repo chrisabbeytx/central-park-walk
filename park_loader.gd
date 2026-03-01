@@ -434,40 +434,7 @@ func _build_bridge(path: Dictionary) -> void:
 		par_mi.name = "Bridge_Parapets"
 		add_child(par_mi)
 
-	# ----------------------------------------------------------------
-	# Abutments at each end
-	# ----------------------------------------------------------------
-	var abu_verts   := PackedVector3Array()
-	var abu_normals := PackedVector3Array()
-
-	for end_i in [0, n_pts - 1]:
-		var other_i := 1 if end_i == 0 else n_pts - 2
-		var pe  := Vector3(float(pts[end_i][0]),   float(pts[end_i][1]),   float(pts[end_i][2]))
-		var po  := Vector3(float(pts[other_i][0]), float(pts[other_i][1]), float(pts[other_i][2]))
-		var seg2 := Vector2(po.x - pe.x, po.z - pe.z).normalized()
-		var nv   := Vector2(-seg2.y, seg2.x)
-		var al := Vector3(pe.x + nv.x * hw2, pe.y,   pe.z + nv.y * hw2)
-		var ar := Vector3(pe.x - nv.x * hw2, pe.y,   pe.z - nv.y * hw2)
-		var bl := Vector3(pe.x + nv.x * hw2, deck_y, pe.z + nv.y * hw2)
-		var br := Vector3(pe.x - nv.x * hw2, deck_y, pe.z - nv.y * hw2)
-		var face_n := -Vector3(seg2.x, 0.0, seg2.y).normalized()
-		abu_verts.append_array(PackedVector3Array([al, ar, br, al, br, bl]))
-		for _j in range(6):
-			abu_normals.append(face_n)
-
-	if not abu_verts.is_empty():
-		var abu_arrays: Array = []
-		abu_arrays.resize(Mesh.ARRAY_MAX)
-		abu_arrays[Mesh.ARRAY_VERTEX] = abu_verts
-		abu_arrays[Mesh.ARRAY_NORMAL] = abu_normals
-		var abu_mesh := ArrayMesh.new()
-		abu_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, abu_arrays)
-		abu_mesh.surface_set_material(0, _make_stone_material(rw_alb, rw_nrm, rw_rgh,
-				Color(0.72, 0.68, 0.62)))
-		var abu_mi := MeshInstance3D.new()
-		abu_mi.mesh = abu_mesh
-		abu_mi.name = "Bridge_Abutments"
-		add_child(abu_mi)
+	# Abutments removed: smooth ramp already connects deck to terrain at each end.
 
 
 # ---------------------------------------------------------------------------
@@ -498,25 +465,28 @@ func _build_tunnel(path: Dictionary) -> void:
 	var u_c := 0.0
 	var u_w := 0.0
 
+	# Floor is lowered by TUNNEL_H so the ceiling ends up flush with terrain level.
+	# This puts the tunnel underground where it belongs.
 	for i in range(pts.size() - 1):
-		var p1 := Vector3(float(pts[i][0]),     float(pts[i][1])   + PATH_Y, float(pts[i][2]))
-		var p2 := Vector3(float(pts[i+1][0]),   float(pts[i+1][1]) + PATH_Y, float(pts[i+1][2]))
+		var fy1 := float(pts[i][1])   + PATH_Y - TUNNEL_H
+		var fy2 := float(pts[i+1][1]) + PATH_Y - TUNNEL_H
+		var p1  := Vector3(float(pts[i][0]),   fy1, float(pts[i][2]))
+		var p2  := Vector3(float(pts[i+1][0]), fy2, float(pts[i+1][2]))
 		var seg2 := Vector2(p2.x - p1.x, p2.z - p1.z)
 		if seg2.length_squared() < 0.0001:
 			continue
 		var seg_len := seg2.length()
 		var dv  := seg2 / seg_len
 		var nv  := Vector2(-dv.y, dv.x)
-		var cy1 := p1.y + TUNNEL_H
+		var cy1 := p1.y + TUNNEL_H   # ≈ original terrain y — ceiling at grade
 		var cy2 := p2.y + TUNNEL_H
 
-		# Ceiling (downward-facing)
+		# Ceiling (downward-facing, sits at terrain level)
 		var ca := Vector3(p1.x + nv.x * hw2, cy1, p1.z + nv.y * hw2)
 		var cb := Vector3(p1.x - nv.x * hw2, cy1, p1.z - nv.y * hw2)
 		var cc := Vector3(p2.x + nv.x * hw2, cy2, p2.z + nv.y * hw2)
 		var cd := Vector3(p2.x - nv.x * hw2, cy2, p2.z - nv.y * hw2)
 		var u2_c := u_c + seg_len / width
-		# Wind order: normal points DOWN into tunnel
 		ceil_verts.append_array(PackedVector3Array([ca, cc, cb, cb, cc, cd]))
 		for _i in range(6):
 			ceil_normals.append(Vector3.DOWN)
@@ -526,7 +496,7 @@ func _build_tunnel(path: Dictionary) -> void:
 		]))
 		u_c = u2_c
 
-		# Side walls (inward-facing)
+		# Side walls (inward-facing, floor to ceiling)
 		var u2_w := u_w + seg_len / TUNNEL_H
 		for side in [-1.0, 1.0]:
 			var s: float = float(side)
@@ -536,7 +506,6 @@ func _build_tunnel(path: Dictionary) -> void:
 			var wb := Vector3(p2.x + ox, p2.y, p2.z + oz)
 			var wc := Vector3(p2.x + ox, cy2,  p2.z + oz)
 			var wd := Vector3(p1.x + ox, cy1,  p1.z + oz)
-			# Inward normal
 			var wall_n := Vector3(-nv.x * s, 0.0, -nv.y * s)
 			wall_verts.append_array(PackedVector3Array([wa, wb, wc, wa, wc, wd]))
 			for _j in range(6):
@@ -569,18 +538,101 @@ func _build_tunnel(path: Dictionary) -> void:
 		var mi := MeshInstance3D.new(); mi.mesh = mesh; mi.name = "Tunnel_Walls"
 		add_child(mi)
 
-	# Floor surface (same texture as the surface type above ground)
-	var floor_mi := _make_path_mesh([path], hw, surf)
+	# Portal arches at each entrance/exit — stone arch framing the opening
+	_build_tunnel_portals(pts, width, TUNNEL_H, tun_mat)
+
+	# Floor surface at lowered depth
+	var mod_path := path.duplicate()
+	var mod_pts  := []
+	for pt in pts:
+		mod_pts.append([pt[0], float(pt[1]) - TUNNEL_H, pt[2]])
+	mod_path["points"] = mod_pts
+	var floor_mi := _make_path_mesh([mod_path], hw, surf)
 	floor_mi.name = "Tunnel_Floor"
 	add_child(floor_mi)
 
 
-# Shared helper: PBR stone/concrete material with optional CC0 texture
+func _build_tunnel_portals(pts: Array, width: float, height: float, mat: Material) -> void:
+	# Stone arch face at each end of the tunnel (entrance / exit)
+	var hw2    := width * 0.5
+	var n_steps := 8   # arch segments
+
+	for end_i in [0, pts.size() - 1]:
+		var other_i := 1 if end_i == 0 else pts.size() - 2
+		var pe  := Vector3(float(pts[end_i][0]),   float(pts[end_i][1]),   float(pts[end_i][2]))
+		var po  := Vector3(float(pts[other_i][0]), float(pts[other_i][1]), float(pts[other_i][2]))
+		var seg2  := Vector2(po.x - pe.x, po.z - pe.z).normalized()
+		# Outward normal of the portal face
+		var face_n := -Vector3(seg2.x, 0.0, seg2.y)
+		var right  := Vector2(-seg2.y, seg2.x)
+
+		# Portal frame: bottom corners at lowered floor, arch crown at ceiling level
+		var floor_y := pe.y + PATH_Y - height
+		var ceil_y  := pe.y + PATH_Y           # ≈ terrain level
+
+		var arch_verts   := PackedVector3Array()
+		var arch_normals := PackedVector3Array()
+
+		# Left and right vertical jambs (from floor to spring line = half height)
+		var spring_y := floor_y + height * 0.5
+		var arch_r   := hw2   # arch radius = half width
+
+		for side in [-1.0, 1.0]:
+			var s: float = float(side)
+			var ox := right.x * hw2 * s
+			var oz := right.y * hw2 * s
+			# Jamb quad: floor → spring line
+			var ja := Vector3(pe.x + ox, floor_y,  pe.z + oz)
+			var jb := Vector3(pe.x + ox, spring_y, pe.z + oz)
+			# Outer edge of jamb (slightly wider)
+			var jao := Vector3(pe.x + right.x*(hw2 + 0.6)*s, floor_y,  pe.z + right.y*(hw2 + 0.6)*s)
+			var jbo := Vector3(pe.x + right.x*(hw2 + 0.6)*s, spring_y, pe.z + right.y*(hw2 + 0.6)*s)
+			arch_verts.append_array(PackedVector3Array([ja, jb, jbo, ja, jbo, jao]))
+			for _j in range(6):
+				arch_normals.append(face_n)
+
+		# Semicircular arch from left spring to right spring
+		for ai in range(n_steps):
+			var a1 := PI * float(ai)     / float(n_steps)   # 0 → π (left→right)
+			var a2 := PI * float(ai + 1) / float(n_steps)
+			# Inner arch edge
+			var ix1 := pe.x + right.x * (-cos(a1) * arch_r)
+			var iz1 := pe.z + right.y * (-cos(a1) * arch_r)
+			var iy1 := spring_y + sin(a1) * arch_r * 0.7   # slightly flattened
+			var ix2 := pe.x + right.x * (-cos(a2) * arch_r)
+			var iz2 := pe.z + right.y * (-cos(a2) * arch_r)
+			var iy2 := spring_y + sin(a2) * arch_r * 0.7
+			# Outer arch edge (0.6 m thick voussoir ring)
+			var ox1 := pe.x + right.x * (-cos(a1) * (arch_r + 0.6))
+			var oz1 := pe.z + right.y * (-cos(a1) * (arch_r + 0.6))
+			var oy1 := spring_y + sin(a1) * (arch_r + 0.6) * 0.7
+			var ox2 := pe.x + right.x * (-cos(a2) * (arch_r + 0.6))
+			var oz2 := pe.z + right.y * (-cos(a2) * (arch_r + 0.6))
+			var oy2 := spring_y + sin(a2) * (arch_r + 0.6) * 0.7
+			var vi := Vector3(ix1, iy1, iz1); var vi2 := Vector3(ix2, iy2, iz2)
+			var vo := Vector3(ox1, oy1, oz1); var vo2 := Vector3(ox2, oy2, oz2)
+			arch_verts.append_array(PackedVector3Array([vi, vi2, vo2, vi, vo2, vo]))
+			for _j in range(6):
+				arch_normals.append(face_n)
+
+		if not arch_verts.is_empty():
+			var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
+			arrays[Mesh.ARRAY_VERTEX] = arch_verts
+			arrays[Mesh.ARRAY_NORMAL] = arch_normals
+			var mesh := ArrayMesh.new()
+			mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+			mesh.surface_set_material(0, mat)
+			var mi := MeshInstance3D.new(); mi.mesh = mesh; mi.name = "Tunnel_Portal"
+			add_child(mi)
+
+
+# Shared helper: PBR stone/concrete material — uses world-space UV so no
+# UV array is needed on the mesh (works on parapets, portals, walls, etc.)
 func _make_stone_material(alb: ImageTexture, nrm: ImageTexture, rgh: ImageTexture,
 						  tint: Color) -> Material:
 	if alb:
 		var sh  := Shader.new()
-		sh.code  = _path_shader_code()
+		sh.code  = _stone_shader_code()
 		var sm  := ShaderMaterial.new()
 		sm.shader = sh
 		sm.set_shader_parameter("tex_alb", alb)
@@ -593,6 +645,46 @@ func _make_stone_material(alb: ImageTexture, nrm: ImageTexture, rgh: ImageTextur
 	mat.roughness    = 0.88
 	mat.cull_mode    = BaseMaterial3D.CULL_DISABLED
 	return mat
+
+
+func _stone_shader_code() -> String:
+	return """shader_type spatial;
+render_mode cull_disabled;
+
+uniform sampler2D tex_alb : source_color,      filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D tex_nrm : hint_normal,        filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D tex_rgh : hint_default_white, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform vec4 tint : source_color = vec4(1.0);
+
+varying vec3 world_pos;
+varying vec3 world_nrm;
+
+void vertex() {
+	world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+	world_nrm = normalize((MODEL_MATRIX * vec4(NORMAL, 0.0)).xyz);
+}
+
+void fragment() {
+	// Triplanar UV: blend XZ (top/ceiling), XY (front/back), YZ (sides)
+	vec3 blend = abs(world_nrm);
+	blend = pow(blend, vec3(4.0));
+	blend /= (blend.x + blend.y + blend.z + 0.001);
+	float tile = 2.0;   // 2 m texture tile
+	vec3 alb = texture(tex_alb, world_pos.xz / tile).rgb * blend.y
+	         + texture(tex_alb, world_pos.xy / tile).rgb * blend.z
+	         + texture(tex_alb, world_pos.yz / tile).rgb * blend.x;
+	vec3 nrm = texture(tex_nrm, world_pos.xz / tile).rgb * blend.y
+	         + texture(tex_nrm, world_pos.xy / tile).rgb * blend.z
+	         + texture(tex_nrm, world_pos.yz / tile).rgb * blend.x;
+	float rgh = texture(tex_rgh, world_pos.xz / tile).r * blend.y
+	          + texture(tex_rgh, world_pos.xy / tile).r * blend.z
+	          + texture(tex_rgh, world_pos.yz / tile).r * blend.x;
+	ALBEDO     = alb * tint.rgb;
+	NORMAL_MAP = nrm;
+	ROUGHNESS  = clamp(rgh * 0.9 + 0.05, 0.0, 1.0);
+	METALLIC   = 0.0;
+}
+"""
 
 
 # ---------------------------------------------------------------------------
