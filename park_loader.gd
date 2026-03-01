@@ -204,6 +204,7 @@ func _ready() -> void:
 	_build_buildings(data.get("buildings", []))
 	_build_paths(data.get("paths", []))
 	_build_water(data.get("water", []))
+	_build_shore_vegetation(data.get("water", []))
 	_build_labels(data.get("water", []))
 	_build_trees(data.get("trees", []))
 	_build_boundary(data.get("boundary", []))
@@ -279,69 +280,103 @@ func _make_path_mesh(paths: Array, hw: String, surface: String) -> MeshInstance3
 	var normals := PackedVector3Array()
 	var uvs     := PackedVector2Array()
 	var width   := _hw_width(hw)
+	var hw2     := width * 0.5
+	var skirt   := 0.18  # metres below terrain for edge skirts
 
 	for path in paths:
-		var pts: Array = _subdivide_pts(path["points"], 5.0)
-		var u := 0.0
-		for i in range(pts.size() - 1):
-			var x1 := float(pts[i][0]);   var z1 := float(pts[i][2])
-			var x2 := float(pts[i+1][0]); var z2 := float(pts[i+1][2])
-			var seg2 := Vector2(x2 - x1, z2 - z1)
-			if seg2.length_squared() < 0.0001:
-				continue
-			var seg_len := seg2.length()
-			var d  := seg2 / seg_len
-			var n  := Vector2(-d.y, d.x)
-			var hw2 := width * 0.5
-			# Sample terrain at each edge vertex so the ribbon drapes cross-slope
-			var ax := x1 + n.x * hw2;  var az := z1 + n.y * hw2
-			var bx := x1 - n.x * hw2;  var bz := z1 - n.y * hw2
-			var cx := x2 + n.x * hw2;  var cz := z2 + n.y * hw2
-			var dx := x2 - n.x * hw2;  var dz := z2 - n.y * hw2
-			var ay := _terrain_y(ax, az);  var by := _terrain_y(bx, bz)
-			var cy := _terrain_y(cx, cz);  var dy := _terrain_y(dx, dz)
-			var a  := Vector3(ax, ay + PATH_Y, az)
-			var b  := Vector3(bx, by + PATH_Y, bz)
-			var c  := Vector3(cx, cy + PATH_Y, cz)
-			var dd := Vector3(dx, dy + PATH_Y, dz)
-			var quad_n := (b - a).cross(c - a).normalized()
+		var pts: Array = _subdivide_pts(path["points"], 3.0)
+		var n_pts := pts.size()
+		if n_pts < 2:
+			continue
+
+		# Build continuous ribbon with averaged normals at each vertex.
+		# This eliminates triangular gaps at curves.
+		var lefts  := PackedVector3Array()  # left edge vertices
+		var rights := PackedVector3Array()  # right edge vertices
+		var l_lo   := PackedVector3Array()  # left skirt (below terrain)
+		var r_lo   := PackedVector3Array()  # right skirt (below terrain)
+		var cum_u  := PackedFloat64Array()  # cumulative UV u-coordinate
+
+		lefts.resize(n_pts); rights.resize(n_pts)
+		l_lo.resize(n_pts);  r_lo.resize(n_pts)
+		cum_u.resize(n_pts)
+		cum_u[0] = 0.0
+
+		for i in range(n_pts):
+			var px := float(pts[i][0]); var pz := float(pts[i][2])
+
+			# Averaged tangent direction at this vertex
+			var tx := 0.0; var tz := 0.0
+			if i > 0:
+				tx += float(pts[i][0]) - float(pts[i-1][0])
+				tz += float(pts[i][2]) - float(pts[i-1][2])
+			if i < n_pts - 1:
+				tx += float(pts[i+1][0]) - float(pts[i][0])
+				tz += float(pts[i+1][2]) - float(pts[i][2])
+			var tlen := sqrt(tx * tx + tz * tz)
+			if tlen < 0.0001:
+				tx = 1.0; tz = 0.0
+			else:
+				tx /= tlen; tz /= tlen
+
+			# Perpendicular (left-hand normal)
+			var nx := -tz; var nz := tx
+
+			# Edge positions
+			var lx := px + nx * hw2; var lz := pz + nz * hw2
+			var rx := px - nx * hw2; var rz := pz - nz * hw2
+
+			# Sample terrain at each edge
+			var ly := _terrain_y(lx, lz)
+			var ry := _terrain_y(rx, rz)
+			lefts[i]  = Vector3(lx, ly + PATH_Y, lz)
+			rights[i] = Vector3(rx, ry + PATH_Y, rz)
+			l_lo[i]   = Vector3(lx, ly - skirt, lz)
+			r_lo[i]   = Vector3(rx, ry - skirt, rz)
+
+			# Cumulative UV
+			if i > 0:
+				var dx := px - float(pts[i-1][0])
+				var dz := pz - float(pts[i-1][2])
+				cum_u[i] = cum_u[i-1] + sqrt(dx*dx + dz*dz) / width
+
+		# Build quads between consecutive vertex pairs
+		for i in range(n_pts - 1):
+			var L0 := lefts[i];  var R0 := rights[i]
+			var L1 := lefts[i+1]; var R1 := rights[i+1]
+			var u0 := cum_u[i]; var u1 := cum_u[i+1]
+
+			# Top surface
+			var quad_n := (R0 - L0).cross(L1 - L0).normalized()
 			if quad_n.y < 0.0:
 				quad_n = -quad_n
-			var u2 := u + seg_len / width
-			# Top surface quad
-			verts.append_array(PackedVector3Array([a, b, c, b, dd, c]))
-			for _i in range(6):
+			verts.append_array(PackedVector3Array([L0, R0, L1, R0, R1, L1]))
+			for _j in range(6):
 				normals.append(quad_n)
 			uvs.append_array(PackedVector2Array([
-				Vector2(u, 0.0), Vector2(u, 1.0), Vector2(u2, 0.0),
-				Vector2(u, 1.0), Vector2(u2, 1.0), Vector2(u2, 0.0),
+				Vector2(u0, 0.0), Vector2(u0, 1.0), Vector2(u1, 0.0),
+				Vector2(u0, 1.0), Vector2(u1, 1.0), Vector2(u1, 0.0),
 			]))
-			# Edge skirts — hide dark void at path intersections on slopes.
-			# Thin vertical strips along each edge, down below terrain.
-			var skirt := 0.15   # metres below terrain
-			var a_lo := Vector3(ax, ay - skirt, az)
-			var b_lo := Vector3(bx, by - skirt, bz)
-			var c_lo := Vector3(cx, cy - skirt, cz)
-			var d_lo := Vector3(dx, dy - skirt, dz)
-			# Left skirt (a→c edge, faces outward)
-			var ln := Vector3(-n.x, 0.0, -n.y)
-			verts.append_array(PackedVector3Array([a_lo, a, c, a_lo, c, c_lo]))
+
+			# Left skirt
+			verts.append_array(PackedVector3Array([
+				l_lo[i], L0, L1, l_lo[i], L1, l_lo[i+1]]))
 			for _j in range(6):
-				normals.append(ln)
+				normals.append(Vector3(-1.0, 0.0, 0.0))
 			uvs.append_array(PackedVector2Array([
-				Vector2(u, 0.0), Vector2(u, 0.0), Vector2(u2, 0.0),
-				Vector2(u, 0.0), Vector2(u2, 0.0), Vector2(u2, 0.0),
+				Vector2(u0, 0.0), Vector2(u0, 0.0), Vector2(u1, 0.0),
+				Vector2(u0, 0.0), Vector2(u1, 0.0), Vector2(u1, 0.0),
 			]))
-			# Right skirt (b→dd edge, faces outward)
-			var rn := Vector3(n.x, 0.0, n.y)
-			verts.append_array(PackedVector3Array([b, b_lo, dd, b_lo, d_lo, dd]))
-			for _k in range(6):
-				normals.append(rn)
+
+			# Right skirt
+			verts.append_array(PackedVector3Array([
+				R0, r_lo[i], R1, r_lo[i], r_lo[i+1], R1]))
+			for _j in range(6):
+				normals.append(Vector3(1.0, 0.0, 0.0))
 			uvs.append_array(PackedVector2Array([
-				Vector2(u, 1.0), Vector2(u, 1.0), Vector2(u2, 1.0),
-				Vector2(u, 1.0), Vector2(u2, 1.0), Vector2(u2, 1.0),
+				Vector2(u0, 1.0), Vector2(u0, 1.0), Vector2(u1, 1.0),
+				Vector2(u0, 1.0), Vector2(u1, 1.0), Vector2(u1, 1.0),
 			]))
-			u = u2
 
 	var arrays: Array = []
 	arrays.resize(Mesh.ARRAY_MAX)
@@ -1131,6 +1166,120 @@ func _make_cylinder_mesh(cx: float, base_y: float, cz: float,
 	add_child(mi)
 
 
+## Add a fountain water spray using GPUParticles3D.
+## jet_h  = height the water reaches above emit_y
+## spread = angular spread in degrees (0 = straight up column, 30 = wide cone)
+## amount = particle count
+func _add_fountain_spray(x: float, emit_y: float, z: float,
+						 jet_h: float, spread_deg: float, amount: int,
+						 spray_r: float = 0.1) -> void:
+	var particles := GPUParticles3D.new()
+	particles.name     = "FountainSpray"
+	particles.amount   = amount
+	particles.lifetime = maxf(0.4, sqrt(2.0 * jet_h / 4.9))  # time to apex + fall
+	particles.emitting = true
+	particles.position = Vector3(x, emit_y, z)
+
+	# Particle material
+	var pm := ParticleProcessMaterial.new()
+	pm.direction           = Vector3(0.0, 1.0, 0.0)
+	pm.spread              = spread_deg
+	pm.initial_velocity_min = jet_h * 3.0
+	pm.initial_velocity_max = jet_h * 3.5
+	pm.gravity             = Vector3(0.0, -9.8, 0.0)
+	pm.damping_min         = 0.5
+	pm.damping_max         = 1.5
+	pm.scale_min           = 0.03
+	pm.scale_max           = 0.08
+	pm.emission_shape      = ParticleProcessMaterial.EMISSION_SHAPE_SPHERE
+	pm.emission_sphere_radius = spray_r
+	# Color: white-blue, fades to transparent
+	pm.color = Color(0.85, 0.92, 1.0, 0.7)
+	var color_ramp := GradientTexture1D.new()
+	var grad := Gradient.new()
+	grad.set_color(0, Color(1.0, 1.0, 1.0, 0.8))
+	grad.add_point(0.5, Color(0.8, 0.9, 1.0, 0.6))
+	grad.set_color(1, Color(0.7, 0.85, 1.0, 0.0))
+	color_ramp.gradient = grad
+	pm.color_ramp = color_ramp
+
+	particles.process_material = pm
+
+	# Draw pass: small sphere mesh for each droplet
+	var sphere := SphereMesh.new()
+	sphere.radius  = 0.04
+	sphere.height  = 0.08
+	sphere.radial_segments  = 4
+	sphere.rings            = 2
+	var drop_mat := StandardMaterial3D.new()
+	drop_mat.albedo_color     = Color(0.9, 0.95, 1.0, 0.6)
+	drop_mat.transparency     = BaseMaterial3D.TRANSPARENCY_ALPHA
+	drop_mat.metallic         = 0.1
+	drop_mat.roughness        = 0.1
+	drop_mat.emission_enabled = true
+	drop_mat.emission         = Color(0.7, 0.85, 1.0) * 0.15
+	sphere.material = drop_mat
+	particles.draw_pass_1 = sphere
+
+	# Bounding box hint so particles aren't culled too early
+	particles.visibility_aabb = AABB(
+		Vector3(-jet_h, -1.0, -jet_h),
+		Vector3(jet_h * 2.0, jet_h * 2.0, jet_h * 2.0))
+
+	add_child(particles)
+
+
+## Add a cascading water curtain (water falling from a rim into the pool below).
+## Uses particles emitted in a ring, falling downward.
+func _add_cascade_ring(x: float, top_y: float, z: float,
+					   ring_r: float, fall_h: float, amount: int) -> void:
+	var particles := GPUParticles3D.new()
+	particles.name     = "FountainCascade"
+	particles.amount   = amount
+	particles.lifetime = maxf(0.3, sqrt(2.0 * fall_h / 9.8) * 1.5)
+	particles.emitting = true
+	particles.position = Vector3(x, top_y, z)
+
+	var pm := ParticleProcessMaterial.new()
+	pm.direction           = Vector3(0.0, -1.0, 0.0)
+	pm.spread              = 8.0
+	pm.initial_velocity_min = 0.3
+	pm.initial_velocity_max = 0.8
+	pm.gravity             = Vector3(0.0, -6.0, 0.0)
+	pm.scale_min           = 0.02
+	pm.scale_max           = 0.06
+	pm.emission_shape      = ParticleProcessMaterial.EMISSION_SHAPE_RING
+	pm.emission_ring_axis   = Vector3(0.0, 1.0, 0.0)
+	pm.emission_ring_radius = ring_r
+	pm.emission_ring_inner_radius = ring_r * 0.85
+	pm.emission_ring_height = 0.05
+	pm.color = Color(0.85, 0.92, 1.0, 0.5)
+	var color_ramp := GradientTexture1D.new()
+	var grad := Gradient.new()
+	grad.set_color(0, Color(1.0, 1.0, 1.0, 0.6))
+	grad.set_color(1, Color(0.7, 0.85, 1.0, 0.0))
+	color_ramp.gradient = grad
+	pm.color_ramp = color_ramp
+
+	particles.process_material = pm
+
+	var sphere := SphereMesh.new()
+	sphere.radius = 0.03; sphere.height = 0.06
+	sphere.radial_segments = 4; sphere.rings = 2
+	var drop_mat := StandardMaterial3D.new()
+	drop_mat.albedo_color = Color(0.9, 0.95, 1.0, 0.5)
+	drop_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	drop_mat.roughness    = 0.1
+	sphere.material = drop_mat
+	particles.draw_pass_1 = sphere
+
+	particles.visibility_aabb = AABB(
+		Vector3(-ring_r - 1.0, -fall_h - 1.0, -ring_r - 1.0),
+		Vector3(ring_r * 2.0 + 2.0, fall_h + 2.0, ring_r * 2.0 + 2.0))
+
+	add_child(particles)
+
+
 # -- Bethesda Fountain: ~29m pool, two-tier sandstone basin, angel column ---
 func _build_bethesda_fountain(cx: float, cz: float, base_y: float, pool_r: float,
 							  alb: ImageTexture, nrm: ImageTexture, rgh: ImageTexture) -> void:
@@ -1201,6 +1350,14 @@ func _build_bethesda_fountain(cx: float, cz: float, base_y: float, pool_r: float
 		mi.name = "Bethesda_Wing"
 		add_child(mi)
 
+	# Water spray: gentle pour from angel's feet, cascading through basins
+	var angel_top := ub_base + ub_h + 1.0 + 3.0  # top of angel column
+	_add_fountain_spray(cx, angel_top, cz, 1.5, 15.0, 200, 0.3)
+	# Cascade from upper basin rim into lower basin
+	_add_cascade_ring(cx, ub_base + ub_h, cz, ub_r * 0.9, lb_h + 0.5, 300)
+	# Cascade from lower basin rim into main pool
+	_add_cascade_ring(cx, base_y + rim_h + lb_h, cz, lb_r * 0.9, rim_h + lb_h, 500)
+
 
 # -- Cherry Hill Fountain: 6m basin, ornate column, globe lamps, gold spire --
 func _build_cherry_hill_fountain(cx: float, cz: float, base_y: float, pool_r: float,
@@ -1240,6 +1397,10 @@ func _build_cherry_hill_fountain(cx: float, cz: float, base_y: float, pool_r: fl
 	# Gold spire
 	_make_cylinder_mesh(cx, lamp_y, cz, 0.08, 1.2, gold, "Cherry_Spire")
 
+	# Water: gentle spray from column capital, falling into basin
+	_add_fountain_spray(cx, base_y + 3.3, cz, 1.0, 25.0, 120, 0.2)
+	_add_cascade_ring(cx, base_y + 2.8, cz, 0.45, 2.5, 200)
+
 
 # -- Untermyer Fountain: oval pool, 3 dancing bronze figures on plinth ------
 func _build_untermyer_fountain(cx: float, cz: float, base_y: float, pool_r: float,
@@ -1268,6 +1429,14 @@ func _build_untermyer_fountain(cx: float, cz: float, base_y: float, pool_r: floa
 		# Head
 		_make_cylinder_mesh(fx, base_y + 0.7 + fig_h, fz, 0.12, 0.25, bronze, "Untermyer_Head_%d" % i, 12)
 
+	# Water: central jet among the figures + two side jets
+	_add_fountain_spray(cx, base_y + 0.7, cz, 2.5, 8.0, 150, 0.15)
+	for ji in range(2):
+		var jang: float = TAU * (float(ji) + 0.5) / 2.0
+		var jx: float = cx + pool_r * 0.5 * cos(jang)
+		var jz: float = cz + pool_r * 0.5 * sin(jang)
+		_add_fountain_spray(jx, base_y + 0.3, jz, 1.5, 12.0, 80, 0.1)
+
 
 # -- Generic fountain: simple basin rim + central column jet ----------------
 func _build_generic_fountain(cx: float, cz: float, base_y: float, pool_r: float,
@@ -1277,6 +1446,110 @@ func _build_generic_fountain(cx: float, cz: float, base_y: float, pool_r: float,
 	_make_ring_mesh(cx, base_y, cz, pool_r - 0.2, pool_r + 0.15, 0.35, stone, "Fountain_Rim")
 	# Central column
 	_make_cylinder_mesh(cx, base_y, cz, 0.3, 1.5, stone, "Fountain_Column")
+
+	# Simple upward jet
+	_add_fountain_spray(cx, base_y + 1.5, cz, 2.0, 5.0, 100, 0.08)
+
+
+# ---------------------------------------------------------------------------
+# Shore vegetation — reeds and cattails along water body edges
+# ---------------------------------------------------------------------------
+func _build_shore_vegetation(water: Array) -> void:
+	if water.is_empty():
+		return
+
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 55555
+
+	var reed_mat := StandardMaterial3D.new()
+	reed_mat.albedo_color       = Color(0.28, 0.48, 0.18, 0.9)
+	reed_mat.transparency       = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
+	reed_mat.alpha_scissor_threshold = 0.3
+	reed_mat.cull_mode          = BaseMaterial3D.CULL_DISABLED
+	reed_mat.shading_mode       = BaseMaterial3D.SHADING_MODE_PER_VERTEX
+
+	var verts   := PackedVector3Array()
+	var normals := PackedVector3Array()
+	var colors  := PackedColorArray()
+
+	for body in water:
+		var bname: String = str(body.get("name", ""))
+		if bname.to_lower().contains("fountain"):
+			continue  # no reeds around fountains
+		var pts: Array = body["points"]
+		if pts.size() < 3:
+			continue
+
+		# Place reeds along every Nth shore vertex
+		var step := maxi(1, pts.size() / 80)  # ~80 reeds per water body max
+		for pi in range(0, pts.size(), step):
+			var sx := float(pts[pi][0]); var sz := float(pts[pi][1])
+			var sy := _terrain_y(sx, sz)
+
+			# 3-6 reed stalks in a small cluster
+			var n_stalks := rng.randi_range(3, 6)
+			for _s in range(n_stalks):
+				var ox := rng.randf_range(-0.6, 0.6)
+				var oz := rng.randf_range(-0.6, 0.6)
+				var rx := sx + ox; var rz := sz + oz
+				var ry := _terrain_y(rx, rz)
+				var h := rng.randf_range(0.8, 2.2)
+				var w := rng.randf_range(0.04, 0.12)
+				var sway := rng.randf_range(-0.15, 0.15)
+				# Green with random variation
+				var green := Color(
+					rng.randf_range(0.18, 0.35),
+					rng.randf_range(0.38, 0.58),
+					rng.randf_range(0.10, 0.22), 1.0)
+				var tip_color := Color(green.r * 0.7, green.g * 0.6, green.b * 0.5, 0.6)
+
+				# Single billboard quad per stalk
+				var base_l := Vector3(rx - w, ry - 0.1, rz)
+				var base_r := Vector3(rx + w, ry - 0.1, rz)
+				var top_l  := Vector3(rx - w * 0.3 + sway, ry + h, rz)
+				var top_r  := Vector3(rx + w * 0.3 + sway, ry + h, rz)
+				verts.append_array(PackedVector3Array([
+					base_l, base_r, top_r, base_l, top_r, top_l]))
+				for _j in range(6):
+					normals.append(Vector3(0.0, 0.0, 1.0))
+				colors.append_array(PackedColorArray([
+					green, green, tip_color, green, tip_color, tip_color]))
+
+				# Cross-billboard (perpendicular)
+				base_l = Vector3(rx, ry - 0.1, rz - w)
+				base_r = Vector3(rx, ry - 0.1, rz + w)
+				top_l  = Vector3(rx + sway, ry + h, rz - w * 0.3)
+				top_r  = Vector3(rx + sway, ry + h, rz + w * 0.3)
+				verts.append_array(PackedVector3Array([
+					base_l, base_r, top_r, base_l, top_r, top_l]))
+				for _j in range(6):
+					normals.append(Vector3(1.0, 0.0, 0.0))
+				colors.append_array(PackedColorArray([
+					green, green, tip_color, green, tip_color, tip_color]))
+
+	if verts.is_empty():
+		return
+
+	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts
+	arrays[Mesh.ARRAY_NORMAL] = normals
+	arrays[Mesh.ARRAY_COLOR]  = colors
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+
+	# Use vertex colors for the reeds
+	var mat := StandardMaterial3D.new()
+	mat.vertex_color_use_as_albedo = true
+	mat.transparency       = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
+	mat.alpha_scissor_threshold = 0.3
+	mat.cull_mode          = BaseMaterial3D.CULL_DISABLED
+	mat.shading_mode       = BaseMaterial3D.SHADING_MODE_PER_VERTEX
+	mesh.surface_set_material(0, mat)
+
+	var mi := MeshInstance3D.new()
+	mi.mesh = mesh
+	mi.name = "ShoreVegetation"
+	add_child(mi)
 
 
 # ---------------------------------------------------------------------------
