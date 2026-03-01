@@ -153,16 +153,31 @@ func _setup_environment() -> void:
 	env.tonemap_mode          = Environment.TONE_MAPPER_FILMIC
 	env.tonemap_exposure      = 0.75   # pull down overall exposure
 	env.tonemap_white         = 6.0    # raise white point so highlights compress more gently
-	env.glow_enabled          = true
-	env.glow_intensity        = 0.10
-	env.glow_bloom            = 0.01
+	env.glow_enabled           = true
+	env.glow_intensity         = 0.28   # was 0.10 — sky/water highlights shimmer
+	env.glow_bloom             = 0.04   # was 0.01
+	env.glow_strength          = 1.2
+	env.glow_hdr_threshold     = 0.85
+	env.glow_hdr_luminance_cap = 2.0
 
 	# SSAO — contact shadows at tree bases, path edges, building corners
 	env.ssao_enabled   = true
-	env.ssao_radius    = 1.5    # ~1.5 m sample radius, good for park scale
+	env.ssao_radius    = 1.5
 	env.ssao_intensity = 2.0
-	env.ssao_power     = 1.8    # stronger curve = crisper contact shadows
+	env.ssao_power     = 1.8
 	env.ssao_detail    = 0.5
+
+	# SSIL — indirect light bounce (grass→tree bases, sky→path edges)
+	env.ssil_enabled   = true
+	env.ssil_radius    = 5.0
+	env.ssil_intensity = 1.2
+	env.ssil_sharpness = 0.98
+
+	# Color grading — richer park greens, snappier midtones
+	env.adjustment_enabled    = true
+	env.adjustment_saturation = 1.18
+	env.adjustment_contrast   = 1.06
+	env.adjustment_brightness = 0.98
 
 	# Atmospheric haze — cool NYC blue-grey, thickens toward horizon
 	env.fog_enabled           = true
@@ -182,6 +197,9 @@ func _setup_environment() -> void:
 	sun.light_energy     = 1.3
 	sun.light_color      = Color(1.00, 0.95, 0.85)
 	sun.shadow_enabled   = true
+	sun.directional_shadow_max_distance    = 300.0   # was ~100 — shadows visible further
+	sun.directional_shadow_split_1         = 0.08    # tighter near cascade = crisper close shadows
+	sun.directional_shadow_pancake_size    = 20.0
 	add_child(sun)
 
 
