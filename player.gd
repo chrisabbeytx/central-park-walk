@@ -76,24 +76,25 @@ func _handle_movement(delta: float) -> void:
 	if Input.is_key_pressed(KEY_W): ly -= 1.0
 	if Input.is_key_pressed(KEY_S): ly += 1.0
 
-	# Gravity
-	if not is_on_floor():
-		velocity.y -= 9.8 * delta
-
 	var wish := Vector3(lx, 0.0, ly)
 	if wish.length_squared() > 1.0:
 		wish = wish.normalized()
 
-	wish = transform.basis * wish
-	wish.y = 0.0
-
-	# Right trigger (JOY_AXIS_TRIGGER_RIGHT): 10x–100x speed boost
+	# Right trigger: fly mode (10x–100x), bypasses collision
 	var rt := clampf(Input.get_joy_axis(0, JOY_AXIS_TRIGGER_RIGHT), 0.0, 1.0)
-	var speed := WALK_SPEED
 	if rt > 0.1:
-		speed *= lerpf(10.0, 100.0, rt)
-
-	velocity.x = wish.x * speed
-	velocity.z = wish.z * speed
-
-	move_and_slide()
+		var speed := WALK_SPEED * lerpf(10.0, 100.0, rt)
+		# Move in camera look direction (head pitch + body yaw)
+		var cam_basis := head.global_transform.basis
+		var fly_dir := cam_basis * wish
+		position += fly_dir * speed * delta
+		velocity = Vector3.ZERO
+	else:
+		# Normal walk with gravity and collision
+		if not is_on_floor():
+			velocity.y -= 9.8 * delta
+		wish = transform.basis * wish
+		wish.y = 0.0
+		velocity.x = wish.x * WALK_SPEED
+		velocity.z = wish.z * WALK_SPEED
+		move_and_slide()
