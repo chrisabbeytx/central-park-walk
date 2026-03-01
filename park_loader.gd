@@ -286,29 +286,60 @@ func _make_path_mesh(paths: Array, hw: String, surface: String) -> MeshInstance3
 		for i in range(pts.size() - 1):
 			var x1 := float(pts[i][0]);   var z1 := float(pts[i][2])
 			var x2 := float(pts[i+1][0]); var z2 := float(pts[i+1][2])
-			var p1 := Vector3(x1, _terrain_y(x1, z1), z1)
-			var p2 := Vector3(x2, _terrain_y(x2, z2), z2)
-			var seg2 := Vector2(p2.x - p1.x, p2.z - p1.z)
+			var seg2 := Vector2(x2 - x1, z2 - z1)
 			if seg2.length_squared() < 0.0001:
 				continue
 			var seg_len := seg2.length()
 			var d  := seg2 / seg_len
 			var n  := Vector2(-d.y, d.x)
 			var hw2 := width * 0.5
-			var a  := Vector3(p1.x + n.x * hw2,  p1.y + PATH_Y,  p1.z + n.y * hw2)
-			var b  := Vector3(p1.x - n.x * hw2,  p1.y + PATH_Y,  p1.z - n.y * hw2)
-			var c  := Vector3(p2.x + n.x * hw2,  p2.y + PATH_Y,  p2.z + n.y * hw2)
-			var dd := Vector3(p2.x - n.x * hw2,  p2.y + PATH_Y,  p2.z - n.y * hw2)
+			# Sample terrain at each edge vertex so the ribbon drapes cross-slope
+			var ax := x1 + n.x * hw2;  var az := z1 + n.y * hw2
+			var bx := x1 - n.x * hw2;  var bz := z1 - n.y * hw2
+			var cx := x2 + n.x * hw2;  var cz := z2 + n.y * hw2
+			var dx := x2 - n.x * hw2;  var dz := z2 - n.y * hw2
+			var ay := _terrain_y(ax, az);  var by := _terrain_y(bx, bz)
+			var cy := _terrain_y(cx, cz);  var dy := _terrain_y(dx, dz)
+			var a  := Vector3(ax, ay + PATH_Y, az)
+			var b  := Vector3(bx, by + PATH_Y, bz)
+			var c  := Vector3(cx, cy + PATH_Y, cz)
+			var dd := Vector3(dx, dy + PATH_Y, dz)
 			var quad_n := (b - a).cross(c - a).normalized()
 			if quad_n.y < 0.0:
 				quad_n = -quad_n
 			var u2 := u + seg_len / width
+			# Top surface quad
 			verts.append_array(PackedVector3Array([a, b, c, b, dd, c]))
 			for _i in range(6):
 				normals.append(quad_n)
 			uvs.append_array(PackedVector2Array([
 				Vector2(u, 0.0), Vector2(u, 1.0), Vector2(u2, 0.0),
 				Vector2(u, 1.0), Vector2(u2, 1.0), Vector2(u2, 0.0),
+			]))
+			# Edge skirts — hide dark void at path intersections on slopes.
+			# Thin vertical strips along each edge, down below terrain.
+			var skirt := 0.15   # metres below terrain
+			var a_lo := Vector3(ax, ay - skirt, az)
+			var b_lo := Vector3(bx, by - skirt, bz)
+			var c_lo := Vector3(cx, cy - skirt, cz)
+			var d_lo := Vector3(dx, dy - skirt, dz)
+			# Left skirt (a→c edge, faces outward)
+			var ln := Vector3(-n.x, 0.0, -n.y)
+			verts.append_array(PackedVector3Array([a_lo, a, c, a_lo, c, c_lo]))
+			for _j in range(6):
+				normals.append(ln)
+			uvs.append_array(PackedVector2Array([
+				Vector2(u, 0.0), Vector2(u, 0.0), Vector2(u2, 0.0),
+				Vector2(u, 0.0), Vector2(u2, 0.0), Vector2(u2, 0.0),
+			]))
+			# Right skirt (b→dd edge, faces outward)
+			var rn := Vector3(n.x, 0.0, n.y)
+			verts.append_array(PackedVector3Array([b, b_lo, dd, b_lo, d_lo, dd]))
+			for _k in range(6):
+				normals.append(rn)
+			uvs.append_array(PackedVector2Array([
+				Vector2(u, 1.0), Vector2(u, 1.0), Vector2(u2, 1.0),
+				Vector2(u, 1.0), Vector2(u2, 1.0), Vector2(u2, 1.0),
 			]))
 			u = u2
 
