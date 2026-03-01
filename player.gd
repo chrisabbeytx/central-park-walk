@@ -88,10 +88,9 @@ func _handle_movement(delta: float) -> void:
 	wish.y = 0.0
 
 	# Right trigger (JOY_AXIS_TRIGGER_RIGHT): 10x–100x speed boost
-	var rt := Input.get_joy_axis(0, JOY_AXIS_TRIGGER_RIGHT)
-	rt = clampf((rt + 1.0) * 0.5, 0.0, 1.0)   # normalize -1..1 → 0..1
+	var rt := clampf(Input.get_joy_axis(0, JOY_AXIS_TRIGGER_RIGHT), 0.0, 1.0)
 	var speed := WALK_SPEED
-	if rt > 0.05:
+	if rt > 0.1:
 		speed *= lerpf(10.0, 100.0, rt)
 
 	velocity.x = wish.x * speed
