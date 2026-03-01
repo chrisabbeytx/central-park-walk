@@ -7,6 +7,8 @@ const DATA_PATH := "res://park_data.json"
 const PATH_Y    := 0.06   # metres above ground plane
 const WATER_Y   := 0.03   # water sits above ground, below path ribbons
 
+var _tex_cache: Dictionary = {}   # path → ImageTexture (null if missing)
+
 
 # ---------------------------------------------------------------------------
 # Typed helpers – avoids Dictionary.get() returning Variant (parse error in 4.6)
@@ -59,6 +61,86 @@ func _path_color(hw: String, surface: String) -> Color:
 
 
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Texture helpers
+# ---------------------------------------------------------------------------
+func _load_tex(path: String) -> ImageTexture:
+	if path in _tex_cache:
+		return _tex_cache[path]
+	if not FileAccess.file_exists(path):
+		_tex_cache[path] = null
+		return null
+	var img := Image.load_from_file(path)
+	if not img:
+		_tex_cache[path] = null
+		return null
+	img.generate_mipmaps()
+	var tex := ImageTexture.create_from_image(img)
+	_tex_cache[path] = tex
+	return tex
+
+
+func _path_tex_prefix(hw: String, surface: String) -> String:
+	match surface:
+		"asphalt":                              return "res://textures/Asphalt012_1K-JPG"
+		"concrete", "concrete:plates", "paved": return "res://textures/Concrete034_1K-JPG"
+		"paving_stones", "sett", "unhewn_cobblestone", \
+		"stone", "brick":                       return "res://textures/PavingStones130_1K-JPG"
+		"gravel", "fine_gravel", "compacted", "pebblestone", \
+		"unpaved", "dirt", "ground", "woodchips", \
+		"mulch", "sand":                        return "res://textures/Gravel021_1K-JPG"
+		"wood":                                 return "res://textures/WoodFloor041_1K-JPG"
+	match hw:
+		"cycleway":   return "res://textures/Asphalt012_1K-JPG"
+		"steps":      return "res://textures/Concrete034_1K-JPG"
+		"pedestrian": return "res://textures/PavingStones130_1K-JPG"
+		"footway":    return "res://textures/PavingStones130_1K-JPG"
+		_:            return "res://textures/Gravel021_1K-JPG"
+
+
+func _make_path_material(hw: String, surface: String) -> Material:
+	var prefix  := _path_tex_prefix(hw, surface)
+	var tex_alb := _load_tex(prefix + "_Color.jpg")
+	var tex_nrm := _load_tex(prefix + "_NormalGL.jpg")
+	var tex_rgh := _load_tex(prefix + "_Roughness.jpg")
+	if tex_alb == null:
+		var mat        := StandardMaterial3D.new()
+		mat.albedo_color = _path_color(hw, surface)
+		mat.roughness    = 0.85
+		mat.cull_mode    = BaseMaterial3D.CULL_DISABLED
+		return mat
+	var shader     := Shader.new()
+	shader.code     = _path_shader_code()
+	var mat        := ShaderMaterial.new()
+	mat.shader      = shader
+	mat.set_shader_parameter("tex_alb", tex_alb)
+	mat.set_shader_parameter("tex_nrm", tex_nrm)
+	mat.set_shader_parameter("tex_rgh", tex_rgh)
+	mat.set_shader_parameter("tint",    _path_color(hw, surface))
+	return mat
+
+
+func _path_shader_code() -> String:
+	return """shader_type spatial;
+render_mode cull_disabled;
+
+uniform sampler2D tex_alb : source_color,      filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D tex_nrm : hint_normal,        filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D tex_rgh : hint_default_white, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform vec4 tint : source_color = vec4(1.0);
+
+void fragment() {
+	vec3  alb   = texture(tex_alb, UV).rgb;
+	float rough = texture(tex_rgh, UV).r;
+	ALBEDO     = alb * tint.rgb;
+	NORMAL_MAP = texture(tex_nrm, UV).rgb;
+	ROUGHNESS  = clamp(rough * 0.9 + 0.05, 0.0, 1.0);
+	METALLIC   = 0.0;
+}
+"""
+
+
+# ---------------------------------------------------------------------------
 func _ready() -> void:
 	if not FileAccess.file_exists(DATA_PATH):
 		push_warning("ParkLoader: park_data.json not found – run convert_to_godot.py first")
@@ -86,54 +168,246 @@ func _ready() -> void:
 # Path meshes – one MeshInstance3D per highway type
 # ---------------------------------------------------------------------------
 func _build_paths(paths: Array) -> void:
-	# Group by (highway, surface) so each material gets one batched mesh
-	var groups: Dictionary = {}
-	for path in paths:
-		var hw:   String = str(path.get("highway", "path"))
-		var surf: String = str(path.get("surface", ""))
-		var key:  String = hw + "|" + surf
-		if key not in groups:
-			groups[key] = []
-		groups[key].append(path)
+	var ground_groups: Dictionary = {}
+	var bridge_paths:  Array      = []
 
-	for key in groups:
+	for path in paths:
+		var hw:    String = str(path.get("highway", "path"))
+		var surf:  String = str(path.get("surface", ""))
+		var layer: int    = int(path.get("layer",   0))
+		var is_bridge: bool = bool(path.get("bridge", false)) or layer >= 1
+
+		if is_bridge:
+			bridge_paths.append(path)
+		else:
+			var key: String = hw + "|" + surf
+			if key not in ground_groups:
+				ground_groups[key] = []
+			ground_groups[key].append(path)
+
+	for key in ground_groups:
 		var parts: PackedStringArray = key.split("|")
-		add_child(_make_path_mesh(groups[key], str(parts[0]), str(parts[1])))
+		add_child(_make_path_mesh(ground_groups[key], str(parts[0]), str(parts[1])))
+
+	for bp in bridge_paths:
+		_build_bridge(bp)
 
 
 func _make_path_mesh(paths: Array, hw: String, surface: String) -> MeshInstance3D:
 	var verts   := PackedVector3Array()
 	var normals := PackedVector3Array()
+	var uvs     := PackedVector2Array()
 	var width   := _hw_width(hw)
 
 	for path in paths:
 		var pts: Array = path["points"]
+		var u := 0.0
 		for i in range(pts.size() - 1):
-			# pts[i] is now [x, terrain_y, z]  (3 elements with terrain height)
-			_append_quad(verts, normals,
-				Vector3(float(pts[i][0]),     float(pts[i][1]),     float(pts[i][2])),
-				Vector3(float(pts[i+1][0]),   float(pts[i+1][1]),   float(pts[i+1][2])),
-				width)
+			var p1 := Vector3(float(pts[i][0]),     float(pts[i][1]),     float(pts[i][2]))
+			var p2 := Vector3(float(pts[i+1][0]),   float(pts[i+1][1]),   float(pts[i+1][2]))
+			var seg2 := Vector2(p2.x - p1.x, p2.z - p1.z)
+			if seg2.length_squared() < 0.0001:
+				continue
+			var seg_len := seg2.length()
+			var d  := seg2 / seg_len
+			var n  := Vector2(-d.y, d.x)
+			var hw2 := width * 0.5
+			var a  := Vector3(p1.x + n.x * hw2,  p1.y + PATH_Y,  p1.z + n.y * hw2)
+			var b  := Vector3(p1.x - n.x * hw2,  p1.y + PATH_Y,  p1.z - n.y * hw2)
+			var c  := Vector3(p2.x + n.x * hw2,  p2.y + PATH_Y,  p2.z + n.y * hw2)
+			var dd := Vector3(p2.x - n.x * hw2,  p2.y + PATH_Y,  p2.z - n.y * hw2)
+			var quad_n := (b - a).cross(c - a).normalized()
+			if quad_n.y < 0.0:
+				quad_n = -quad_n
+			var u2 := u + seg_len / width
+			verts.append_array(PackedVector3Array([a, b, c, b, dd, c]))
+			for _i in range(6):
+				normals.append(quad_n)
+			uvs.append_array(PackedVector2Array([
+				Vector2(u, 0.0), Vector2(u, 1.0), Vector2(u2, 0.0),
+				Vector2(u, 1.0), Vector2(u2, 1.0), Vector2(u2, 0.0),
+			]))
+			u = u2
 
 	var arrays: Array = []
 	arrays.resize(Mesh.ARRAY_MAX)
 	arrays[Mesh.ARRAY_VERTEX] = verts
 	arrays[Mesh.ARRAY_NORMAL] = normals
+	arrays[Mesh.ARRAY_TEX_UV] = uvs
 
 	var mesh := ArrayMesh.new()
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = _path_color(hw, surface)
-	mat.roughness    = 0.85
-	mat.cull_mode    = BaseMaterial3D.CULL_DISABLED
-
-	mesh.surface_set_material(0, mat)
+	mesh.surface_set_material(0, _make_path_material(hw, surface))
 
 	var mi := MeshInstance3D.new()
 	mi.mesh = mesh
 	mi.name = "Paths_" + hw + ("_" + surface if surface else "")
 	return mi
+
+
+# ---------------------------------------------------------------------------
+# Bridge geometry
+# A bridge path is lifted to a fixed clearance above the lowest terrain point
+# in its span, then gets:
+#   • a textured deck ribbon (same width as the path)
+#   • thin parapet boxes along each side (0.15 m thick, 0.9 m tall)
+#   • vertical abutment quads at each end connecting deck to terrain
+# ---------------------------------------------------------------------------
+const BRIDGE_CLEARANCE := 3.0   # metres above lowest span terrain
+const PARAPET_H        := 0.9   # parapet wall height above deck
+const PARAPET_T        := 0.15  # parapet thickness
+
+func _build_bridge(path: Dictionary) -> void:
+	var hw:   String = str(path.get("highway", "path"))
+	var surf: String = str(path.get("surface", ""))
+	var pts:  Array  = path["points"]
+	if pts.size() < 2:
+		return
+
+	var width  := _hw_width(hw)
+
+	# --- Compute deck Y: clearance above minimum terrain along span ---
+	var min_y := INF
+	for pt in pts:
+		min_y = minf(min_y, float(pt[1]))
+	var deck_y := min_y + BRIDGE_CLEARANCE
+
+	# --- Deck ribbon (UV-mapped) ---
+	var verts   := PackedVector3Array()
+	var normals := PackedVector3Array()
+	var uvs     := PackedVector2Array()
+	var u := 0.0
+
+	for i in range(pts.size() - 1):
+		var p1 := Vector3(float(pts[i][0]),     deck_y,  float(pts[i][2]))
+		var p2 := Vector3(float(pts[i+1][0]),   deck_y,  float(pts[i+1][2]))
+		var seg2 := Vector2(p2.x - p1.x, p2.z - p1.z)
+		if seg2.length_squared() < 0.0001:
+			continue
+		var seg_len := seg2.length()
+		var d  := seg2 / seg_len
+		var n  := Vector2(-d.y, d.x)
+		var hw2 := width * 0.5
+		var a  := Vector3(p1.x + n.x * hw2,  deck_y,  p1.z + n.y * hw2)
+		var b  := Vector3(p1.x - n.x * hw2,  deck_y,  p1.z - n.y * hw2)
+		var c  := Vector3(p2.x + n.x * hw2,  deck_y,  p2.z + n.y * hw2)
+		var dd := Vector3(p2.x - n.x * hw2,  deck_y,  p2.z - n.y * hw2)
+		var u2 := u + seg_len / width
+		verts.append_array(PackedVector3Array([a, b, c, b, dd, c]))
+		for _i in range(6):
+			normals.append(Vector3.UP)
+		uvs.append_array(PackedVector2Array([
+			Vector2(u, 0.0), Vector2(u, 1.0), Vector2(u2, 0.0),
+			Vector2(u, 1.0), Vector2(u2, 1.0), Vector2(u2, 0.0),
+		]))
+		u = u2
+
+	var arrays: Array = []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts
+	arrays[Mesh.ARRAY_NORMAL] = normals
+	arrays[Mesh.ARRAY_TEX_UV] = uvs
+	var deck_mesh := ArrayMesh.new()
+	deck_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	deck_mesh.surface_set_material(0, _make_path_material(hw, surf))
+	var deck_mi      := MeshInstance3D.new()
+	deck_mi.mesh      = deck_mesh
+	deck_mi.name      = "Bridge_Deck"
+	add_child(deck_mi)
+
+	# --- Parapet walls (stone material) ---
+	var par_verts   := PackedVector3Array()
+	var par_normals := PackedVector3Array()
+	var parapet_mat := StandardMaterial3D.new()
+	parapet_mat.albedo_color = Color(0.62, 0.60, 0.56)   # light stone
+	parapet_mat.roughness    = 0.88
+	var prefix := "res://textures/PavingStones130_1K-JPG"
+	var par_tex := _load_tex(prefix + "_Color.jpg")
+	if par_tex:
+		parapet_mat = null   # replaced below by shader
+
+	for i in range(pts.size() - 1):
+		var p1 := Vector3(float(pts[i][0]),   deck_y,  float(pts[i][2]))
+		var p2 := Vector3(float(pts[i+1][0]), deck_y,  float(pts[i+1][2]))
+		var seg2 := Vector2(p2.x - p1.x, p2.z - p1.z)
+		if seg2.length_squared() < 0.0001:
+			continue
+		var d   := seg2.normalized()
+		var n   := Vector2(-d.y, d.x)
+		var hw2 := width * 0.5 + PARAPET_T
+
+		for side in [-1.0, 1.0]:
+			var s: float = float(side)
+			var ox: float = n.x * hw2 * s
+			var oz: float = n.y * hw2 * s
+			var fa := Vector3(p1.x + ox,  deck_y,              p1.z + oz)
+			var fb := Vector3(p2.x + ox,  deck_y,              p2.z + oz)
+			var fc := Vector3(p2.x + ox,  deck_y + PARAPET_H,  p2.z + oz)
+			var fd := Vector3(p1.x + ox,  deck_y + PARAPET_H,  p1.z + oz)
+			var wall_n := Vector3(n.x * s, 0.0, n.y * s)
+			par_verts.append_array(PackedVector3Array([fa, fb, fc, fa, fc, fd]))
+			for _j in range(6):
+				par_normals.append(wall_n)
+
+	if not par_verts.is_empty():
+		var par_arrays: Array = []
+		par_arrays.resize(Mesh.ARRAY_MAX)
+		par_arrays[Mesh.ARRAY_VERTEX] = par_verts
+		par_arrays[Mesh.ARRAY_NORMAL] = par_normals
+		var par_mesh := ArrayMesh.new()
+		par_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, par_arrays)
+		if parapet_mat:
+			par_mesh.surface_set_material(0, parapet_mat)
+		else:
+			var sh := Shader.new()
+			sh.code = _path_shader_code()
+			var sm := ShaderMaterial.new()
+			sm.shader = sh
+			sm.set_shader_parameter("tex_alb", par_tex)
+			sm.set_shader_parameter("tex_nrm", _load_tex(prefix + "_NormalGL.jpg"))
+			sm.set_shader_parameter("tex_rgh", _load_tex(prefix + "_Roughness.jpg"))
+			sm.set_shader_parameter("tint",    Color(0.80, 0.78, 0.74))
+			par_mesh.surface_set_material(0, sm)
+		var par_mi   := MeshInstance3D.new()
+		par_mi.mesh   = par_mesh
+		par_mi.name   = "Bridge_Parapets"
+		add_child(par_mi)
+
+	# --- Abutments: vertical quads at start and end connecting deck to terrain ---
+	var abu_verts   := PackedVector3Array()
+	var abu_normals := PackedVector3Array()
+	for end_i in [0, pts.size() - 1]:
+		var other_i := 1 if end_i == 0 else pts.size() - 2
+		var pe  := Vector3(float(pts[end_i][0]),   float(pts[end_i][1]),   float(pts[end_i][2]))
+		var po  := Vector3(float(pts[other_i][0]), float(pts[other_i][1]), float(pts[other_i][2]))
+		var seg2 := Vector2(po.x - pe.x, po.z - pe.z).normalized()
+		var n    := Vector2(-seg2.y, seg2.x)
+		var hw2  := width * 0.5
+		var al := Vector3(pe.x + n.x * hw2,  pe.y,   pe.z + n.y * hw2)
+		var ar := Vector3(pe.x - n.x * hw2,  pe.y,   pe.z - n.y * hw2)
+		var bl := Vector3(pe.x + n.x * hw2,  deck_y, pe.z + n.y * hw2)
+		var br := Vector3(pe.x - n.x * hw2,  deck_y, pe.z - n.y * hw2)
+		# Outward face = away from bridge interior = opposite of inward seg2 direction
+		var face_n := -Vector3(seg2.x, 0.0, seg2.y).normalized()
+		abu_verts.append_array(PackedVector3Array([al, ar, br, al, br, bl]))
+		for _j in range(6):
+			abu_normals.append(face_n)
+
+	if not abu_verts.is_empty():
+		var abu_arrays: Array = []
+		abu_arrays.resize(Mesh.ARRAY_MAX)
+		abu_arrays[Mesh.ARRAY_VERTEX] = abu_verts
+		abu_arrays[Mesh.ARRAY_NORMAL] = abu_normals
+		var abu_mesh := ArrayMesh.new()
+		abu_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, abu_arrays)
+		var abu_mat        := StandardMaterial3D.new()
+		abu_mat.albedo_color = Color(0.55, 0.52, 0.48)
+		abu_mat.roughness    = 0.92
+		abu_mesh.surface_set_material(0, abu_mat)
+		var abu_mi   := MeshInstance3D.new()
+		abu_mi.mesh   = abu_mesh
+		abu_mi.name   = "Bridge_Abutments"
+		add_child(abu_mi)
 
 
 # ---------------------------------------------------------------------------
@@ -269,67 +543,240 @@ func _add_batch_mesh(verts: PackedVector3Array, normals: PackedVector3Array,
 
 
 # ---------------------------------------------------------------------------
-# Trees – two MultiMeshInstance3D nodes (trunks + canopies) for one draw call each
+# Trees – crossed billboard planes, separate broadleaf/conifer MultiMeshes
 # ---------------------------------------------------------------------------
 func _build_trees(trees: Array) -> void:
 	if trees.is_empty():
 		return
 
-	var count := trees.size()
-	var rng   := RandomNumberGenerator.new()
+	var rng := RandomNumberGenerator.new()
 
-	# Trunk: low-poly cylinder, brown
+	# [trunk_h_min, trunk_h_max, trunk_r_min, trunk_r_max, canopy_sx, canopy_sy]
+	var ap_table := [
+		[15.0, 24.0, 0.28, 0.50, 1.55, 0.85],   # 0 oak
+		[12.0, 18.0, 0.20, 0.36, 1.05, 1.05],   # 1 maple
+		[20.0, 28.0, 0.18, 0.30, 0.70, 1.40],   # 2 elm
+		[1.0,   3.5, 0.05, 0.12, 2.10, 0.45],   # 3 shrub
+		[18.0, 32.0, 0.16, 0.26, 0.40, 2.30],   # 4 conifer
+	]
+
+	# Textures
+	var broad_tex := _load_tex("res://textures/tree_canopy_broad.png")
+	var conif_tex := _load_tex("res://textures/tree_canopy_conifer.png")
+	var bark_alb  := _load_tex("res://textures/Bark007_1K-JPG_Color.jpg")
+	var bark_nrm  := _load_tex("res://textures/Bark007_1K-JPG_NormalGL.jpg")
+	var bark_rgh  := _load_tex("res://textures/Bark007_1K-JPG_Roughness.jpg")
+
+	# Shared canopy planes mesh (3 crossed vertical quads)
+	var planes_mesh := _make_canopy_planes_mesh()
+
+	# Canopy materials
+	var broad_mat := _make_canopy_mat(broad_tex)
+	var conif_mat := _make_canopy_mat(conif_tex)
+
+	# Trunk mesh + material
 	var trunk_mesh            := CylinderMesh.new()
-	trunk_mesh.height          = 5.0
-	trunk_mesh.top_radius      = 0.12
-	trunk_mesh.bottom_radius   = 0.20
-	trunk_mesh.radial_segments = 6
-	var trunk_mat              := StandardMaterial3D.new()
-	trunk_mat.albedo_color      = Color(0.32, 0.20, 0.09)
-	trunk_mat.roughness         = 0.95
-	trunk_mesh.surface_set_material(0, trunk_mat)
+	trunk_mesh.height          = 1.0
+	trunk_mesh.top_radius      = 0.60
+	trunk_mesh.bottom_radius   = 1.0
+	trunk_mesh.radial_segments = 7
 
-	var trunk_mm              := MultiMesh.new()
-	trunk_mm.mesh              = trunk_mesh
-	trunk_mm.transform_format  = MultiMesh.TRANSFORM_3D
-	trunk_mm.instance_count    = count
+	var trunk_sh    := Shader.new()
+	trunk_sh.code    = _trunk_shader_code()
+	var trunk_mat   := ShaderMaterial.new()
+	trunk_mat.shader = trunk_sh
+	if bark_alb:
+		trunk_mat.set_shader_parameter("bark_albedo", bark_alb)
+		trunk_mat.set_shader_parameter("bark_normal",  bark_nrm)
+		trunk_mat.set_shader_parameter("bark_rough",   bark_rgh)
 
-	# Canopy: low-poly sphere, green
-	var canopy_mesh            := SphereMesh.new()
-	canopy_mesh.radius          = 3.0
-	canopy_mesh.height          = 6.0
-	canopy_mesh.radial_segments = 8
-	canopy_mesh.rings           = 5
-	var canopy_mat             := StandardMaterial3D.new()
-	canopy_mat.albedo_color     = Color(0.18, 0.44, 0.14)
-	canopy_mat.roughness        = 0.90
-	canopy_mesh.surface_set_material(0, canopy_mat)
+	# Collect transforms per group
+	var broad_xf: Array = []
+	var conif_xf: Array = []
+	var trunk_xf: Array = []
 
-	var canopy_mm             := MultiMesh.new()
-	canopy_mm.mesh             = canopy_mesh
-	canopy_mm.transform_format = MultiMesh.TRANSFORM_3D
-	canopy_mm.instance_count   = count
-
-	for i in count:
+	for i in trees.size():
 		var pt: Array = trees[i]
-		var tx    := float(pt[0])
-		var ty    := float(pt[1])   # terrain height baked in by convert_to_godot.py
-		var tz    := float(pt[2])
-		rng.seed   = i
-		var scale := rng.randf_range(0.70, 1.35)
-		var basis  := Basis.IDENTITY.scaled(Vector3(scale, scale, scale))
-		trunk_mm.set_instance_transform(i,  Transform3D(basis, Vector3(tx, ty + scale * 2.5, tz)))
-		canopy_mm.set_instance_transform(i, Transform3D(basis, Vector3(tx, ty + scale * 6.5, tz)))
+		var tx := float(pt[0]); var ty := float(pt[1]); var tz := float(pt[2])
+		rng.seed = i * 1234567891 + 987654321
 
-	var trunk_mmi        := MultiMeshInstance3D.new()
-	trunk_mmi.multimesh   = trunk_mm
-	trunk_mmi.name        = "TreeTrunks"
-	add_child(trunk_mmi)
+		var rv := rng.randf()
+		var arch := 0
+		if   rv < 0.35: arch = 0
+		elif rv < 0.65: arch = 1
+		elif rv < 0.85: arch = 2
+		elif rv < 0.97: arch = 3
+		else:           arch = 4
 
-	var canopy_mmi       := MultiMeshInstance3D.new()
-	canopy_mmi.multimesh  = canopy_mm
-	canopy_mmi.name       = "TreeCanopies"
-	add_child(canopy_mmi)
+		var ap     : Array = ap_table[arch]
+		var trunk_h := rng.randf_range(float(ap[0]), float(ap[1]))
+		var trunk_r := rng.randf_range(float(ap[2]), float(ap[3]))
+		var sx      := float(ap[4])
+		var sy      := float(ap[5])
+		var canopy_r := trunk_h * rng.randf_range(0.32, 0.56)
+
+		var cbasis := Basis(
+			Vector3(canopy_r * sx, 0.0,           0.0),
+			Vector3(0.0,           canopy_r * sy, 0.0),
+			Vector3(0.0,           0.0,           canopy_r * sx))
+		var canopy_tf := Transform3D(cbasis, Vector3(tx, ty + trunk_h, tz))
+		if arch == 4:
+			conif_xf.append(canopy_tf)
+		else:
+			broad_xf.append(canopy_tf)
+
+		var tbasis := Basis(
+			Vector3(trunk_r, 0.0,     0.0),
+			Vector3(0.0,     trunk_h, 0.0),
+			Vector3(0.0,     0.0,     trunk_r))
+		trunk_xf.append(Transform3D(tbasis, Vector3(tx, ty + trunk_h * 0.5, tz)))
+
+	_spawn_multimesh(planes_mesh, broad_mat, broad_xf, "TreeCanopies_Broad")
+	_spawn_multimesh(planes_mesh, conif_mat, conif_xf, "TreeCanopies_Conifer")
+	_spawn_multimesh(trunk_mesh,  trunk_mat, trunk_xf, "TreeTrunks")
+
+
+func _make_canopy_planes_mesh() -> ArrayMesh:
+	# 3 crossed vertical unit planes, 60° apart around Y axis
+	var verts   := PackedVector3Array()
+	var normals := PackedVector3Array()
+	var uvs     := PackedVector2Array()
+	var indices := PackedInt32Array()
+	for pi in 3:
+		var a  := PI * float(pi) / 3.0
+		var c  := cos(a); var sa := sin(a)
+		var base := verts.size()
+		# corners: left-bottom, right-bottom, right-top, left-top
+		verts.append_array(PackedVector3Array([
+			Vector3(-c, -1.0, -sa),
+			Vector3( c, -1.0,  sa),
+			Vector3( c,  1.0,  sa),
+			Vector3(-c,  1.0, -sa),
+		]))
+		# V=0 at top (y=+1), V=1 at bottom (y=-1) – matches texture orientation
+		uvs.append_array(PackedVector2Array([
+			Vector2(0.0, 1.0), Vector2(1.0, 1.0),
+			Vector2(1.0, 0.0), Vector2(0.0, 0.0),
+		]))
+		var n := Vector3(-sa, 0.0, c)
+		for _j in 4: normals.append(n)
+		indices.append_array(PackedInt32Array([
+			base, base+1, base+2, base, base+2, base+3,
+		]))
+	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts
+	arrays[Mesh.ARRAY_NORMAL] = normals
+	arrays[Mesh.ARRAY_TEX_UV] = uvs
+	arrays[Mesh.ARRAY_INDEX]  = indices
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	return mesh
+
+
+func _make_canopy_mat(tex: ImageTexture) -> ShaderMaterial:
+	var sh    := Shader.new()
+	sh.code    = _canopy_shader_code()
+	var mat   := ShaderMaterial.new()
+	mat.shader = sh
+	if tex:
+		mat.set_shader_parameter("canopy_tex", tex)
+	return mat
+
+
+func _spawn_multimesh(mesh: Mesh, mat: Material,
+					  transforms: Array, node_name: String) -> void:
+	if transforms.is_empty():
+		return
+	var mm             := MultiMesh.new()
+	mm.transform_format = MultiMesh.TRANSFORM_3D
+	mm.mesh             = mesh
+	mm.instance_count   = transforms.size()
+	for i in transforms.size():
+		mm.set_instance_transform(i, transforms[i])
+	var mmi       := MultiMeshInstance3D.new()
+	mmi.multimesh  = mm
+	mmi.name       = node_name
+	mmi.set_surface_override_material(0, mat)
+	add_child(mmi)
+
+
+func _canopy_shader_code() -> String:
+	return """shader_type spatial;
+render_mode cull_disabled, depth_prepass_alpha;
+
+uniform sampler2D canopy_tex : source_color, filter_linear_mipmap_anisotropic;
+uniform float alpha_cutoff = 0.18;
+
+varying vec3 tree_origin;
+
+float hash21(vec2 p) {
+	p = fract(p * vec2(127.1, 311.7));
+	p += dot(p, p + 43.21);
+	return fract(p.x * p.y);
+}
+
+void vertex() {
+	tree_origin = (MODEL_MATRIX * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+	// Wind sway: phase from tree world position, weight by local height
+	float sway = max(VERTEX.y, 0.0);
+	VERTEX.x += sin(TIME * 0.7 + tree_origin.x * 0.04 + tree_origin.z * 0.06) * 0.09 * sway;
+	VERTEX.z += sin(TIME * 1.1 + tree_origin.z * 0.05) * 0.05 * sway;
+}
+
+void fragment() {
+	vec4 tex = texture(canopy_tex, UV);
+	if (tex.a < alpha_cutoff) discard;
+
+	// Per-tree colour variation from world position hash (no INSTANCE_CUSTOM needed)
+	float h = hash21(floor(tree_origin.xz * 0.025));
+	float bright = 0.72 + h * 0.44;
+	float warm   = (h - 0.5) * 0.14;
+	vec3 col = tex.rgb * bright;
+	col.r += warm;
+	col.b -= warm * 0.4;
+
+	// Fake subsurface scattering: rim glows yellow-green (backlit leaves)
+	float sss = pow(1.0 - max(dot(NORMAL, VIEW), 0.0), 3.0) * 0.20;
+	col += vec3(0.09, 0.13, 0.01) * sss;
+
+	ALBEDO    = clamp(col, 0.0, 1.0);
+	ROUGHNESS = 0.88;
+	METALLIC  = 0.0;
+}
+"""
+
+
+func _trunk_shader_code() -> String:
+	return """shader_type spatial;
+
+uniform sampler2D bark_albedo : source_color,      filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D bark_normal : hint_normal,        filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D bark_rough  : hint_default_white, filter_linear_mipmap_anisotropic, repeat_enable;
+
+varying vec3 world_pos;
+
+float hash21(vec2 p) {
+	p = fract(p * vec2(127.1, 311.7));
+	p += dot(p, p + 43.21);
+	return fract(p.x * p.y);
+}
+
+void vertex() {
+	world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+}
+
+void fragment() {
+	vec2 uv    = vec2(UV.x * 2.0, UV.y * 4.0);
+	vec3 alb   = texture(bark_albedo, uv).rgb;
+	float rgh  = texture(bark_rough,  uv).r;
+
+	float h = hash21(floor(world_pos.xz * 0.04));
+	ALBEDO     = alb * (0.55 + h * 0.30);
+	NORMAL_MAP = texture(bark_normal, uv).rgb;
+	ROUGHNESS  = clamp(rgh * 0.85 + 0.12, 0.0, 1.0);
+	METALLIC   = 0.0;
+}
+"""
 
 
 # ---------------------------------------------------------------------------

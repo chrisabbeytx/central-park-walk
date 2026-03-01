@@ -308,7 +308,17 @@ def main() -> None:
             skipped_pts += 1
             continue
 
-        paths_out.append({"highway": hw, "surface": tags.get("surface", ""), "points": pts})
+        layer   = int(tags.get("layer",  0))
+        is_bridge  = tags.get("bridge")  in ("yes", "viaduct", "aqueduct")
+        is_tunnel  = tags.get("tunnel")  in ("yes", "building_passage", "culvert")
+        entry = {"highway": hw, "surface": tags.get("surface", ""), "points": pts}
+        if layer != 0:
+            entry["layer"] = layer
+        if is_bridge:
+            entry["bridge"] = True
+        if is_tunnel:
+            entry["tunnel"] = True
+        paths_out.append(entry)
 
     # -------------------------------------------------------------------
     # Boundary  (stays 2D – used for invisible walls only)
