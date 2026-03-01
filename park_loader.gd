@@ -4,10 +4,17 @@ extends Node3D
 ##   • One StaticBody3D with BoxShape3D collision per boundary segment (invisible walls)
 
 const DATA_PATH := "res://park_data.json"
+const HM_PATH   := "res://heightmap.json"
 const PATH_Y    := 0.06   # metres above ground plane
 const WATER_Y   := 0.03   # water sits above ground, below path ribbons
 
 var _tex_cache: Dictionary = {}   # path → ImageTexture (null if missing)
+
+# Heightmap for snapping geometry to the rendered terrain surface
+var _hm_data:       Array   = []
+var _hm_width:      int     = 0
+var _hm_depth:      int     = 0
+var _hm_world_size: float   = 5000.0
 
 
 # ---------------------------------------------------------------------------
@@ -141,10 +148,49 @@ void fragment() {
 
 
 # ---------------------------------------------------------------------------
+# Heightmap terrain sampler — matches the bilinear interpolation used by the
+# terrain mesh in main.gd so paths/water sit exactly on the rendered surface.
+# ---------------------------------------------------------------------------
+func _load_heightmap() -> void:
+	if not FileAccess.file_exists(HM_PATH):
+		return
+	var fa := FileAccess.open(HM_PATH, FileAccess.READ)
+	var hm  = JSON.parse_string(fa.get_as_text())
+	fa.close()
+	if typeof(hm) != TYPE_DICTIONARY:
+		return
+	_hm_width      = int(hm["width"])
+	_hm_depth      = int(hm["depth"])
+	_hm_world_size = float(hm["world_size"])
+	_hm_data       = hm["data"]
+	print("ParkLoader: heightmap loaded %d×%d" % [_hm_width, _hm_depth])
+
+
+func _terrain_y(x: float, z: float) -> float:
+	## Sample the heightmap at world (x, z). Returns 0.0 if no heightmap.
+	if _hm_data.is_empty():
+		return 0.0
+	var half := _hm_world_size * 0.5
+	var xi   := (x + half) / _hm_world_size * (_hm_width  - 1)
+	var zi   := (z + half) / _hm_world_size * (_hm_depth  - 1)
+	var xi0  := clampi(int(xi), 0, _hm_width  - 2)
+	var zi0  := clampi(int(zi), 0, _hm_depth  - 2)
+	var fx   := xi - xi0
+	var fz   := zi - zi0
+	var h00  := float(_hm_data[zi0       * _hm_width + xi0    ])
+	var h10  := float(_hm_data[zi0       * _hm_width + xi0 + 1])
+	var h01  := float(_hm_data[(zi0 + 1) * _hm_width + xi0    ])
+	var h11  := float(_hm_data[(zi0 + 1) * _hm_width + xi0 + 1])
+	return h00*(1.0-fx)*(1.0-fz) + h10*fx*(1.0-fz) + h01*(1.0-fx)*fz + h11*fx*fz
+
+
+# ---------------------------------------------------------------------------
 func _ready() -> void:
 	if not FileAccess.file_exists(DATA_PATH):
 		push_warning("ParkLoader: park_data.json not found – run convert_to_godot.py first")
 		return
+
+	_load_heightmap()
 
 	var fa   := FileAccess.open(DATA_PATH, FileAccess.READ)
 	var data  = JSON.parse_string(fa.get_as_text())
@@ -238,8 +284,10 @@ func _make_path_mesh(paths: Array, hw: String, surface: String) -> MeshInstance3
 		var pts: Array = path["points"]
 		var u := 0.0
 		for i in range(pts.size() - 1):
-			var p1 := Vector3(float(pts[i][0]),     float(pts[i][1]),     float(pts[i][2]))
-			var p2 := Vector3(float(pts[i+1][0]),   float(pts[i+1][1]),   float(pts[i+1][2]))
+			var x1 := float(pts[i][0]);   var z1 := float(pts[i][2])
+			var x2 := float(pts[i+1][0]); var z2 := float(pts[i+1][2])
+			var p1 := Vector3(x1, _terrain_y(x1, z1), z1)
+			var p2 := Vector3(x2, _terrain_y(x2, z2), z2)
 			var seg2 := Vector2(p2.x - p1.x, p2.z - p1.z)
 			if seg2.length_squared() < 0.0001:
 				continue
@@ -319,6 +367,9 @@ func _build_bridge(path: Dictionary) -> void:
 
 	# Subdivide so we have at least 1 point per ~2 metres for smooth ramps.
 	var pts: Array = _subdivide_pts(raw_pts, 2.0)
+	# Snap Y to actual terrain so bridge clearance is computed from the rendered surface
+	for i in range(pts.size()):
+		pts[i] = [pts[i][0], _terrain_y(float(pts[i][0]), float(pts[i][2])), pts[i][2]]
 	var n_pts := pts.size()
 
 	var width := _hw_width(hw)
@@ -658,6 +709,9 @@ func _build_tunnel(path: Dictionary) -> void:
 	var pts:  Array  = path["points"]
 	if pts.size() < 2:
 		return
+	# Snap Y to rendered terrain surface
+	for i in range(pts.size()):
+		pts[i] = [pts[i][0], _terrain_y(float(pts[i][0]), float(pts[i][2])), pts[i][2]]
 
 	var width := _hw_width(hw)
 	var hw2   := width * 0.5
@@ -914,8 +968,13 @@ func _build_water(water: Array) -> void:
 		if pts.size() < 3:
 			continue
 
-		# water_y = terrain height at the body centroid (from convert_to_godot.py)
-		var wy: float = float(body.get("water_y", 0.0)) + WATER_Y
+		# Water level = minimum terrain height along the shore + small offset.
+		# This ensures the water surface never floats above the surrounding terrain.
+		var wy := INF
+		for pt in pts:
+			var hh := _terrain_y(float(pt[0]), float(pt[1]))
+			wy = minf(wy, hh)
+		wy += WATER_Y
 
 		var polygon := PackedVector2Array()
 		for pt in pts:
@@ -1030,7 +1089,13 @@ func _build_buildings(buildings: Array) -> void:
 	for bld in buildings:
 		var pts:  Array = bld["points"]
 		var h:    float = float(bld["height"])
-		var base: float = float(bld.get("base", 0.0))
+		# Snap base to minimum terrain height across footprint so building
+		# doesn't float above terrain on any side
+		var base := INF
+		for pt in pts:
+			base = minf(base, _terrain_y(float(pt[0]), float(pt[1])))
+		if base == INF:
+			base = float(bld.get("base", 0.0))
 		var top:  float = base + h
 		var n:    int   = pts.size()
 		if n < 3:
@@ -1261,7 +1326,8 @@ func _build_trees(trees: Array) -> void:
 
 	for i in trees.size():
 		var pt: Array = trees[i]
-		var tx := float(pt[0]); var ty := float(pt[1]); var tz := float(pt[2])
+		var tx := float(pt[0]); var tz := float(pt[2])
+		var ty := _terrain_y(tx, tz)
 		rng.seed = i * 1234567891 + 987654321
 
 		var rv := rng.randf()
