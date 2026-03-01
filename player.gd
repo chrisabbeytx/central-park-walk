@@ -87,7 +87,14 @@ func _handle_movement(delta: float) -> void:
 	wish = transform.basis * wish
 	wish.y = 0.0
 
-	velocity.x = wish.x * WALK_SPEED
-	velocity.z = wish.z * WALK_SPEED
+	# Right trigger (JOY_AXIS_TRIGGER_RIGHT): 10x–100x speed boost
+	var rt := Input.get_joy_axis(0, JOY_AXIS_TRIGGER_RIGHT)
+	rt = clampf((rt + 1.0) * 0.5, 0.0, 1.0)   # normalize -1..1 → 0..1
+	var speed := WALK_SPEED
+	if rt > 0.05:
+		speed *= lerpf(10.0, 100.0, rt)
+
+	velocity.x = wish.x * speed
+	velocity.z = wish.z * speed
 
 	move_and_slide()
