@@ -193,11 +193,39 @@ func _build_paths(paths: Array) -> void:
 		var parts: PackedStringArray = key.split("|")
 		add_child(_make_path_mesh(ground_groups[key], str(parts[0]), str(parts[1])))
 
+	# Collect bridge centroids so tunnels can detect if they're an underpass
+	var bridge_centroids: Array = []
+	for bp in bridge_paths:
+		var bpts: Array = bp["points"]
+		var cx := 0.0; var cz := 0.0
+		for pt in bpts:
+			cx += float(pt[0]); cz += float(pt[2])
+		cx /= bpts.size(); cz /= bpts.size()
+		bridge_centroids.append(Vector2(cx, cz))
+
 	for bp in bridge_paths:
 		_build_bridge(bp)
 
 	for tp in tunnel_paths:
-		_build_tunnel(tp)
+		# Check if this tunnel is near a bridge (= underpass, not a rock tunnel)
+		var tpts: Array = tp["points"]
+		var tcx := 0.0; var tcz := 0.0
+		for pt in tpts:
+			tcx += float(pt[0]); tcz += float(pt[2])
+		tcx /= tpts.size(); tcz /= tpts.size()
+		var near_bridge := false
+		for bc in bridge_centroids:
+			if Vector2(tcx, tcz).distance_to(bc) < 60.0:
+				near_bridge = true
+				break
+		if near_bridge:
+			# Render as normal ground-level path (bridge overhead provides cover)
+			var hw_t:   String = str(tp.get("highway", "path"))
+			var surf_t: String = str(tp.get("surface", ""))
+			var key_t: String = hw_t + "|" + surf_t
+			add_child(_make_path_mesh([tp], hw_t, surf_t))
+		else:
+			_build_tunnel(tp)
 
 
 func _make_path_mesh(paths: Array, hw: String, surface: String) -> MeshInstance3D:
@@ -260,19 +288,38 @@ func _make_path_mesh(paths: Array, hw: String, surface: String) -> MeshInstance3
 #   • thin parapet boxes along each side (0.15 m thick, 0.9 m tall)
 #   • vertical abutment quads at each end connecting deck to terrain
 # ---------------------------------------------------------------------------
-const BRIDGE_CLEARANCE := 3.0   # metres above lowest span terrain
+const BRIDGE_CLEARANCE := 3.5   # metres above lowest span terrain (room to walk under)
+const BRIDGE_DECK_T    := 0.4   # deck thickness (visible from below)
 const PARAPET_H        := 0.9   # parapet wall height above deck
 const PARAPET_T        := 0.15  # parapet thickness
 const BRIDGE_RAMP_FRAC := 0.35  # fraction of bridge path used as ramp at each end
 const TUNNEL_H         := 3.4   # clear height inside tunnel (metres above path)
 
+func _subdivide_pts(pts: Array, max_seg: float) -> Array:
+	## Ensure no segment exceeds max_seg metres by inserting linearly interpolated points.
+	var out: Array = [pts[0]]
+	for i in range(1, pts.size()):
+		var ax := float(pts[i-1][0]); var ay := float(pts[i-1][1]); var az := float(pts[i-1][2])
+		var bx := float(pts[i][0]);   var by := float(pts[i][1]);   var bz := float(pts[i][2])
+		var dx := bx - ax; var dz := bz - az
+		var seg := sqrt(dx*dx + dz*dz)
+		var n_sub := int(ceil(seg / max_seg))
+		for j in range(1, n_sub + 1):
+			var t := float(j) / float(n_sub)
+			out.append([ax + dx * t, ay + (by - ay) * t, az + dz * t])
+	return out
+
+
 func _build_bridge(path: Dictionary) -> void:
 	var hw:   String = str(path.get("highway", "path"))
 	var surf: String = str(path.get("surface", ""))
-	var pts:  Array  = path["points"]
-	var n_pts := pts.size()
-	if n_pts < 2:
+	var raw_pts: Array = path["points"]
+	if raw_pts.size() < 2:
 		return
+
+	# Subdivide so we have at least 1 point per ~2 metres for smooth ramps.
+	var pts: Array = _subdivide_pts(raw_pts, 2.0)
+	var n_pts := pts.size()
 
 	var width := _hw_width(hw)
 	var hw2   := width * 0.5
@@ -301,7 +348,18 @@ func _build_bridge(path: Dictionary) -> void:
 	var y_start := float(pts[0][1])
 	var y_end   := float(pts[n_pts - 1][1])
 
-	# Deck clearance: above minimum terrain in the mid (non-ramp) section
+	# Deck clearance: scale with bridge length
+	#   Short bridges (< 10m): stream crossings, ~0.8m rise (gentle hump)
+	#   Medium (10-25m):  scale linearly 0.8 → 3.5m
+	#   Long (> 25m):     full 3.5m clearance (pedestrian underpass height)
+	var eff_clearance: float
+	if total_len < 10.0:
+		eff_clearance = 0.8
+	elif total_len < 25.0:
+		eff_clearance = lerpf(0.8, BRIDGE_CLEARANCE, (total_len - 10.0) / 15.0)
+	else:
+		eff_clearance = BRIDGE_CLEARANCE
+
 	var min_y_mid := INF
 	for i in range(n_pts):
 		if cum_len[i] >= ramp_len and cum_len[i] <= total_len - ramp_len:
@@ -310,7 +368,7 @@ func _build_bridge(path: Dictionary) -> void:
 		min_y_mid = y_start
 		for pt in pts:
 			min_y_mid = minf(min_y_mid, float(pt[1]))
-	var deck_y := maxf(min_y_mid + BRIDGE_CLEARANCE,
+	var deck_y := maxf(min_y_mid + eff_clearance,
 					   maxf(y_start + 0.5, y_end + 0.5))
 
 	# ----------------------------------------------------------------
@@ -393,32 +451,116 @@ func _build_bridge(path: Dictionary) -> void:
 		add_child(body)
 
 	# ----------------------------------------------------------------
-	# Parapet walls (rock_wall texture)
+	# Soffit (underside of deck) — only on bridges tall enough to walk under
 	# ----------------------------------------------------------------
-	var par_verts   := PackedVector3Array()
-	var par_normals := PackedVector3Array()
+	var sof_verts   := PackedVector3Array()
+	var sof_normals := PackedVector3Array()
+	var sof_uvs     := PackedVector2Array()
+	var _skip_soffit := total_len < 12.0
+	var edge_verts  := PackedVector3Array()
+	var edge_norms  := PackedVector3Array()
+	var u_s := 0.0
+	var sof_ramp_start := ramp_len * 0.15
+	var sof_ramp_end   := total_len - ramp_len * 0.15
 
 	for i in range(n_pts - 1):
+		if _skip_soffit:
+			break
+		# Only build soffit/edges where bridge is elevated
+		if cum_len[i + 1] < sof_ramp_start or cum_len[i] > sof_ramp_end:
+			continue
 		var p1 := Vector3(float(pts[i][0]),     pt_y[i],     float(pts[i][2]))
 		var p2 := Vector3(float(pts[i+1][0]),   pt_y[i+1],   float(pts[i+1][2]))
 		var seg2 := Vector2(p2.x - p1.x, p2.z - p1.z)
 		if seg2.length_squared() < 0.0001:
 			continue
-		var dv  := seg2.normalized()
-		var nv  := Vector2(-dv.y, dv.x)
-		var ohw := hw2 + PARAPET_T
+		var seg_len := seg2.length()
+		var dv := seg2 / seg_len
+		var nv := Vector2(-dv.y, dv.x)
+		var bot1 := p1.y - BRIDGE_DECK_T
+		var bot2 := p2.y - BRIDGE_DECK_T
+		# Soffit quad (downward-facing, reversed winding)
+		var sa := Vector3(p1.x + nv.x * hw2, bot1, p1.z + nv.y * hw2)
+		var sb := Vector3(p1.x - nv.x * hw2, bot1, p1.z - nv.y * hw2)
+		var sc := Vector3(p2.x + nv.x * hw2, bot2, p2.z + nv.y * hw2)
+		var sd := Vector3(p2.x - nv.x * hw2, bot2, p2.z - nv.y * hw2)
+		var u2_s := u_s + seg_len / width
+		sof_verts.append_array(PackedVector3Array([sa, sb, sc, sb, sd, sc]))
+		for _j in range(6):
+			sof_normals.append(Vector3.DOWN)
+		sof_uvs.append_array(PackedVector2Array([
+			Vector2(u_s, 0.0), Vector2(u_s, 1.0), Vector2(u2_s, 0.0),
+			Vector2(u_s, 1.0), Vector2(u2_s, 1.0), Vector2(u2_s, 0.0),
+		]))
+		# Side edge beams (deck top to soffit bottom, both sides)
 		for side in [-1.0, 1.0]:
 			var s: float = float(side)
-			var ox := nv.x * ohw * s
-			var oz := nv.y * ohw * s
-			var fa := Vector3(p1.x + ox, p1.y,              p1.z + oz)
-			var fb := Vector3(p2.x + ox, p2.y,              p2.z + oz)
-			var fc := Vector3(p2.x + ox, p2.y + PARAPET_H,  p2.z + oz)
-			var fd := Vector3(p1.x + ox, p1.y + PARAPET_H,  p1.z + oz)
-			par_verts.append_array(PackedVector3Array([fa, fb, fc, fa, fc, fd]))
-			var wall_n := Vector3(nv.x * s, 0.0, nv.y * s)
+			var ox := nv.x * hw2 * s
+			var oz := nv.y * hw2 * s
+			var ea := Vector3(p1.x + ox, p1.y,  p1.z + oz)
+			var eb := Vector3(p2.x + ox, p2.y,  p2.z + oz)
+			var ec := Vector3(p2.x + ox, bot2,  p2.z + oz)
+			var ed := Vector3(p1.x + ox, bot1,  p1.z + oz)
+			edge_verts.append_array(PackedVector3Array([ea, eb, ec, ea, ec, ed]))
+			var en := Vector3(nv.x * s, 0.0, nv.y * s)
 			for _j in range(6):
-				par_normals.append(wall_n)
+				edge_norms.append(en)
+		u_s = u2_s
+
+	if not sof_verts.is_empty():
+		sof_verts.append_array(edge_verts)
+		sof_normals.append_array(edge_norms)
+		# UVs for edges not critical — extend soffit UVs array to match
+		for _j in range(edge_verts.size()):
+			sof_uvs.append(Vector2.ZERO)
+		var sof_arrays: Array = []; sof_arrays.resize(Mesh.ARRAY_MAX)
+		sof_arrays[Mesh.ARRAY_VERTEX] = sof_verts
+		sof_arrays[Mesh.ARRAY_NORMAL] = sof_normals
+		sof_arrays[Mesh.ARRAY_TEX_UV] = sof_uvs
+		var sof_mesh := ArrayMesh.new()
+		sof_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, sof_arrays)
+		sof_mesh.surface_set_material(0, _make_stone_material(rw_alb, rw_nrm, rw_rgh,
+				Color(0.78, 0.76, 0.72)))
+		var sof_mi := MeshInstance3D.new()
+		sof_mi.mesh = sof_mesh
+		sof_mi.name = "Bridge_Soffit"
+		add_child(sof_mi)
+
+	# ----------------------------------------------------------------
+	# Parapet walls (rock_wall texture) — only on bridges long enough for an
+	# elevated span. Short stream crossings (< 12m) skip parapets entirely.
+	# ----------------------------------------------------------------
+	var par_verts   := PackedVector3Array()
+	var par_normals := PackedVector3Array()
+	var par_ramp_start := ramp_len * 0.3
+	var par_ramp_end   := total_len - ramp_len * 0.3
+	var _skip_parapets := total_len < 12.0
+
+	if not _skip_parapets:
+		for i in range(n_pts - 1):
+			# Skip segments fully within the ramp approach (no parapets there)
+			if cum_len[i + 1] < par_ramp_start or cum_len[i] > par_ramp_end:
+				continue
+			var p1 := Vector3(float(pts[i][0]),     pt_y[i],     float(pts[i][2]))
+			var p2 := Vector3(float(pts[i+1][0]),   pt_y[i+1],   float(pts[i+1][2]))
+			var seg2 := Vector2(p2.x - p1.x, p2.z - p1.z)
+			if seg2.length_squared() < 0.0001:
+				continue
+			var dv  := seg2.normalized()
+			var nv  := Vector2(-dv.y, dv.x)
+			var ohw := hw2 + PARAPET_T
+			for side in [-1.0, 1.0]:
+				var s: float = float(side)
+				var ox := nv.x * ohw * s
+				var oz := nv.y * ohw * s
+				var fa := Vector3(p1.x + ox, p1.y,              p1.z + oz)
+				var fb := Vector3(p2.x + ox, p2.y,              p2.z + oz)
+				var fc := Vector3(p2.x + ox, p2.y + PARAPET_H,  p2.z + oz)
+				var fd := Vector3(p1.x + ox, p1.y + PARAPET_H,  p1.z + oz)
+				par_verts.append_array(PackedVector3Array([fa, fb, fc, fa, fc, fd]))
+				var wall_n := Vector3(nv.x * s, 0.0, nv.y * s)
+				for _j in range(6):
+					par_normals.append(wall_n)
 
 	if not par_verts.is_empty():
 		var par_arrays: Array = []
@@ -434,7 +576,77 @@ func _build_bridge(path: Dictionary) -> void:
 		par_mi.name = "Bridge_Parapets"
 		add_child(par_mi)
 
-	# Abutments removed: smooth ramp already connects deck to terrain at each end.
+	# ----------------------------------------------------------------
+	# Abutment wing walls — only on bridges with real underpasses (>= 15m)
+	# ----------------------------------------------------------------
+	var abut_verts   := PackedVector3Array()
+	var abut_normals := PackedVector3Array()
+	var span_start_i := -1
+	var span_end_i   := -1
+	if total_len >= 15.0:
+		for i in range(n_pts):
+			if cum_len[i] >= ramp_len and span_start_i < 0:
+				span_start_i = i
+			if cum_len[i] <= total_len - ramp_len:
+				span_end_i = i
+
+	if span_start_i >= 0 and span_end_i >= 0:
+		for end_i in [span_start_i, span_end_i]:
+			var px   := float(pts[end_i][0])
+			var pz   := float(pts[end_i][2])
+			var ty   := float(pts[end_i][1])   # terrain level
+			var dy   := pt_y[end_i]             # deck level
+			if dy - ty < 0.5:
+				continue   # not enough gap for a visible abutment
+
+			# Get path direction at this point for the abutment face orientation
+			var other_i: int = (end_i + 1) if end_i == span_start_i else (end_i - 1)
+			other_i = clampi(other_i, 0, n_pts - 1)
+			var seg2 := Vector2(float(pts[other_i][0]) - px,
+								float(pts[other_i][2]) - pz)
+			if seg2.length_squared() < 0.01:
+				continue
+			var dv  := seg2.normalized()
+			var nv  := Vector2(-dv.y, dv.x)
+			var face_dir := -1.0 if end_i == span_start_i else 1.0
+			var face_n   := Vector3(dv.x * face_dir, 0.0, dv.y * face_dir)
+			var ohw      := hw2 + PARAPET_T + 0.3   # slightly wider than parapets
+			var lintel_h := 0.4   # stone lintel depth at top of opening
+
+			# Wing walls: one on each side of the opening, from hw2 outward to ohw
+			for side in [-1.0, 1.0]:
+				var s: float = float(side)
+				# Wing wall: from path edge to outer edge, terrain to deck
+				var wa := Vector3(px + nv.x * hw2 * s, ty,  pz + nv.y * hw2 * s)
+				var wb := Vector3(px + nv.x * ohw * s, ty,  pz + nv.y * ohw * s)
+				var wc := Vector3(px + nv.x * ohw * s, dy,  pz + nv.y * ohw * s)
+				var wd := Vector3(px + nv.x * hw2 * s, dy,  pz + nv.y * hw2 * s)
+				abut_verts.append_array(PackedVector3Array([wa, wb, wc, wa, wc, wd]))
+				for _j in range(6):
+					abut_normals.append(face_n)
+
+			# Lintel across the top of the opening (deck bottom to deck, full width)
+			var lt_y := dy - lintel_h
+			var la := Vector3(px + nv.x * hw2, lt_y, pz + nv.y * hw2)
+			var lb := Vector3(px - nv.x * hw2, lt_y, pz - nv.y * hw2)
+			var lc := Vector3(px - nv.x * hw2, dy,   pz - nv.y * hw2)
+			var ld := Vector3(px + nv.x * hw2, dy,   pz + nv.y * hw2)
+			abut_verts.append_array(PackedVector3Array([la, lb, lc, la, lc, ld]))
+			for _j in range(6):
+				abut_normals.append(face_n)
+
+	if not abut_verts.is_empty():
+		var abut_arrays: Array = []; abut_arrays.resize(Mesh.ARRAY_MAX)
+		abut_arrays[Mesh.ARRAY_VERTEX] = abut_verts
+		abut_arrays[Mesh.ARRAY_NORMAL] = abut_normals
+		var abut_mesh := ArrayMesh.new()
+		abut_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, abut_arrays)
+		abut_mesh.surface_set_material(0, _make_stone_material(rw_alb, rw_nrm, rw_rgh,
+				Color(0.80, 0.78, 0.74)))
+		var abut_mi := MeshInstance3D.new()
+		abut_mi.mesh = abut_mesh
+		abut_mi.name = "Bridge_Abutments"
+		add_child(abut_mi)
 
 
 # ---------------------------------------------------------------------------
