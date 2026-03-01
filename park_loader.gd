@@ -281,7 +281,7 @@ func _make_path_mesh(paths: Array, hw: String, surface: String) -> MeshInstance3
 	var width   := _hw_width(hw)
 
 	for path in paths:
-		var pts: Array = path["points"]
+		var pts: Array = _subdivide_pts(path["points"], 5.0)
 		var u := 0.0
 		for i in range(pts.size() - 1):
 			var x1 := float(pts[i][0]);   var z1 := float(pts[i][2])
@@ -985,6 +985,301 @@ void fragment() {
 
 
 # ---------------------------------------------------------------------------
+# Fountain geometry — builds 3D structures for named fountains
+# ---------------------------------------------------------------------------
+func _build_fountain(body: Dictionary) -> void:
+	var pts: Array = body["points"]
+	var bname: String = str(body.get("name", ""))
+
+	# Compute centroid and radius from polygon
+	var cx := 0.0; var cz := 0.0
+	for pt in pts:
+		cx += float(pt[0]); cz += float(pt[1])
+	cx /= pts.size(); cz /= pts.size()
+	var max_r := 0.0
+	for pt in pts:
+		var dx := float(pt[0]) - cx; var dz := float(pt[1]) - cz
+		max_r = maxf(max_r, sqrt(dx * dx + dz * dz))
+
+	var base_y := _terrain_y(cx, cz)
+	var pool_y := base_y + WATER_Y
+
+	# Textures for stone basin
+	var rw_alb := _load_tex("res://textures/rock_wall_diff.jpg")
+	var rw_nrm := _load_tex("res://textures/rock_wall_nrm.jpg")
+	var rw_rgh := _load_tex("res://textures/rock_wall_rgh.jpg")
+
+	# All fountains get a water-filled pool from their polygon
+	_build_fountain_pool(pts, pool_y)
+
+	var lname := bname.to_lower()
+	if lname.contains("bethesda"):
+		_build_bethesda_fountain(cx, cz, base_y, max_r, rw_alb, rw_nrm, rw_rgh)
+	elif lname.contains("cherry"):
+		_build_cherry_hill_fountain(cx, cz, base_y, max_r, rw_alb, rw_nrm, rw_rgh)
+	elif lname.contains("untermyer"):
+		_build_untermyer_fountain(cx, cz, base_y, max_r, rw_alb, rw_nrm, rw_rgh)
+	else:
+		# Generic fountain: simple basin rim + central column
+		_build_generic_fountain(cx, cz, base_y, max_r, rw_alb, rw_nrm, rw_rgh)
+	print("ParkLoader: built fountain '%s' at (%.0f, %.0f)" % [bname, cx, cz])
+
+
+func _build_fountain_pool(pts: Array, wy: float) -> void:
+	## Render the water polygon for a fountain pool
+	var polygon := PackedVector2Array()
+	for pt in pts:
+		polygon.append(Vector2(float(pt[0]), float(pt[1])))
+	var indices := Geometry2D.triangulate_polygon(polygon)
+	if indices.is_empty():
+		return
+	var verts   := PackedVector3Array()
+	var normals := PackedVector3Array()
+	for i in range(0, indices.size(), 3):
+		verts.append(Vector3(polygon[indices[i    ]].x, wy, polygon[indices[i    ]].y))
+		verts.append(Vector3(polygon[indices[i + 1]].x, wy, polygon[indices[i + 1]].y))
+		verts.append(Vector3(polygon[indices[i + 2]].x, wy, polygon[indices[i + 2]].y))
+		for _j in range(3):
+			normals.append(Vector3.UP)
+	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts
+	arrays[Mesh.ARRAY_NORMAL] = normals
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	var sh  := Shader.new(); sh.code = _water_shader_code()
+	mesh.surface_set_material(0, ShaderMaterial.new())
+	mesh.surface_get_material(0).shader = sh
+	var mi := MeshInstance3D.new(); mi.mesh = mesh; mi.name = "FountainPool"
+	add_child(mi)
+
+
+## Generate a ring of triangles (annulus) for basin rims
+func _make_ring_mesh(cx: float, y: float, cz: float,
+					 inner_r: float, outer_r: float, height: float,
+					 mat: Material, mname: String, segs: int = 48) -> void:
+	var verts   := PackedVector3Array()
+	var normals := PackedVector3Array()
+	for i in range(segs):
+		var a0 := TAU * float(i)   / float(segs)
+		var a1 := TAU * float(i+1) / float(segs)
+		var c0 := cos(a0); var s0 := sin(a0)
+		var c1 := cos(a1); var s1 := sin(a1)
+		# Top face
+		var oi0 := Vector3(cx + inner_r * c0, y + height, cz + inner_r * s0)
+		var oo0 := Vector3(cx + outer_r * c0, y + height, cz + outer_r * s0)
+		var oi1 := Vector3(cx + inner_r * c1, y + height, cz + inner_r * s1)
+		var oo1 := Vector3(cx + outer_r * c1, y + height, cz + outer_r * s1)
+		verts.append_array(PackedVector3Array([oi0, oo0, oi1, oo0, oo1, oi1]))
+		for _j in range(6):
+			normals.append(Vector3.UP)
+		# Outer wall
+		var ob := Vector3(cx + outer_r * c0, y, cz + outer_r * s0)
+		var ob1:= Vector3(cx + outer_r * c1, y, cz + outer_r * s1)
+		var on := Vector3(c0, 0.0, s0)
+		var on1:= Vector3(c1, 0.0, s1)
+		verts.append_array(PackedVector3Array([ob, oo0, ob1, oo0, oo1, ob1]))
+		normals.append_array(PackedVector3Array([on, on, on1, on, on1, on1]))
+		# Inner wall
+		var ib := Vector3(cx + inner_r * c0, y, cz + inner_r * s0)
+		var ib1:= Vector3(cx + inner_r * c1, y, cz + inner_r * s1)
+		var inv := Vector3(-c0, 0.0, -s0)
+		var inv1:= Vector3(-c1, 0.0, -s1)
+		verts.append_array(PackedVector3Array([oi0, ib, oi1, ib, ib1, oi1]))
+		normals.append_array(PackedVector3Array([inv, inv, inv1, inv, inv1, inv1]))
+	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts
+	arrays[Mesh.ARRAY_NORMAL] = normals
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	mesh.surface_set_material(0, mat)
+	var mi := MeshInstance3D.new(); mi.mesh = mesh; mi.name = mname
+	add_child(mi)
+
+
+## Generate a cylinder (column/pedestal) with top cap
+func _make_cylinder_mesh(cx: float, base_y: float, cz: float,
+						 radius: float, height: float,
+						 mat: Material, mname: String, segs: int = 32) -> void:
+	var verts   := PackedVector3Array()
+	var normals := PackedVector3Array()
+	var top_y := base_y + height
+	for i in range(segs):
+		var a0 := TAU * float(i)   / float(segs)
+		var a1 := TAU * float(i+1) / float(segs)
+		var c0 := cos(a0); var s0 := sin(a0)
+		var c1 := cos(a1); var s1 := sin(a1)
+		# Side wall
+		var b0 := Vector3(cx + radius * c0, base_y, cz + radius * s0)
+		var b1 := Vector3(cx + radius * c1, base_y, cz + radius * s1)
+		var t0 := Vector3(cx + radius * c0, top_y,  cz + radius * s0)
+		var t1 := Vector3(cx + radius * c1, top_y,  cz + radius * s1)
+		var n0 := Vector3(c0, 0.0, s0); var n1 := Vector3(c1, 0.0, s1)
+		verts.append_array(PackedVector3Array([b0, t0, b1, t0, t1, b1]))
+		normals.append_array(PackedVector3Array([n0, n0, n1, n0, n1, n1]))
+		# Top cap
+		var center := Vector3(cx, top_y, cz)
+		verts.append_array(PackedVector3Array([center, t0, t1]))
+		for _j in range(3):
+			normals.append(Vector3.UP)
+	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts
+	arrays[Mesh.ARRAY_NORMAL] = normals
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	mesh.surface_set_material(0, mat)
+	var mi := MeshInstance3D.new(); mi.mesh = mesh; mi.name = mname
+	add_child(mi)
+
+
+# -- Bethesda Fountain: ~29m pool, two-tier sandstone basin, angel column ---
+func _build_bethesda_fountain(cx: float, cz: float, base_y: float, pool_r: float,
+							  alb: ImageTexture, nrm: ImageTexture, rgh: ImageTexture) -> void:
+	# Warm sandstone tint (olive-mustard)
+	var stone := _make_stone_material(alb, nrm, rgh, Color(0.85, 0.78, 0.60))
+	var bronze := StandardMaterial3D.new()
+	bronze.albedo_color = Color(0.35, 0.45, 0.30)  # green-brown patina
+	bronze.roughness    = 0.55
+	bronze.metallic     = 0.7
+
+	# Basin rim (raised lip around the pool)
+	var rim_h := 0.45
+	_make_ring_mesh(cx, base_y, cz, pool_r - 0.4, pool_r + 0.3, rim_h, stone, "Bethesda_Rim")
+
+	# Lower basin (wide dish, 4m radius, 0.6m above pool)
+	var lb_r := 4.0; var lb_h := 0.6
+	_make_ring_mesh(cx, base_y + rim_h, cz, lb_r - 0.3, lb_r, lb_h, stone, "Bethesda_LowerBasin")
+	# Lower basin pedestal
+	_make_cylinder_mesh(cx, base_y, cz, 1.8, rim_h + lb_h, stone, "Bethesda_LowerPedestal")
+
+	# Upper basin (narrower dish, 2m radius)
+	var ub_base := base_y + rim_h + lb_h
+	var ub_r := 2.0; var ub_h := 0.5
+	_make_ring_mesh(cx, ub_base, cz, ub_r - 0.2, ub_r, ub_h, stone, "Bethesda_UpperBasin")
+	# Upper pedestal column
+	_make_cylinder_mesh(cx, ub_base, cz, 0.8, ub_h + 1.0, stone, "Bethesda_UpperPedestal")
+
+	# Angel column + figure (bronze cylinder with wider top = simplified angel)
+	var angel_base := ub_base + ub_h + 1.0
+	_make_cylinder_mesh(cx, angel_base, cz, 0.35, 3.0, bronze, "Bethesda_AngelColumn")
+	# Angel figure (wider cylinder at top represents the spread-wing angel)
+	_make_cylinder_mesh(cx, angel_base + 3.0, cz, 0.9, 2.4, bronze, "Bethesda_Angel")
+	# Wings (two thin slabs extending outward)
+	var wing_mat := bronze
+	var wing_y := angel_base + 4.2
+	for side_i in range(2):
+		var side: float = -1.0 if side_i == 0 else 1.0
+		var wverts   := PackedVector3Array()
+		var wnormals := PackedVector3Array()
+		var wx: float = cx + side * 0.6
+		var ww: float = side * 1.8   # wing span
+		var wt: float = 0.08         # wing thickness
+		var wh: float = 1.6          # wing height
+		# Simple thin box for wing
+		var p0 := Vector3(wx, wing_y, cz - wt)
+		var p1 := Vector3(wx + ww, wing_y + 0.4, cz - wt)
+		var p2 := Vector3(wx + ww, wing_y + wh, cz - wt)
+		var p3 := Vector3(wx, wing_y + wh - 0.3, cz - wt)
+		var p4 := Vector3(wx, wing_y, cz + wt)
+		var p5 := Vector3(wx + ww, wing_y + 0.4, cz + wt)
+		var p6 := Vector3(wx + ww, wing_y + wh, cz + wt)
+		var p7 := Vector3(wx, wing_y + wh - 0.3, cz + wt)
+		# Front face
+		var fn := Vector3(0.0, 0.0, -1.0)
+		wverts.append_array(PackedVector3Array([p0, p1, p2, p0, p2, p3]))
+		for _j in range(6): wnormals.append(fn)
+		# Back face
+		var bn := Vector3(0.0, 0.0, 1.0)
+		wverts.append_array(PackedVector3Array([p5, p4, p7, p5, p7, p6]))
+		for _j in range(6): wnormals.append(bn)
+		var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
+		arrays[Mesh.ARRAY_VERTEX] = wverts
+		arrays[Mesh.ARRAY_NORMAL] = wnormals
+		var mesh := ArrayMesh.new()
+		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+		mesh.surface_set_material(0, wing_mat)
+		var mi := MeshInstance3D.new(); mi.mesh = mesh
+		mi.name = "Bethesda_Wing"
+		add_child(mi)
+
+
+# -- Cherry Hill Fountain: 6m basin, ornate column, globe lamps, gold spire --
+func _build_cherry_hill_fountain(cx: float, cz: float, base_y: float, pool_r: float,
+								 alb: ImageTexture, nrm: ImageTexture, rgh: ImageTexture) -> void:
+	var stone := _make_stone_material(alb, nrm, rgh, Color(0.72, 0.70, 0.66))
+	var tile_mat := StandardMaterial3D.new()
+	tile_mat.albedo_color = Color(0.20, 0.45, 0.55)  # blue-green Minton tile
+	tile_mat.roughness    = 0.4
+	tile_mat.metallic     = 0.15
+	var gold := StandardMaterial3D.new()
+	gold.albedo_color = Color(0.85, 0.72, 0.25)
+	gold.roughness    = 0.3
+	gold.metallic     = 0.85
+	var lamp_mat := StandardMaterial3D.new()
+	lamp_mat.albedo_color = Color(0.95, 0.92, 0.82)  # frosted glass
+	lamp_mat.roughness    = 0.2
+	lamp_mat.emission     = Color(0.95, 0.92, 0.82) * 0.3
+	lamp_mat.emission_enabled = true
+
+	# Basin rim
+	_make_ring_mesh(cx, base_y, cz, pool_r - 0.25, pool_r + 0.2, 0.35, stone, "Cherry_Rim")
+
+	# Central column — stone base, tile-clad shaft, bronze top
+	_make_cylinder_mesh(cx, base_y, cz, 0.6, 0.8, stone, "Cherry_Base")
+	_make_cylinder_mesh(cx, base_y + 0.8, cz, 0.4, 2.0, tile_mat, "Cherry_TileShaft")
+	_make_cylinder_mesh(cx, base_y + 2.8, cz, 0.5, 0.5, stone, "Cherry_Capital")
+
+	# 8 globe lamps around the top
+	var lamp_y := base_y + 3.3
+	var lamp_r := 0.8  # distance from center
+	for i in range(8):
+		var ang := TAU * float(i) / 8.0
+		var lx := cx + lamp_r * cos(ang)
+		var lz := cz + lamp_r * sin(ang)
+		_make_cylinder_mesh(lx, lamp_y, lz, 0.12, 0.25, lamp_mat, "Cherry_Lamp_%d" % i, 12)
+
+	# Gold spire
+	_make_cylinder_mesh(cx, lamp_y, cz, 0.08, 1.2, gold, "Cherry_Spire")
+
+
+# -- Untermyer Fountain: oval pool, 3 dancing bronze figures on plinth ------
+func _build_untermyer_fountain(cx: float, cz: float, base_y: float, pool_r: float,
+							   alb: ImageTexture, nrm: ImageTexture, rgh: ImageTexture) -> void:
+	var stone := _make_stone_material(alb, nrm, rgh, Color(0.80, 0.78, 0.72))
+	var bronze := StandardMaterial3D.new()
+	bronze.albedo_color = Color(0.30, 0.40, 0.28)  # green patina
+	bronze.roughness    = 0.5
+	bronze.metallic     = 0.7
+
+	# Basin rim
+	_make_ring_mesh(cx, base_y, cz, pool_r - 0.2, pool_r + 0.15, 0.3, stone, "Untermyer_Rim")
+
+	# Central limestone plinth
+	_make_cylinder_mesh(cx, base_y, cz, 0.8, 0.7, stone, "Untermyer_Plinth")
+
+	# 3 dancing figures (simplified as bronze cylinders in a ring)
+	var fig_r := 0.6  # distance from center
+	var fig_h := 1.7  # life-size
+	for i in range(3):
+		var ang := TAU * float(i) / 3.0
+		var fx := cx + fig_r * cos(ang)
+		var fz := cz + fig_r * sin(ang)
+		# Body
+		_make_cylinder_mesh(fx, base_y + 0.7, fz, 0.18, fig_h, bronze, "Untermyer_Figure_%d" % i, 16)
+		# Head
+		_make_cylinder_mesh(fx, base_y + 0.7 + fig_h, fz, 0.12, 0.25, bronze, "Untermyer_Head_%d" % i, 12)
+
+
+# -- Generic fountain: simple basin rim + central column jet ----------------
+func _build_generic_fountain(cx: float, cz: float, base_y: float, pool_r: float,
+							 alb: ImageTexture, nrm: ImageTexture, rgh: ImageTexture) -> void:
+	var stone := _make_stone_material(alb, nrm, rgh, Color(0.75, 0.73, 0.68))
+	# Basin rim
+	_make_ring_mesh(cx, base_y, cz, pool_r - 0.2, pool_r + 0.15, 0.35, stone, "Fountain_Rim")
+	# Central column
+	_make_cylinder_mesh(cx, base_y, cz, 0.3, 1.5, stone, "Fountain_Column")
+
+
+# ---------------------------------------------------------------------------
 # Water bodies – filled polygons triangulated with Geometry2D
 # ---------------------------------------------------------------------------
 func _build_water(water: Array) -> void:
@@ -997,6 +1292,12 @@ func _build_water(water: Array) -> void:
 	for body in water:
 		var pts: Array = body["points"]
 		if pts.size() < 3:
+			continue
+
+		# Check if this water body is a fountain — build 3D structure instead
+		var bname: String = str(body.get("name", ""))
+		if bname.to_lower().contains("fountain"):
+			_build_fountain(body)
 			continue
 
 		# Water level = minimum terrain height along the shore + small offset.
