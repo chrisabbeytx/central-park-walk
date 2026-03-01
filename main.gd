@@ -31,6 +31,13 @@ func _ready() -> void:
 	_setup_park()
 	_player = _setup_player()
 	_setup_hud()
+	# Auto-screenshot for dev review (remove when done)
+	get_tree().create_timer(4.0).timeout.connect(_take_screenshot)
+
+func _take_screenshot() -> void:
+	var img := get_viewport().get_texture().get_image()
+	img.save_png("/tmp/godot_screenshot.png")
+	print("Screenshot saved to /tmp/godot_screenshot.png")
 
 
 # ---------------------------------------------------------------------------
@@ -117,7 +124,8 @@ func _load_sky_material() -> Material:
 			img.generate_mipmaps()
 			var tex := ImageTexture.create_from_image(img)
 			var pan := PanoramaSkyMaterial.new()
-			pan.panorama = tex
+			pan.panorama          = tex
+			pan.energy_multiplier = 0.6   # dim raw HDR to avoid blowout
 			print("Sky: loaded HDR panorama")
 			return pan
 	print("Sky: procedural fallback")
@@ -140,12 +148,30 @@ func _setup_environment() -> void:
 	var env := Environment.new()
 	env.background_mode      = Environment.BG_SKY
 	env.sky                  = sky
-	env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
-	env.ambient_light_energy = 0.45
-	env.tonemap_mode         = Environment.TONE_MAPPER_FILMIC
-	env.glow_enabled         = true
-	env.glow_intensity       = 0.12
-	env.glow_bloom           = 0.02
+	env.ambient_light_source  = Environment.AMBIENT_SOURCE_SKY
+	env.ambient_light_energy  = 0.30   # was 0.45 — less fill light = more contrast
+	env.tonemap_mode          = Environment.TONE_MAPPER_FILMIC
+	env.tonemap_exposure      = 0.75   # pull down overall exposure
+	env.tonemap_white         = 6.0    # raise white point so highlights compress more gently
+	env.glow_enabled          = true
+	env.glow_intensity        = 0.10
+	env.glow_bloom            = 0.01
+
+	# SSAO — contact shadows at tree bases, path edges, building corners
+	env.ssao_enabled   = true
+	env.ssao_radius    = 1.5    # ~1.5 m sample radius, good for park scale
+	env.ssao_intensity = 2.0
+	env.ssao_power     = 1.8    # stronger curve = crisper contact shadows
+	env.ssao_detail    = 0.5
+
+	# Atmospheric haze — cool NYC blue-grey, thickens toward horizon
+	env.fog_enabled           = true
+	env.fog_light_color       = Color(0.72, 0.78, 0.88)   # cool blue-grey
+	env.fog_light_energy      = 1.0
+	env.fog_sun_scatter       = 0.25   # subtle glow toward sun direction
+	env.fog_density           = 0.0018 # gentle — noticeable at ~400 m, heavy at ~1.5 km
+	env.fog_aerial_perspective = 0.6   # blend fog with sky at horizon for depth
+	env.fog_sky_affect        = 0.5    # also haze the sky dome slightly
 
 	var world_env := WorldEnvironment.new()
 	world_env.environment = env
@@ -304,18 +330,26 @@ void vertex() {
 }
 
 void fragment() {
-	vec2 uv     = world_pos.xz / tile_m;
-	vec3  alb   = texture(grass_albedo, uv).rgb;
-	float rough = texture(grass_rough,  uv).r;
+	vec2 uv  = world_pos.xz / tile_m;
+	vec2 uv2 = world_pos.xz / (tile_m * 4.0) + vec2(0.37, 0.61); // coarser, offset
 
-	// Large-scale tint breaks up tiling repetition
+	vec3 alb = texture(grass_albedo, uv).rgb;
+
+	// Blend normals at two scales — breaks up the 'wet floor' specularity
+	vec3 n1 = texture(grass_normal, uv).rgb;
+	vec3 n2 = texture(grass_normal, uv2).rgb;
+	vec3 nrm = normalize(n1 * 0.65 + n2 * 0.35);
+
+	// Large-scale colour variation
 	float f = clamp(fbm(world_pos.xz * 0.004, 4) * 0.45
 	              + fbm(world_pos.xz * 0.025, 3) * 0.35 + 0.30, 0.55, 1.1);
 
-	ALBEDO     = alb * f;
-	NORMAL_MAP = texture(grass_normal, uv).rgb;
-	ROUGHNESS  = clamp(rough * 0.85 + 0.1, 0.0, 1.0);
-	METALLIC   = 0.0;
+	ALBEDO          = alb * f;
+	NORMAL_MAP      = nrm;
+	NORMAL_MAP_DEPTH = 1.6;   // stronger blade-level detail
+	ROUGHNESS       = 0.95;   // grass is almost fully diffuse
+	SPECULAR        = 0.0;    // no specular highlight on grass
+	METALLIC        = 0.0;
 }
 """
 

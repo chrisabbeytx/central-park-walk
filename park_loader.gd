@@ -170,15 +170,19 @@ func _ready() -> void:
 func _build_paths(paths: Array) -> void:
 	var ground_groups: Dictionary = {}
 	var bridge_paths:  Array      = []
+	var tunnel_paths:  Array      = []
 
 	for path in paths:
 		var hw:    String = str(path.get("highway", "path"))
 		var surf:  String = str(path.get("surface", ""))
 		var layer: int    = int(path.get("layer",   0))
 		var is_bridge: bool = bool(path.get("bridge", false)) or layer >= 1
+		var is_tunnel: bool = bool(path.get("tunnel", false)) or layer <= -1
 
 		if is_bridge:
 			bridge_paths.append(path)
+		elif is_tunnel:
+			tunnel_paths.append(path)
 		else:
 			var key: String = hw + "|" + surf
 			if key not in ground_groups:
@@ -191,6 +195,9 @@ func _build_paths(paths: Array) -> void:
 
 	for bp in bridge_paths:
 		_build_bridge(bp)
+
+	for tp in tunnel_paths:
+		_build_tunnel(tp)
 
 
 func _make_path_mesh(paths: Array, hw: String, surface: String) -> MeshInstance3D:
@@ -256,96 +263,160 @@ func _make_path_mesh(paths: Array, hw: String, surface: String) -> MeshInstance3
 const BRIDGE_CLEARANCE := 3.0   # metres above lowest span terrain
 const PARAPET_H        := 0.9   # parapet wall height above deck
 const PARAPET_T        := 0.15  # parapet thickness
+const BRIDGE_RAMP_FRAC := 0.35  # fraction of bridge path used as ramp at each end
+const TUNNEL_H         := 3.4   # clear height inside tunnel (metres above path)
 
 func _build_bridge(path: Dictionary) -> void:
 	var hw:   String = str(path.get("highway", "path"))
 	var surf: String = str(path.get("surface", ""))
 	var pts:  Array  = path["points"]
-	if pts.size() < 2:
+	var n_pts := pts.size()
+	if n_pts < 2:
 		return
 
-	var width  := _hw_width(hw)
+	var width := _hw_width(hw)
+	var hw2   := width * 0.5
 
-	# --- Compute deck Y: clearance above minimum terrain along span ---
-	var min_y := INF
-	for pt in pts:
-		min_y = minf(min_y, float(pt[1]))
-	var deck_y := min_y + BRIDGE_CLEARANCE
+	# CC0 rock wall texture for parapets / abutments
+	var rw_alb := _load_tex("res://textures/rock_wall_diff.jpg")
+	var rw_nrm := _load_tex("res://textures/rock_wall_nrm.jpg")
+	var rw_rgh := _load_tex("res://textures/rock_wall_rgh.jpg")
 
-	# --- Deck ribbon (UV-mapped) ---
+	# ----------------------------------------------------------------
+	# Cumulative arc lengths
+	# ----------------------------------------------------------------
+	var cum_len := PackedFloat32Array()
+	cum_len.resize(n_pts)
+	cum_len[0] = 0.0
+	for i in range(1, n_pts):
+		var dx := float(pts[i][0]) - float(pts[i-1][0])
+		var dz := float(pts[i][2]) - float(pts[i-1][2])
+		cum_len[i] = cum_len[i-1] + sqrt(dx*dx + dz*dz)
+	var total_len := cum_len[n_pts - 1]
+	if total_len < 0.1:
+		return
+	var ramp_len := total_len * BRIDGE_RAMP_FRAC
+
+	# Terrain heights at the two endpoints
+	var y_start := float(pts[0][1])
+	var y_end   := float(pts[n_pts - 1][1])
+
+	# Deck clearance: above minimum terrain in the mid (non-ramp) section
+	var min_y_mid := INF
+	for i in range(n_pts):
+		if cum_len[i] >= ramp_len and cum_len[i] <= total_len - ramp_len:
+			min_y_mid = minf(min_y_mid, float(pts[i][1]))
+	if min_y_mid == INF:
+		min_y_mid = y_start
+		for pt in pts:
+			min_y_mid = minf(min_y_mid, float(pt[1]))
+	var deck_y := maxf(min_y_mid + BRIDGE_CLEARANCE,
+					   maxf(y_start + 0.5, y_end + 0.5))
+
+	# ----------------------------------------------------------------
+	# Per-point smooth bridge height (S-curve ramp at both ends)
+	# ----------------------------------------------------------------
+	var pt_y := PackedFloat32Array()
+	pt_y.resize(n_pts)
+	for i in range(n_pts):
+		var d := cum_len[i]
+		var t: float
+		var y: float
+		if d <= ramp_len:
+			t = d / ramp_len
+			t = t * t * (3.0 - 2.0 * t)   # smoothstep
+			y = lerpf(y_start + PATH_Y, deck_y, t)
+		elif d >= total_len - ramp_len:
+			t = (total_len - d) / ramp_len
+			t = t * t * (3.0 - 2.0 * t)   # smoothstep
+			y = lerpf(y_end + PATH_Y, deck_y, t)
+		else:
+			y = deck_y
+		pt_y[i] = y
+
+	# ----------------------------------------------------------------
+	# Deck ribbon (UV-mapped along path)
+	# ----------------------------------------------------------------
 	var verts   := PackedVector3Array()
 	var normals := PackedVector3Array()
 	var uvs     := PackedVector2Array()
 	var u := 0.0
 
-	for i in range(pts.size() - 1):
-		var p1 := Vector3(float(pts[i][0]),     deck_y,  float(pts[i][2]))
-		var p2 := Vector3(float(pts[i+1][0]),   deck_y,  float(pts[i+1][2]))
+	for i in range(n_pts - 1):
+		var p1 := Vector3(float(pts[i][0]),     pt_y[i],     float(pts[i][2]))
+		var p2 := Vector3(float(pts[i+1][0]),   pt_y[i+1],   float(pts[i+1][2]))
 		var seg2 := Vector2(p2.x - p1.x, p2.z - p1.z)
 		if seg2.length_squared() < 0.0001:
 			continue
 		var seg_len := seg2.length()
-		var d  := seg2 / seg_len
-		var n  := Vector2(-d.y, d.x)
-		var hw2 := width * 0.5
-		var a  := Vector3(p1.x + n.x * hw2,  deck_y,  p1.z + n.y * hw2)
-		var b  := Vector3(p1.x - n.x * hw2,  deck_y,  p1.z - n.y * hw2)
-		var c  := Vector3(p2.x + n.x * hw2,  deck_y,  p2.z + n.y * hw2)
-		var dd := Vector3(p2.x - n.x * hw2,  deck_y,  p2.z - n.y * hw2)
+		var dv := seg2 / seg_len
+		var nv := Vector2(-dv.y, dv.x)
+		var a  := Vector3(p1.x + nv.x * hw2, p1.y, p1.z + nv.y * hw2)
+		var b  := Vector3(p1.x - nv.x * hw2, p1.y, p1.z - nv.y * hw2)
+		var c  := Vector3(p2.x + nv.x * hw2, p2.y, p2.z + nv.y * hw2)
+		var dd := Vector3(p2.x - nv.x * hw2, p2.y, p2.z - nv.y * hw2)
 		var u2 := u + seg_len / width
 		verts.append_array(PackedVector3Array([a, b, c, b, dd, c]))
+		var quad_n := (b - a).cross(c - a).normalized()
+		if quad_n.y < 0.0:
+			quad_n = -quad_n
 		for _i in range(6):
-			normals.append(Vector3.UP)
+			normals.append(quad_n)
 		uvs.append_array(PackedVector2Array([
 			Vector2(u, 0.0), Vector2(u, 1.0), Vector2(u2, 0.0),
 			Vector2(u, 1.0), Vector2(u2, 1.0), Vector2(u2, 0.0),
 		]))
 		u = u2
 
-	var arrays: Array = []
-	arrays.resize(Mesh.ARRAY_MAX)
-	arrays[Mesh.ARRAY_VERTEX] = verts
-	arrays[Mesh.ARRAY_NORMAL] = normals
-	arrays[Mesh.ARRAY_TEX_UV] = uvs
-	var deck_mesh := ArrayMesh.new()
-	deck_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-	deck_mesh.surface_set_material(0, _make_path_material(hw, surf))
-	var deck_mi      := MeshInstance3D.new()
-	deck_mi.mesh      = deck_mesh
-	deck_mi.name      = "Bridge_Deck"
-	add_child(deck_mi)
+	if not verts.is_empty():
+		var arrays: Array = []
+		arrays.resize(Mesh.ARRAY_MAX)
+		arrays[Mesh.ARRAY_VERTEX] = verts
+		arrays[Mesh.ARRAY_NORMAL] = normals
+		arrays[Mesh.ARRAY_TEX_UV] = uvs
+		var deck_mesh := ArrayMesh.new()
+		deck_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+		deck_mesh.surface_set_material(0, _make_path_material(hw, surf))
+		var deck_mi := MeshInstance3D.new()
+		deck_mi.mesh = deck_mesh
+		deck_mi.name = "Bridge_Deck"
+		add_child(deck_mi)
 
-	# --- Parapet walls (stone material) ---
+		# Walkable collision from deck triangles
+		var body  := StaticBody3D.new()
+		body.name  = "Bridge_Collision"
+		var shape := ConcavePolygonShape3D.new()
+		shape.set_faces(verts)
+		var col   := CollisionShape3D.new()
+		col.shape  = shape
+		body.add_child(col)
+		add_child(body)
+
+	# ----------------------------------------------------------------
+	# Parapet walls (rock_wall texture)
+	# ----------------------------------------------------------------
 	var par_verts   := PackedVector3Array()
 	var par_normals := PackedVector3Array()
-	var parapet_mat := StandardMaterial3D.new()
-	parapet_mat.albedo_color = Color(0.62, 0.60, 0.56)   # light stone
-	parapet_mat.roughness    = 0.88
-	var prefix := "res://textures/PavingStones130_1K-JPG"
-	var par_tex := _load_tex(prefix + "_Color.jpg")
-	if par_tex:
-		parapet_mat = null   # replaced below by shader
 
-	for i in range(pts.size() - 1):
-		var p1 := Vector3(float(pts[i][0]),   deck_y,  float(pts[i][2]))
-		var p2 := Vector3(float(pts[i+1][0]), deck_y,  float(pts[i+1][2]))
+	for i in range(n_pts - 1):
+		var p1 := Vector3(float(pts[i][0]),     pt_y[i],     float(pts[i][2]))
+		var p2 := Vector3(float(pts[i+1][0]),   pt_y[i+1],   float(pts[i+1][2]))
 		var seg2 := Vector2(p2.x - p1.x, p2.z - p1.z)
 		if seg2.length_squared() < 0.0001:
 			continue
-		var d   := seg2.normalized()
-		var n   := Vector2(-d.y, d.x)
-		var hw2 := width * 0.5 + PARAPET_T
-
+		var dv  := seg2.normalized()
+		var nv  := Vector2(-dv.y, dv.x)
+		var ohw := hw2 + PARAPET_T
 		for side in [-1.0, 1.0]:
 			var s: float = float(side)
-			var ox: float = n.x * hw2 * s
-			var oz: float = n.y * hw2 * s
-			var fa := Vector3(p1.x + ox,  deck_y,              p1.z + oz)
-			var fb := Vector3(p2.x + ox,  deck_y,              p2.z + oz)
-			var fc := Vector3(p2.x + ox,  deck_y + PARAPET_H,  p2.z + oz)
-			var fd := Vector3(p1.x + ox,  deck_y + PARAPET_H,  p1.z + oz)
-			var wall_n := Vector3(n.x * s, 0.0, n.y * s)
+			var ox := nv.x * ohw * s
+			var oz := nv.y * ohw * s
+			var fa := Vector3(p1.x + ox, p1.y,              p1.z + oz)
+			var fb := Vector3(p2.x + ox, p2.y,              p2.z + oz)
+			var fc := Vector3(p2.x + ox, p2.y + PARAPET_H,  p2.z + oz)
+			var fd := Vector3(p1.x + ox, p1.y + PARAPET_H,  p1.z + oz)
 			par_verts.append_array(PackedVector3Array([fa, fb, fc, fa, fc, fd]))
+			var wall_n := Vector3(nv.x * s, 0.0, nv.y * s)
 			for _j in range(6):
 				par_normals.append(wall_n)
 
@@ -356,38 +427,29 @@ func _build_bridge(path: Dictionary) -> void:
 		par_arrays[Mesh.ARRAY_NORMAL] = par_normals
 		var par_mesh := ArrayMesh.new()
 		par_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, par_arrays)
-		if parapet_mat:
-			par_mesh.surface_set_material(0, parapet_mat)
-		else:
-			var sh := Shader.new()
-			sh.code = _path_shader_code()
-			var sm := ShaderMaterial.new()
-			sm.shader = sh
-			sm.set_shader_parameter("tex_alb", par_tex)
-			sm.set_shader_parameter("tex_nrm", _load_tex(prefix + "_NormalGL.jpg"))
-			sm.set_shader_parameter("tex_rgh", _load_tex(prefix + "_Roughness.jpg"))
-			sm.set_shader_parameter("tint",    Color(0.80, 0.78, 0.74))
-			par_mesh.surface_set_material(0, sm)
-		var par_mi   := MeshInstance3D.new()
-		par_mi.mesh   = par_mesh
-		par_mi.name   = "Bridge_Parapets"
+		par_mesh.surface_set_material(0, _make_stone_material(rw_alb, rw_nrm, rw_rgh,
+				Color(0.82, 0.80, 0.76)))
+		var par_mi := MeshInstance3D.new()
+		par_mi.mesh = par_mesh
+		par_mi.name = "Bridge_Parapets"
 		add_child(par_mi)
 
-	# --- Abutments: vertical quads at start and end connecting deck to terrain ---
+	# ----------------------------------------------------------------
+	# Abutments at each end
+	# ----------------------------------------------------------------
 	var abu_verts   := PackedVector3Array()
 	var abu_normals := PackedVector3Array()
-	for end_i in [0, pts.size() - 1]:
-		var other_i := 1 if end_i == 0 else pts.size() - 2
+
+	for end_i in [0, n_pts - 1]:
+		var other_i := 1 if end_i == 0 else n_pts - 2
 		var pe  := Vector3(float(pts[end_i][0]),   float(pts[end_i][1]),   float(pts[end_i][2]))
 		var po  := Vector3(float(pts[other_i][0]), float(pts[other_i][1]), float(pts[other_i][2]))
 		var seg2 := Vector2(po.x - pe.x, po.z - pe.z).normalized()
-		var n    := Vector2(-seg2.y, seg2.x)
-		var hw2  := width * 0.5
-		var al := Vector3(pe.x + n.x * hw2,  pe.y,   pe.z + n.y * hw2)
-		var ar := Vector3(pe.x - n.x * hw2,  pe.y,   pe.z - n.y * hw2)
-		var bl := Vector3(pe.x + n.x * hw2,  deck_y, pe.z + n.y * hw2)
-		var br := Vector3(pe.x - n.x * hw2,  deck_y, pe.z - n.y * hw2)
-		# Outward face = away from bridge interior = opposite of inward seg2 direction
+		var nv   := Vector2(-seg2.y, seg2.x)
+		var al := Vector3(pe.x + nv.x * hw2, pe.y,   pe.z + nv.y * hw2)
+		var ar := Vector3(pe.x - nv.x * hw2, pe.y,   pe.z - nv.y * hw2)
+		var bl := Vector3(pe.x + nv.x * hw2, deck_y, pe.z + nv.y * hw2)
+		var br := Vector3(pe.x - nv.x * hw2, deck_y, pe.z - nv.y * hw2)
 		var face_n := -Vector3(seg2.x, 0.0, seg2.y).normalized()
 		abu_verts.append_array(PackedVector3Array([al, ar, br, al, br, bl]))
 		for _j in range(6):
@@ -400,14 +462,137 @@ func _build_bridge(path: Dictionary) -> void:
 		abu_arrays[Mesh.ARRAY_NORMAL] = abu_normals
 		var abu_mesh := ArrayMesh.new()
 		abu_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, abu_arrays)
-		var abu_mat        := StandardMaterial3D.new()
-		abu_mat.albedo_color = Color(0.55, 0.52, 0.48)
-		abu_mat.roughness    = 0.92
-		abu_mesh.surface_set_material(0, abu_mat)
-		var abu_mi   := MeshInstance3D.new()
-		abu_mi.mesh   = abu_mesh
-		abu_mi.name   = "Bridge_Abutments"
+		abu_mesh.surface_set_material(0, _make_stone_material(rw_alb, rw_nrm, rw_rgh,
+				Color(0.72, 0.68, 0.62)))
+		var abu_mi := MeshInstance3D.new()
+		abu_mi.mesh = abu_mesh
+		abu_mi.name = "Bridge_Abutments"
 		add_child(abu_mi)
+
+
+# ---------------------------------------------------------------------------
+# Tunnel geometry — ceiling ribbon + side walls + floor path
+# ---------------------------------------------------------------------------
+func _build_tunnel(path: Dictionary) -> void:
+	var hw:   String = str(path.get("highway", "path"))
+	var surf: String = str(path.get("surface", ""))
+	var pts:  Array  = path["points"]
+	if pts.size() < 2:
+		return
+
+	var width := _hw_width(hw)
+	var hw2   := width * 0.5
+
+	# CC0 concrete texture for ceiling / walls
+	var cw_alb := _load_tex("res://textures/concrete_wall_diff.jpg")
+	var cw_nrm := _load_tex("res://textures/concrete_wall_nrm.jpg")
+	var cw_rgh := _load_tex("res://textures/concrete_wall_rgh.jpg")
+	var tun_mat := _make_stone_material(cw_alb, cw_nrm, cw_rgh, Color(0.72, 0.71, 0.70))
+
+	var ceil_verts   := PackedVector3Array()
+	var ceil_normals := PackedVector3Array()
+	var ceil_uvs     := PackedVector2Array()
+	var wall_verts   := PackedVector3Array()
+	var wall_normals := PackedVector3Array()
+	var wall_uvs     := PackedVector2Array()
+	var u_c := 0.0
+	var u_w := 0.0
+
+	for i in range(pts.size() - 1):
+		var p1 := Vector3(float(pts[i][0]),     float(pts[i][1])   + PATH_Y, float(pts[i][2]))
+		var p2 := Vector3(float(pts[i+1][0]),   float(pts[i+1][1]) + PATH_Y, float(pts[i+1][2]))
+		var seg2 := Vector2(p2.x - p1.x, p2.z - p1.z)
+		if seg2.length_squared() < 0.0001:
+			continue
+		var seg_len := seg2.length()
+		var dv  := seg2 / seg_len
+		var nv  := Vector2(-dv.y, dv.x)
+		var cy1 := p1.y + TUNNEL_H
+		var cy2 := p2.y + TUNNEL_H
+
+		# Ceiling (downward-facing)
+		var ca := Vector3(p1.x + nv.x * hw2, cy1, p1.z + nv.y * hw2)
+		var cb := Vector3(p1.x - nv.x * hw2, cy1, p1.z - nv.y * hw2)
+		var cc := Vector3(p2.x + nv.x * hw2, cy2, p2.z + nv.y * hw2)
+		var cd := Vector3(p2.x - nv.x * hw2, cy2, p2.z - nv.y * hw2)
+		var u2_c := u_c + seg_len / width
+		# Wind order: normal points DOWN into tunnel
+		ceil_verts.append_array(PackedVector3Array([ca, cc, cb, cb, cc, cd]))
+		for _i in range(6):
+			ceil_normals.append(Vector3.DOWN)
+		ceil_uvs.append_array(PackedVector2Array([
+			Vector2(u_c, 0.0), Vector2(u2_c, 0.0), Vector2(u_c,  1.0),
+			Vector2(u_c, 1.0), Vector2(u2_c, 0.0), Vector2(u2_c, 1.0),
+		]))
+		u_c = u2_c
+
+		# Side walls (inward-facing)
+		var u2_w := u_w + seg_len / TUNNEL_H
+		for side in [-1.0, 1.0]:
+			var s: float = float(side)
+			var ox := nv.x * hw2 * s
+			var oz := nv.y * hw2 * s
+			var wa := Vector3(p1.x + ox, p1.y, p1.z + oz)
+			var wb := Vector3(p2.x + ox, p2.y, p2.z + oz)
+			var wc := Vector3(p2.x + ox, cy2,  p2.z + oz)
+			var wd := Vector3(p1.x + ox, cy1,  p1.z + oz)
+			# Inward normal
+			var wall_n := Vector3(-nv.x * s, 0.0, -nv.y * s)
+			wall_verts.append_array(PackedVector3Array([wa, wb, wc, wa, wc, wd]))
+			for _j in range(6):
+				wall_normals.append(wall_n)
+			wall_uvs.append_array(PackedVector2Array([
+				Vector2(u_w,  0.0), Vector2(u2_w, 0.0), Vector2(u2_w, 1.0),
+				Vector2(u_w,  0.0), Vector2(u2_w, 1.0), Vector2(u_w,  1.0),
+			]))
+		u_w = u2_w
+
+	if not ceil_verts.is_empty():
+		var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
+		arrays[Mesh.ARRAY_VERTEX] = ceil_verts
+		arrays[Mesh.ARRAY_NORMAL] = ceil_normals
+		arrays[Mesh.ARRAY_TEX_UV] = ceil_uvs
+		var mesh := ArrayMesh.new()
+		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+		mesh.surface_set_material(0, tun_mat)
+		var mi := MeshInstance3D.new(); mi.mesh = mesh; mi.name = "Tunnel_Ceiling"
+		add_child(mi)
+
+	if not wall_verts.is_empty():
+		var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
+		arrays[Mesh.ARRAY_VERTEX] = wall_verts
+		arrays[Mesh.ARRAY_NORMAL] = wall_normals
+		arrays[Mesh.ARRAY_TEX_UV] = wall_uvs
+		var mesh := ArrayMesh.new()
+		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+		mesh.surface_set_material(0, tun_mat)
+		var mi := MeshInstance3D.new(); mi.mesh = mesh; mi.name = "Tunnel_Walls"
+		add_child(mi)
+
+	# Floor surface (same texture as the surface type above ground)
+	var floor_mi := _make_path_mesh([path], hw, surf)
+	floor_mi.name = "Tunnel_Floor"
+	add_child(floor_mi)
+
+
+# Shared helper: PBR stone/concrete material with optional CC0 texture
+func _make_stone_material(alb: ImageTexture, nrm: ImageTexture, rgh: ImageTexture,
+						  tint: Color) -> Material:
+	if alb:
+		var sh  := Shader.new()
+		sh.code  = _path_shader_code()
+		var sm  := ShaderMaterial.new()
+		sm.shader = sh
+		sm.set_shader_parameter("tex_alb", alb)
+		sm.set_shader_parameter("tex_nrm", nrm)
+		sm.set_shader_parameter("tex_rgh", rgh)
+		sm.set_shader_parameter("tint",    tint)
+		return sm
+	var mat        := StandardMaterial3D.new()
+	mat.albedo_color = tint
+	mat.roughness    = 0.88
+	mat.cull_mode    = BaseMaterial3D.CULL_DISABLED
+	return mat
 
 
 # ---------------------------------------------------------------------------
@@ -454,18 +639,75 @@ func _build_water(water: Array) -> void:
 	var mesh := ArrayMesh.new()
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(0.13, 0.32, 0.62)
-	mat.roughness    = 0.08
-	mat.metallic     = 0.35
-	mat.cull_mode    = BaseMaterial3D.CULL_DISABLED
-
+	var sh  := Shader.new()
+	sh.code  = _water_shader_code()
+	var mat := ShaderMaterial.new()
+	mat.shader = sh
 	mesh.surface_set_material(0, mat)
 
 	var mi := MeshInstance3D.new()
 	mi.mesh = mesh
 	mi.name = "WaterBodies"
 	add_child(mi)
+
+
+func _water_shader_code() -> String:
+	return """shader_type spatial;
+render_mode cull_disabled;
+
+varying vec3 world_pos;
+
+// Gradient noise (returns -1..1)
+vec2 ghash(vec2 p) {
+	p = vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3)));
+	return fract(sin(p) * 43758.5453) * 2.0 - 1.0;
+}
+float gnoise(vec2 p) {
+	vec2 i = floor(p); vec2 f = fract(p);
+	vec2 u = f * f * (3.0 - 2.0 * f);
+	return mix(mix(dot(ghash(i),          f),
+	               dot(ghash(i+vec2(1,0)), f-vec2(1,0)), u.x),
+	           mix(dot(ghash(i+vec2(0,1)), f-vec2(0,1)),
+	               dot(ghash(i+vec2(1,1)), f-vec2(1,1)), u.x), u.y);
+}
+
+// World-space wave normal from two overlapping noise layers
+vec3 wave_normal(vec2 uv) {
+	float t  = TIME;
+	vec2 o1  = vec2( t * 0.11,  t * 0.07);
+	vec2 o2  = vec2(-t * 0.09,  t * 0.13);
+	float e  = 0.05;
+	// Height field: coarse + fine layer
+	float h   = gnoise(uv       + o1) * 0.65 + gnoise(uv * 1.9       + o2) * 0.35;
+	float hx  = gnoise(uv+vec2(e,0)+o1)*0.65 + gnoise((uv+vec2(e,0))*1.9+o2)*0.35;
+	float hz  = gnoise(uv+vec2(0,e)+o1)*0.65 + gnoise((uv+vec2(0,e))*1.9+o2)*0.35;
+	return normalize(vec3(-(hx - h) / e * 0.18, 1.0, -(hz - h) / e * 0.18));
+}
+
+void vertex() {
+	world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+}
+
+void fragment() {
+	vec2 uv      = world_pos.xz / 7.0;   // wave tile ~7 m
+	vec3 wave_nrm = wave_normal(uv);      // world-space
+
+	// Wave height for colour modulation (-1..1)
+	float wave_h = gnoise(uv + vec2(TIME * 0.11, TIME * 0.07));
+
+	// Deep blue-grey ↔ lighter teal at crests
+	vec3 deep    = vec3(0.04, 0.16, 0.34);
+	vec3 shallow = vec3(0.10, 0.34, 0.58);
+	vec3 col     = mix(deep, shallow, wave_h * 0.5 + 0.5);
+
+	// Convert world-space normal → view-space for Godot lighting
+	NORMAL    = normalize((VIEW_MATRIX * vec4(wave_nrm, 0.0)).xyz);
+	ALBEDO    = col;
+	ROUGHNESS = 0.04;   // very smooth — strong specular glint
+	METALLIC  = 0.08;
+	SPECULAR  = 1.0;    // PBR Fresnel gives edge reflectivity automatically
+}
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -477,25 +719,27 @@ func _build_buildings(buildings: Array) -> void:
 
 	var wall_verts   := PackedVector3Array()
 	var wall_normals := PackedVector3Array()
+	var wall_uvs     := PackedVector2Array()
 	var roof_verts   := PackedVector3Array()
 	var roof_normals := PackedVector3Array()
 
 	for bld in buildings:
 		var pts:  Array = bld["points"]
 		var h:    float = float(bld["height"])
-		var base: float = float(bld.get("base", 0.0))   # terrain height at centroid
+		var base: float = float(bld.get("base", 0.0))
 		var top:  float = base + h
 		var n:    int   = pts.size()
 		if n < 3:
 			continue
 
-		# Walls – one quad per polygon edge, grounded at terrain height
+		# Walls – UV.x = metres along wall, UV.y = metres above base
 		for i in n:
 			var p1 := Vector2(float(pts[i][0]),           float(pts[i][1]))
 			var p2 := Vector2(float(pts[(i + 1) % n][0]), float(pts[(i + 1) % n][1]))
 			var seg := p2 - p1
 			if seg.length_squared() < 0.01:
 				continue
+			var seg_len := seg.length()
 			var norm := Vector3(-seg.y, 0.0, seg.x).normalized()
 			var a := Vector3(p1.x, base, p1.y)
 			var b := Vector3(p2.x, base, p2.y)
@@ -504,8 +748,16 @@ func _build_buildings(buildings: Array) -> void:
 			wall_verts.append_array(PackedVector3Array([a, b, c, a, c, d]))
 			for _j in range(6):
 				wall_normals.append(norm)
+			wall_uvs.append_array(PackedVector2Array([
+				Vector2(0.0,     0.0),
+				Vector2(seg_len, 0.0),
+				Vector2(seg_len, h),
+				Vector2(0.0,     0.0),
+				Vector2(seg_len, h),
+				Vector2(0.0,     h),
+			]))
 
-		# Flat roof at terrain_base + building_height
+		# Flat roof
 		var polygon := PackedVector2Array()
 		for pt in pts:
 			polygon.append(Vector2(float(pt[0]), float(pt[1])))
@@ -517,8 +769,19 @@ func _build_buildings(buildings: Array) -> void:
 			for _j in range(3):
 				roof_normals.append(Vector3.UP)
 
-	_add_batch_mesh(wall_verts, wall_normals, Color(0.76, 0.70, 0.62), 0.82, "BuildingWalls")
-	_add_batch_mesh(roof_verts, roof_normals, Color(0.48, 0.46, 0.44), 0.88, "BuildingRoofs")
+	# Walls: facade shader with window grid
+	if not wall_verts.is_empty():
+		var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
+		arrays[Mesh.ARRAY_VERTEX] = wall_verts
+		arrays[Mesh.ARRAY_NORMAL] = wall_normals
+		arrays[Mesh.ARRAY_TEX_UV] = wall_uvs
+		var mesh := ArrayMesh.new()
+		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+		mesh.surface_set_material(0, _make_facade_material())
+		var mi := MeshInstance3D.new(); mi.mesh = mesh; mi.name = "BuildingWalls"
+		add_child(mi)
+
+	_add_batch_mesh(roof_verts, roof_normals, Color(0.38, 0.36, 0.34), 0.92, "BuildingRoofs")
 
 
 func _add_batch_mesh(verts: PackedVector3Array, normals: PackedVector3Array,
@@ -540,6 +803,101 @@ func _add_batch_mesh(verts: PackedVector3Array, normals: PackedVector3Array,
 	mi.mesh = mesh
 	mi.name = node_name
 	add_child(mi)
+
+
+# ---------------------------------------------------------------------------
+# Building facade material + shader
+# ---------------------------------------------------------------------------
+func _make_facade_material() -> ShaderMaterial:
+	var sh   := Shader.new()
+	sh.code   = _facade_shader_code()
+	var mat  := ShaderMaterial.new()
+	mat.shader = sh
+	return mat
+
+
+func _facade_shader_code() -> String:
+	return """shader_type spatial;
+render_mode cull_disabled;
+
+// Window grid dimensions (metres)
+const float WIN_W  = 1.5;   // window width
+const float WIN_H  = 2.0;   // window height
+const float GAP_X  = 0.6;   // horizontal gap between windows
+const float GAP_Y  = 0.8;   // floor-to-floor gap (sill + lintel)
+const float GROUND = 3.5;   // metres of solid base before first windows
+
+varying vec3 world_pos;
+
+float hash2(vec2 p) {
+	p = fract(p * vec2(127.1, 311.7));
+	p += dot(p, p + 43.21);
+	return fract(p.x * p.y);
+}
+
+void vertex() {
+	world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+}
+
+void fragment() {
+	float cell_w = WIN_W + GAP_X;
+	float cell_h = WIN_H + GAP_Y;
+
+	// Local position within a window cell
+	float lx = fract(UV.x / cell_w);
+	float ly = fract((UV.y - GROUND) / cell_h);
+
+	bool in_win = (lx < WIN_W / cell_w) && (ly < WIN_H / cell_h) && (UV.y > GROUND);
+
+	// Building identity from snapped world position
+	vec2 bld = floor(world_pos.xz * 0.03);
+	// Style: 0 = limestone pre-war, 1 = glass tower
+	float style = step(0.5, hash2(bld * 1.7));
+
+	// Per-window light/glass variation
+	vec2 cell = vec2(floor(UV.x / cell_w), floor((UV.y - GROUND) / cell_h));
+	float wrand = hash2(bld * 0.5 + cell * 0.13);
+
+	vec3 col;
+	float rough;
+	float metal = 0.0;
+
+	if (in_win) {
+		if (style < 0.5) {
+			// Limestone: dark recess windows, slight warm tint
+			vec3 dark_glass = vec3(0.10, 0.13, 0.16);
+			vec3 refl_glass = vec3(0.35, 0.48, 0.58);
+			col   = mix(dark_glass, refl_glass, wrand * 0.5);
+			rough = 0.08;
+			metal = 0.15;
+		} else {
+			// Glass tower: reflective blue-grey curtain wall
+			vec3 g1 = vec3(0.28, 0.38, 0.52);
+			vec3 g2 = vec3(0.48, 0.58, 0.70);
+			col   = mix(g1, g2, wrand);
+			rough = 0.04;
+			metal = 0.35;
+		}
+	} else {
+		// Wall surface
+		float var_ = hash2(world_pos.xz * 0.15) * 0.10;
+		if (style < 0.5) {
+			// Warm limestone / granite
+			col   = vec3(0.78, 0.72, 0.62) * (0.90 + var_);
+			rough = 0.88;
+		} else {
+			// Cool aluminium spandrel panel
+			col   = vec3(0.55, 0.58, 0.62) * (0.90 + var_);
+			rough = 0.45;
+			metal = 0.30;
+		}
+	}
+
+	ALBEDO    = clamp(col, 0.0, 1.0);
+	ROUGHNESS = rough;
+	METALLIC  = metal;
+}
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -566,6 +924,7 @@ func _build_trees(trees: Array) -> void:
 	var bark_alb  := _load_tex("res://textures/Bark007_1K-JPG_Color.jpg")
 	var bark_nrm  := _load_tex("res://textures/Bark007_1K-JPG_NormalGL.jpg")
 	var bark_rgh  := _load_tex("res://textures/Bark007_1K-JPG_Roughness.jpg")
+	var bark_ao   := _load_tex("res://textures/Bark007_1K-JPG_AmbientOcclusion.jpg")
 
 	# Shared canopy planes mesh (3 crossed vertical quads)
 	var planes_mesh := _make_canopy_planes_mesh()
@@ -589,6 +948,7 @@ func _build_trees(trees: Array) -> void:
 		trunk_mat.set_shader_parameter("bark_albedo", bark_alb)
 		trunk_mat.set_shader_parameter("bark_normal",  bark_nrm)
 		trunk_mat.set_shader_parameter("bark_rough",   bark_rgh)
+		trunk_mat.set_shader_parameter("bark_ao",      bark_ao)
 
 	# Collect transforms per group
 	var broad_xf: Array = []
@@ -634,6 +994,27 @@ func _build_trees(trees: Array) -> void:
 	_spawn_multimesh(planes_mesh, broad_mat, broad_xf, "TreeCanopies_Broad")
 	_spawn_multimesh(planes_mesh, conif_mat, conif_xf, "TreeCanopies_Conifer")
 	_spawn_multimesh(trunk_mesh,  trunk_mat, trunk_xf, "TreeTrunks")
+	_build_tree_collision(trunk_xf)
+
+
+func _build_tree_collision(trunk_xf: Array) -> void:
+	if trunk_xf.is_empty():
+		return
+	# One StaticBody3D with a CylinderShape3D per trunk.
+	# trunk_xf basis encodes: x.x = trunk_r, y.y = trunk_h (see _build_trees).
+	var body := StaticBody3D.new()
+	body.name = "TreeTrunkCollision"
+	for tf: Transform3D in trunk_xf:
+		var r: float = tf.basis.x.x   # trunk_r
+		var h: float = tf.basis.y.y   # trunk_h
+		var shape        := CylinderShape3D.new()
+		shape.radius      = r
+		shape.height      = h
+		var col          := CollisionShape3D.new()
+		col.shape         = shape
+		col.position      = tf.origin  # already at trunk centre (base + h/2)
+		body.add_child(col)
+	add_child(body)
 
 
 func _make_canopy_planes_mesh() -> ArrayMesh:
@@ -693,10 +1074,10 @@ func _spawn_multimesh(mesh: Mesh, mat: Material,
 	mm.instance_count   = transforms.size()
 	for i in transforms.size():
 		mm.set_instance_transform(i, transforms[i])
-	var mmi       := MultiMeshInstance3D.new()
-	mmi.multimesh  = mm
-	mmi.name       = node_name
-	mmi.set_surface_override_material(0, mat)
+	var mmi              := MultiMeshInstance3D.new()
+	mmi.multimesh         = mm
+	mmi.name              = node_name
+	mmi.material_override = mat
 	add_child(mmi)
 
 
@@ -752,6 +1133,7 @@ func _trunk_shader_code() -> String:
 uniform sampler2D bark_albedo : source_color,      filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D bark_normal : hint_normal,        filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D bark_rough  : hint_default_white, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D bark_ao     : hint_default_white, filter_linear_mipmap_anisotropic, repeat_enable;
 
 varying vec3 world_pos;
 
@@ -766,14 +1148,22 @@ void vertex() {
 }
 
 void fragment() {
-	vec2 uv    = vec2(UV.x * 2.0, UV.y * 4.0);
-	vec3 alb   = texture(bark_albedo, uv).rgb;
-	float rgh  = texture(bark_rough,  uv).r;
+	vec2 uv   = vec2(UV.x * 2.0, UV.y * 4.0);
+	vec3 alb  = texture(bark_albedo, uv).rgb;
+	float rgh = texture(bark_rough,  uv).r;
+	float ao  = texture(bark_ao,     uv).r;
 
+	// Per-tree hue variation (dark brown ↔ grey-brown)
 	float h = hash21(floor(world_pos.xz * 0.04));
-	ALBEDO     = alb * (0.55 + h * 0.30);
+	// Base brightness 0.30–0.48 (was 0.55–0.85) — much darker
+	vec3 col = alb * ao * (0.30 + h * 0.18);
+	// Warm brown push: boost red slightly, pull blue down
+	col.r *= 1.08;
+	col.b *= 0.82;
+
+	ALBEDO     = clamp(col, 0.0, 1.0);
 	NORMAL_MAP = texture(bark_normal, uv).rgb;
-	ROUGHNESS  = clamp(rgh * 0.85 + 0.12, 0.0, 1.0);
+	ROUGHNESS  = clamp(rgh * 0.90 + 0.08, 0.0, 1.0);
 	METALLIC   = 0.0;
 }
 """
