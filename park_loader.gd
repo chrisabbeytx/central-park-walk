@@ -1630,10 +1630,10 @@ func _build_tunnel(path: Dictionary) -> void:
 	var u_c := 0.0
 	var u_w := 0.0
 
-	# Floor is lowered by TUNNEL_H so the ceiling ends up below terrain level.
-	# Ceiling sits 1.0m below terrain so walls don't block surface movement
-	# and ceiling doesn't poke through the coarse (256×256) terrain mesh.
-	var ceil_drop := 1.0
+	# Floor is lowered by TUNNEL_H so the ceiling ends up at terrain level.
+	# Visual geometry uses full height; collision is built separately with
+	# wall tops trimmed 0.5m below terrain to avoid blocking surface walkers.
+	var ceil_drop := 0.0
 	for i in range(pts.size() - 1):
 		var fy1 := float(pts[i][1])   + PATH_Y - TUNNEL_H
 		var fy2 := float(pts[i+1][1]) + PATH_Y - TUNNEL_H
@@ -1705,12 +1705,52 @@ func _build_tunnel(path: Dictionary) -> void:
 		var mi := MeshInstance3D.new(); mi.mesh = mesh; mi.name = "Tunnel_Walls"
 		add_child(mi)
 
-	# Tunnel collision — combine ceiling + wall triangles into one concave shape
+	# Tunnel collision — ceiling + floor as-is, walls trimmed 0.5m below
+	# terrain so they don't block players walking on the surface above.
+	var col_wall_trim := 0.5
 	var tun_col_faces := PackedVector3Array()
+	# Floor collision (so player can walk on the tunnel floor)
+	for i in range(pts.size() - 1):
+		var cffy1 := float(pts[i][1])   + PATH_Y - TUNNEL_H
+		var cffy2 := float(pts[i+1][1]) + PATH_Y - TUNNEL_H
+		var cfp1  := Vector3(float(pts[i][0]),   cffy1, float(pts[i][2]))
+		var cfp2  := Vector3(float(pts[i+1][0]), cffy2, float(pts[i+1][2]))
+		var cfseg := Vector2(cfp2.x - cfp1.x, cfp2.z - cfp1.z)
+		if cfseg.length_squared() < 0.0001:
+			continue
+		var cfdv  := cfseg.normalized()
+		var cfnv  := Vector2(-cfdv.y, cfdv.x)
+		var cfa := Vector3(cfp1.x + cfnv.x * hw2, cffy1, cfp1.z + cfnv.y * hw2)
+		var cfb := Vector3(cfp1.x - cfnv.x * hw2, cffy1, cfp1.z - cfnv.y * hw2)
+		var cfc := Vector3(cfp2.x + cfnv.x * hw2, cffy2, cfp2.z + cfnv.y * hw2)
+		var cfd := Vector3(cfp2.x - cfnv.x * hw2, cffy2, cfp2.z - cfnv.y * hw2)
+		tun_col_faces.append_array(PackedVector3Array([cfa, cfb, cfc, cfb, cfd, cfc]))
 	if not ceil_verts.is_empty():
 		tun_col_faces.append_array(ceil_verts)
-	if not wall_verts.is_empty():
-		tun_col_faces.append_array(wall_verts)
+	# Build trimmed wall collision (same geometry but tops lowered)
+	for i in range(pts.size() - 1):
+		var cfy1 := float(pts[i][1])   + PATH_Y - TUNNEL_H
+		var cfy2 := float(pts[i+1][1]) + PATH_Y - TUNNEL_H
+		var cp1  := Vector3(float(pts[i][0]),   cfy1, float(pts[i][2]))
+		var cp2  := Vector3(float(pts[i+1][0]), cfy2, float(pts[i+1][2]))
+		var cseg := Vector2(cp2.x - cp1.x, cp2.z - cp1.z)
+		if cseg.length_squared() < 0.0001:
+			continue
+		var clen := cseg.length()
+		var cdv  := cseg / clen
+		var cnv  := Vector2(-cdv.y, cdv.x)
+		# Wall tops trimmed below terrain
+		var ccy1 := cp1.y + TUNNEL_H - col_wall_trim
+		var ccy2 := cp2.y + TUNNEL_H - col_wall_trim
+		for side in [-1.0, 1.0]:
+			var s: float = float(side)
+			var cox := cnv.x * hw2 * s
+			var coz := cnv.y * hw2 * s
+			var cwa := Vector3(cp1.x + cox, cp1.y, cp1.z + coz)
+			var cwb := Vector3(cp2.x + cox, cp2.y, cp2.z + coz)
+			var cwc := Vector3(cp2.x + cox, ccy2,  cp2.z + coz)
+			var cwd := Vector3(cp1.x + cox, ccy1,  cp1.z + coz)
+			tun_col_faces.append_array(PackedVector3Array([cwa, cwb, cwc, cwa, cwc, cwd]))
 	if not tun_col_faces.is_empty():
 		var tun_body := StaticBody3D.new()
 		tun_body.name = "Tunnel_Collision"
