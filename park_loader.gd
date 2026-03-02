@@ -220,7 +220,7 @@ render_mode cull_disabled;
 uniform sampler2D tex_alb : source_color,      filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D tex_nrm : hint_normal,        filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D tex_rgh : hint_default_white, filter_linear_mipmap_anisotropic, repeat_enable;
-uniform sampler2D heightmap_tex : filter_linear, repeat_disable;
+uniform sampler2D heightmap_tex : filter_nearest, repeat_disable;
 uniform vec4 tint : source_color = vec4(1.0);
 uniform float hm_world_size = 5000.0;
 uniform float hm_min_h      = 0.0;
@@ -2493,7 +2493,7 @@ func _water_shader_code() -> String:
 	return """shader_type spatial;
 render_mode cull_disabled;
 
-uniform sampler2D heightmap_tex : filter_linear, repeat_disable;
+uniform sampler2D heightmap_tex : filter_nearest, repeat_disable;
 uniform float hm_world_size = 5000.0;
 uniform float hm_min_h      = 0.0;
 uniform float hm_range      = 1.0;
