@@ -35,6 +35,10 @@ const BUILDING_GRID_CELL := 4.0
 var _path_grid: Dictionary = {}
 const PATH_GRID_CELL := 3.0
 
+# Spatial hash of water zones — keep flowers away from lakes
+var _water_grid: Dictionary = {}
+const WATER_GRID_CELL := 4.0
+
 
 # Slope threshold for furniture placement
 const BENCH_MAX_SLOPE := 0.27  # tan(~15°) — skip benches on steeper terrain
@@ -367,6 +371,61 @@ func _terrain_slope(x: float, z: float) -> float:
 
 
 # ---------------------------------------------------------------------------
+# CPU-side value noise / FBM — matches shader hash2/vnoise/fbm exactly
+# ---------------------------------------------------------------------------
+func _hash2(p: Vector2) -> float:
+	var q := Vector2(fmod(abs(p.x * 127.1), 1.0), fmod(abs(p.y * 311.7), 1.0))
+	# replicate fract(p * vec2(127.1, 311.7))
+	q = Vector2(p.x * 127.1 - floor(p.x * 127.1), p.y * 311.7 - floor(p.y * 311.7))
+	var d := q.x * (q.x + 43.21) + q.y * (q.y + 43.21) + q.x * q.y
+	q += Vector2(d, d)  # p += dot(p, p + 43.21)
+	var v := q.x * q.y
+	return v - floor(v)
+
+
+func _vnoise(p: Vector2) -> float:
+	var i := Vector2(floor(p.x), floor(p.y))
+	var f := Vector2(p.x - floor(p.x), p.y - floor(p.y))
+	var u := Vector2(f.x * f.x * (3.0 - 2.0 * f.x), f.y * f.y * (3.0 - 2.0 * f.y))
+	var h00 := _hash2(i)
+	var h10 := _hash2(Vector2(i.x + 1.0, i.y))
+	var h01 := _hash2(Vector2(i.x, i.y + 1.0))
+	var h11 := _hash2(Vector2(i.x + 1.0, i.y + 1.0))
+	return lerp(lerp(h00, h10, u.x), lerp(h01, h11, u.x), u.y)
+
+
+func _fbm(p: Vector2, octaves: int) -> float:
+	var v := 0.0
+	var a := 0.5
+	var q := p
+	for _i in octaves:
+		v += a * _vnoise(q)
+		q *= 2.13
+		a *= 0.47
+	return v
+
+
+func _is_excluded(x: float, z: float) -> bool:
+	## Unified exclusion check: paths, bridges, buildings, benches, water.
+	var pk := Vector2i(int(floor(x / PATH_GRID_CELL)), int(floor(z / PATH_GRID_CELL)))
+	if _path_grid.has(pk):
+		return true
+	var bk := Vector2i(int(floor(x / BRIDGE_GRID_CELL)), int(floor(z / BRIDGE_GRID_CELL)))
+	if _bridge_grid.has(bk):
+		return true
+	var blk := Vector2i(int(floor(x / BUILDING_GRID_CELL)), int(floor(z / BUILDING_GRID_CELL)))
+	if _building_grid.has(blk):
+		return true
+	var bnk := Vector2i(int(floor(x / BENCH_GRID_CELL)), int(floor(z / BENCH_GRID_CELL)))
+	if _bench_grid.has(bnk):
+		return true
+	var wk := Vector2i(int(floor(x / WATER_GRID_CELL)), int(floor(z / WATER_GRID_CELL)))
+	if _water_grid.has(wk):
+		return true
+	return false
+
+
+# ---------------------------------------------------------------------------
 func _ready() -> void:
 	if not FileAccess.file_exists(DATA_PATH):
 		push_warning("ParkLoader: park_data.json not found – run convert_to_godot.py first")
@@ -389,6 +448,7 @@ func _ready() -> void:
 	_build_buildings(data.get("buildings", []))
 	_build_paths(data.get("paths", []))
 	_build_water(data.get("water", []))
+	_populate_water_grid(data.get("water", []))
 	_build_shore_vegetation(data.get("water", []))
 	_build_labels(data.get("water", []))
 	_build_trees(data.get("trees", []))
@@ -399,6 +459,10 @@ func _ready() -> void:
 	_build_staircases(data.get("paths", []))
 	_build_statues(data.get("statues", []))
 	_build_tree_dirt(data.get("trees", []))
+	_build_blossoms(data.get("trees", []))
+	_build_wildflowers(data.get("trees", []), data.get("water", []))
+	_build_meadow_grass(data.get("trees", []))
+	_build_ground_cover(data.get("trees", []), data.get("water", []), data.get("buildings", []))
 	_build_boundary(data.get("boundary", []))
 	print("ParkLoader: done")
 
@@ -5120,3 +5184,708 @@ func _build_tree_dirt(trees: Array) -> void:
 
 	print("ParkLoader: tree dirt circles = ", xforms.size())
 	_spawn_multimesh(dirt_mesh, dirt_mat, xforms, "TreeDirt")
+
+
+# ---------------------------------------------------------------------------
+# Water grid population — marks cells near water bodies for exclusion
+# ---------------------------------------------------------------------------
+func _populate_water_grid(water: Array) -> void:
+	for body in water:
+		var pts: Array = body["points"]
+		if pts.size() < 3:
+			continue
+		for pi in pts.size():
+			var sx := float(pts[pi][0])
+			var sz := float(pts[pi][1])
+			# Mark a radius of ~12m around each shore point
+			for dx in range(-3, 4):
+				for dz in range(-3, 4):
+					var key := Vector2i(
+						int(floor(sx / WATER_GRID_CELL)) + dx,
+						int(floor(sz / WATER_GRID_CELL)) + dz)
+					_water_grid[key] = true
+
+
+# ---------------------------------------------------------------------------
+# Wildflower system — impressionist floral patches
+# ---------------------------------------------------------------------------
+func _flower_shader_code() -> String:
+	return """shader_type spatial;
+render_mode cull_disabled, depth_prepass_alpha;
+
+uniform sampler2D petal_opacity : hint_default_white, filter_linear_mipmap_anisotropic;
+uniform vec3 flower_tint : source_color = vec3(0.95, 0.92, 0.75);
+
+varying vec3 origin;
+
+void vertex() {
+	origin = (MODEL_MATRIX * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+	float sway = max(VERTEX.y, 0.0);
+	VERTEX.x += sin(TIME * 1.2 + origin.x * 0.08 + origin.z * 0.1) * 0.04 * sway;
+	VERTEX.z += sin(TIME * 1.6 + origin.z * 0.09) * 0.03 * sway;
+}
+
+void fragment() {
+	float opac = texture(petal_opacity, UV).r;
+	float alpha = smoothstep(0.02, 0.15, opac);
+	if (alpha < 0.01) discard;
+	ALPHA = alpha;
+	ALBEDO = flower_tint;
+	ROUGHNESS = 0.85;
+	SPECULAR = 0.0;
+	METALLIC = 0.0;
+}
+"""
+
+
+func _make_flower_billboard_mesh() -> ArrayMesh:
+	## 3 crossed quads at 60-degree intervals (6 tris total)
+	var verts   := PackedVector3Array()
+	var normals := PackedVector3Array()
+	var uvs     := PackedVector2Array()
+	var indices := PackedInt32Array()
+
+	for i in 3:
+		var angle := float(i) * PI / 3.0
+		var ca := cos(angle)
+		var sa := sin(angle)
+		var right := Vector3(ca * 0.5, 0.0, sa * 0.5)
+		var up    := Vector3(0.0, 0.5, 0.0)
+		var n     := Vector3(-sa, 0.0, ca)
+		var base  := verts.size()
+		verts.append_array(PackedVector3Array([
+			-right,          right,
+			right + up * 2.0, -right + up * 2.0]))
+		uvs.append_array(PackedVector2Array([
+			Vector2(0.0, 1.0), Vector2(1.0, 1.0),
+			Vector2(1.0, 0.0), Vector2(0.0, 0.0)]))
+		for _j in 4:
+			normals.append(n)
+		indices.append_array(PackedInt32Array([
+			base, base + 1, base + 2, base, base + 2, base + 3]))
+
+	var arrays: Array = []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts
+	arrays[Mesh.ARRAY_NORMAL] = normals
+	arrays[Mesh.ARRAY_TEX_UV] = uvs
+	arrays[Mesh.ARRAY_INDEX]  = indices
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	return mesh
+
+
+func _build_wildflowers(trees: Array, water: Array) -> void:
+	if trees.is_empty():
+		return
+
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 112233
+
+	var opac_tex := _load_tex("res://textures/LeafSet005_2K-JPG_Opacity.jpg")
+	var flower_mesh := _make_flower_billboard_mesh()
+
+	# 5 species: daisy, buttercup, clover, poppy, cornflower
+	var species_tints: Array = [
+		Color(0.95, 0.92, 0.75),  # daisy — cream-white
+		Color(0.95, 0.85, 0.15),  # buttercup — bright yellow
+		Color(0.72, 0.35, 0.65),  # clover — purple-pink
+		Color(0.92, 0.18, 0.12),  # poppy — vivid red
+		Color(0.25, 0.40, 0.85),  # cornflower — blue
+	]
+	var species_weights := [0.30, 0.25, 0.20, 0.10, 0.15]  # abundance
+	var species_h_min := [0.8, 0.7, 0.6, 1.0, 1.0]
+	var species_h_max := [1.8, 1.5, 1.2, 2.2, 2.2]
+
+	# Build materials per species
+	var species_mats: Array = []
+	for si in 5:
+		var mat := ShaderMaterial.new()
+		mat.shader = _get_shader("flower", _flower_shader_code())
+		if opac_tex:
+			mat.set_shader_parameter("petal_opacity", opac_tex)
+		var c: Color = species_tints[si]
+		mat.set_shader_parameter("flower_tint", Vector3(c.r, c.g, c.b))
+		species_mats.append(mat)
+
+	# Collect transforms per species
+	var species_xf: Array = [[], [], [], [], []]
+
+	# Build a quick tree-position lookup for proximity bias
+	var tree_positions: PackedVector2Array = PackedVector2Array()
+	for pt in trees:
+		tree_positions.append(Vector2(float(pt[0]), float(pt[2])))
+
+	# Build a spatial hash of tree positions for fast proximity lookup
+	const TREE_HASH_CELL := 30.0
+	var tree_hash: Dictionary = {}
+	for tp in tree_positions:
+		var tk := Vector2i(int(floor(tp.x / TREE_HASH_CELL)), int(floor(tp.y / TREE_HASH_CELL)))
+		if not tree_hash.has(tk):
+			tree_hash[tk] = []
+		tree_hash[tk].append(tp)
+
+	# Grid scan — only within actual park footprint (near trees)
+	var half := _hm_world_size * 0.5
+	var scan_step := 20.0
+	var x := -half + 50.0
+	while x < half - 50.0:
+		var z := -half + 50.0
+		while z < half - 50.0:
+			# FBM noise gate — creates natural patches
+			var noise_val := _fbm(Vector2(x, z) * 0.007, 3)
+			if noise_val < 0.48:
+				z += scan_step
+				continue
+
+			if _is_excluded(x, z):
+				z += scan_step
+				continue
+
+			# Check tree proximity via spatial hash — REQUIRE a tree within 40m
+			var min_dist := 999.0
+			var ck := Vector2i(int(floor(x / TREE_HASH_CELL)), int(floor(z / TREE_HASH_CELL)))
+			for di in range(-2, 3):
+				for dj in range(-2, 3):
+					var nk := Vector2i(ck.x + di, ck.y + dj)
+					if tree_hash.has(nk):
+						for tp: Vector2 in tree_hash[nk]:
+							var d := Vector2(x, z).distance_to(tp)
+							if d < min_dist:
+								min_dist = d
+			# Must be within 40m of a tree (park footprint) but not under canopy
+			if min_dist > 40.0 or min_dist < 5.0:
+				z += scan_step
+				continue
+
+			# Denser clusters near trees
+			var cluster_size := rng.randi_range(4, 8)
+			if min_dist < 15.0:
+				cluster_size = rng.randi_range(6, 12)
+
+			# Choose dominant species for this cluster
+			var dom_roll := rng.randf()
+			var dom_species := 0
+			var cum_w := 0.0
+			for si in 5:
+				cum_w += float(species_weights[si])
+				if dom_roll < cum_w:
+					dom_species = si
+					break
+
+			var cluster_r := rng.randf_range(2.0, 6.0)
+			for _ci in cluster_size:
+				var fx := x + rng.randf_range(-cluster_r, cluster_r)
+				var fz := z + rng.randf_range(-cluster_r, cluster_r)
+
+				if _is_excluded(fx, fz):
+					continue
+
+				var fy := _terrain_y(fx, fz) + 0.02
+
+				# 70% dominant, 30% random
+				var sp := dom_species
+				if rng.randf() > 0.70:
+					sp = rng.randi_range(0, 4)
+
+				var h := rng.randf_range(float(species_h_min[sp]), float(species_h_max[sp]))
+				var w := h * rng.randf_range(0.5, 0.8)
+				var rot := rng.randf() * TAU
+				var basis := Basis(
+					Vector3(cos(rot) * w, 0.0, sin(rot) * w),
+					Vector3(0.0, h, 0.0),
+					Vector3(-sin(rot) * w, 0.0, cos(rot) * w))
+				species_xf[sp].append(Transform3D(basis, Vector3(fx, fy, fz)))
+
+			z += scan_step
+		x += scan_step
+
+	var total := 0
+	for si in 5:
+		total += species_xf[si].size()
+		if not species_xf[si].is_empty():
+			var names := ["Daisy", "Buttercup", "Clover", "Poppy", "Cornflower"]
+			_spawn_multimesh(flower_mesh, species_mats[si], species_xf[si],
+				"Wildflowers_%s" % names[si])
+	print("ParkLoader: wildflowers = ", total)
+
+
+# ---------------------------------------------------------------------------
+# Meadow grass — tall grass clumps in meadow regions
+# ---------------------------------------------------------------------------
+func _make_meadow_grass_mesh() -> ArrayMesh:
+	## 4 crossed tapered quads at 45-degree intervals, unit height
+	var verts   := PackedVector3Array()
+	var normals := PackedVector3Array()
+	var uvs     := PackedVector2Array()
+	var indices := PackedInt32Array()
+
+	for i in 4:
+		var angle := float(i) * PI / 4.0
+		var ca := cos(angle)
+		var sa := sin(angle)
+		# Wide at base, narrow at tip
+		var base_hw := 0.5   # half-width at bottom
+		var tip_hw  := 0.15  # half-width at top
+		var bl := Vector3(-ca * base_hw, 0.0, -sa * base_hw)
+		var br := Vector3( ca * base_hw, 0.0,  sa * base_hw)
+		var tl := Vector3(-ca * tip_hw,  1.0, -sa * tip_hw)
+		var tr := Vector3( ca * tip_hw,  1.0,  sa * tip_hw)
+		var n  := Vector3(-sa, 0.0, ca)
+		var base := verts.size()
+		verts.append_array(PackedVector3Array([bl, br, tr, tl]))
+		uvs.append_array(PackedVector2Array([
+			Vector2(0.0, 1.0), Vector2(1.0, 1.0),
+			Vector2(1.0, 0.0), Vector2(0.0, 0.0)]))
+		for _j in 4:
+			normals.append(n)
+		indices.append_array(PackedInt32Array([
+			base, base + 1, base + 2, base, base + 2, base + 3]))
+
+	var arrays: Array = []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts
+	arrays[Mesh.ARRAY_NORMAL] = normals
+	arrays[Mesh.ARRAY_TEX_UV] = uvs
+	arrays[Mesh.ARRAY_INDEX]  = indices
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	return mesh
+
+
+func _build_meadow_grass(trees: Array) -> void:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 445566
+
+	var opac_tex := _load_tex("res://textures/LeafSet019_2K-JPG_Opacity.jpg")
+	var grass_mesh := _make_meadow_grass_mesh()
+
+	# Two tint variants: green and golden
+	var tints := [
+		Vector3(0.32, 0.50, 0.14),  # meadow green
+		Vector3(0.52, 0.50, 0.18),  # sun-bleached golden
+	]
+	var grass_mats: Array = []
+	for ti in 2:
+		var mat := ShaderMaterial.new()
+		mat.shader = _get_shader("flower", _flower_shader_code())
+		if opac_tex:
+			mat.set_shader_parameter("petal_opacity", opac_tex)
+		mat.set_shader_parameter("flower_tint", tints[ti])
+		grass_mats.append(mat)
+
+	var xf: Array = [[], []]  # green, golden
+
+	# Spatial hash for tree proximity
+	const MG_TREE_CELL := 30.0
+	var mg_tree_hash: Dictionary = {}
+	for pt in trees:
+		var tp := Vector2(float(pt[0]), float(pt[2]))
+		var tk := Vector2i(int(floor(tp.x / MG_TREE_CELL)), int(floor(tp.y / MG_TREE_CELL)))
+		if not mg_tree_hash.has(tk):
+			mg_tree_hash[tk] = []
+		mg_tree_hash[tk].append(tp)
+
+	var half := _hm_world_size * 0.5
+	var scan_step := 18.0
+	var x := -half + 50.0
+	while x < half - 50.0:
+		var z := -half + 50.0
+		while z < half - 50.0:
+			# Replicate terrain shader meadow noise exactly
+			var meadow_noise := _fbm(Vector2(x, z) * 0.003, 3) * 0.6 \
+							  + _fbm(Vector2(x, z) * 0.018, 2) * 0.4
+			if meadow_noise < 0.50:
+				z += scan_step
+				continue
+
+			if _is_excluded(x, z):
+				z += scan_step
+				continue
+
+			# Must be within 50m of a tree (actual park area)
+			var mg_min := 999.0
+			var mgk := Vector2i(int(floor(x / MG_TREE_CELL)), int(floor(z / MG_TREE_CELL)))
+			for di in range(-2, 3):
+				for dj in range(-2, 3):
+					var nk := Vector2i(mgk.x + di, mgk.y + dj)
+					if mg_tree_hash.has(nk):
+						for tp: Vector2 in mg_tree_hash[nk]:
+							var d := Vector2(x, z).distance_to(tp)
+							if d < mg_min:
+								mg_min = d
+			if mg_min > 50.0:
+				z += scan_step
+				continue
+
+			var cluster_size := rng.randi_range(2, 5)
+			var cluster_r := rng.randf_range(2.0, 5.0)
+
+			for _ci in cluster_size:
+				var gx := x + rng.randf_range(-cluster_r, cluster_r)
+				var gz := z + rng.randf_range(-cluster_r, cluster_r)
+
+				if _is_excluded(gx, gz):
+					continue
+
+				var gy := _terrain_y(gx, gz) + 0.01
+				var h := rng.randf_range(1.0, 2.0)
+				var w := rng.randf_range(0.6, 1.2)
+				var rot := rng.randf() * TAU
+
+				# 60% green, 40% golden
+				var ti := 0 if rng.randf() < 0.60 else 1
+
+				var basis := Basis(
+					Vector3(cos(rot) * w, 0.0, sin(rot) * w),
+					Vector3(0.0, h, 0.0),
+					Vector3(-sin(rot) * w, 0.0, cos(rot) * w))
+				xf[ti].append(Transform3D(basis, Vector3(gx, gy, gz)))
+
+			z += scan_step
+		x += scan_step
+
+	var total := 0
+	for ti in 2:
+		total += xf[ti].size()
+		if not xf[ti].is_empty():
+			var names := ["Green", "Golden"]
+			_spawn_multimesh(grass_mesh, grass_mats[ti], xf[ti],
+				"MeadowGrass_%s" % names[ti])
+	print("ParkLoader: meadow grass = ", total)
+
+
+# ---------------------------------------------------------------------------
+# Flowering tree blossoms — cherry, magnolia, dogwood, crabapple
+# ---------------------------------------------------------------------------
+func _blossom_shader_code() -> String:
+	return """shader_type spatial;
+render_mode cull_disabled, depth_prepass_alpha;
+
+uniform sampler2D leaf_opacity : hint_default_white, filter_linear_mipmap_anisotropic;
+uniform vec3 blossom_tint : source_color = vec3(0.95, 0.72, 0.80);
+
+varying vec3 tree_origin;
+
+float hash21(vec2 p) {
+	p = fract(p * vec2(127.1, 311.7));
+	p += dot(p, p + 43.21);
+	return fract(p.x * p.y);
+}
+
+void vertex() {
+	tree_origin = (MODEL_MATRIX * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+	float sway = max(VERTEX.y, 0.0);
+	VERTEX.x += sin(TIME * 0.7 + tree_origin.x * 0.04 + tree_origin.z * 0.06) * 0.09 * sway;
+	VERTEX.z += sin(TIME * 1.1 + tree_origin.z * 0.05) * 0.05 * sway;
+	float flutter = sin(TIME * 3.5 + VERTEX.x * 11.0 + VERTEX.z * 7.0) * 0.012;
+	VERTEX.y += flutter * sway;
+}
+
+void fragment() {
+	float opac = texture(leaf_opacity, UV).r;
+	float alpha = smoothstep(0.05, 0.30, opac) * 0.85;
+	if (alpha < 0.01) discard;
+
+	// Per-tree colour variation
+	float h = hash21(floor(tree_origin.xz * 0.025));
+	float bright = 0.85 + h * 0.30;
+	vec3 col = blossom_tint * bright;
+	// Warm petal variation
+	col.r += (h - 0.5) * 0.08;
+	col.g -= (h - 0.5) * 0.04;
+
+	// Soft rim glow for dreamy look
+	float rim = pow(1.0 - max(dot(NORMAL, VIEW), 0.0), 2.0) * 0.15;
+	col += vec3(rim);
+
+	ALPHA = alpha;
+	ALBEDO = clamp(col, 0.0, 1.0);
+	ROUGHNESS = 0.75;
+	SPECULAR = 0.1;
+	METALLIC = 0.0;
+}
+"""
+
+
+func _build_blossoms(trees: Array) -> void:
+	if trees.is_empty():
+		return
+
+	var rng := RandomNumberGenerator.new()
+	var blossom_rng := RandomNumberGenerator.new()
+	blossom_rng.seed = 778899
+
+	var opac_tex := _load_tex("res://textures/LeafSet005_2K-JPG_Opacity.jpg")
+	var broad_mesh := _make_leaf_card_mesh(false)
+
+	# Blossom species: cherry, magnolia, dogwood, crabapple
+	var blossom_tints: Array = [
+		Vector3(0.95, 0.72, 0.80),  # cherry — soft pink
+		Vector3(0.95, 0.90, 0.80),  # magnolia — cream
+		Vector3(0.98, 0.96, 0.92),  # dogwood — white
+		Vector3(0.92, 0.55, 0.62),  # crabapple — deep pink
+	]
+	# Percentage of broadleaf trees: 12%, 6%, 6%, 6% = 30% total
+	var blossom_thresholds := [0.12, 0.18, 0.24, 0.30]
+
+	var blossom_mats: Array = []
+	for bi in 4:
+		var mat := ShaderMaterial.new()
+		mat.shader = _get_shader("blossom", _blossom_shader_code())
+		if opac_tex:
+			mat.set_shader_parameter("leaf_opacity", opac_tex)
+		mat.set_shader_parameter("blossom_tint", blossom_tints[bi])
+		blossom_mats.append(mat)
+
+	# Archetype table (same as _build_trees)
+	var ap_table := [
+		[15.0, 24.0, 0.28, 0.50, 1.55, 0.85],   # 0 oak
+		[12.0, 18.0, 0.20, 0.36, 1.05, 1.05],   # 1 maple
+		[20.0, 28.0, 0.18, 0.30, 0.70, 1.40],   # 2 elm
+		[1.0,   3.5, 0.05, 0.12, 2.10, 0.45],   # 3 shrub
+		[18.0, 32.0, 0.16, 0.26, 0.40, 2.30],   # 4 conifer
+	]
+
+	var blossom_xf: Array = [[], [], [], []]
+
+	for i in trees.size():
+		var pt: Array = trees[i]
+		var tx := float(pt[0]); var tz := float(pt[2])
+		var ty := _terrain_y(tx, tz)
+
+		# Reconstruct identical RNG sequence as _build_trees
+		rng.seed = i * 1234567891 + 987654321
+		var rv := rng.randf()
+		var arch := 0
+		if   rv < 0.35: arch = 0
+		elif rv < 0.65: arch = 1
+		elif rv < 0.85: arch = 2
+		elif rv < 0.97: arch = 3
+		else:           arch = 4
+
+		# Skip conifers and shrubs
+		if arch == 3 or arch == 4:
+			continue
+
+		var ap: Array = ap_table[arch]
+		var trunk_h := rng.randf_range(float(ap[0]), float(ap[1]))
+		var _trunk_r := rng.randf_range(float(ap[2]), float(ap[3]))
+		var sx := float(ap[4])
+		var sy := float(ap[5])
+		var canopy_r := trunk_h * rng.randf_range(0.32, 0.56)
+		var y_rot := rng.randf() * TAU
+
+		# Decide blossom with separate RNG (deterministic per tree)
+		blossom_rng.seed = i * 55667788 + 11223344
+		var broll := blossom_rng.randf()
+		if broll > 0.30:
+			continue  # 70% of broadleaf trees have no blossoms
+
+		# Pick species
+		var species := 0
+		for bi in 4:
+			if broll < float(blossom_thresholds[bi]):
+				species = bi
+				break
+
+		# 8% scale boost over leaf canopy — halo effect
+		var boost := 1.08
+		var rot_basis := Basis(Vector3.UP, y_rot)
+		var cbasis := Basis(
+			Vector3(canopy_r * sx * boost, 0.0, 0.0),
+			Vector3(0.0, canopy_r * sy * boost, 0.0),
+			Vector3(0.0, 0.0, canopy_r * sx * boost))
+		cbasis = rot_basis * cbasis
+		var blossom_tf := Transform3D(cbasis, Vector3(tx, ty + trunk_h, tz))
+		blossom_xf[species].append(blossom_tf)
+
+	var total := 0
+	var names := ["Cherry", "Magnolia", "Dogwood", "Crabapple"]
+	for bi in 4:
+		total += blossom_xf[bi].size()
+		if not blossom_xf[bi].is_empty():
+			_spawn_multimesh(broad_mesh, blossom_mats[bi], blossom_xf[bi],
+				"Blossoms_%s" % names[bi])
+	print("ParkLoader: tree blossoms = ", total)
+
+
+# ---------------------------------------------------------------------------
+# Ground cover — ferns near water/trees + ivy near buildings
+# ---------------------------------------------------------------------------
+func _make_fern_mesh() -> ArrayMesh:
+	## 6 elongated leaf cards radiating from center, angled 30-deg upward
+	var verts   := PackedVector3Array()
+	var normals := PackedVector3Array()
+	var uvs     := PackedVector2Array()
+	var indices := PackedInt32Array()
+
+	for i in 6:
+		var angle := TAU * float(i) / 6.0 + 0.25
+		var ca := cos(angle)
+		var sa := sin(angle)
+		# Each frond: elongated quad pointing outward and tilted up
+		var inner_r := 0.05
+		var outer_r := 0.55
+		var tip_h   := 0.35  # tip lifts upward
+		var hw      := 0.12  # half-width
+		# Perpendicular direction for width
+		var px := -sa
+		var pz := ca
+		var b_l := Vector3(ca * inner_r - px * hw, 0.0, sa * inner_r - pz * hw)
+		var b_r := Vector3(ca * inner_r + px * hw, 0.0, sa * inner_r + pz * hw)
+		var t_l := Vector3(ca * outer_r - px * hw * 0.3, tip_h, sa * outer_r - pz * hw * 0.3)
+		var t_r := Vector3(ca * outer_r + px * hw * 0.3, tip_h, sa * outer_r + pz * hw * 0.3)
+		var n := Vector3(0.0, 1.0, 0.0)  # roughly up-facing
+		var base := verts.size()
+		verts.append_array(PackedVector3Array([b_l, b_r, t_r, t_l]))
+		uvs.append_array(PackedVector2Array([
+			Vector2(0.0, 1.0), Vector2(1.0, 1.0),
+			Vector2(1.0, 0.0), Vector2(0.0, 0.0)]))
+		for _j in 4:
+			normals.append(n)
+		indices.append_array(PackedInt32Array([
+			base, base + 1, base + 2, base, base + 2, base + 3]))
+
+	var arrays: Array = []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts
+	arrays[Mesh.ARRAY_NORMAL] = normals
+	arrays[Mesh.ARRAY_TEX_UV] = uvs
+	arrays[Mesh.ARRAY_INDEX]  = indices
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	return mesh
+
+
+func _build_ground_cover(trees: Array, water: Array, buildings: Array) -> void:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 889900
+
+	var opac_tex := _load_tex("res://textures/LeafSet009_2K-JPG_Opacity.jpg")
+
+	# Fern material — deep forest green
+	var fern_mat := ShaderMaterial.new()
+	fern_mat.shader = _get_shader("flower", _flower_shader_code())
+	if opac_tex:
+		fern_mat.set_shader_parameter("petal_opacity", opac_tex)
+	fern_mat.set_shader_parameter("flower_tint", Vector3(0.18, 0.42, 0.12))
+
+	var fern_mesh := _make_fern_mesh()
+	var fern_xf: Array = []
+
+	# --- Ferns near water (5-15m inland from shore) ---
+	for body in water:
+		var bname: String = str(body.get("name", ""))
+		if bname.to_lower().contains("fountain"):
+			continue
+		var pts: Array = body["points"]
+		if pts.size() < 3:
+			continue
+		var step := maxi(1, pts.size() / 80)
+		for pi in range(0, pts.size(), step):
+			var sx := float(pts[pi][0])
+			var sz := float(pts[pi][1])
+			# Compute inland normal
+			var prev_i := (pi - 1 + pts.size()) % pts.size()
+			var next_i := (pi + 1) % pts.size()
+			var dx := float(pts[next_i][0]) - float(pts[prev_i][0])
+			var dz := float(pts[next_i][1]) - float(pts[prev_i][1])
+			var tlen := sqrt(dx * dx + dz * dz)
+			if tlen < 0.01:
+				continue
+			var nx := -dz / tlen
+			var nz := dx / tlen
+			var n_ferns := rng.randi_range(1, 3)
+			for _fi in n_ferns:
+				var off := rng.randf_range(5.0, 15.0)
+				var fx := sx + nx * off + rng.randf_range(-2.0, 2.0)
+				var fz := sz + nz * off + rng.randf_range(-2.0, 2.0)
+				if _is_excluded(fx, fz):
+					continue
+				var fy := _terrain_y(fx, fz) + 0.02
+				var r := rng.randf_range(0.5, 1.0)
+				var h := rng.randf_range(0.4, 0.8)
+				var rot := rng.randf() * TAU
+				var basis := Basis(
+					Vector3(cos(rot) * r, 0.0, sin(rot) * r),
+					Vector3(0.0, h, 0.0),
+					Vector3(-sin(rot) * r, 0.0, cos(rot) * r))
+				fern_xf.append(Transform3D(basis, Vector3(fx, fy, fz)))
+
+	# --- Ferns near trees (shade) ---
+	for i in trees.size():
+		if i % 5 != 0:
+			continue
+		rng.seed = i * 667788 + 112233
+		if rng.randf() > 0.40:
+			continue
+		var pt: Array = trees[i]
+		var tx := float(pt[0]); var tz := float(pt[2])
+		var n_ferns := rng.randi_range(2, 5)
+		for _fi in n_ferns:
+			var angle := rng.randf() * TAU
+			var dist := rng.randf_range(2.0, 8.0)
+			var fx := tx + cos(angle) * dist
+			var fz := tz + sin(angle) * dist
+			if _is_excluded(fx, fz):
+				continue
+			var fy := _terrain_y(fx, fz) + 0.02
+			var r := rng.randf_range(0.3, 0.7)
+			var h := rng.randf_range(0.25, 0.55)
+			var rot := rng.randf() * TAU
+			var basis := Basis(
+				Vector3(cos(rot) * r, 0.0, sin(rot) * r),
+				Vector3(0.0, h, 0.0),
+				Vector3(-sin(rot) * r, 0.0, cos(rot) * r))
+			fern_xf.append(Transform3D(basis, Vector3(fx, fy, fz)))
+
+	if not fern_xf.is_empty():
+		_spawn_multimesh(fern_mesh, fern_mat, fern_xf, "Ferns")
+
+	# --- Ivy patches near buildings ---
+	var ivy_mesh := _make_dirt_circle_mesh()  # reuse flat disc
+	var ivy_mat := StandardMaterial3D.new()
+	ivy_mat.albedo_color    = Color(0.15, 0.38, 0.10, 0.70)
+	ivy_mat.roughness       = 0.90
+	ivy_mat.transparency    = BaseMaterial3D.TRANSPARENCY_ALPHA
+	ivy_mat.cull_mode       = BaseMaterial3D.CULL_DISABLED
+	ivy_mat.render_priority = -1
+
+	var ivy_xf: Array = []
+	rng.seed = 556677
+	for bld in buildings:
+		var pts: Array = bld["points"]
+		if pts.size() < 3:
+			continue
+		# Place ivy along ~20% of building edges
+		if rng.randf() > 0.35:
+			continue
+		var n_ivy := rng.randi_range(1, 3)
+		for _ii in n_ivy:
+			var pi := rng.randi_range(0, pts.size() - 1)
+			var bx := float(pts[pi][0]) + rng.randf_range(-3.0, 3.0)
+			var bz := float(pts[pi][1]) + rng.randf_range(-3.0, 3.0)
+			# Push slightly away from building
+			var cx := 0.0; var cz := 0.0
+			for p in pts:
+				cx += float(p[0]); cz += float(p[1])
+			cx /= pts.size(); cz /= pts.size()
+			var dx := bx - cx; var dz := bz - cz
+			var dl := sqrt(dx * dx + dz * dz)
+			if dl > 0.1:
+				bx += dx / dl * 2.0
+				bz += dz / dl * 2.0
+			var by := _terrain_y(bx, bz) + 0.03
+			var r := rng.randf_range(0.8, 2.0)
+			var rot := rng.randf() * TAU
+			var basis := Basis(
+				Vector3(cos(rot) * r, 0.0, sin(rot) * r),
+				Vector3(0.0, 1.0, 0.0),
+				Vector3(-sin(rot) * r, 0.0, cos(rot) * r))
+			ivy_xf.append(Transform3D(basis, Vector3(bx, by, bz)))
+
+	if not ivy_xf.is_empty():
+		_spawn_multimesh(ivy_mesh, ivy_mat, ivy_xf, "IvyPatches")
+
+	print("ParkLoader: ferns = ", fern_xf.size(), "  ivy = ", ivy_xf.size())
