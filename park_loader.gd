@@ -2777,14 +2777,14 @@ void fragment() {
 	float n_fine  = gnoise(uv * 3.5 + vec2(t * 0.15, -t * 0.12));
 	float wave_h  = n_large * 0.4 + n_med * 0.35 + n_fine * 0.25;
 
-	vec3 deep    = vec3(0.020, 0.055, 0.048);
-	vec3 shallow = vec3(0.055, 0.12, 0.09);
+	vec3 deep    = vec3(0.025, 0.055, 0.042);
+	vec3 shallow = vec3(0.065, 0.12, 0.08);
 	// Subtle blend — mostly deep, shallow only at wave peaks
 	vec3 col     = mix(deep, shallow, smoothstep(-0.3, 0.6, wave_h));
 
 	NORMAL    = normalize((VIEW_MATRIX * vec4(wave_nrm, 0.0)).xyz);
 	ALBEDO    = col;
-	ROUGHNESS = 0.15;
+	ROUGHNESS = 0.20;
 	METALLIC  = 0.0;
 	SPECULAR  = 0.5;
 }
@@ -3789,9 +3789,9 @@ void fragment() {
 
 	// Per-instance colour variation from world position hash
 	float h = hash21(floor(tree_origin.xz * 0.025));
-	// Tree: bright 0.65–1.15; understorey: darker 0.45–0.75
-	float bright = mix(0.65 + h * 0.50, 0.45 + h * 0.30, understorey);
-	float warm   = (h - 0.5) * 0.20;
+	// Tree: bright 0.60–1.20; understorey: darker 0.45–0.75
+	float bright = mix(0.60 + h * 0.60, 0.45 + h * 0.30, understorey);
+	float warm   = (h - 0.5) * 0.35;
 	vec3 col = alb * bright;
 	col.r += warm;
 	col.b -= warm * 0.4;
@@ -3801,8 +3801,8 @@ void fragment() {
 	col.b *= mix(1.0, 0.55, understorey);
 
 	// Fake subsurface scattering: rim glows yellow-green (backlit leaves)
-	float sss = pow(1.0 - max(dot(NORMAL, VIEW), 0.0), 3.0) * 0.22;
-	col += vec3(0.09, 0.13, 0.01) * sss;
+	float sss = pow(1.0 - max(dot(NORMAL, VIEW), 0.0), 2.5) * 0.35;
+	col += vec3(0.14, 0.18, 0.02) * sss;
 
 	ALBEDO     = clamp(col, 0.0, 1.0);
 	NORMAL_MAP = texture(leaf_normal, UV).rgb;
@@ -3841,11 +3841,11 @@ void fragment() {
 
 	// Per-tree hue variation (dark brown ↔ grey-brown)
 	float h = hash21(floor(world_pos.xz * 0.04));
-	// Base brightness 0.30–0.48 (was 0.55–0.85) — much darker
-	vec3 col = alb * ao * (0.30 + h * 0.18);
-	// Warm brown push: boost red slightly, pull blue down
-	col.r *= 1.08;
-	col.b *= 0.82;
+	// Base brightness 0.24–0.40 — dark sienna/umber
+	vec3 col = alb * ao * (0.24 + h * 0.16);
+	// Strong warm sienna push: boost red, pull blue down
+	col.r *= 1.15;
+	col.b *= 0.72;
 
 	ALBEDO     = clamp(col, 0.0, 1.0);
 	NORMAL_MAP = texture(bark_normal, uv).rgb;
