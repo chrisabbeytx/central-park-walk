@@ -2504,55 +2504,56 @@ func _make_leaf_card_mesh(is_conifer: bool) -> ArrayMesh:
 	return mesh
 
 
-func _make_bush_volume_mesh() -> ArrayMesh:
-	# Lighter volume mesh for bushes: 4 planes at 45° + 1 horizontal cap
-	# 20 verts / 10 tris
+func _make_bush_leaf_mesh() -> ArrayMesh:
+	# 10 leaf card quads in a low dome for understorey bushes.
+	# Bottom ring (5) + upper ring (3) + top caps (2) = 10 quads, 20 tris.
 	var verts   := PackedVector3Array()
 	var normals := PackedVector3Array()
 	var uvs     := PackedVector2Array()
 	var indices := PackedInt32Array()
 
-	# 4 vertical planes at 45° spacing, offset 0.2 from center
-	for pi in 4:
-		var a   := PI * float(pi) / 4.0
-		var ca  := cos(a); var sa := sin(a)
-		var ox  := sa * 0.2
-		var oz  := -ca * 0.2
-		var hw  := 0.65
-		var base := verts.size()
+	var card_defs: Array = []  # [position, half_size, tilt_axis, tilt_angle]
+
+	# Bottom ring: 5 quads around equator
+	for i in 5:
+		var a := TAU * float(i) / 5.0 + 0.3
+		var r := 0.60
+		var pos := Vector3(cos(a) * r, -0.05 + float(i % 2) * 0.08, sin(a) * r)
+		var tilt_ax := Vector3(-sin(a), 0.0, cos(a))
+		card_defs.append([pos, 0.38, tilt_ax, 22.0 + float(i) * 6.0])
+	# Upper ring: 3 quads at ~40° elevation
+	for i in 3:
+		var a := TAU * float(i) / 3.0 + 0.7
+		var r := 0.38
+		var pos := Vector3(cos(a) * r, 0.30, sin(a) * r)
+		var tilt_ax := Vector3(-sin(a), 0.0, cos(a))
+		card_defs.append([pos, 0.34, tilt_ax, 35.0 + float(i) * 8.0])
+	# Top caps: 2 nearly horizontal quads
+	card_defs.append([Vector3(0.10, 0.45, 0.05), 0.32, Vector3(1.0, 0.0, 0.0), 10.0])
+	card_defs.append([Vector3(-0.06, 0.42, -0.08), 0.30, Vector3(0.0, 0.0, 1.0), 14.0])
+
+	for cd in card_defs:
+		var pos: Vector3 = cd[0] as Vector3
+		var hs: float    = cd[1]
+		var tax: Vector3 = cd[2] as Vector3
+		var tang: float  = cd[3]
+		var rot := Basis(tax, deg_to_rad(tang))
+		var right := rot * Vector3(hs, 0.0, 0.0)
+		var up    := rot * Vector3(0.0, hs, 0.0)
+		var base  := verts.size()
 		verts.append_array(PackedVector3Array([
-			Vector3(ox - ca * hw, -1.0, oz - sa * hw),
-			Vector3(ox + ca * hw, -1.0, oz + sa * hw),
-			Vector3(ox + ca * hw,  1.0, oz + sa * hw),
-			Vector3(ox - ca * hw,  1.0, oz - sa * hw),
+			pos - right - up, pos + right - up,
+			pos + right + up, pos - right + up,
 		]))
 		uvs.append_array(PackedVector2Array([
 			Vector2(0.0, 1.0), Vector2(1.0, 1.0),
 			Vector2(1.0, 0.0), Vector2(0.0, 0.0),
 		]))
-		var n := Vector3(-sa, 0.0, ca)
+		var n := right.cross(up).normalized()
 		for _j in 4: normals.append(n)
 		indices.append_array(PackedInt32Array([
 			base, base+1, base+2, base, base+2, base+3,
 		]))
-
-	# 1 horizontal cap at Y=+0.2
-	var base := verts.size()
-	verts.append_array(PackedVector3Array([
-		Vector3(-0.65, 0.2, -0.65),
-		Vector3( 0.65, 0.2, -0.65),
-		Vector3( 0.65, 0.2,  0.65),
-		Vector3(-0.65, 0.2,  0.65),
-	]))
-	uvs.append_array(PackedVector2Array([
-		Vector2(0.0, 1.0), Vector2(1.0, 1.0),
-		Vector2(1.0, 0.0), Vector2(0.0, 0.0),
-	]))
-	var n := Vector3(0.0, 1.0, 0.0)
-	for _j in 4: normals.append(n)
-	indices.append_array(PackedInt32Array([
-		base, base+1, base+2, base, base+2, base+3,
-	]))
 
 	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
 	arrays[Mesh.ARRAY_VERTEX] = verts
@@ -2608,6 +2609,7 @@ uniform sampler2D leaf_color   : source_color,      filter_linear_mipmap_anisotr
 uniform sampler2D leaf_normal  : hint_normal,        filter_linear_mipmap_anisotropic;
 uniform sampler2D leaf_rough   : hint_default_white, filter_linear_mipmap_anisotropic;
 uniform sampler2D leaf_opacity : hint_default_white, filter_linear_mipmap_anisotropic;
+uniform float understorey : hint_range(0.0, 1.0) = 0.0;
 
 varying vec3 tree_origin;
 
@@ -2640,13 +2642,18 @@ void fragment() {
 	if (alpha < 0.01) discard;
 	ALPHA = alpha;
 
-	// Per-tree colour variation from world position hash
+	// Per-instance colour variation from world position hash
 	float h = hash21(floor(tree_origin.xz * 0.025));
-	float bright = 0.65 + h * 0.50;
+	// Tree: bright 0.65–1.15; understorey: darker 0.45–0.75
+	float bright = mix(0.65 + h * 0.50, 0.45 + h * 0.30, understorey);
 	float warm   = (h - 0.5) * 0.20;
 	vec3 col = alb * bright;
 	col.r += warm;
 	col.b -= warm * 0.4;
+	// Understorey green saturation boost
+	col.r *= mix(1.0, 0.70, understorey);
+	col.g *= mix(1.0, 1.10, understorey);
+	col.b *= mix(1.0, 0.55, understorey);
 
 	// Fake subsurface scattering: rim glows yellow-green (backlit leaves)
 	float sss = pow(1.0 - max(dot(NORMAL, VIEW), 0.0), 3.0) * 0.22;
@@ -2712,9 +2719,9 @@ func _build_undergrowth(trees: Array, paths: Array) -> void:
 	var rng := RandomNumberGenerator.new()
 	rng.seed = 77777
 
-	var broad_tex := _load_tex("res://textures/tree_canopy_broad.png")
-	var bush_mat  := _make_bush_mat(broad_tex)
-	var bush_mesh := _make_bush_volume_mesh()
+	var bush_mat  := _make_leaf_mat(true)   # reuse LeafSet005 PBR textures
+	bush_mat.set_shader_parameter("understorey", 1.0)
+	var bush_mesh := _make_bush_leaf_mesh()
 	var xforms: Array = []
 
 	# Scatter 1–4 bushes within 3–12m of ~60% of trees
@@ -2792,58 +2799,6 @@ func _build_undergrowth(trees: Array, paths: Array) -> void:
 
 	print("ParkLoader: undergrowth bushes = ", xforms.size())
 	_spawn_multimesh(bush_mesh, bush_mat, xforms, "Undergrowth")
-
-
-func _bush_shader_code() -> String:
-	return """shader_type spatial;
-render_mode cull_disabled, depth_prepass_alpha;
-
-uniform sampler2D canopy_tex : source_color, filter_linear_mipmap_anisotropic;
-
-varying vec3 bush_origin;
-
-float hash21(vec2 p) {
-	p = fract(p * vec2(127.1, 311.7));
-	p += dot(p, p + 43.21);
-	return fract(p.x * p.y);
-}
-
-void vertex() {
-	bush_origin = (MODEL_MATRIX * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
-	float sway = max(VERTEX.y, 0.0);
-	VERTEX.x += sin(TIME * 1.2 + bush_origin.x * 0.08 + bush_origin.z * 0.1) * 0.04 * sway;
-	VERTEX.z += sin(TIME * 1.7 + bush_origin.z * 0.09) * 0.03 * sway;
-}
-
-void fragment() {
-	vec4 tex = texture(canopy_tex, UV);
-	// Soft alpha edge for bushes
-	float alpha = smoothstep(0.10, 0.40, tex.a);
-	if (alpha < 0.01) discard;
-	ALPHA = alpha;
-
-	float h = hash21(floor(bush_origin.xz * 0.03));
-	float bright = 0.50 + h * 0.30;
-	float warm = (h - 0.5) * 0.10;
-	vec3 col = tex.rgb * bright;
-	// Darker, more saturated green for undergrowth
-	col.r = col.r * 0.70 + warm;
-	col.g = col.g * 1.10;
-	col.b = col.b * 0.55 - warm * 0.3;
-
-	ALBEDO    = clamp(col, 0.0, 1.0);
-	ROUGHNESS = 0.92;
-	METALLIC  = 0.0;
-}
-"""
-
-
-func _make_bush_mat(tex: ImageTexture) -> ShaderMaterial:
-	var mat   := ShaderMaterial.new()
-	mat.shader = _get_shader("bush", _bush_shader_code())
-	if tex:
-		mat.set_shader_parameter("canopy_tex", tex)
-	return mat
 
 
 # ---------------------------------------------------------------------------
