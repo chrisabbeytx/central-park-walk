@@ -317,6 +317,11 @@ func _ready() -> void:
 	_build_trees(data.get("trees", []))
 	_build_undergrowth(data.get("trees", []), data.get("paths", []))
 	_build_rocks(data.get("trees", []), data.get("water", []))
+	_build_barriers(data.get("barriers", []))
+	_build_staircases(data.get("paths", []))
+	_build_statues(data.get("statues", []))
+	_build_furniture(data.get("paths", []))
+	_build_tree_dirt(data.get("trees", []))
 	_build_boundary(data.get("boundary", []))
 	print("ParkLoader: done")
 
@@ -340,6 +345,8 @@ func _build_paths(paths: Array) -> void:
 			bridge_paths.append(path)
 		elif is_tunnel:
 			tunnel_paths.append(path)
+		elif hw == "steps":
+			continue  # handled by _build_staircases()
 		else:
 			var key: String = hw + "|" + surf
 			if key not in ground_groups:
@@ -2279,12 +2286,13 @@ func _make_canopy_volume_mesh() -> ArrayMesh:
 	var colors  := PackedColorArray()
 	var indices := PackedInt32Array()
 
-	# --- Outer shell: 6 vertical planes at 30° spacing, pushed out 0.35 ---
+	# --- Outer shell: 6 vertical planes at 30° spacing, varied push ---
 	for pi in 6:
 		var a   := PI * float(pi) / 6.0
 		var ca  := cos(a); var sa := sin(a)
-		var ox  := sa * 0.35   # push outward from center
-		var oz  := -ca * 0.35
+		var push := 0.25 + fmod(float(pi) * 0.618, 1.0) * 0.20  # 0.25-0.45 range
+		var ox  := sa * push   # push outward from center
+		var oz  := -ca * push
 		var hw  := 0.7         # half-width
 		var base := verts.size()
 		verts.append_array(PackedVector3Array([
@@ -2494,18 +2502,21 @@ void vertex() {
 void fragment() {
 	vec4 tex = texture(canopy_tex, UV);
 
-	// Soft alpha edge: gradient fade instead of hard cookie-cutter
-	float alpha = smoothstep(0.08, 0.45, tex.a);
+	// Soft alpha edge: rougher cutoff for more ragged silhouettes
+	float alpha = smoothstep(0.12, 0.55, tex.a);
 	// Inner core (layer_id=1.0) gets opacity boost for dense center
 	alpha = mix(alpha, min(alpha * 1.4, 1.0), layer_id);
 	if (alpha < 0.01) discard;
 	ALPHA = alpha;
 
+	// Depth darkening: inner core darker, outer shell brighter
+	float depth_dim = mix(1.0, 0.65, layer_id);
+
 	// Per-tree colour variation from world position hash
 	float h = hash21(floor(tree_origin.xz * 0.025));
-	float bright = 0.72 + h * 0.44;
-	float warm   = (h - 0.5) * 0.14;
-	vec3 col = tex.rgb * bright;
+	float bright = 0.60 + h * 0.55;
+	float warm   = (h - 0.5) * 0.22;
+	vec3 col = tex.rgb * bright * depth_dim;
 	col.r += warm;
 	col.b -= warm * 0.4;
 
@@ -2919,6 +2930,473 @@ func _append_quad(verts: PackedVector3Array, normals: PackedVector3Array,
 
 
 # ---------------------------------------------------------------------------
+# Barriers – stone walls, iron fences, retaining walls, hedges
+# ---------------------------------------------------------------------------
+func _build_barriers(barriers: Array) -> void:
+	if barriers.is_empty():
+		return
+
+	var rw_alb := _load_tex("res://textures/rock_wall_diff.jpg")
+	var rw_nrm := _load_tex("res://textures/rock_wall_nrm.jpg")
+	var rw_rgh := _load_tex("res://textures/rock_wall_rgh.jpg")
+
+	var wall_verts   := PackedVector3Array()
+	var wall_normals := PackedVector3Array()
+	var fence_verts  := PackedVector3Array()
+	var fence_normals := PackedVector3Array()
+	var col_verts    := PackedVector3Array()
+
+	for barrier in barriers:
+		var btype: String = str(barrier.get("type", "wall"))
+		var height: float = float(barrier.get("height", 1.2))
+		var raw_pts: Array = barrier.get("points", [])
+		if raw_pts.size() < 2:
+			continue
+		var pts: Array = _subdivide_pts(raw_pts, 3.0)
+
+		match btype:
+			"fence", "guard_rail":
+				_build_fence_segments(pts, height, fence_verts, fence_normals, col_verts)
+			_:
+				_build_wall_segments(pts, height, wall_verts, wall_normals, col_verts)
+
+	# Stone wall mesh
+	if not wall_verts.is_empty():
+		_add_stone_mesh(wall_verts, wall_normals, rw_alb, rw_nrm, rw_rgh,
+						Color(0.78, 0.76, 0.72), "StoneWalls")
+	# Iron fence mesh
+	if not fence_verts.is_empty():
+		_add_batch_mesh(fence_verts, fence_normals,
+						Color(0.15, 0.15, 0.14), 0.45, "IronFences")
+	# Combined collision
+	if not col_verts.is_empty():
+		var body := StaticBody3D.new()
+		body.name = "Barrier_Collision"
+		var shape := ConcavePolygonShape3D.new()
+		shape.set_faces(col_verts)
+		var col := CollisionShape3D.new()
+		col.shape = shape
+		body.add_child(col)
+		add_child(body)
+
+	print("ParkLoader: barriers = %d wall tris, %d fence tris" % [
+		wall_verts.size() / 3, fence_verts.size() / 3])
+
+
+func _build_wall_segments(pts: Array, height: float,
+		verts: PackedVector3Array, normals: PackedVector3Array,
+		col_verts: PackedVector3Array) -> void:
+	var ht := 0.2  # half-thickness
+
+	for i in range(pts.size() - 1):
+		var p1x := float(pts[i][0]);   var p1z := float(pts[i][2])
+		var p2x := float(pts[i+1][0]); var p2z := float(pts[i+1][2])
+		var p1y := _terrain_y(p1x, p1z)
+		var p2y := _terrain_y(p2x, p2z)
+
+		var seg2 := Vector2(p2x - p1x, p2z - p1z)
+		if seg2.length_squared() < 0.01:
+			continue
+		var d := seg2.normalized()
+		var n := Vector2(-d.y, d.x)
+
+		# Front and back faces
+		for side in [-1.0, 1.0]:
+			var sf: float = side
+			var ox: float = n.x * ht * sf
+			var oz: float = n.y * ht * sf
+			var a := Vector3(p1x + ox, p1y, p1z + oz)
+			var b := Vector3(p2x + ox, p2y, p2z + oz)
+			var c := Vector3(p2x + ox, p2y + height, p2z + oz)
+			var dd := Vector3(p1x + ox, p1y + height, p1z + oz)
+			var wall_n := Vector3(n.x * sf, 0.0, n.y * sf)
+			var tri := PackedVector3Array([a, b, c, a, c, dd])
+			verts.append_array(tri)
+			col_verts.append_array(tri)
+			for _j in range(6):
+				normals.append(wall_n)
+
+		# Top cap
+		var tl1 := Vector3(p1x + n.x * ht, p1y + height, p1z + n.y * ht)
+		var tr1 := Vector3(p1x - n.x * ht, p1y + height, p1z - n.y * ht)
+		var tl2 := Vector3(p2x + n.x * ht, p2y + height, p2z + n.y * ht)
+		var tr2 := Vector3(p2x - n.x * ht, p2y + height, p2z - n.y * ht)
+		var cap := PackedVector3Array([tl1, tl2, tr1, tr1, tl2, tr2])
+		verts.append_array(cap)
+		col_verts.append_array(cap)
+		for _j in range(6):
+			normals.append(Vector3.UP)
+
+
+func _build_fence_segments(pts: Array, height: float,
+		verts: PackedVector3Array, normals: PackedVector3Array,
+		col_verts: PackedVector3Array) -> void:
+	var rail_h := 0.04
+	var post_spacing := 2.0
+
+	for i in range(pts.size() - 1):
+		var p1x := float(pts[i][0]);   var p1z := float(pts[i][2])
+		var p2x := float(pts[i+1][0]); var p2z := float(pts[i+1][2])
+		var p1y := _terrain_y(p1x, p1z)
+		var p2y := _terrain_y(p2x, p2z)
+		var seg := Vector2(p2x - p1x, p2z - p1z)
+		var seg_len := seg.length()
+		if seg_len < 0.1:
+			continue
+		var d := seg / seg_len
+		var n := Vector2(-d.y, d.x)
+
+		# 3 horizontal rails
+		for rail_frac in [0.15, 0.50, 0.95]:
+			var rf: float = rail_frac
+			var ry1: float = p1y + height * rf
+			var ry2: float = p2y + height * rf
+			var rh := rail_h * 0.5
+			var a := Vector3(p1x, ry1 - rh, p1z)
+			var b := Vector3(p2x, ry2 - rh, p2z)
+			var c := Vector3(p2x, ry2 + rh, p2z)
+			var dd := Vector3(p1x, ry1 + rh, p1z)
+			var face_n := Vector3(n.x, 0.0, n.y)
+			verts.append_array(PackedVector3Array([a, b, c, a, c, dd]))
+			for _j in range(6):
+				normals.append(face_n)
+
+		# Vertical posts every ~2m
+		var n_posts := int(ceil(seg_len / post_spacing)) + 1
+		for pi in range(n_posts):
+			var t: float = float(pi) / float(max(n_posts - 1, 1))
+			var px: float = p1x + (p2x - p1x) * t
+			var pz: float = p1z + (p2z - p1z) * t
+			var py := lerpf(p1y, p2y, t)
+			var ph := 0.04
+			var post_a := Vector3(px + n.x * ph, py, pz + n.y * ph)
+			var post_b := Vector3(px - n.x * ph, py, pz - n.y * ph)
+			var post_c := Vector3(px - n.x * ph, py + height, pz - n.y * ph)
+			var post_d := Vector3(px + n.x * ph, py + height, pz + n.y * ph)
+			var tri := PackedVector3Array([post_a, post_b, post_c, post_a, post_c, post_d])
+			verts.append_array(tri)
+			col_verts.append_array(tri)
+			for _j in range(6):
+				normals.append(Vector3(d.x, 0.0, d.y))
+
+
+func _add_stone_mesh(v: PackedVector3Array, n: PackedVector3Array,
+		alb: ImageTexture, nrm: ImageTexture, rgh: ImageTexture,
+		tint: Color, node_name: String) -> void:
+	if v.is_empty():
+		return
+	var arrays: Array = []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = v
+	arrays[Mesh.ARRAY_NORMAL] = n
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	mesh.surface_set_material(0, _make_stone_material(alb, nrm, rgh, tint))
+	var mi := MeshInstance3D.new()
+	mi.mesh = mesh
+	mi.name = node_name
+	add_child(mi)
+
+
+# ---------------------------------------------------------------------------
+# Staircases – 3D stepped treads + risers replacing flat ribbons
+# ---------------------------------------------------------------------------
+const STEP_RISE  := 0.17
+const STEP_DEPTH := 0.30
+const HANDRAIL_H := 0.9
+
+func _build_staircases(paths: Array) -> void:
+	var stair_verts   := PackedVector3Array()
+	var stair_normals := PackedVector3Array()
+	var stair_uvs     := PackedVector2Array()
+	var rail_verts    := PackedVector3Array()
+	var rail_normals  := PackedVector3Array()
+	var col_verts     := PackedVector3Array()
+
+	for path in paths:
+		var hw: String = str(path.get("highway", ""))
+		if hw != "steps":
+			continue
+		if bool(path.get("bridge", false)) or bool(path.get("tunnel", false)):
+			continue
+		var raw_pts: Array = path.get("points", [])
+		if raw_pts.size() < 2:
+			continue
+
+		var width: float = _hw_width("steps")
+		var step_count: int = int(path.get("step_count", 0))
+		var has_handrail: bool = path.has("handrail")
+
+		var pts: Array = _subdivide_pts(raw_pts, 2.0)
+		var n_pts := pts.size()
+
+		# Cumulative arc length
+		var cum_len := PackedFloat32Array()
+		cum_len.resize(n_pts)
+		cum_len[0] = 0.0
+		for i in range(1, n_pts):
+			var dx := float(pts[i][0]) - float(pts[i-1][0])
+			var dz := float(pts[i][2]) - float(pts[i-1][2])
+			cum_len[i] = cum_len[i-1] + sqrt(dx * dx + dz * dz)
+		var total_len := cum_len[n_pts - 1]
+		if total_len < 0.1:
+			continue
+
+		# Elevation change
+		var start_y := _terrain_y(float(pts[0][0]), float(pts[0][2]))
+		var end_y   := _terrain_y(float(pts[n_pts-1][0]), float(pts[n_pts-1][2]))
+		var delta_y := end_y - start_y
+
+		if step_count <= 0:
+			step_count = max(2, int(round(absf(delta_y) / STEP_RISE)))
+		var rise := delta_y / float(step_count)
+		var hw2 := width * 0.5
+
+		# Build each step
+		for si in range(step_count):
+			var d_front := total_len * float(si) / float(step_count)
+			var d_back  := total_len * float(si + 1) / float(step_count)
+			var step_y  := start_y + rise * float(si)
+
+			# Interpolate front position on polyline
+			var fp := _interp_polyline(pts, cum_len, d_front)
+			var fx: float = fp[0]; var fz: float = fp[1]
+			# Interpolate back position
+			var bp := _interp_polyline(pts, cum_len, d_back)
+			var bx: float = bp[0]; var bz: float = bp[1]
+
+			# Direction and perpendicular at midpoint
+			var mid_d := (d_front + d_back) * 0.5
+			var mp := _interp_polyline(pts, cum_len, mid_d)
+			var seg_dir := Vector2(mp[2], mp[3]).normalized()
+			var nv := Vector2(-seg_dir.y, seg_dir.x)
+
+			# Tread corners (horizontal quad at step_y + rise)
+			var tread_y := step_y + rise
+			var fl := Vector3(fx + nv.x * hw2, tread_y, fz + nv.y * hw2)
+			var fr := Vector3(fx - nv.x * hw2, tread_y, fz - nv.y * hw2)
+			var bl := Vector3(bx + nv.x * hw2, tread_y, bx - nv.x * hw2)  # placeholder
+			var br := Vector3(bx - nv.x * hw2, tread_y, bz - nv.y * hw2)
+			# Fix bl properly
+			bl = Vector3(bx + nv.x * hw2, tread_y, bz + nv.y * hw2)
+
+			var tread := PackedVector3Array([fl, fr, br, fl, br, bl])
+			stair_verts.append_array(tread)
+			col_verts.append_array(tread)
+			for _j in range(6):
+				stair_normals.append(Vector3.UP)
+			# UVs for tread
+			var u_left := 0.0; var u_right := width
+			var v_front := d_front; var v_back := d_back
+			stair_uvs.append_array(PackedVector2Array([
+				Vector2(u_left, v_front), Vector2(u_right, v_front),
+				Vector2(u_right, v_back), Vector2(u_left, v_front),
+				Vector2(u_right, v_back), Vector2(u_left, v_back)]))
+
+			# Riser (vertical face at front of this step)
+			if absf(rise) > 0.01:
+				var riser_bot := step_y
+				var riser_top := step_y + rise if rise > 0 else step_y
+				var riser_low := step_y + rise if rise < 0 else step_y
+				var rl := Vector3(fx + nv.x * hw2, riser_low, fz + nv.y * hw2)
+				var rr := Vector3(fx - nv.x * hw2, riser_low, fz - nv.y * hw2)
+				var rtl := Vector3(fx + nv.x * hw2, riser_low + absf(rise), fz + nv.y * hw2)
+				var rtr := Vector3(fx - nv.x * hw2, riser_low + absf(rise), fz - nv.y * hw2)
+				var riser_n := Vector3(-seg_dir.x, 0.0, -seg_dir.y)
+				var riser := PackedVector3Array([rl, rr, rtr, rl, rtr, rtl])
+				stair_verts.append_array(riser)
+				col_verts.append_array(riser)
+				for _j in range(6):
+					stair_normals.append(riser_n)
+				stair_uvs.append_array(PackedVector2Array([
+					Vector2(0.0, 0.0), Vector2(width, 0.0),
+					Vector2(width, absf(rise)), Vector2(0.0, 0.0),
+					Vector2(width, absf(rise)), Vector2(0.0, absf(rise))]))
+
+		# Handrails along both edges
+		if has_handrail:
+			for side_sign in [-1.0, 1.0]:
+				var ss: float = side_sign
+				var prev_x := 0.0; var prev_z := 0.0; var prev_y := 0.0
+				for si in range(step_count + 1):
+					var d_pos := total_len * float(si) / float(step_count)
+					var hp := _interp_polyline(pts, cum_len, d_pos)
+					var hx: float = hp[0]; var hz: float = hp[1]
+					var hdir := Vector2(hp[2], hp[3]).normalized()
+					var hnv := Vector2(-hdir.y, hdir.x)
+					var hy := start_y + rise * float(si) + HANDRAIL_H
+					var rx: float = hx + hnv.x * hw2 * ss
+					var rz: float = hz + hnv.y * hw2 * ss
+
+					if si > 0:
+						# Rail segment: thin quad from prev to current
+						var a := Vector3(prev_x, prev_y - 0.02, prev_z)
+						var b := Vector3(rx, hy - 0.02, rz)
+						var c := Vector3(rx, hy + 0.02, rz)
+						var dd := Vector3(prev_x, prev_y + 0.02, prev_z)
+						var rn := Vector3(hnv.x * ss, 0.0, hnv.y * ss)
+						rail_verts.append_array(PackedVector3Array([a, b, c, a, c, dd]))
+						for _j in range(6):
+							rail_normals.append(rn)
+
+						# Vertical post at this position
+						var post_off: float = 0.02 * ss
+						var pa := Vector3(rx + hnv.x * post_off, start_y + rise * float(si), rz + hnv.y * post_off)
+						var pb := Vector3(rx - hnv.x * post_off, start_y + rise * float(si), rz - hnv.y * post_off)
+						var pc := Vector3(rx - hnv.x * post_off, hy, rz - hnv.y * post_off)
+						var pd := Vector3(rx + hnv.x * post_off, hy, rz + hnv.y * post_off)
+						rail_verts.append_array(PackedVector3Array([pa, pb, pc, pa, pc, pd]))
+						for _j in range(6):
+							rail_normals.append(Vector3(hdir.x, 0.0, hdir.y))
+
+					prev_x = rx; prev_z = rz; prev_y = hy
+
+	# Stair mesh
+	if not stair_verts.is_empty():
+		var arrays: Array = []
+		arrays.resize(Mesh.ARRAY_MAX)
+		arrays[Mesh.ARRAY_VERTEX] = stair_verts
+		arrays[Mesh.ARRAY_NORMAL] = stair_normals
+		arrays[Mesh.ARRAY_TEX_UV] = stair_uvs
+		var mesh := ArrayMesh.new()
+		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+		mesh.surface_set_material(0, _make_path_material("steps", "concrete"))
+		var mi := MeshInstance3D.new()
+		mi.mesh = mesh
+		mi.name = "Staircases"
+		add_child(mi)
+
+	# Handrail mesh
+	if not rail_verts.is_empty():
+		_add_batch_mesh(rail_verts, rail_normals,
+						Color(0.18, 0.18, 0.17), 0.40, "Handrails")
+
+	# Stair collision
+	if not col_verts.is_empty():
+		var body := StaticBody3D.new()
+		body.name = "Staircase_Collision"
+		var shape := ConcavePolygonShape3D.new()
+		shape.set_faces(col_verts)
+		var col := CollisionShape3D.new()
+		col.shape = shape
+		body.add_child(col)
+		add_child(body)
+
+	print("ParkLoader: staircases = %d steps" % [col_verts.size() / 18])
+
+
+## Interpolate a position + direction along a polyline at distance d_along.
+## Returns via the reference parameters: out_x, out_z, out_dx, out_dz.
+func _interp_polyline(pts: Array, cum_len: PackedFloat32Array, d_along: float) -> Array:
+	var n := pts.size()
+	# Clamp to valid range
+	if d_along <= 0.0:
+		var dx := float(pts[1][0]) - float(pts[0][0])
+		var dz := float(pts[1][2]) - float(pts[0][2])
+		return [float(pts[0][0]), float(pts[0][2]), dx, dz]
+	if d_along >= cum_len[n - 1]:
+		var dx := float(pts[n-1][0]) - float(pts[n-2][0])
+		var dz := float(pts[n-1][2]) - float(pts[n-2][2])
+		return [float(pts[n-1][0]), float(pts[n-1][2]), dx, dz]
+	# Find segment
+	for i in range(1, n):
+		if cum_len[i] >= d_along:
+			var seg_start: float = cum_len[i - 1]
+			var seg_len: float = cum_len[i] - seg_start
+			var t: float = (d_along - seg_start) / max(seg_len, 0.001)
+			var x1 := float(pts[i-1][0]); var z1 := float(pts[i-1][2])
+			var x2 := float(pts[i][0]);   var z2 := float(pts[i][2])
+			return [lerpf(x1, x2, t), lerpf(z1, z2, t), x2 - x1, z2 - z1]
+	return [float(pts[0][0]), float(pts[0][2]), 1.0, 0.0]
+
+
+# ---------------------------------------------------------------------------
+# Statues, monuments, memorials
+# ---------------------------------------------------------------------------
+func _build_statues(statues: Array) -> void:
+	if statues.is_empty():
+		return
+
+	var rw_alb := _load_tex("res://textures/rock_wall_diff.jpg")
+	var rw_nrm := _load_tex("res://textures/rock_wall_nrm.jpg")
+	var rw_rgh := _load_tex("res://textures/rock_wall_rgh.jpg")
+	var stone_mat := _make_stone_material(rw_alb, rw_nrm, rw_rgh, Color(0.80, 0.78, 0.74))
+
+	var bronze_mat := StandardMaterial3D.new()
+	bronze_mat.albedo_color = Color(0.30, 0.25, 0.18)
+	bronze_mat.roughness    = 0.55
+	bronze_mat.metallic     = 0.65
+
+	for statue in statues:
+		var stype: String = str(statue.get("type", "statue"))
+		var sname: String = str(statue.get("name", ""))
+		var pos: Array = statue.get("position", [0, 0, 0])
+		var sx := float(pos[0]); var sz := float(pos[2])
+		var sy := _terrain_y(sx, sz)
+
+		# Skip murals/graffiti/street_art — 2D art, no 3D geometry
+		if stype in ["mural", "graffiti", "street_art"]:
+			continue
+
+		var ped_h := 1.2
+		var ped_r := 0.6
+		var fig_h := 1.6
+
+		if stype == "obelisk" or sname.to_lower().contains("needle") or sname.to_lower().contains("obelisk"):
+			stype = "obelisk"
+			ped_h = 1.5
+			ped_r = 1.2
+			fig_h = 18.0
+		elif stype == "monument":
+			ped_h = 1.8
+			ped_r = 0.9
+			fig_h = 2.5
+
+		# Pedestal (cylinder)
+		_make_cylinder_mesh(sx, sy, sz, ped_r, ped_h, stone_mat,
+							"Pedestal_%s" % sname if sname else "Pedestal")
+
+		# Figure on top
+		var fig_y := sy + ped_h
+		if stype == "obelisk":
+			# Tall tapered column
+			_make_cylinder_mesh(sx, fig_y, sz, 0.8, fig_h, stone_mat,
+								"Obelisk_%s" % sname if sname else "Obelisk", 4)
+		elif stype == "bust":
+			_make_cylinder_mesh(sx, fig_y, sz, 0.25, 0.5, bronze_mat,
+								"Bust_%s" % sname if sname else "Bust")
+		else:
+			_make_cylinder_mesh(sx, fig_y, sz, 0.25, fig_h, bronze_mat,
+								"Figure_%s" % sname if sname else "Figure")
+
+		# Label
+		var lbl := Label3D.new()
+		lbl.text = sname if sname else stype.capitalize()
+		lbl.font_size = 48
+		lbl.pixel_size = 0.02
+		lbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+		lbl.modulate = Color(1.0, 1.0, 0.9, 0.9)
+		lbl.outline_size = 6
+		lbl.outline_modulate = Color(0.0, 0.0, 0.0, 0.7)
+		lbl.position = Vector3(sx, sy + ped_h + fig_h + 0.5, sz)
+		add_child(lbl)
+
+		# Collision cylinder
+		var col_body := StaticBody3D.new()
+		col_body.name = "Statue_Col"
+		var cyl := CylinderShape3D.new()
+		cyl.radius = ped_r
+		cyl.height = ped_h + fig_h
+		var col := CollisionShape3D.new()
+		col.shape = cyl
+		col_body.add_child(col)
+		col_body.position = Vector3(sx, sy + (ped_h + fig_h) * 0.5, sz)
+		add_child(col_body)
+
+	print("ParkLoader: statues/monuments = %d" % [statues.size()])
+
+
+# ---------------------------------------------------------------------------
 # Boundary walls – invisible collision boxes along the park perimeter
 # ---------------------------------------------------------------------------
 func _build_boundary(boundary: Array) -> void:
@@ -2951,3 +3429,262 @@ func _build_boundary(boundary: Array) -> void:
 		col.rotation.y = atan2(-dir.y, dir.x)
 
 		body.add_child(col)
+
+
+# ---------------------------------------------------------------------------
+# Lampposts & Benches – procedural furniture along paths
+# ---------------------------------------------------------------------------
+func _make_lamppost_mesh() -> ArrayMesh:
+	## Procedural lamppost: thin post + arm + lantern head (~40 tris)
+	var verts   := PackedVector3Array()
+	var normals := PackedVector3Array()
+	var indices := PackedInt32Array()
+
+	var segments := 6
+	# --- Post: cylinder r=0.06, h=3.5 ---
+	var post_r := 0.06
+	var post_h := 3.5
+	for i in segments:
+		var a0 := TAU * float(i) / float(segments)
+		var a1 := TAU * float(i + 1) / float(segments)
+		var c0 := cos(a0); var s0 := sin(a0)
+		var c1 := cos(a1); var s1 := sin(a1)
+		var base := verts.size()
+		verts.append(Vector3(c0 * post_r, 0.0, s0 * post_r))
+		verts.append(Vector3(c1 * post_r, 0.0, s1 * post_r))
+		verts.append(Vector3(c1 * post_r, post_h, s1 * post_r))
+		verts.append(Vector3(c0 * post_r, post_h, s0 * post_r))
+		var n0 := Vector3(c0, 0.0, s0)
+		var n1 := Vector3(c1, 0.0, s1)
+		normals.append(n0); normals.append(n1); normals.append(n1); normals.append(n0)
+		indices.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
+
+	# --- Arm: horizontal cylinder r=0.03, length=0.25 at y=3.4 ---
+	var arm_y := 3.4
+	var arm_r := 0.03
+	var arm_len := 0.25
+	for i in segments:
+		var a0 := TAU * float(i) / float(segments)
+		var a1 := TAU * float(i + 1) / float(segments)
+		var base := verts.size()
+		verts.append(Vector3(0.0, arm_y + cos(a0) * arm_r, sin(a0) * arm_r))
+		verts.append(Vector3(arm_len, arm_y + cos(a0) * arm_r, sin(a0) * arm_r))
+		verts.append(Vector3(arm_len, arm_y + cos(a1) * arm_r, sin(a1) * arm_r))
+		verts.append(Vector3(0.0, arm_y + cos(a1) * arm_r, sin(a1) * arm_r))
+		var n := Vector3(0.0, cos(a0), sin(a0)).normalized()
+		for _j in 4:
+			normals.append(n)
+		indices.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
+
+	# --- Lantern head: box 0.18 wide x 0.28 tall at end of arm ---
+	var lx := arm_len
+	var ly := arm_y - 0.14
+	var lw := 0.09  # half-width
+	var lh := 0.28
+	var ld := 0.09  # half-depth
+	var box_faces := [
+		[Vector3(lx-lw, ly, ld), Vector3(lx+lw, ly, ld), Vector3(lx+lw, ly+lh, ld), Vector3(lx-lw, ly+lh, ld), Vector3(0,0,1)],
+		[Vector3(lx+lw, ly, -ld), Vector3(lx-lw, ly, -ld), Vector3(lx-lw, ly+lh, -ld), Vector3(lx+lw, ly+lh, -ld), Vector3(0,0,-1)],
+		[Vector3(lx+lw, ly, ld), Vector3(lx+lw, ly, -ld), Vector3(lx+lw, ly+lh, -ld), Vector3(lx+lw, ly+lh, ld), Vector3(1,0,0)],
+		[Vector3(lx-lw, ly, -ld), Vector3(lx-lw, ly, ld), Vector3(lx-lw, ly+lh, ld), Vector3(lx-lw, ly+lh, -ld), Vector3(-1,0,0)],
+		[Vector3(lx-lw, ly+lh, ld), Vector3(lx+lw, ly+lh, ld), Vector3(lx+lw, ly+lh, -ld), Vector3(lx-lw, ly+lh, -ld), Vector3(0,1,0)],
+		[Vector3(lx-lw, ly, -ld), Vector3(lx+lw, ly, -ld), Vector3(lx+lw, ly, ld), Vector3(lx-lw, ly, ld), Vector3(0,-1,0)],
+	]
+	for face in box_faces:
+		var base := verts.size()
+		verts.append(face[0]); verts.append(face[1]); verts.append(face[2]); verts.append(face[3])
+		for _j in 4:
+			normals.append(face[4])
+		indices.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
+
+	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts
+	arrays[Mesh.ARRAY_NORMAL] = normals
+	arrays[Mesh.ARRAY_INDEX]  = indices
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	return mesh
+
+
+func _make_bench_mesh() -> ArrayMesh:
+	## Procedural park bench: seat + backrest + 4 legs + 2 armrests (~60 tris)
+	var verts   := PackedVector3Array()
+	var normals := PackedVector3Array()
+	var indices := PackedInt32Array()
+
+	# Helper: add a box given center + half-extents
+	var _add_box := func(cx: float, cy: float, cz: float,
+						 hx: float, hy: float, hz: float) -> void:
+		var faces := [
+			[Vector3(cx-hx,cy-hy,cz+hz), Vector3(cx+hx,cy-hy,cz+hz), Vector3(cx+hx,cy+hy,cz+hz), Vector3(cx-hx,cy+hy,cz+hz), Vector3(0,0,1)],
+			[Vector3(cx+hx,cy-hy,cz-hz), Vector3(cx-hx,cy-hy,cz-hz), Vector3(cx-hx,cy+hy,cz-hz), Vector3(cx+hx,cy+hy,cz-hz), Vector3(0,0,-1)],
+			[Vector3(cx+hx,cy-hy,cz+hz), Vector3(cx+hx,cy-hy,cz-hz), Vector3(cx+hx,cy+hy,cz-hz), Vector3(cx+hx,cy+hy,cz+hz), Vector3(1,0,0)],
+			[Vector3(cx-hx,cy-hy,cz-hz), Vector3(cx-hx,cy-hy,cz+hz), Vector3(cx-hx,cy+hy,cz+hz), Vector3(cx-hx,cy+hy,cz-hz), Vector3(-1,0,0)],
+			[Vector3(cx-hx,cy+hy,cz+hz), Vector3(cx+hx,cy+hy,cz+hz), Vector3(cx+hx,cy+hy,cz-hz), Vector3(cx-hx,cy+hy,cz-hz), Vector3(0,1,0)],
+			[Vector3(cx-hx,cy-hy,cz-hz), Vector3(cx+hx,cy-hy,cz-hz), Vector3(cx+hx,cy-hy,cz+hz), Vector3(cx-hx,cy-hy,cz+hz), Vector3(0,-1,0)],
+		]
+		for face in faces:
+			var base := verts.size()
+			verts.append(face[0]); verts.append(face[1])
+			verts.append(face[2]); verts.append(face[3])
+			for _j in 4:
+				normals.append(face[4])
+			indices.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
+
+	# Seat: 1.5m wide (X), 0.04m thick (Y), 0.45m deep (Z), at y=0.45
+	_add_box.call(0.0, 0.45, 0.0, 0.75, 0.02, 0.225)
+	# Backrest: tilted slightly back
+	_add_box.call(0.0, 0.67, -0.23, 0.75, 0.175, 0.01)
+	# 4 legs
+	_add_box.call(-0.65, 0.225, 0.18, 0.02, 0.225, 0.02)
+	_add_box.call( 0.65, 0.225, 0.18, 0.02, 0.225, 0.02)
+	_add_box.call(-0.65, 0.225, -0.18, 0.02, 0.225, 0.02)
+	_add_box.call( 0.65, 0.225, -0.18, 0.02, 0.225, 0.02)
+	# 2 armrests
+	_add_box.call(-0.72, 0.56, 0.0, 0.02, 0.02, 0.20)
+	_add_box.call( 0.72, 0.56, 0.0, 0.02, 0.02, 0.20)
+
+	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts
+	arrays[Mesh.ARRAY_NORMAL] = normals
+	arrays[Mesh.ARRAY_INDEX]  = indices
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	return mesh
+
+
+func _build_furniture(paths: Array) -> void:
+	if paths.is_empty():
+		return
+
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 88888
+
+	var lamp_mesh  := _make_lamppost_mesh()
+	var bench_mesh := _make_bench_mesh()
+
+	var lamp_mat := StandardMaterial3D.new()
+	lamp_mat.albedo_color = Color(0.12, 0.16, 0.10)
+	lamp_mat.roughness    = 0.55
+	lamp_mat.metallic     = 0.3
+
+	var bench_mat := StandardMaterial3D.new()
+	bench_mat.albedo_color = Color(0.35, 0.22, 0.12)
+	bench_mat.roughness    = 0.75
+
+	var lamp_xf:  Array = []
+	var bench_xf: Array = []
+
+	for path in paths:
+		var hw: String = str(path.get("highway", "path"))
+		if hw == "cycleway" or hw == "track" or hw == "steps":
+			continue
+		if bool(path.get("bridge", false)) or bool(path.get("tunnel", false)):
+			continue
+		var pts: Array = path["points"]
+		if pts.size() < 2:
+			continue
+
+		var lamp_cum  := 0.0
+		var bench_cum := 0.0
+		var next_lamp  := rng.randf_range(25.0, 45.0)
+		var next_bench := rng.randf_range(18.0, 32.0)
+		var lamp_side  := 1.0 if rng.randf() > 0.5 else -1.0
+		var bench_side := -lamp_side
+
+		for pi in range(1, pts.size()):
+			var x0 := float(pts[pi-1][0]); var z0 := float(pts[pi-1][2])
+			var x1 := float(pts[pi][0]);   var z1 := float(pts[pi][2])
+			var dx := x1 - x0; var dz := z1 - z0
+			var seg_len := sqrt(dx * dx + dz * dz)
+			if seg_len < 0.01:
+				continue
+			var nx := -dz / seg_len; var nz := dx / seg_len
+			lamp_cum  += seg_len
+			bench_cum += seg_len
+
+			if lamp_cum >= next_lamp:
+				lamp_cum = 0.0
+				next_lamp = rng.randf_range(28.0, 40.0)
+				var lx := x1 + nx * 0.3 * lamp_side
+				var lz := z1 + nz * 0.3 * lamp_side
+				var ly := _terrain_y(lx, lz)
+				lamp_xf.append(Transform3D(Basis.IDENTITY, Vector3(lx, ly, lz)))
+				lamp_side = -lamp_side
+
+			if bench_cum >= next_bench:
+				bench_cum = 0.0
+				next_bench = rng.randf_range(20.0, 30.0)
+				var bx := x1 + nx * 0.5 * bench_side
+				var bz := z1 + nz * 0.5 * bench_side
+				var by := _terrain_y(bx, bz)
+				var angle := atan2(nx, nz)
+				if bench_side < 0.0:
+					angle += PI
+				var basis := Basis(Vector3.UP, angle)
+				bench_xf.append(Transform3D(basis, Vector3(bx, by, bz)))
+				bench_side = -bench_side
+
+	print("ParkLoader: lampposts = ", lamp_xf.size(), "  benches = ", bench_xf.size())
+	_spawn_multimesh(lamp_mesh, lamp_mat, lamp_xf, "Lampposts")
+	_spawn_multimesh(bench_mesh, bench_mat, bench_xf, "Benches")
+
+
+# ---------------------------------------------------------------------------
+# Tree-base dirt circles
+# ---------------------------------------------------------------------------
+func _make_dirt_circle_mesh() -> ArrayMesh:
+	## Flat disc (8-segment fan), radius 1.0 (scaled per-instance)
+	var verts   := PackedVector3Array()
+	var normals := PackedVector3Array()
+	var indices := PackedInt32Array()
+	var seg := 8
+	verts.append(Vector3(0.0, 0.0, 0.0))
+	normals.append(Vector3(0.0, 1.0, 0.0))
+	for i in seg:
+		var a := TAU * float(i) / float(seg)
+		verts.append(Vector3(cos(a), 0.0, sin(a)))
+		normals.append(Vector3(0.0, 1.0, 0.0))
+	for i in seg:
+		indices.append(0)
+		indices.append(i + 1)
+		indices.append((i + 1) % seg + 1)
+	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts
+	arrays[Mesh.ARRAY_NORMAL] = normals
+	arrays[Mesh.ARRAY_INDEX]  = indices
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	return mesh
+
+
+func _build_tree_dirt(trees: Array) -> void:
+	if trees.is_empty():
+		return
+
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 99999
+
+	var dirt_mesh := _make_dirt_circle_mesh()
+	var dirt_mat  := StandardMaterial3D.new()
+	dirt_mat.albedo_color    = Color(0.25, 0.20, 0.12, 0.6)
+	dirt_mat.roughness       = 0.92
+	dirt_mat.transparency    = BaseMaterial3D.TRANSPARENCY_ALPHA
+	dirt_mat.render_priority = -1
+
+	var xforms: Array = []
+	for i in trees.size():
+		var pt: Array = trees[i]
+		var tx := float(pt[0]); var tz := float(pt[2])
+		var ty := _terrain_y(tx, tz) + 0.02
+		rng.seed = i * 271828 + 31415
+		var r := rng.randf_range(2.0, 4.0)
+		var rot := rng.randf() * TAU
+		var basis := Basis(
+			Vector3(cos(rot) * r, 0.0, sin(rot) * r),
+			Vector3(0.0, 1.0, 0.0),
+			Vector3(-sin(rot) * r, 0.0, cos(rot) * r))
+		xforms.append(Transform3D(basis, Vector3(tx, ty, tz)))
+
+	print("ParkLoader: tree dirt circles = ", xforms.size())
+	_spawn_multimesh(dirt_mesh, dirt_mat, xforms, "TreeDirt")

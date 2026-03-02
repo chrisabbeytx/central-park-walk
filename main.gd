@@ -365,12 +365,15 @@ void fragment() {
 
 	// Large-scale colour variation
 	float f = clamp(fbm(world_pos.xz * 0.004, 4) * 0.45
-	              + fbm(world_pos.xz * 0.025, 3) * 0.35 + 0.30, 0.55, 1.1);
+	              + fbm(world_pos.xz * 0.025, 3) * 0.35 + 0.30, 0.48, 1.1);
 
-	ALBEDO          = alb * f;
+	// Blend toward brown dirt where noise is low (bare earth patches)
+	vec3 dirt = vec3(0.22, 0.17, 0.10);
+	float wear = smoothstep(0.60, 0.50, f);
+	ALBEDO          = mix(alb * f, dirt, wear * 0.7);
 	NORMAL_MAP      = nrm;
 	NORMAL_MAP_DEPTH = 1.6;   // stronger blade-level detail
-	ROUGHNESS       = 0.95;   // grass is almost fully diffuse
+	ROUGHNESS       = clamp(texture(grass_rough, uv).r * 0.15 + 0.85, 0.0, 1.0);
 	SPECULAR        = 0.0;    // no specular highlight on grass
 	METALLIC        = 0.0;
 }
