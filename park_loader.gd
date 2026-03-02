@@ -35,6 +35,10 @@ const BUILDING_GRID_CELL := 4.0
 var _path_grid: Dictionary = {}
 const PATH_GRID_CELL := 3.0
 
+# Junction fill: collect ribbon edge vertices at path endpoints
+# Key = Vector2i(round(x*10), round(z*10)) → Array of {left: Vector3, right: Vector3, hw: String, surface: String}
+var _junction_edges: Dictionary = {}
+
 # Slope threshold for furniture placement
 const BENCH_MAX_SLOPE := 0.27  # tan(~15°) — skip benches on steeper terrain
 
@@ -443,6 +447,8 @@ func _build_paths(paths: Array) -> void:
 		var parts: PackedStringArray = key.split("|")
 		add_child(_make_path_mesh(ground_groups[key], str(parts[0]), str(parts[1])))
 
+	_build_junction_fills()
+
 	# Collect bridge centroids so tunnels can detect if they're an underpass
 	var bridge_centroids: Array = []
 	for bp in bridge_paths:
@@ -574,6 +580,16 @@ func _make_path_mesh(paths: Array, hw: String, surface: String) -> MeshInstance3
 				var dz := pz - float(pts[i-1][2])
 				cum_u[i] = cum_u[i-1] + sqrt(dx*dx + dz*dz) / width
 
+		# Record edge vertices at endpoints for junction fill
+		for ep_idx in [0, n_pts - 1]:
+			var raw_pt: Array = path["points"][0] if ep_idx == 0 else path["points"][path["points"].size() - 1]
+			var jk := Vector2i(roundi(float(raw_pt[0]) * 10.0), roundi(float(raw_pt[2]) * 10.0))
+			if jk not in _junction_edges:
+				_junction_edges[jk] = []
+			(_junction_edges[jk] as Array).append({
+				"left": lefts[ep_idx], "right": rights[ep_idx],
+				"hw": hw, "surface": surface})
+
 		# Build quads between consecutive vertex pairs
 		for i in range(n_pts - 1):
 			var L0 := lefts[i];  var R0 := rights[i]
@@ -633,6 +649,68 @@ func _make_path_mesh(paths: Array, hw: String, surface: String) -> MeshInstance3
 	mi.mesh = mesh
 	mi.name = "Paths_" + hw + ("_" + surface if surface else "")
 	return mi
+
+
+func _build_junction_fills() -> void:
+	## At every node where 2+ path ribbons meet, emit a triangle fan to fill
+	## the wedge-shaped gap between ribbons.
+	var verts   := PackedVector3Array()
+	var normals := PackedVector3Array()
+	var uvs     := PackedVector2Array()
+
+	for jk: Vector2i in _junction_edges:
+		var edges: Array = _junction_edges[jk]
+		if edges.size() < 2:
+			continue
+
+		# Collect all unique edge vertices around this junction
+		# Lower fill slightly so it sits below path ribbons (fills gaps only)
+		var center := Vector3.ZERO
+		var ring: Array[Vector3] = []
+		for e: Dictionary in edges:
+			var lv: Vector3 = e["left"]
+			var rv: Vector3 = e["right"]
+			lv.y -= 0.02
+			rv.y -= 0.02
+			ring.append(lv)
+			ring.append(rv)
+			center += lv + rv
+		center /= float(ring.size())
+
+		# Sort ring vertices by angle around center (XZ plane)
+		ring.sort_custom(func(a: Vector3, b: Vector3) -> bool:
+			return atan2(a.x - center.x, a.z - center.z) < atan2(b.x - center.x, b.z - center.z))
+
+		# Triangle fan from center
+		var n_ring := ring.size()
+		for i in range(n_ring):
+			var v0 := ring[i]
+			var v1 := ring[(i + 1) % n_ring]
+			verts.append(center); verts.append(v0); verts.append(v1)
+			normals.append(Vector3.UP); normals.append(Vector3.UP); normals.append(Vector3.UP)
+			uvs.append(Vector2(0.5, 0.5))
+			uvs.append(Vector2(0.0, 0.0))
+			uvs.append(Vector2(1.0, 0.0))
+
+	if verts.is_empty():
+		return
+
+	var arrays: Array = []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts
+	arrays[Mesh.ARRAY_NORMAL] = normals
+	arrays[Mesh.ARRAY_TEX_UV] = uvs
+
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	# Use a generic paving material — most junctions are paving stones or asphalt
+	mesh.surface_set_material(0, _make_path_material("footway", ""))
+
+	var mi := MeshInstance3D.new()
+	mi.mesh = mesh
+	mi.name = "JunctionFills"
+	add_child(mi)
+	print("ParkLoader: junction fills = ", _junction_edges.size(), " nodes, ", verts.size() / 3, " tris")
 
 
 # ---------------------------------------------------------------------------
@@ -1324,6 +1402,7 @@ func _build_iron_railings(pts: Array, pt_y: PackedFloat32Array,
 	var mi := MeshInstance3D.new()
 	mi.mesh = mesh
 	mi.name = "Bridge_IronRailings"
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(mi)
 
 
@@ -1453,6 +1532,7 @@ func _build_wood_railings(pts: Array, pt_y: PackedFloat32Array,
 	var mi := MeshInstance3D.new()
 	mi.mesh = mesh
 	mi.name = "Bridge_WoodRailings"
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(mi)
 
 
@@ -2666,7 +2746,8 @@ func _build_buildings(buildings: Array) -> void:
 
 
 func _add_batch_mesh(verts: PackedVector3Array, normals: PackedVector3Array,
-					 color: Color, roughness: float, node_name: String) -> void:
+					 color: Color, roughness: float, node_name: String,
+					 no_shadow: bool = false) -> void:
 	if verts.is_empty():
 		return
 	var arrays: Array = []
@@ -2683,6 +2764,8 @@ func _add_batch_mesh(verts: PackedVector3Array, normals: PackedVector3Array,
 	var mi := MeshInstance3D.new()
 	mi.mesh = mesh
 	mi.name = node_name
+	if no_shadow:
+		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(mi)
 
 
@@ -3758,7 +3841,7 @@ func _build_barriers(barriers: Array) -> void:
 	# Iron fence mesh
 	if not fence_verts.is_empty():
 		_add_batch_mesh(fence_verts, fence_normals,
-						Color(0.15, 0.15, 0.14), 0.45, "IronFences")
+						Color(0.15, 0.15, 0.14), 0.45, "IronFences", true)
 	# Combined collision
 	if not col_verts.is_empty():
 		var body := StaticBody3D.new()
@@ -4060,7 +4143,7 @@ func _build_staircases(paths: Array) -> void:
 	# Handrail mesh
 	if not rail_verts.is_empty():
 		_add_batch_mesh(rail_verts, rail_normals,
-						Color(0.18, 0.18, 0.17), 0.40, "Handrails")
+						Color(0.18, 0.18, 0.17), 0.40, "Handrails", true)
 
 	# Stair collision
 	if not col_verts.is_empty():
