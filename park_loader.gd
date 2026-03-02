@@ -2114,7 +2114,7 @@ func _build_trees(trees: Array) -> void:
 	var bark_ao   := _load_tex("res://textures/Bark007_1K-JPG_AmbientOcclusion.jpg")
 
 	# Shared canopy planes mesh (3 crossed vertical quads)
-	var planes_mesh := _make_canopy_planes_mesh()
+	var planes_mesh := _make_canopy_volume_mesh()
 
 	# Canopy materials
 	var broad_mat := _make_canopy_mat(broad_tex)
@@ -2242,6 +2242,171 @@ func _make_canopy_planes_mesh() -> ArrayMesh:
 	return mesh
 
 
+func _make_canopy_volume_mesh() -> ArrayMesh:
+	# 3-layer volumetric canopy: outer shell (6 planes) + caps (2) + inner core (3)
+	# 44 verts / 22 tris — single draw call, uses COLOR.r for layer ID
+	var verts   := PackedVector3Array()
+	var normals := PackedVector3Array()
+	var uvs     := PackedVector2Array()
+	var colors  := PackedColorArray()
+	var indices := PackedInt32Array()
+
+	# --- Outer shell: 6 vertical planes at 30° spacing, pushed out 0.35 ---
+	for pi in 6:
+		var a   := PI * float(pi) / 6.0
+		var ca  := cos(a); var sa := sin(a)
+		var ox  := sa * 0.35   # push outward from center
+		var oz  := -ca * 0.35
+		var hw  := 0.7         # half-width
+		var base := verts.size()
+		verts.append_array(PackedVector3Array([
+			Vector3(ox - ca * hw, -1.0, oz - sa * hw),
+			Vector3(ox + ca * hw, -1.0, oz + sa * hw),
+			Vector3(ox + ca * hw,  1.0, oz + sa * hw),
+			Vector3(ox - ca * hw,  1.0, oz - sa * hw),
+		]))
+		uvs.append_array(PackedVector2Array([
+			Vector2(0.0, 1.0), Vector2(1.0, 1.0),
+			Vector2(1.0, 0.0), Vector2(0.0, 0.0),
+		]))
+		var n := Vector3(-sa, 0.0, ca)
+		for _j in 4:
+			normals.append(n)
+			colors.append(Color(0.0, 0.0, 0.0))  # layer_id = 0.0
+		indices.append_array(PackedInt32Array([
+			base, base+1, base+2, base, base+2, base+3,
+		]))
+
+	# --- Horizontal caps: 2 tilted quads filling the top-down view gap ---
+	var cap_configs := [
+		[0.3, 15.0, Vector3(1.0, 0.0, 0.0)],   # upper cap tilted around X
+		[-0.1, 15.0, Vector3(0.0, 0.0, 1.0)],   # lower cap tilted around Z
+	]
+	for cfg in cap_configs:
+		var cy: float   = cfg[0]
+		var tilt: float = deg_to_rad(cfg[1])
+		var axis: Vector3 = cfg[2]
+		var base := verts.size()
+		var corners := [
+			Vector3(-0.7, cy, -0.7),
+			Vector3( 0.7, cy, -0.7),
+			Vector3( 0.7, cy,  0.7),
+			Vector3(-0.7, cy,  0.7),
+		]
+		for ci in 4:
+			# Rotate corner around axis by tilt
+			var v: Vector3 = corners[ci]
+			v = v.rotated(axis, tilt)
+			verts.append(v)
+		uvs.append_array(PackedVector2Array([
+			Vector2(0.0, 1.0), Vector2(1.0, 1.0),
+			Vector2(1.0, 0.0), Vector2(0.0, 0.0),
+		]))
+		var n := Vector3(0.0, 1.0, 0.0).rotated(axis, tilt)
+		for _j in 4:
+			normals.append(n)
+			colors.append(Color(0.5, 0.0, 0.0))  # layer_id = 0.5
+		indices.append_array(PackedInt32Array([
+			base, base+1, base+2, base, base+2, base+3,
+		]))
+
+	# --- Inner core: 3 vertical planes at 60° spacing, smaller ---
+	for pi in 3:
+		var a   := PI * float(pi) / 3.0
+		var ca  := cos(a); var sa := sin(a)
+		var hw  := 0.55    # half-width (smaller than outer)
+		var hh  := 0.7     # half-height
+		var base := verts.size()
+		verts.append_array(PackedVector3Array([
+			Vector3(-ca * hw, -hh, -sa * hw),
+			Vector3( ca * hw, -hh,  sa * hw),
+			Vector3( ca * hw,  hh,  sa * hw),
+			Vector3(-ca * hw,  hh, -sa * hw),
+		]))
+		# UVs shrunk to [0.15, 0.85] — samples dense center of texture
+		uvs.append_array(PackedVector2Array([
+			Vector2(0.15, 0.85), Vector2(0.85, 0.85),
+			Vector2(0.85, 0.15), Vector2(0.15, 0.15),
+		]))
+		var n := Vector3(-sa, 0.0, ca)
+		for _j in 4:
+			normals.append(n)
+			colors.append(Color(1.0, 0.0, 0.0))  # layer_id = 1.0
+		indices.append_array(PackedInt32Array([
+			base, base+1, base+2, base, base+2, base+3,
+		]))
+
+	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts
+	arrays[Mesh.ARRAY_NORMAL] = normals
+	arrays[Mesh.ARRAY_TEX_UV] = uvs
+	arrays[Mesh.ARRAY_COLOR]  = colors
+	arrays[Mesh.ARRAY_INDEX]  = indices
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	return mesh
+
+
+func _make_bush_volume_mesh() -> ArrayMesh:
+	# Lighter volume mesh for bushes: 4 planes at 45° + 1 horizontal cap
+	# 20 verts / 10 tris
+	var verts   := PackedVector3Array()
+	var normals := PackedVector3Array()
+	var uvs     := PackedVector2Array()
+	var indices := PackedInt32Array()
+
+	# 4 vertical planes at 45° spacing, offset 0.2 from center
+	for pi in 4:
+		var a   := PI * float(pi) / 4.0
+		var ca  := cos(a); var sa := sin(a)
+		var ox  := sa * 0.2
+		var oz  := -ca * 0.2
+		var hw  := 0.65
+		var base := verts.size()
+		verts.append_array(PackedVector3Array([
+			Vector3(ox - ca * hw, -1.0, oz - sa * hw),
+			Vector3(ox + ca * hw, -1.0, oz + sa * hw),
+			Vector3(ox + ca * hw,  1.0, oz + sa * hw),
+			Vector3(ox - ca * hw,  1.0, oz - sa * hw),
+		]))
+		uvs.append_array(PackedVector2Array([
+			Vector2(0.0, 1.0), Vector2(1.0, 1.0),
+			Vector2(1.0, 0.0), Vector2(0.0, 0.0),
+		]))
+		var n := Vector3(-sa, 0.0, ca)
+		for _j in 4: normals.append(n)
+		indices.append_array(PackedInt32Array([
+			base, base+1, base+2, base, base+2, base+3,
+		]))
+
+	# 1 horizontal cap at Y=+0.2
+	var base := verts.size()
+	verts.append_array(PackedVector3Array([
+		Vector3(-0.65, 0.2, -0.65),
+		Vector3( 0.65, 0.2, -0.65),
+		Vector3( 0.65, 0.2,  0.65),
+		Vector3(-0.65, 0.2,  0.65),
+	]))
+	uvs.append_array(PackedVector2Array([
+		Vector2(0.0, 1.0), Vector2(1.0, 1.0),
+		Vector2(1.0, 0.0), Vector2(0.0, 0.0),
+	]))
+	var n := Vector3(0.0, 1.0, 0.0)
+	for _j in 4: normals.append(n)
+	indices.append_array(PackedInt32Array([
+		base, base+1, base+2, base, base+2, base+3,
+	]))
+
+	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts
+	arrays[Mesh.ARRAY_NORMAL] = normals
+	arrays[Mesh.ARRAY_TEX_UV] = uvs
+	arrays[Mesh.ARRAY_INDEX]  = indices
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	return mesh
+
+
 func _make_canopy_mat(tex: ImageTexture) -> ShaderMaterial:
 	var sh    := Shader.new()
 	sh.code    = _canopy_shader_code()
@@ -2274,9 +2439,9 @@ func _canopy_shader_code() -> String:
 render_mode cull_disabled, depth_prepass_alpha;
 
 uniform sampler2D canopy_tex : source_color, filter_linear_mipmap_anisotropic;
-uniform float alpha_cutoff = 0.18;
 
 varying vec3 tree_origin;
+varying float layer_id;
 
 float hash21(vec2 p) {
 	p = fract(p * vec2(127.1, 311.7));
@@ -2286,17 +2451,29 @@ float hash21(vec2 p) {
 
 void vertex() {
 	tree_origin = (MODEL_MATRIX * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+	layer_id = COLOR.r;
+
 	// Wind sway: phase from tree world position, weight by local height
 	float sway = max(VERTEX.y, 0.0);
 	VERTEX.x += sin(TIME * 0.7 + tree_origin.x * 0.04 + tree_origin.z * 0.06) * 0.09 * sway;
 	VERTEX.z += sin(TIME * 1.1 + tree_origin.z * 0.05) * 0.05 * sway;
+
+	// Cap billow: gentle vertical bob for horizontal caps (layer_id ~ 0.5)
+	float is_cap = step(0.4, layer_id) * step(layer_id, 0.6);
+	VERTEX.y += is_cap * sin(TIME * 0.9 + tree_origin.x * 0.05) * 0.06;
 }
 
 void fragment() {
 	vec4 tex = texture(canopy_tex, UV);
-	if (tex.a < alpha_cutoff) discard;
 
-	// Per-tree colour variation from world position hash (no INSTANCE_CUSTOM needed)
+	// Soft alpha edge: gradient fade instead of hard cookie-cutter
+	float alpha = smoothstep(0.08, 0.45, tex.a);
+	// Inner core (layer_id=1.0) gets opacity boost for dense center
+	alpha = mix(alpha, min(alpha * 1.4, 1.0), layer_id);
+	if (alpha < 0.01) discard;
+	ALPHA = alpha;
+
+	// Per-tree colour variation from world position hash
 	float h = hash21(floor(tree_origin.xz * 0.025));
 	float bright = 0.72 + h * 0.44;
 	float warm   = (h - 0.5) * 0.14;
@@ -2307,6 +2484,11 @@ void fragment() {
 	// Fake subsurface scattering: rim glows yellow-green (backlit leaves)
 	float sss = pow(1.0 - max(dot(NORMAL, VIEW), 0.0), 3.0) * 0.20;
 	col += vec3(0.09, 0.13, 0.01) * sss;
+
+	// Normal perturbation: hash-based jitter breaks flat-plane lighting
+	vec2 nj = vec2(hash21(UV * 73.1 + tree_origin.xz) - 0.5,
+	               hash21(UV * 91.3 + tree_origin.zx) - 0.5) * 0.25;
+	NORMAL = normalize(NORMAL + vec3(nj.x, 0.0, nj.y));
 
 	ALBEDO    = clamp(col, 0.0, 1.0);
 	ROUGHNESS = 0.88;
@@ -2369,7 +2551,7 @@ func _build_undergrowth(trees: Array, paths: Array) -> void:
 
 	var broad_tex := _load_tex("res://textures/tree_canopy_broad.png")
 	var bush_mat  := _make_bush_mat(broad_tex)
-	var bush_mesh := _make_canopy_planes_mesh()
+	var bush_mesh := _make_bush_volume_mesh()
 	var xforms: Array = []
 
 	# Scatter 1–4 bushes within 3–12m of ~60% of trees
@@ -2442,7 +2624,6 @@ func _bush_shader_code() -> String:
 render_mode cull_disabled, depth_prepass_alpha;
 
 uniform sampler2D canopy_tex : source_color, filter_linear_mipmap_anisotropic;
-uniform float alpha_cutoff = 0.20;
 
 varying vec3 bush_origin;
 
@@ -2461,7 +2642,10 @@ void vertex() {
 
 void fragment() {
 	vec4 tex = texture(canopy_tex, UV);
-	if (tex.a < alpha_cutoff) discard;
+	// Soft alpha edge for bushes
+	float alpha = smoothstep(0.10, 0.40, tex.a);
+	if (alpha < 0.01) discard;
+	ALPHA = alpha;
 
 	float h = hash21(floor(bush_origin.xz * 0.03));
 	float bright = 0.50 + h * 0.30;
