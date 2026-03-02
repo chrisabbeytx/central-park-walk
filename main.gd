@@ -27,9 +27,9 @@ var _latlon_label:  Label
 # Day/night cycle
 # ---------------------------------------------------------------------------
 var _time_of_day: float = 6.0        # hours [0..24), start at dawn
-var _time_speed: float  = 0.004      # game-hours per real-second (~100 min full cycle)
+var _time_speed: float  = 0.001      # game-hours per real-second (~400 min full cycle)
 var _time_speed_idx: int = 0
-const TIME_SPEEDS: Array = [0.004, 0.04, 0.4, 0.0]
+const TIME_SPEEDS: Array = [0.001, 0.01, 0.1, 0.0]
 const TIME_SPEED_NAMES: Array = ["1x", "10x", "100x", "Paused"]
 
 var _env: Environment
