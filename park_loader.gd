@@ -46,6 +46,7 @@ var lamppost_material: StandardMaterial3D
 const SPLAT_RES := 4096
 const SPLAT_FEATHER := 1.5  # metres — soft edge transition width
 var splat_texture: ImageTexture
+var tunnel_depressions: Array = []  # [{x, z, dx, dz, length, hw, max_depth}]
 
 
 # ---------------------------------------------------------------------------
@@ -1789,6 +1790,32 @@ func _build_tunnel(path: Dictionary) -> void:
 
 	# Portal arches at tunnel body entrance/exit (not at ramp start)
 	_build_tunnel_portals(pts, width, TUNNEL_H, tun_mat)
+
+	# Export depression data for terrain carving — entry ramp (linearly deepens)
+	tunnel_depressions.append({
+		"x": p_first.x, "z": p_first.z,
+		"dx": -dir_in.x, "dz": -dir_in.y,
+		"length": RAMP_LEN, "hw": hw2, "max_depth": TUNNEL_H, "ramp": true
+	})
+	# Exit ramp (linearly deepens)
+	tunnel_depressions.append({
+		"x": p_last.x, "z": p_last.z,
+		"dx": dir_out.x, "dz": dir_out.y,
+		"length": RAMP_LEN, "hw": hw2, "max_depth": TUNNEL_H, "ramp": true
+	})
+	# Tunnel body — full depth along entire length
+	for i in range(pts.size() - 1):
+		var bx1 := float(pts[i][0]); var bz1 := float(pts[i][2])
+		var bx2 := float(pts[i+1][0]); var bz2 := float(pts[i+1][2])
+		var bseg := Vector2(bx2 - bx1, bz2 - bz1)
+		var blen := bseg.length()
+		if blen < 0.01:
+			continue
+		tunnel_depressions.append({
+			"x": bx1, "z": bz1,
+			"dx": bseg.x / blen, "dz": bseg.y / blen,
+			"length": blen, "hw": hw2, "max_depth": TUNNEL_H, "ramp": false
+		})
 
 
 func _build_tunnel_portals(pts: Array, width: float, height: float, mat: Material) -> void:
