@@ -581,6 +581,53 @@ const PARAPET_T        := 0.15  # parapet thickness
 const BRIDGE_RAMP_FRAC := 0.35  # fraction of bridge path used as ramp at each end
 const TUNNEL_H         := 3.4   # clear height inside tunnel (metres above path)
 
+# ---------------------------------------------------------------------------
+# Bridge style classification
+# ---------------------------------------------------------------------------
+enum BridgeStyle { STONE, CAST_IRON, RUSTIC_WOOD, BRICK, DRIVE }
+
+const BRIDGE_NAME_STYLE := {
+	# Cast iron (~5)
+	"Bow Bridge": BridgeStyle.CAST_IRON,
+	"Bridge No. 24": BridgeStyle.CAST_IRON,
+	"Bridge No. 27": BridgeStyle.CAST_IRON,
+	"Bridge No. 28": BridgeStyle.CAST_IRON,
+	"Pinebank Arch": BridgeStyle.CAST_IRON,
+	# Stone (~12)
+	"Gapstow Bridge": BridgeStyle.STONE,
+	"Glade Arch": BridgeStyle.STONE,
+	"Ramble Stone Arch": BridgeStyle.STONE,
+	"Glen Span Arch": BridgeStyle.STONE,
+	"Springbanks Arch": BridgeStyle.STONE,
+	"Huddlestone Arch": BridgeStyle.STONE,
+	"Trefoil Arch": BridgeStyle.STONE,
+	"Dalehead Arch": BridgeStyle.STONE,
+	"Greyshot Arch": BridgeStyle.STONE,
+	"Denesmouth Arch": BridgeStyle.STONE,
+	"Eaglevale Bridge": BridgeStyle.STONE,
+	"Balcony Bridge": BridgeStyle.STONE,
+	# Rustic wood (~3)
+	"Oak Bridge": BridgeStyle.RUSTIC_WOOD,
+	"Ravine Rustic Bridge": BridgeStyle.RUSTIC_WOOD,
+	"Ramble Rustic Bridge": BridgeStyle.RUSTIC_WOOD,
+	# Brick (~4)
+	"Playmates Arch": BridgeStyle.BRICK,
+	"Willowdell Arch": BridgeStyle.BRICK,
+	"Winterdale Arch": BridgeStyle.BRICK,
+	"Green Gap Arch": BridgeStyle.BRICK,
+}
+
+func _bridge_style(bname: String) -> int:
+	if bname.is_empty():
+		return BridgeStyle.STONE
+	if BRIDGE_NAME_STYLE.has(bname):
+		return BRIDGE_NAME_STYLE[bname]
+	# Partial match for Drive segments
+	var lower := bname.to_lower()
+	if lower.contains("drive"):
+		return BridgeStyle.DRIVE
+	return BridgeStyle.STONE
+
 func _subdivide_pts(pts: Array, max_seg: float) -> Array:
 	## Ensure no segment exceeds max_seg metres by inserting linearly interpolated points.
 	var out: Array = [pts[0]]
@@ -599,6 +646,13 @@ func _subdivide_pts(pts: Array, max_seg: float) -> Array:
 func _build_bridge(path: Dictionary) -> void:
 	var hw:   String = str(path.get("highway", "path"))
 	var surf: String = str(path.get("surface", ""))
+	var bridge_name: String = str(path.get("bridge_name", ""))
+	var style: int = _bridge_style(bridge_name)
+	if not bridge_name.is_empty():
+		var style_names := {BridgeStyle.STONE: "STONE", BridgeStyle.CAST_IRON: "CAST_IRON",
+			BridgeStyle.RUSTIC_WOOD: "RUSTIC_WOOD", BridgeStyle.BRICK: "BRICK",
+			BridgeStyle.DRIVE: "DRIVE"}
+		print("  Bridge: ", bridge_name, " → ", style_names.get(style, "STONE"))
 	var raw_pts: Array = path["points"]
 	if raw_pts.size() < 2:
 		return
@@ -617,6 +671,19 @@ func _build_bridge(path: Dictionary) -> void:
 	var rw_alb := _load_tex("res://textures/rock_wall_diff.jpg")
 	var rw_nrm := _load_tex("res://textures/rock_wall_nrm.jpg")
 	var rw_rgh := _load_tex("res://textures/rock_wall_rgh.jpg")
+
+	# Per-style material tints
+	var soffit_tint := Color(0.78, 0.76, 0.72)
+	var parapet_tint := Color(0.82, 0.80, 0.76)
+	var abut_tint := Color(0.80, 0.78, 0.74)
+	match style:
+		BridgeStyle.CAST_IRON:
+			soffit_tint = Color(0.72, 0.70, 0.68)
+			abut_tint = Color(0.70, 0.68, 0.65)
+		BridgeStyle.BRICK:
+			soffit_tint = Color(0.60, 0.40, 0.30)
+			parapet_tint = Color(0.65, 0.42, 0.32)
+			abut_tint = Color(0.62, 0.41, 0.31)
 
 	# ----------------------------------------------------------------
 	# Cumulative arc lengths
@@ -812,61 +879,31 @@ func _build_bridge(path: Dictionary) -> void:
 		var sof_mesh := ArrayMesh.new()
 		sof_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, sof_arrays)
 		sof_mesh.surface_set_material(0, _make_stone_material(rw_alb, rw_nrm, rw_rgh,
-				Color(0.78, 0.76, 0.72)))
+				soffit_tint))
 		var sof_mi := MeshInstance3D.new()
 		sof_mi.mesh = sof_mesh
 		sof_mi.name = "Bridge_Soffit"
 		add_child(sof_mi)
 
 	# ----------------------------------------------------------------
-	# Parapet walls (rock_wall texture) — only on bridges long enough for an
-	# elevated span. Short stream crossings (< 12m) skip parapets entirely.
+	# Parapet / railing — style-dependent
 	# ----------------------------------------------------------------
-	var par_verts   := PackedVector3Array()
-	var par_normals := PackedVector3Array()
 	var par_ramp_start := ramp_len * 0.3
 	var par_ramp_end   := total_len - ramp_len * 0.3
 	var _skip_parapets := total_len < 12.0
 
 	if not _skip_parapets:
-		for i in range(n_pts - 1):
-			# Skip segments fully within the ramp approach (no parapets there)
-			if cum_len[i + 1] < par_ramp_start or cum_len[i] > par_ramp_end:
-				continue
-			var p1 := Vector3(float(pts[i][0]),     pt_y[i],     float(pts[i][2]))
-			var p2 := Vector3(float(pts[i+1][0]),   pt_y[i+1],   float(pts[i+1][2]))
-			var seg2 := Vector2(p2.x - p1.x, p2.z - p1.z)
-			if seg2.length_squared() < 0.0001:
-				continue
-			var dv  := seg2.normalized()
-			var nv  := Vector2(-dv.y, dv.x)
-			var ohw := hw2 + PARAPET_T
-			for side in [-1.0, 1.0]:
-				var s: float = float(side)
-				var ox := nv.x * ohw * s
-				var oz := nv.y * ohw * s
-				var fa := Vector3(p1.x + ox, p1.y,              p1.z + oz)
-				var fb := Vector3(p2.x + ox, p2.y,              p2.z + oz)
-				var fc := Vector3(p2.x + ox, p2.y + PARAPET_H,  p2.z + oz)
-				var fd := Vector3(p1.x + ox, p1.y + PARAPET_H,  p1.z + oz)
-				par_verts.append_array(PackedVector3Array([fa, fb, fc, fa, fc, fd]))
-				var wall_n := Vector3(nv.x * s, 0.0, nv.y * s)
-				for _j in range(6):
-					par_normals.append(wall_n)
-
-	if not par_verts.is_empty():
-		var par_arrays: Array = []
-		par_arrays.resize(Mesh.ARRAY_MAX)
-		par_arrays[Mesh.ARRAY_VERTEX] = par_verts
-		par_arrays[Mesh.ARRAY_NORMAL] = par_normals
-		var par_mesh := ArrayMesh.new()
-		par_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, par_arrays)
-		par_mesh.surface_set_material(0, _make_stone_material(rw_alb, rw_nrm, rw_rgh,
-				Color(0.82, 0.80, 0.76)))
-		var par_mi := MeshInstance3D.new()
-		par_mi.mesh = par_mesh
-		par_mi.name = "Bridge_Parapets"
-		add_child(par_mi)
+		match style:
+			BridgeStyle.CAST_IRON:
+				_build_iron_railings(pts, pt_y, cum_len, n_pts, hw2,
+					par_ramp_start, par_ramp_end)
+			BridgeStyle.RUSTIC_WOOD:
+				_build_wood_railings(pts, pt_y, cum_len, n_pts, hw2,
+					par_ramp_start, par_ramp_end)
+			_:
+				_build_solid_parapets(pts, pt_y, cum_len, n_pts, hw2,
+					par_ramp_start, par_ramp_end, rw_alb, rw_nrm, rw_rgh,
+					parapet_tint)
 
 	# ----------------------------------------------------------------
 	# Abutment wing walls — only on bridges with real underpasses (>= 15m)
@@ -934,11 +971,293 @@ func _build_bridge(path: Dictionary) -> void:
 		var abut_mesh := ArrayMesh.new()
 		abut_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, abut_arrays)
 		abut_mesh.surface_set_material(0, _make_stone_material(rw_alb, rw_nrm, rw_rgh,
-				Color(0.80, 0.78, 0.74)))
+				abut_tint))
 		var abut_mi := MeshInstance3D.new()
 		abut_mi.mesh = abut_mesh
 		abut_mi.name = "Bridge_Abutments"
 		add_child(abut_mi)
+
+
+# ---------------------------------------------------------------------------
+# Bridge railing helpers
+# ---------------------------------------------------------------------------
+func _build_solid_parapets(pts: Array, pt_y: PackedFloat32Array,
+		cum_len: PackedFloat32Array, n_pts: int, hw2: float,
+		ramp_start: float, ramp_end: float,
+		rw_alb: ImageTexture, rw_nrm: ImageTexture, rw_rgh: ImageTexture,
+		tint: Color) -> void:
+	var par_verts   := PackedVector3Array()
+	var par_normals := PackedVector3Array()
+	for i in range(n_pts - 1):
+		if cum_len[i + 1] < ramp_start or cum_len[i] > ramp_end:
+			continue
+		var p1 := Vector3(float(pts[i][0]),     pt_y[i],     float(pts[i][2]))
+		var p2 := Vector3(float(pts[i+1][0]),   pt_y[i+1],   float(pts[i+1][2]))
+		var seg2 := Vector2(p2.x - p1.x, p2.z - p1.z)
+		if seg2.length_squared() < 0.0001:
+			continue
+		var dv  := seg2.normalized()
+		var nv  := Vector2(-dv.y, dv.x)
+		var ohw := hw2 + PARAPET_T
+		for side in [-1.0, 1.0]:
+			var s: float = float(side)
+			var ox := nv.x * ohw * s
+			var oz := nv.y * ohw * s
+			var fa := Vector3(p1.x + ox, p1.y,              p1.z + oz)
+			var fb := Vector3(p2.x + ox, p2.y,              p2.z + oz)
+			var fc := Vector3(p2.x + ox, p2.y + PARAPET_H,  p2.z + oz)
+			var fd := Vector3(p1.x + ox, p1.y + PARAPET_H,  p1.z + oz)
+			par_verts.append_array(PackedVector3Array([fa, fb, fc, fa, fc, fd]))
+			var wall_n := Vector3(nv.x * s, 0.0, nv.y * s)
+			for _j in range(6):
+				par_normals.append(wall_n)
+	if par_verts.is_empty():
+		return
+	var par_arrays: Array = []
+	par_arrays.resize(Mesh.ARRAY_MAX)
+	par_arrays[Mesh.ARRAY_VERTEX] = par_verts
+	par_arrays[Mesh.ARRAY_NORMAL] = par_normals
+	var par_mesh := ArrayMesh.new()
+	par_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, par_arrays)
+	par_mesh.surface_set_material(0, _make_stone_material(rw_alb, rw_nrm, rw_rgh, tint))
+	var par_mi := MeshInstance3D.new()
+	par_mi.mesh = par_mesh
+	par_mi.name = "Bridge_Parapets"
+	add_child(par_mi)
+
+
+func _build_iron_railings(pts: Array, pt_y: PackedFloat32Array,
+		cum_len: PackedFloat32Array, n_pts: int, hw2: float,
+		ramp_start: float, ramp_end: float) -> void:
+	## Cast-iron railings: thin posts every ~2m + 3 horizontal rails at 15%/50%/95% of PARAPET_H.
+	var rail_verts   := PackedVector3Array()
+	var rail_normals := PackedVector3Array()
+	var rail_h := [PARAPET_H * 0.15, PARAPET_H * 0.50, PARAPET_H * 0.95]
+	var rail_thick := 0.03   # horizontal rail thickness
+	var post_w := 0.05       # post width (square cross-section)
+	var post_spacing := 2.0  # metres between posts
+	var ohw := hw2 + 0.02    # slight offset from deck edge
+
+	# Horizontal rails: continuous quads per segment
+	for i in range(n_pts - 1):
+		if cum_len[i + 1] < ramp_start or cum_len[i] > ramp_end:
+			continue
+		var p1 := Vector3(float(pts[i][0]), pt_y[i], float(pts[i][2]))
+		var p2 := Vector3(float(pts[i+1][0]), pt_y[i+1], float(pts[i+1][2]))
+		var seg2 := Vector2(p2.x - p1.x, p2.z - p1.z)
+		if seg2.length_squared() < 0.0001:
+			continue
+		var dv := seg2.normalized()
+		var nv := Vector2(-dv.y, dv.x)
+		for rh in rail_h:
+			for side in [-1.0, 1.0]:
+				var s: float = float(side)
+				var ox := nv.x * ohw * s
+				var oz := nv.y * ohw * s
+				var ra := Vector3(p1.x + ox, p1.y + rh, p1.z + oz)
+				var rb := Vector3(p2.x + ox, p2.y + rh, p2.z + oz)
+				var rc := Vector3(p2.x + ox, p2.y + rh + rail_thick, p2.z + oz)
+				var rd := Vector3(p1.x + ox, p1.y + rh + rail_thick, p1.z + oz)
+				rail_verts.append_array(PackedVector3Array([ra, rb, rc, ra, rc, rd]))
+				var wall_n := Vector3(nv.x * s, 0.0, nv.y * s)
+				for _j in range(6):
+					rail_normals.append(wall_n)
+
+	# Vertical posts
+	var total_len := cum_len[n_pts - 1]
+	var d := ramp_start
+	while d <= ramp_end:
+		# Find interpolated position along path at distance d
+		var idx := 0
+		for k in range(n_pts - 1):
+			if cum_len[k + 1] >= d:
+				idx = k
+				break
+		var seg_d := cum_len[idx + 1] - cum_len[idx]
+		var t_val := 0.0
+		if seg_d > 0.001:
+			t_val = (d - cum_len[idx]) / seg_d
+		var px := lerpf(float(pts[idx][0]), float(pts[idx + 1][0]), t_val)
+		var pz := lerpf(float(pts[idx][2]), float(pts[idx + 1][2]), t_val)
+		var py := lerpf(pt_y[idx], pt_y[idx + 1], t_val)
+		var seg2 := Vector2(float(pts[idx+1][0]) - float(pts[idx][0]),
+							float(pts[idx+1][2]) - float(pts[idx][2]))
+		if seg2.length_squared() < 0.001:
+			d += post_spacing
+			continue
+		var nv := Vector2(-seg2.normalized().y, seg2.normalized().x)
+
+		for side in [-1.0, 1.0]:
+			var s: float = float(side)
+			var cx := px + nv.x * ohw * s
+			var cz := pz + nv.y * ohw * s
+			# Post as 4 quads (front/back/left/right faces)
+			var phw := post_w * 0.5
+			for face in range(4):
+				var fn: Vector3
+				var c0: Vector3; var c1: Vector3; var c2: Vector3; var c3: Vector3
+				var base_y := py
+				var top_y := py + PARAPET_H
+				if face == 0:   # +X face
+					fn = Vector3(1, 0, 0)
+					c0 = Vector3(cx + phw, base_y, cz - phw)
+					c1 = Vector3(cx + phw, base_y, cz + phw)
+					c2 = Vector3(cx + phw, top_y,  cz + phw)
+					c3 = Vector3(cx + phw, top_y,  cz - phw)
+				elif face == 1: # -X face
+					fn = Vector3(-1, 0, 0)
+					c0 = Vector3(cx - phw, base_y, cz + phw)
+					c1 = Vector3(cx - phw, base_y, cz - phw)
+					c2 = Vector3(cx - phw, top_y,  cz - phw)
+					c3 = Vector3(cx - phw, top_y,  cz + phw)
+				elif face == 2: # +Z face
+					fn = Vector3(0, 0, 1)
+					c0 = Vector3(cx + phw, base_y, cz + phw)
+					c1 = Vector3(cx - phw, base_y, cz + phw)
+					c2 = Vector3(cx - phw, top_y,  cz + phw)
+					c3 = Vector3(cx + phw, top_y,  cz + phw)
+				else:           # -Z face
+					fn = Vector3(0, 0, -1)
+					c0 = Vector3(cx - phw, base_y, cz - phw)
+					c1 = Vector3(cx + phw, base_y, cz - phw)
+					c2 = Vector3(cx + phw, top_y,  cz - phw)
+					c3 = Vector3(cx - phw, top_y,  cz - phw)
+				rail_verts.append_array(PackedVector3Array([c0, c1, c2, c0, c2, c3]))
+				for _j in range(6):
+					rail_normals.append(fn)
+		d += post_spacing
+
+	if rail_verts.is_empty():
+		return
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(0.12, 0.12, 0.14)
+	mat.metallic = 0.6
+	mat.roughness = 0.35
+	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = rail_verts
+	arrays[Mesh.ARRAY_NORMAL] = rail_normals
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	mesh.surface_set_material(0, mat)
+	var mi := MeshInstance3D.new()
+	mi.mesh = mesh
+	mi.name = "Bridge_IronRailings"
+	add_child(mi)
+
+
+func _build_wood_railings(pts: Array, pt_y: PackedFloat32Array,
+		cum_len: PackedFloat32Array, n_pts: int, hw2: float,
+		ramp_start: float, ramp_end: float) -> void:
+	## Rustic wood railings: chunky posts every ~2.5m + 2 horizontal rails at 35%/85% of PARAPET_H.
+	var rail_verts   := PackedVector3Array()
+	var rail_normals := PackedVector3Array()
+	var rail_h := [PARAPET_H * 0.35, PARAPET_H * 0.85]
+	var rail_thick := 0.06   # thicker than iron
+	var post_w := 0.10       # chunky square posts
+	var post_spacing := 2.5
+	var ohw := hw2 + 0.02
+
+	# Horizontal rails
+	for i in range(n_pts - 1):
+		if cum_len[i + 1] < ramp_start or cum_len[i] > ramp_end:
+			continue
+		var p1 := Vector3(float(pts[i][0]), pt_y[i], float(pts[i][2]))
+		var p2 := Vector3(float(pts[i+1][0]), pt_y[i+1], float(pts[i+1][2]))
+		var seg2 := Vector2(p2.x - p1.x, p2.z - p1.z)
+		if seg2.length_squared() < 0.0001:
+			continue
+		var dv := seg2.normalized()
+		var nv := Vector2(-dv.y, dv.x)
+		for rh in rail_h:
+			for side in [-1.0, 1.0]:
+				var s: float = float(side)
+				var ox := nv.x * ohw * s
+				var oz := nv.y * ohw * s
+				var ra := Vector3(p1.x + ox, p1.y + rh, p1.z + oz)
+				var rb := Vector3(p2.x + ox, p2.y + rh, p2.z + oz)
+				var rc := Vector3(p2.x + ox, p2.y + rh + rail_thick, p2.z + oz)
+				var rd := Vector3(p1.x + ox, p1.y + rh + rail_thick, p1.z + oz)
+				rail_verts.append_array(PackedVector3Array([ra, rb, rc, ra, rc, rd]))
+				var wall_n := Vector3(nv.x * s, 0.0, nv.y * s)
+				for _j in range(6):
+					rail_normals.append(wall_n)
+
+	# Vertical posts (same logic as iron but chunkier)
+	var d := ramp_start
+	while d <= ramp_end:
+		var idx := 0
+		for k in range(n_pts - 1):
+			if cum_len[k + 1] >= d:
+				idx = k
+				break
+		var seg_d := cum_len[idx + 1] - cum_len[idx]
+		var t_val := 0.0
+		if seg_d > 0.001:
+			t_val = (d - cum_len[idx]) / seg_d
+		var px := lerpf(float(pts[idx][0]), float(pts[idx + 1][0]), t_val)
+		var pz := lerpf(float(pts[idx][2]), float(pts[idx + 1][2]), t_val)
+		var py := lerpf(pt_y[idx], pt_y[idx + 1], t_val)
+		var seg2 := Vector2(float(pts[idx+1][0]) - float(pts[idx][0]),
+							float(pts[idx+1][2]) - float(pts[idx][2]))
+		if seg2.length_squared() < 0.001:
+			d += post_spacing
+			continue
+		var nv := Vector2(-seg2.normalized().y, seg2.normalized().x)
+
+		for side in [-1.0, 1.0]:
+			var s: float = float(side)
+			var cx := px + nv.x * ohw * s
+			var cz := pz + nv.y * ohw * s
+			var phw := post_w * 0.5
+			for face in range(4):
+				var fn: Vector3
+				var c0: Vector3; var c1: Vector3; var c2: Vector3; var c3: Vector3
+				var base_y := py
+				var top_y := py + PARAPET_H
+				if face == 0:
+					fn = Vector3(1, 0, 0)
+					c0 = Vector3(cx + phw, base_y, cz - phw)
+					c1 = Vector3(cx + phw, base_y, cz + phw)
+					c2 = Vector3(cx + phw, top_y,  cz + phw)
+					c3 = Vector3(cx + phw, top_y,  cz - phw)
+				elif face == 1:
+					fn = Vector3(-1, 0, 0)
+					c0 = Vector3(cx - phw, base_y, cz + phw)
+					c1 = Vector3(cx - phw, base_y, cz - phw)
+					c2 = Vector3(cx - phw, top_y,  cz - phw)
+					c3 = Vector3(cx - phw, top_y,  cz + phw)
+				elif face == 2:
+					fn = Vector3(0, 0, 1)
+					c0 = Vector3(cx + phw, base_y, cz + phw)
+					c1 = Vector3(cx - phw, base_y, cz + phw)
+					c2 = Vector3(cx - phw, top_y,  cz + phw)
+					c3 = Vector3(cx + phw, top_y,  cz + phw)
+				else:
+					fn = Vector3(0, 0, -1)
+					c0 = Vector3(cx - phw, base_y, cz - phw)
+					c1 = Vector3(cx + phw, base_y, cz - phw)
+					c2 = Vector3(cx + phw, top_y,  cz - phw)
+					c3 = Vector3(cx - phw, top_y,  cz - phw)
+				rail_verts.append_array(PackedVector3Array([c0, c1, c2, c0, c2, c3]))
+				for _j in range(6):
+					rail_normals.append(fn)
+		d += post_spacing
+
+	if rail_verts.is_empty():
+		return
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(0.35, 0.25, 0.15)
+	mat.roughness = 0.85
+	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = rail_verts
+	arrays[Mesh.ARRAY_NORMAL] = rail_normals
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	mesh.surface_set_material(0, mat)
+	var mi := MeshInstance3D.new()
+	mi.mesh = mesh
+	mi.name = "Bridge_WoodRailings"
+	add_child(mi)
 
 
 # ---------------------------------------------------------------------------

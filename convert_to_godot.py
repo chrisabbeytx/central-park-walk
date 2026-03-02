@@ -316,8 +316,24 @@ def main() -> None:
             entry["layer"] = layer
         if is_bridge:
             entry["bridge"] = True
+            bridge_name = tags.get("name", "")
+            if bridge_name:
+                entry["bridge_name"] = bridge_name
         if is_tunnel:
             entry["tunnel"] = True
+        # Staircase metadata (previously discarded)
+        if hw == "steps":
+            sc = tags.get("step_count", "")
+            if sc:
+                try:
+                    entry["step_count"] = int(sc)
+                except ValueError:
+                    pass
+            if tags.get("handrail") in ("yes", "both", "left", "right"):
+                entry["handrail"] = tags["handrail"]
+            inc = tags.get("incline", "")
+            if inc:
+                entry["incline"] = inc
         paths_out.append(entry)
 
     # -------------------------------------------------------------------
@@ -438,6 +454,88 @@ def main() -> None:
             trees_out.append([x, round(terrain(x, z), 2), z])
 
     # -------------------------------------------------------------------
+    # Barriers  – walls, fences, retaining walls, hedges, guard rails
+    # -------------------------------------------------------------------
+    BARRIER_HEIGHTS = {
+        "wall": 1.2, "retaining_wall": 1.8, "fence": 1.5,
+        "hedge": 1.2, "guard_rail": 0.9, "city_wall": 2.5,
+    }
+    barriers_out = []
+    for wid, tags in ways_tags.items():
+        btype = tags.get("barrier")
+        if btype not in BARRIER_HEIGHTS:
+            continue
+        nids = ways_nodes.get(wid, [])
+        pts = []
+        for nid in nids:
+            if nid in nodes_ll:
+                x, z = project(*nodes_ll[nid])
+                pts.append([x, round(terrain(x, z), 2), z])
+        if len(pts) < 2:
+            continue
+        h = BARRIER_HEIGHTS[btype]
+        raw_h = tags.get("height", "")
+        if raw_h:
+            try:
+                h = float(raw_h.replace("m", "").strip())
+            except ValueError:
+                pass
+        barriers_out.append({
+            "type":     btype,
+            "height":   round(h, 1),
+            "points":   pts,
+            "material": tags.get("material", ""),
+        })
+
+    # -------------------------------------------------------------------
+    # Statues, monuments, memorials, artworks
+    # -------------------------------------------------------------------
+    statues_out = []
+    # From nodes
+    for e in elements:
+        if e["type"] != "node" or "lat" not in e:
+            continue
+        tags = e.get("tags", {})
+        stype = None
+        if tags.get("historic") in ("memorial", "monument"):
+            stype = tags["historic"]
+        elif tags.get("tourism") == "artwork":
+            stype = tags.get("artwork_type", "statue")
+        elif tags.get("man_made") == "obelisk":
+            stype = "obelisk"
+        if not stype:
+            continue
+        x, z = project(e["lat"], e["lon"])
+        statues_out.append({
+            "name":     tags.get("name", ""),
+            "type":     stype,
+            "position": [x, round(terrain(x, z), 2), z],
+        })
+    # From ways (some monuments are mapped as areas)
+    for wid, tags in ways_tags.items():
+        stype = None
+        if tags.get("historic") in ("memorial", "monument"):
+            stype = tags["historic"]
+        elif tags.get("man_made") == "obelisk":
+            stype = "obelisk"
+        if not stype:
+            continue
+        nids = ways_nodes.get(wid, [])
+        pts_2d = []
+        for nid in nids:
+            if nid in nodes_ll:
+                pts_2d.append(list(project(*nodes_ll[nid])))
+        if len(pts_2d) < 2:
+            continue
+        cx = sum(p[0] for p in pts_2d) / len(pts_2d)
+        cz = sum(p[1] for p in pts_2d) / len(pts_2d)
+        statues_out.append({
+            "name":     tags.get("name", ""),
+            "type":     stype,
+            "position": [cx, round(terrain(cx, cz), 2), cz],
+        })
+
+    # -------------------------------------------------------------------
     # Write park_data.json
     # -------------------------------------------------------------------
     out = {
@@ -451,6 +549,8 @@ def main() -> None:
         "water":              water_out,
         "trees":              trees_out,
         "buildings":          buildings_out,
+        "barriers":           barriers_out,
+        "statues":            statues_out,
     }
 
     with open("park_data.json", "w") as fh:
@@ -462,6 +562,8 @@ def main() -> None:
     print(f"Water:      {len(water_out):5d}  bodies")
     print(f"Trees:      {len(trees_out):5d}")
     print(f"Buildings:  {len(buildings_out):5d}")
+    print(f"Barriers:   {len(barriers_out):5d}")
+    print(f"Statues:    {len(statues_out):5d}")
     print(f"\nSaved → park_data.json  ({size_kb:.0f} KB)")
 
 
