@@ -2435,16 +2435,23 @@ float gnoise(vec2 p) {
 	               dot(ghash(i+vec2(1,1)), f-vec2(1,1)), u.x), u.y);
 }
 
-// World-space wave normal from two overlapping noise layers
+// World-space wave normal from three overlapping noise layers
 vec3 wave_normal(vec2 uv) {
 	float t  = TIME;
-	vec2 o1  = vec2( t * 0.11,  t * 0.07);
-	vec2 o2  = vec2(-t * 0.09,  t * 0.13);
-	float e  = 0.05;
-	float h   = gnoise(uv       + o1) * 0.65 + gnoise(uv * 1.9       + o2) * 0.35;
-	float hx  = gnoise(uv+vec2(e,0)+o1)*0.65 + gnoise((uv+vec2(e,0))*1.9+o2)*0.35;
-	float hz  = gnoise(uv+vec2(0,e)+o1)*0.65 + gnoise((uv+vec2(0,e))*1.9+o2)*0.35;
-	return normalize(vec3(-(hx - h) / e * 0.18, 1.0, -(hz - h) / e * 0.18));
+	vec2 o1  = vec2( t * 0.08,  t * 0.05);   // slow drift
+	vec2 o2  = vec2(-t * 0.12,  t * 0.09);   // medium ripples
+	vec2 o3  = vec2( t * 0.18, -t * 0.14);   // fine detail
+	float e  = 0.04;
+	float h   = gnoise(uv * 0.7 + o1) * 0.4
+	          + gnoise(uv * 1.8 + o2) * 0.35
+	          + gnoise(uv * 4.5 + o3) * 0.25;
+	float hx  = gnoise((uv + vec2(e, 0.0)) * 0.7 + o1) * 0.4
+	          + gnoise((uv + vec2(e, 0.0)) * 1.8 + o2) * 0.35
+	          + gnoise((uv + vec2(e, 0.0)) * 4.5 + o3) * 0.25;
+	float hz  = gnoise((uv + vec2(0.0, e)) * 0.7 + o1) * 0.4
+	          + gnoise((uv + vec2(0.0, e)) * 1.8 + o2) * 0.35
+	          + gnoise((uv + vec2(0.0, e)) * 4.5 + o3) * 0.25;
+	return normalize(vec3(-(hx - h) / e * 0.12, 1.0, -(hz - h) / e * 0.12));
 }
 
 void vertex() {
@@ -2460,18 +2467,24 @@ void vertex() {
 }
 
 void fragment() {
-	vec2 uv      = world_pos.xz / 7.0;
+	vec2 uv      = world_pos.xz / 3.5;   // finer scale = less blobby
 	vec3 wave_nrm = wave_normal(uv);
 
-	float wave_h = gnoise(uv + vec2(TIME * 0.11, TIME * 0.07));
+	// Three noise layers at different scales for natural variation
+	float t = TIME;
+	float n_large = gnoise(uv * 0.4 + vec2(t * 0.06, t * 0.04));
+	float n_med   = gnoise(uv * 1.2 + vec2(-t * 0.1, t * 0.08));
+	float n_fine  = gnoise(uv * 3.5 + vec2(t * 0.15, -t * 0.12));
+	float wave_h  = n_large * 0.4 + n_med * 0.35 + n_fine * 0.25;
 
-	vec3 deep    = vec3(0.03, 0.08, 0.06);
-	vec3 shallow = vec3(0.08, 0.18, 0.12);
-	vec3 col     = mix(deep, shallow, wave_h * 0.5 + 0.5);
+	vec3 deep    = vec3(0.025, 0.065, 0.055);
+	vec3 shallow = vec3(0.06, 0.14, 0.10);
+	// Subtle blend — mostly deep, shallow only at wave peaks
+	vec3 col     = mix(deep, shallow, smoothstep(-0.3, 0.6, wave_h));
 
 	NORMAL    = normalize((VIEW_MATRIX * vec4(wave_nrm, 0.0)).xyz);
 	ALBEDO    = col;
-	ROUGHNESS = 0.18;
+	ROUGHNESS = 0.15;
 	METALLIC  = 0.0;
 	SPECULAR  = 0.5;
 }
