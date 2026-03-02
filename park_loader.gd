@@ -33,6 +33,29 @@ func _hw_width(hw: String) -> float:
 		_:            return 2.5   # "path" and unknowns
 
 
+func _hw_y_priority(hw: String) -> float:
+	## Higher-priority paths render on top at crossings.
+	match hw:
+		"pedestrian": return 0.05
+		"footway":    return 0.04
+		"steps":      return 0.03
+		"cycleway":   return 0.02
+		"path":       return 0.01
+		"track":      return 0.00
+		_:            return 0.01
+
+
+func _hw_render_priority(hw: String) -> int:
+	match hw:
+		"pedestrian": return 5
+		"footway":    return 4
+		"steps":      return 3
+		"cycleway":   return 2
+		"path":       return 1
+		"track":      return 0
+		_:            return 1
+
+
 func _path_color(hw: String, surface: String) -> Color:
 	# Surface tag takes priority; highway type is the fallback
 	match surface:
@@ -125,6 +148,8 @@ func _make_path_material(hw: String, surface: String) -> Material:
 	if tex_rgh:
 		mat.set_shader_parameter("tex_rgh", tex_rgh)
 	mat.set_shader_parameter("tint",    _path_color(hw, surface))
+	mat.set_shader_parameter("path_y_offset", PATH_Y + _hw_y_priority(hw))
+	mat.render_priority = _hw_render_priority(hw)
 	# Heightmap for vertex-shader terrain snapping
 	if _hm_texture:
 		mat.set_shader_parameter("heightmap_tex", _hm_texture)
@@ -290,6 +315,8 @@ func _ready() -> void:
 	_build_shore_vegetation(data.get("water", []))
 	_build_labels(data.get("water", []))
 	_build_trees(data.get("trees", []))
+	_build_undergrowth(data.get("trees", []), data.get("paths", []))
+	_build_rocks(data.get("trees", []), data.get("water", []))
 	_build_boundary(data.get("boundary", []))
 	print("ParkLoader: done")
 
@@ -405,9 +432,10 @@ func _make_path_mesh(paths: Array, hw: String, surface: String) -> MeshInstance3
 			# Perpendicular (left-hand normal)
 			var nx := -tz; var nz := tx
 
-			# Edge positions
-			var lx := px + nx * hw2; var lz := pz + nz * hw2
-			var rx := px - nx * hw2; var rz := pz - nz * hw2
+			# Edge positions with organic roughness (2-frequency sine displacement)
+			var edge_noise := sin(px * 0.7 + pz * 0.3) * 0.06 + sin(px * 1.9 - pz * 1.3) * 0.04
+			var lx := px + nx * (hw2 + edge_noise); var lz := pz + nz * (hw2 + edge_noise)
+			var rx := px - nx * (hw2 + edge_noise); var rz := pz - nz * (hw2 + edge_noise)
 
 			# Sample terrain at each edge
 			var ly := _terrain_y(lx, lz)
@@ -1564,7 +1592,7 @@ func _build_shore_vegetation(water: Array) -> void:
 			continue
 
 		# Place reeds along every Nth shore vertex
-		var step := maxi(1, pts.size() / 80)  # ~80 reeds per water body max
+		var step := maxi(1, pts.size() / 200)  # ~200 reeds per water body
 		for pi in range(0, pts.size(), step):
 			var sx := float(pts[pi][0]); var sz := float(pts[pi][1])
 			var sy := _terrain_y(sx, sz)
@@ -1609,6 +1637,61 @@ func _build_shore_vegetation(water: Array) -> void:
 					normals.append(Vector3(1.0, 0.0, 0.0))
 				colors.append_array(PackedColorArray([
 					green, green, tip_color, green, tip_color, tip_color]))
+
+	# Inland grass tufts — shorter, wider clusters 1–3m from shore
+	for body in water:
+		var bname2: String = str(body.get("name", ""))
+		if bname2.to_lower().contains("fountain"):
+			continue
+		var pts2: Array = body["points"]
+		if pts2.size() < 3:
+			continue
+		var step2 := maxi(1, pts2.size() / 120)
+		for pi in range(0, pts2.size(), step2):
+			var sx := float(pts2[pi][0]); var sz := float(pts2[pi][1])
+			# Push outward (inland) from shore
+			var prev_i := (pi - 1 + pts2.size()) % pts2.size()
+			var next_i := (pi + 1) % pts2.size()
+			var dx := float(pts2[next_i][0]) - float(pts2[prev_i][0])
+			var dz := float(pts2[next_i][1]) - float(pts2[prev_i][1])
+			var tlen := sqrt(dx * dx + dz * dz)
+			if tlen < 0.01:
+				continue
+			var nx := -dz / tlen; var nz := dx / tlen
+			var off := rng.randf_range(1.0, 3.0)
+			var gx := sx + nx * off; var gz := sz + nz * off
+			var gy := _terrain_y(gx, gz)
+			# 2–4 short grass blades per cluster
+			var n_blades := rng.randi_range(2, 4)
+			for _bl in range(n_blades):
+				var bx := gx + rng.randf_range(-0.4, 0.4)
+				var bz := gz + rng.randf_range(-0.4, 0.4)
+				var by := _terrain_y(bx, bz)
+				var gh := rng.randf_range(0.3, 1.2)
+				var gw := rng.randf_range(0.03, 0.08)
+				var gsway := rng.randf_range(-0.10, 0.10)
+				var green := Color(
+					rng.randf_range(0.20, 0.38),
+					rng.randf_range(0.42, 0.62),
+					rng.randf_range(0.08, 0.18), 1.0)
+				var tip_c := Color(green.r * 0.8, green.g * 0.7, green.b * 0.6, 0.7)
+				var bl_l := Vector3(bx - gw, by - 0.05, bz)
+				var bl_r := Vector3(bx + gw, by - 0.05, bz)
+				var tl_l := Vector3(bx - gw * 0.2 + gsway, by + gh, bz)
+				var tl_r := Vector3(bx + gw * 0.2 + gsway, by + gh, bz)
+				verts.append_array(PackedVector3Array([bl_l, bl_r, tl_r, bl_l, tl_r, tl_l]))
+				for _j in range(6):
+					normals.append(Vector3(0.0, 0.0, 1.0))
+				colors.append_array(PackedColorArray([green, green, tip_c, green, tip_c, tip_c]))
+				# Cross blade
+				bl_l = Vector3(bx, by - 0.05, bz - gw)
+				bl_r = Vector3(bx, by - 0.05, bz + gw)
+				tl_l = Vector3(bx + gsway, by + gh, bz - gw * 0.2)
+				tl_r = Vector3(bx + gsway, by + gh, bz + gw * 0.2)
+				verts.append_array(PackedVector3Array([bl_l, bl_r, tl_r, bl_l, tl_r, tl_l]))
+				for _j in range(6):
+					normals.append(Vector3(1.0, 0.0, 0.0))
+				colors.append_array(PackedColorArray([green, green, tip_c, green, tip_c, tip_c]))
 
 	if verts.is_empty():
 		return
@@ -2272,6 +2355,285 @@ void fragment() {
 	METALLIC   = 0.0;
 }
 """
+
+
+# ---------------------------------------------------------------------------
+# Undergrowth bushes – scattered near trees and along path edges
+# ---------------------------------------------------------------------------
+func _build_undergrowth(trees: Array, paths: Array) -> void:
+	if trees.is_empty():
+		return
+
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 77777
+
+	var broad_tex := _load_tex("res://textures/tree_canopy_broad.png")
+	var bush_mat  := _make_bush_mat(broad_tex)
+	var bush_mesh := _make_canopy_planes_mesh()
+	var xforms: Array = []
+
+	# Scatter 1–4 bushes within 3–12m of ~60% of trees
+	for i in trees.size():
+		rng.seed = i * 314159 + 271828
+		if rng.randf() > 0.6:
+			continue
+		var pt: Array = trees[i]
+		var tx := float(pt[0]); var tz := float(pt[2])
+		var n_bushes := rng.randi_range(1, 4)
+		for _b in range(n_bushes):
+			var angle := rng.randf() * TAU
+			var dist  := rng.randf_range(3.0, 12.0)
+			var bx := tx + cos(angle) * dist
+			var bz := tz + sin(angle) * dist
+			var by := _terrain_y(bx, bz)
+			var r  := rng.randf_range(0.8, 2.2)
+			var h  := rng.randf_range(0.6, 1.6)
+			var rot := rng.randf() * TAU
+			var basis := Basis(
+				Vector3(cos(rot) * r, 0.0, sin(rot) * r),
+				Vector3(0.0, h, 0.0),
+				Vector3(-sin(rot) * r, 0.0, cos(rot) * r))
+			xforms.append(Transform3D(basis, Vector3(bx, by + h * 0.3, bz)))
+
+	# Scatter bushes along footway/path edges (every ~6m, 0.5–3m offset)
+	for path in paths:
+		var hw: String = str(path.get("highway", "path"))
+		if hw != "footway" and hw != "path":
+			continue
+		if bool(path.get("bridge", false)) or bool(path.get("tunnel", false)):
+			continue
+		var pts: Array = path["points"]
+		if pts.size() < 2:
+			continue
+		var cum := 0.0
+		var next_at := rng.randf_range(4.0, 8.0)
+		for pi in range(1, pts.size()):
+			var dx := float(pts[pi][0]) - float(pts[pi-1][0])
+			var dz := float(pts[pi][2]) - float(pts[pi-1][2])
+			cum += sqrt(dx * dx + dz * dz)
+			if cum >= next_at:
+				cum = 0.0
+				next_at = rng.randf_range(4.0, 8.0)
+				var px := float(pts[pi][0]); var pz := float(pts[pi][2])
+				var side := 1.0 if rng.randf() > 0.5 else -1.0
+				var off := rng.randf_range(0.5, 3.0)
+				# Perpendicular offset
+				var tlen := sqrt(dx * dx + dz * dz)
+				if tlen < 0.01:
+					continue
+				var nx := -dz / tlen * side; var nz := dx / tlen * side
+				var bx := px + nx * off; var bz := pz + nz * off
+				var by := _terrain_y(bx, bz)
+				var r  := rng.randf_range(0.6, 1.5)
+				var h  := rng.randf_range(0.4, 1.2)
+				var rot := rng.randf() * TAU
+				var basis := Basis(
+					Vector3(cos(rot) * r, 0.0, sin(rot) * r),
+					Vector3(0.0, h, 0.0),
+					Vector3(-sin(rot) * r, 0.0, cos(rot) * r))
+				xforms.append(Transform3D(basis, Vector3(bx, by + h * 0.3, bz)))
+
+	print("ParkLoader: undergrowth bushes = ", xforms.size())
+	_spawn_multimesh(bush_mesh, bush_mat, xforms, "Undergrowth")
+
+
+func _bush_shader_code() -> String:
+	return """shader_type spatial;
+render_mode cull_disabled, depth_prepass_alpha;
+
+uniform sampler2D canopy_tex : source_color, filter_linear_mipmap_anisotropic;
+uniform float alpha_cutoff = 0.20;
+
+varying vec3 bush_origin;
+
+float hash21(vec2 p) {
+	p = fract(p * vec2(127.1, 311.7));
+	p += dot(p, p + 43.21);
+	return fract(p.x * p.y);
+}
+
+void vertex() {
+	bush_origin = (MODEL_MATRIX * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+	float sway = max(VERTEX.y, 0.0);
+	VERTEX.x += sin(TIME * 1.2 + bush_origin.x * 0.08 + bush_origin.z * 0.1) * 0.04 * sway;
+	VERTEX.z += sin(TIME * 1.7 + bush_origin.z * 0.09) * 0.03 * sway;
+}
+
+void fragment() {
+	vec4 tex = texture(canopy_tex, UV);
+	if (tex.a < alpha_cutoff) discard;
+
+	float h = hash21(floor(bush_origin.xz * 0.03));
+	float bright = 0.50 + h * 0.30;
+	float warm = (h - 0.5) * 0.10;
+	vec3 col = tex.rgb * bright;
+	// Darker, more saturated green for undergrowth
+	col.r = col.r * 0.70 + warm;
+	col.g = col.g * 1.10;
+	col.b = col.b * 0.55 - warm * 0.3;
+
+	ALBEDO    = clamp(col, 0.0, 1.0);
+	ROUGHNESS = 0.92;
+	METALLIC  = 0.0;
+}
+"""
+
+
+func _make_bush_mat(tex: ImageTexture) -> ShaderMaterial:
+	var sh    := Shader.new()
+	sh.code    = _bush_shader_code()
+	var mat   := ShaderMaterial.new()
+	mat.shader = sh
+	if tex:
+		mat.set_shader_parameter("canopy_tex", tex)
+	return mat
+
+
+# ---------------------------------------------------------------------------
+# Scattered rocks — near water shores and occasional tree bases
+# ---------------------------------------------------------------------------
+func _build_rocks(trees: Array, water: Array) -> void:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 99999
+
+	var rock_alb := _load_tex("res://textures/rock_wall_diff.jpg")
+	var rock_nrm := _load_tex("res://textures/rock_wall_nrm.jpg")
+	var rock_rgh := _load_tex("res://textures/rock_wall_rgh.jpg")
+
+	var rock_mesh := SphereMesh.new()
+	rock_mesh.radius          = 1.0
+	rock_mesh.height          = 2.0
+	rock_mesh.radial_segments = 6
+	rock_mesh.rings           = 4
+
+	var rock_mat := _make_rock_material(rock_alb, rock_nrm, rock_rgh)
+	var xforms: Array = []
+
+	# Rocks along water body shores (~30 per body)
+	for body in water:
+		var bname: String = str(body.get("name", ""))
+		if bname.to_lower().contains("fountain"):
+			continue
+		var pts: Array = body["points"]
+		if pts.size() < 3:
+			continue
+		var step := maxi(1, pts.size() / 30)
+		for pi in range(0, pts.size(), step):
+			rng.seed = pi * 567890 + pts.size()
+			if rng.randf() > 0.7:
+				continue
+			var sx := float(pts[pi][0]); var sz := float(pts[pi][1])
+			# Offset outward from shore
+			var prev_i := (pi - 1 + pts.size()) % pts.size()
+			var next_i := (pi + 1) % pts.size()
+			var dx := float(pts[next_i][0]) - float(pts[prev_i][0])
+			var dz := float(pts[next_i][1]) - float(pts[prev_i][1])
+			var tlen := sqrt(dx * dx + dz * dz)
+			if tlen < 0.01:
+				continue
+			var nx := -dz / tlen; var nz := dx / tlen
+			var off := rng.randf_range(0.5, 4.0)
+			var rx := sx + nx * off; var rz := sz + nz * off
+			var ry := _terrain_y(rx, rz)
+			var scale := rng.randf_range(0.15, 0.55)
+			var sy := scale * rng.randf_range(0.4, 0.8)  # flattened
+			var rot := rng.randf() * TAU
+			var basis := Basis(
+				Vector3(cos(rot) * scale, 0.0, sin(rot) * scale),
+				Vector3(0.0, sy, 0.0),
+				Vector3(-sin(rot) * scale, 0.0, cos(rot) * scale))
+			xforms.append(Transform3D(basis, Vector3(rx, ry - sy * 0.3, rz)))
+
+	# Rocks near ~every 8th tree
+	for i in range(0, trees.size(), 8):
+		rng.seed = i * 135791 + 246810
+		var pt: Array = trees[i]
+		var tx := float(pt[0]); var tz := float(pt[2])
+		var n_rocks := rng.randi_range(1, 3)
+		for _r in range(n_rocks):
+			var angle := rng.randf() * TAU
+			var dist  := rng.randf_range(1.5, 5.0)
+			var rx := tx + cos(angle) * dist
+			var rz := tz + sin(angle) * dist
+			var ry := _terrain_y(rx, rz)
+			var scale := rng.randf_range(0.12, 0.40)
+			var sy := scale * rng.randf_range(0.4, 0.7)
+			var rot := rng.randf() * TAU
+			var basis := Basis(
+				Vector3(cos(rot) * scale, 0.0, sin(rot) * scale),
+				Vector3(0.0, sy, 0.0),
+				Vector3(-sin(rot) * scale, 0.0, cos(rot) * scale))
+			xforms.append(Transform3D(basis, Vector3(rx, ry - sy * 0.3, rz)))
+
+	print("ParkLoader: rocks = ", xforms.size())
+	_spawn_multimesh(rock_mesh, rock_mat, xforms, "Rocks")
+
+
+func _rock_shader_code() -> String:
+	return """shader_type spatial;
+
+uniform sampler2D rock_albedo : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D rock_normal : hint_normal,  filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D rock_rough  : hint_default_white, filter_linear_mipmap_anisotropic, repeat_enable;
+
+varying vec3 world_pos;
+varying vec3 world_normal;
+
+float hash21(vec2 p) {
+	p = fract(p * vec2(127.1, 311.7));
+	p += dot(p, p + 43.21);
+	return fract(p.x * p.y);
+}
+
+void vertex() {
+	world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+	world_normal = normalize((MODEL_MATRIX * vec4(NORMAL, 0.0)).xyz);
+	// Organic vertex displacement — perturb sphere into irregular rock shape
+	float n = sin(VERTEX.x * 5.0 + VERTEX.z * 3.7) * 0.12
+	        + sin(VERTEX.y * 7.3 + VERTEX.x * 4.1) * 0.08;
+	VERTEX += NORMAL * n;
+}
+
+void fragment() {
+	// Triplanar mapping for natural rock texture
+	vec3 blend = abs(world_normal);
+	blend = pow(blend, vec3(4.0));
+	blend /= (blend.x + blend.y + blend.z);
+	float scale = 2.0;
+	vec3 alb_x = texture(rock_albedo, world_pos.yz * scale).rgb;
+	vec3 alb_y = texture(rock_albedo, world_pos.xz * scale).rgb;
+	vec3 alb_z = texture(rock_albedo, world_pos.xy * scale).rgb;
+	vec3 alb = alb_x * blend.x + alb_y * blend.y + alb_z * blend.z;
+
+	float rgh_x = texture(rock_rough, world_pos.yz * scale).r;
+	float rgh_y = texture(rock_rough, world_pos.xz * scale).r;
+	float rgh_z = texture(rock_rough, world_pos.xy * scale).r;
+	float rgh = rgh_x * blend.x + rgh_y * blend.y + rgh_z * blend.z;
+
+	// Per-rock color variation
+	float h = hash21(floor(world_pos.xz * 0.05));
+	float bright = 0.55 + h * 0.35;
+	alb *= bright;
+
+	ALBEDO    = clamp(alb, 0.0, 1.0);
+	ROUGHNESS = clamp(rgh * 0.9 + 0.1, 0.0, 1.0);
+	METALLIC  = 0.0;
+}
+"""
+
+
+func _make_rock_material(alb: ImageTexture, nrm: ImageTexture, rgh: ImageTexture) -> ShaderMaterial:
+	var sh    := Shader.new()
+	sh.code    = _rock_shader_code()
+	var mat   := ShaderMaterial.new()
+	mat.shader = sh
+	if alb:
+		mat.set_shader_parameter("rock_albedo", alb)
+	if nrm:
+		mat.set_shader_parameter("rock_normal", nrm)
+	if rgh:
+		mat.set_shader_parameter("rock_rough", rgh)
+	return mat
 
 
 # ---------------------------------------------------------------------------
