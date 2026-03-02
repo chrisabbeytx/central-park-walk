@@ -80,10 +80,10 @@ func _handle_movement(delta: float) -> void:
 	if wish.length_squared() > 1.0:
 		wish = wish.normalized()
 
-	# Right trigger: fly mode (10x–100x), bypasses collision
+	# Right trigger: fly mode (5x–20x), bypasses collision
 	var rt := clampf(Input.get_joy_axis(0, JOY_AXIS_TRIGGER_RIGHT), 0.0, 1.0)
 	if rt > 0.1:
-		var speed := WALK_SPEED * lerpf(10.0, 100.0, rt)
+		var speed := WALK_SPEED * lerpf(5.0, 20.0, rt)
 		# Move in camera look direction (head pitch + body yaw)
 		var cam_basis := head.global_transform.basis
 		var fly_dir := cam_basis * wish
