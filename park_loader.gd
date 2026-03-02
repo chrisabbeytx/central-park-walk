@@ -23,6 +23,10 @@ var _hm_max_h:      float   = 1.0
 var _bench_grid:    Dictionary = {}  # Vector2i → true
 const BENCH_GRID_CELL := 4.0
 
+# Spatial hash of bridge zones — keep furniture/undergrowth away
+var _bridge_grid:   Dictionary = {}  # Vector2i → true
+const BRIDGE_GRID_CELL := 5.0
+
 
 # ---------------------------------------------------------------------------
 # Typed helpers – avoids Dictionary.get() returning Variant (parse error in 4.6)
@@ -382,6 +386,28 @@ func _build_paths(paths: Array) -> void:
 		cx /= bpts.size(); cz /= bpts.size()
 		bridge_centroids.append(Vector2(cx, cz))
 
+	# Populate bridge spatial grid — mark all cells along bridge paths + 8m around endpoints
+	for bp in bridge_paths:
+		var bpts: Array = bp["points"]
+		if bpts.size() < 2:
+			continue
+		# Mark cells along the entire bridge
+		for pt in bpts:
+			var px := float(pt[0]); var pz := float(pt[2])
+			for di in range(-1, 2):
+				for dj in range(-1, 2):
+					var key := Vector2i(int(floor(px / BRIDGE_GRID_CELL)) + di,
+										int(floor(pz / BRIDGE_GRID_CELL)) + dj)
+					_bridge_grid[key] = true
+		# Extra margin around endpoints (8m radius) to clear approach zones
+		for ep_idx in [0, bpts.size() - 1]:
+			var ex := float(bpts[ep_idx][0]); var ez := float(bpts[ep_idx][2])
+			for di in range(-2, 3):
+				for dj in range(-2, 3):
+					var key := Vector2i(int(floor(ex / BRIDGE_GRID_CELL)) + di,
+										int(floor(ez / BRIDGE_GRID_CELL)) + dj)
+					_bridge_grid[key] = true
+
 	for bp in bridge_paths:
 		_build_bridge(bp)
 
@@ -623,9 +649,12 @@ func _build_bridge(path: Dictionary) -> void:
 
 	# ----------------------------------------------------------------
 	# Per-point smooth bridge height (S-curve ramp at both ends)
+	# Ramp starts 0.15m BELOW terrain so collision mesh slopes into
+	# the ground — prevents a vertical wall at the bridge entrance.
 	# ----------------------------------------------------------------
 	var pt_y := PackedFloat32Array()
 	pt_y.resize(n_pts)
+	var ramp_sink := 0.15
 	for i in range(n_pts):
 		var d := cum_len[i]
 		var t: float
@@ -633,11 +662,11 @@ func _build_bridge(path: Dictionary) -> void:
 		if d <= ramp_len:
 			t = d / ramp_len
 			t = t * t * (3.0 - 2.0 * t)   # smoothstep
-			y = lerpf(y_start + PATH_Y, deck_y, t)
+			y = lerpf(y_start + PATH_Y - ramp_sink, deck_y, t)
 		elif d >= total_len - ramp_len:
 			t = (total_len - d) / ramp_len
 			t = t * t * (3.0 - 2.0 * t)   # smoothstep
-			y = lerpf(y_end + PATH_Y, deck_y, t)
+			y = lerpf(y_end + PATH_Y - ramp_sink, deck_y, t)
 		else:
 			y = deck_y
 		pt_y[i] = y
@@ -2621,6 +2650,10 @@ func _build_undergrowth(trees: Array, paths: Array) -> void:
 			var dist  := rng.randf_range(3.0, 12.0)
 			var bx := tx + cos(angle) * dist
 			var bz := tz + sin(angle) * dist
+			# Skip if near a bridge
+			var bgk := Vector2i(int(floor(bx / BRIDGE_GRID_CELL)), int(floor(bz / BRIDGE_GRID_CELL)))
+			if _bridge_grid.has(bgk):
+				continue
 			var by := _terrain_y(bx, bz)
 			var r  := rng.randf_range(0.8, 2.2)
 			var h  := rng.randf_range(0.6, 1.6)
@@ -2660,9 +2693,12 @@ func _build_undergrowth(trees: Array, paths: Array) -> void:
 					continue
 				var nx := -dz / tlen * side; var nz := dx / tlen * side
 				var bx := px + nx * off; var bz := pz + nz * off
-				# Skip if in front of a bench
+				# Skip if in front of a bench or near a bridge
 				var gk := Vector2i(int(floor(bx / BENCH_GRID_CELL)), int(floor(bz / BENCH_GRID_CELL)))
 				if _bench_grid.has(gk):
+					continue
+				var bgk := Vector2i(int(floor(bx / BRIDGE_GRID_CELL)), int(floor(bz / BRIDGE_GRID_CELL)))
+				if _bridge_grid.has(bgk):
 					continue
 				var by := _terrain_y(bx, bz)
 				var r  := rng.randf_range(0.6, 1.5)
@@ -3625,26 +3661,32 @@ func _build_furniture(paths: Array) -> void:
 			lamp_cum  += seg_len
 			bench_cum += seg_len
 
+			# Skip placement near bridges
+			var bgk := Vector2i(int(floor(x1 / BRIDGE_GRID_CELL)), int(floor(z1 / BRIDGE_GRID_CELL)))
+			var near_bridge := _bridge_grid.has(bgk)
+
 			if lamp_cum >= next_lamp:
 				lamp_cum = 0.0
 				next_lamp = rng.randf_range(28.0, 40.0)
-				var off := half_w + 0.8
-				var lx := x1 + nx * off * lamp_side
-				var lz := z1 + nz * off * lamp_side
-				var ly := _terrain_y(lx, lz)
-				lamp_xf.append(Transform3D(Basis.IDENTITY, Vector3(lx, ly, lz)))
+				if not near_bridge:
+					var off := half_w + 0.8
+					var lx := x1 + nx * off * lamp_side
+					var lz := z1 + nz * off * lamp_side
+					var ly := _terrain_y(lx, lz)
+					lamp_xf.append(Transform3D(Basis.IDENTITY, Vector3(lx, ly, lz)))
 
 			if bench_cum >= next_bench:
 				bench_cum = 0.0
 				next_bench = rng.randf_range(20.0, 30.0)
-				var off := half_w + 1.2
-				var bx := x1 + nx * off * bench_side
-				var bz := z1 + nz * off * bench_side
-				var by := _terrain_y(bx, bz)
-				# Face bench toward the path (opposite of offset direction)
-				var angle := atan2(-nx * bench_side, -nz * bench_side)
-				var basis := Basis(Vector3.UP, angle)
-				bench_xf.append(Transform3D(basis, Vector3(bx, by, bz)))
+				if not near_bridge:
+					var off := half_w + 1.2
+					var bx := x1 + nx * off * bench_side
+					var bz := z1 + nz * off * bench_side
+					var by := _terrain_y(bx, bz)
+					# Face bench toward the path (opposite of offset direction)
+					var angle := atan2(-nx * bench_side, -nz * bench_side)
+					var basis := Basis(Vector3.UP, angle)
+					bench_xf.append(Transform3D(basis, Vector3(bx, by, bz)))
 
 	# Build spatial hash of bench front zones (bench pos + area toward path)
 	for xf in bench_xf:
