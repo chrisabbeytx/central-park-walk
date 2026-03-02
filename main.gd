@@ -195,12 +195,14 @@ func _setup_environment() -> void:
 	_env.ambient_light_source  = Environment.AMBIENT_SOURCE_COLOR
 	_env.tonemap_mode          = Environment.TONE_MAPPER_FILMIC
 	_env.glow_enabled          = true
+	_env.glow_blend_mode       = Environment.GLOW_BLEND_MODE_SOFTLIGHT
 	_env.ssao_enabled          = true
 	_env.ssao_detail           = 0.5
 	_env.ssil_enabled          = true
 	_env.ssil_radius           = 5.0
 	_env.ssil_sharpness        = 0.98
 	_env.adjustment_enabled    = true
+	_env.adjustment_brightness = 1.02
 	_env.fog_enabled           = true
 
 	var world_env := WorldEnvironment.new()
@@ -268,12 +270,12 @@ func _build_keyframes() -> void:
 		"gnd_horizon":    Color(0.50, 0.35, 0.18),
 		"sun_angle_max":  5.0,
 		"sun_curve":      0.08,
-		"ambient_color":  Color(0.40, 0.30, 0.20),
+		"ambient_color":  Color(0.45, 0.32, 0.18),
 		"ambient_energy": 0.35,
 		"exposure":       0.85,
 		"white":          4.0,
-		"glow_intensity": 0.5,
-		"glow_bloom":     0.08,
+		"glow_intensity": 0.7,
+		"glow_bloom":     0.15,
 		"glow_strength":  1.2,
 		"glow_threshold": 0.8,
 		"glow_cap":       5.0,
@@ -281,7 +283,7 @@ func _build_keyframes() -> void:
 		"ssao_intensity": 2.0,
 		"ssao_power":     1.8,
 		"ssil_intensity": 0.7,
-		"saturation":     1.05,
+		"saturation":     1.18,
 		"contrast":       1.08,
 		"brightness":     1.0,
 		"fog_color":      Color(0.55, 0.38, 0.22),
@@ -290,8 +292,8 @@ func _build_keyframes() -> void:
 		"fog_density":    0.0015,
 		"fog_aerial":     0.6,
 		"fog_sky_affect": 0.5,
-		"sun_energy":     1.8,
-		"sun_color":      Color(1.0, 0.72, 0.38),
+		"sun_energy":     2.2,
+		"sun_color":      Color(1.0, 0.68, 0.32),
 		"sun_pitch":      -15.0,
 		"sun_yaw":        -95.0,
 		"shadow_dist":    250.0,
@@ -302,35 +304,35 @@ func _build_keyframes() -> void:
 	_keyframes.append({
 		"hour": 12.0,
 		"sky_top":        Color(0.18, 0.38, 0.72),
-		"sky_horizon":    Color(0.50, 0.62, 0.80),
+		"sky_horizon":    Color(0.55, 0.58, 0.68),
 		"gnd_bottom":     Color(0.10, 0.12, 0.08),
 		"gnd_horizon":    Color(0.35, 0.38, 0.30),
 		"sun_angle_max":  1.5,
 		"sun_curve":      0.15,
-		"ambient_color":  Color(0.35, 0.40, 0.50),
-		"ambient_energy": 0.30,
+		"ambient_color":  Color(0.42, 0.38, 0.28),
+		"ambient_energy": 0.35,
 		"exposure":       0.75,
 		"white":          3.5,
-		"glow_intensity": 0.3,
-		"glow_bloom":     0.05,
+		"glow_intensity": 0.5,
+		"glow_bloom":     0.12,
 		"glow_strength":  1.0,
-		"glow_threshold": 1.2,
+		"glow_threshold": 0.8,
 		"glow_cap":       8.0,
 		"ssao_radius":    1.5,
 		"ssao_intensity": 2.0,
 		"ssao_power":     1.8,
 		"ssil_intensity": 0.8,
-		"saturation":     1.0,
+		"saturation":     1.12,
 		"contrast":       1.05,
 		"brightness":     1.0,
-		"fog_color":      Color(0.42, 0.48, 0.58),
+		"fog_color":      Color(0.48, 0.45, 0.38),
 		"fog_energy":     1.0,
 		"fog_scatter":    0.15,
 		"fog_density":    0.0012,
 		"fog_aerial":     0.5,
 		"fog_sky_affect": 0.3,
 		"sun_energy":     2.2,
-		"sun_color":      Color(1.0, 0.96, 0.88),
+		"sun_color":      Color(1.0, 0.94, 0.82),
 		"sun_pitch":      -55.0,
 		"sun_yaw":        -20.0,
 		"shadow_dist":    300.0,
@@ -346,12 +348,12 @@ func _build_keyframes() -> void:
 		"gnd_horizon":    Color(0.45, 0.30, 0.15),
 		"sun_angle_max":  5.0,
 		"sun_curve":      0.08,
-		"ambient_color":  Color(0.35, 0.25, 0.18),
+		"ambient_color":  Color(0.40, 0.28, 0.16),
 		"ambient_energy": 0.32,
 		"exposure":       0.90,
 		"white":          4.0,
-		"glow_intensity": 0.5,
-		"glow_bloom":     0.10,
+		"glow_intensity": 0.7,
+		"glow_bloom":     0.18,
 		"glow_strength":  1.3,
 		"glow_threshold": 0.7,
 		"glow_cap":       5.0,
@@ -359,7 +361,7 @@ func _build_keyframes() -> void:
 		"ssao_intensity": 2.2,
 		"ssao_power":     1.9,
 		"ssil_intensity": 0.6,
-		"saturation":     1.08,
+		"saturation":     1.20,
 		"contrast":       1.08,
 		"brightness":     0.98,
 		"fog_color":      Color(0.50, 0.35, 0.20),
@@ -368,8 +370,8 @@ func _build_keyframes() -> void:
 		"fog_density":    0.0016,
 		"fog_aerial":     0.6,
 		"fog_sky_affect": 0.5,
-		"sun_energy":     1.6,
-		"sun_color":      Color(1.0, 0.65, 0.30),
+		"sun_energy":     2.0,
+		"sun_color":      Color(1.0, 0.60, 0.25),
 		"sun_pitch":      -12.0,
 		"sun_yaw":        95.0,
 		"shadow_dist":    220.0,
@@ -390,7 +392,7 @@ func _build_keyframes() -> void:
 		"exposure":       1.4,
 		"white":          5.0,
 		"glow_intensity": 0.6,
-		"glow_bloom":     0.12,
+		"glow_bloom":     0.15,
 		"glow_strength":  1.5,
 		"glow_threshold": 0.5,
 		"glow_cap":       3.0,
@@ -398,7 +400,7 @@ func _build_keyframes() -> void:
 		"ssao_intensity": 3.0,
 		"ssao_power":     2.0,
 		"ssil_intensity": 0.6,
-		"saturation":     0.55,
+		"saturation":     0.60,
 		"contrast":       1.12,
 		"brightness":     0.92,
 		"fog_color":      Color(0.06, 0.08, 0.14),
@@ -789,10 +791,10 @@ float fbm(vec2 p, int oct) {
 // Returns vec4(tex_set_index, tint_r, tint_g, tint_b) for material indices 1-30
 vec4 mat_lookup(int idx) {
 	// tex_set: 0=Asphalt, 1=Concrete, 2=PavingStones, 3=Gravel, 4=Wood
-	if (idx == 1)  return vec4(0.0, 0.28, 0.28, 0.30);   // asphalt
-	if (idx == 2)  return vec4(1.0, 0.68, 0.68, 0.66);   // concrete
+	if (idx == 1)  return vec4(0.0, 0.32, 0.30, 0.26);   // asphalt
+	if (idx == 2)  return vec4(1.0, 0.72, 0.68, 0.60);   // concrete
 	if (idx == 3)  return vec4(1.0, 0.65, 0.65, 0.63);   // concrete:plates
-	if (idx == 4)  return vec4(2.0, 0.78, 0.74, 0.65);   // paving_stones
+	if (idx == 4)  return vec4(2.0, 0.80, 0.74, 0.62);   // paving_stones
 	if (idx == 5)  return vec4(2.0, 0.54, 0.52, 0.48);   // sett
 	if (idx == 6)  return vec4(2.0, 0.52, 0.50, 0.44);   // unhewn_cobblestone
 	if (idx == 7)  return vec4(3.0, 0.60, 0.57, 0.50);   // pebblestone
@@ -801,7 +803,7 @@ vec4 mat_lookup(int idx) {
 	if (idx == 10) return vec4(2.0, 0.68, 0.38, 0.26);   // brick
 	if (idx == 11) return vec4(1.0, 0.62, 0.63, 0.66);   // metal
 	if (idx == 12) return vec4(4.0, 0.50, 0.34, 0.16);   // wood
-	if (idx == 13) return vec4(1.0, 0.60, 0.60, 0.58);   // paved
+	if (idx == 13) return vec4(1.0, 0.64, 0.60, 0.52);   // paved
 	if (idx == 14) return vec4(3.0, 0.52, 0.42, 0.28);   // compacted
 	if (idx == 15) return vec4(3.0, 0.64, 0.57, 0.44);   // fine_gravel
 	if (idx == 16) return vec4(3.0, 0.60, 0.53, 0.40);   // gravel
@@ -812,11 +814,11 @@ vec4 mat_lookup(int idx) {
 	if (idx == 21) return vec4(3.0, 0.46, 0.32, 0.14);   // woodchips
 	if (idx == 22) return vec4(3.0, 0.40, 0.28, 0.12);   // mulch
 	if (idx == 23) return vec4(3.0, 0.76, 0.70, 0.52);   // sand
-	if (idx == 24) return vec4(2.0, 0.70, 0.64, 0.52);   // hw:footway
+	if (idx == 24) return vec4(2.0, 0.74, 0.66, 0.50);   // hw:footway
 	if (idx == 25) return vec4(0.0, 0.30, 0.30, 0.32);   // hw:cycleway
-	if (idx == 26) return vec4(2.0, 0.78, 0.74, 0.65);   // hw:pedestrian
+	if (idx == 26) return vec4(2.0, 0.80, 0.74, 0.62);   // hw:pedestrian
 	if (idx == 27) return vec4(3.0, 0.54, 0.44, 0.30);   // hw:path
-	if (idx == 28) return vec4(1.0, 0.60, 0.58, 0.54);   // hw:steps
+	if (idx == 28) return vec4(1.0, 0.64, 0.58, 0.48);   // hw:steps
 	if (idx == 29) return vec4(3.0, 0.48, 0.40, 0.26);   // hw:track
 	return vec4(3.0, 0.65, 0.60, 0.48);                   // catchall (30)
 }
@@ -869,7 +871,7 @@ void fragment() {
 	float grass_rgh = clamp(texture(grass_rough, uv).r * 0.15 + 0.85, 0.0, 1.0);
 	float f = clamp(fbm(world_pos.xz * 0.004, 4) * 0.45
 	              + fbm(world_pos.xz * 0.025, 3) * 0.35 + 0.30, 0.48, 1.1);
-	vec3 dirt = vec3(0.22, 0.17, 0.10);
+	vec3 dirt = vec3(0.28, 0.20, 0.10);
 	float wear = smoothstep(0.60, 0.50, f);
 	grass_alb = mix(grass_alb * f, dirt, wear * 0.7);
 
@@ -884,6 +886,18 @@ void fragment() {
 	grass_alb = mix(grass_alb, m_alb * f, meadow_blend);
 	grass_nrm = mix(grass_nrm, m_nrm, meadow_blend);
 	grass_rgh = mix(grass_rgh, m_rgh, meadow_blend);
+
+	// Warm green push — shift grass toward yellow-green
+	grass_alb.r *= 1.08;
+	grass_alb.b *= 0.85;
+
+	// Dappled sunlight — simulates light filtering through tree canopy
+	float dapple = fbm(world_pos.xz * 0.15, 3) * 0.5
+	             + fbm(world_pos.xz * 0.4, 2) * 0.3
+	             + fbm(world_pos.xz * 1.2, 2) * 0.2;
+	float sun_patch = smoothstep(0.38, 0.62, dapple);
+	vec3 sun_tint = vec3(1.12, 1.06, 0.85); // warm golden highlight
+	grass_alb *= mix(vec3(1.0), sun_tint, sun_patch * 0.35);
 
 	if (mat_idx > 0 && path_weight > 0.001) {
 		// --- Path shading ---
