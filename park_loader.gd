@@ -39,6 +39,10 @@ const PATH_GRID_CELL := 3.0
 # Key = Vector2i(round(x*10), round(z*10)) → Array of {left: Vector3, right: Vector3, hw: String, surface: String}
 var _junction_edges: Dictionary = {}
 
+# Spatial index for clipping lower-priority paths at intersections
+var _path_clip_grid: Dictionary = {}  # Vector2i → Array of [x0,z0,x1,z1,half_w,priority]
+const CLIP_CELL := 8.0
+
 # Slope threshold for furniture placement
 const BENCH_MAX_SLOPE := 0.27  # tan(~15°) — skip benches on steeper terrain
 
@@ -401,6 +405,63 @@ func _ready() -> void:
 
 
 # ---------------------------------------------------------------------------
+# Path intersection clipping – lower-priority paths terminate at higher ones
+# ---------------------------------------------------------------------------
+func _build_clip_index(paths: Array) -> void:
+	## Index all ground-level path segments so we can clip lower-priority ribbons.
+	for path in paths:
+		if bool(path.get("bridge", false)) or bool(path.get("tunnel", false)):
+			continue
+		var hw := str(path.get("highway", "path"))
+		if hw == "steps":
+			continue
+		var pts: Array = path["points"]
+		var priority := _hw_y_priority(hw)
+		var half_w := _hw_width(hw) * 0.5
+		for i in range(pts.size() - 1):
+			var x0 := float(pts[i][0]);  var z0 := float(pts[i][2])
+			var x1 := float(pts[i+1][0]); var z1 := float(pts[i+1][2])
+			var seg: Array = [x0, z0, x1, z1, half_w, priority]
+			var bmin_x := minf(x0, x1) - half_w
+			var bmax_x := maxf(x0, x1) + half_w
+			var bmin_z := minf(z0, z1) - half_w
+			var bmax_z := maxf(z0, z1) + half_w
+			for gx in range(int(floor(bmin_x / CLIP_CELL)), int(floor(bmax_x / CLIP_CELL)) + 1):
+				for gz in range(int(floor(bmin_z / CLIP_CELL)), int(floor(bmax_z / CLIP_CELL)) + 1):
+					var key := Vector2i(gx, gz)
+					if key not in _path_clip_grid:
+						_path_clip_grid[key] = []
+					_path_clip_grid[key].append(seg)
+
+
+func _inside_higher_path(px: float, pz: float, my_priority: float) -> bool:
+	## Return true if (px, pz) falls within the footprint of any path with
+	## strictly higher priority than my_priority.
+	var key := Vector2i(int(floor(px / CLIP_CELL)), int(floor(pz / CLIP_CELL)))
+	if key not in _path_clip_grid:
+		return false
+	var segs: Array = _path_clip_grid[key]
+	for s_idx in range(segs.size()):
+		var seg: Array = segs[s_idx]
+		var s_pri: float = seg[5]
+		if s_pri <= my_priority:
+			continue
+		var sx0: float = seg[0]; var sz0: float = seg[1]
+		var sx1: float = seg[2]; var sz1: float = seg[3]
+		var shw: float = seg[4]
+		var dx := sx1 - sx0; var dz := sz1 - sz0
+		var len_sq := dx * dx + dz * dz
+		if len_sq < 0.0001:
+			continue
+		var t := clampf(((px - sx0) * dx + (pz - sz0) * dz) / len_sq, 0.0, 1.0)
+		var cx := sx0 + t * dx; var cz := sz0 + t * dz
+		var dist_sq := (px - cx) * (px - cx) + (pz - cz) * (pz - cz)
+		if dist_sq < shw * shw:
+			return true
+	return false
+
+
+# ---------------------------------------------------------------------------
 # Path meshes – one MeshInstance3D per highway type
 # ---------------------------------------------------------------------------
 func _build_paths(paths: Array) -> void:
@@ -442,6 +503,9 @@ func _build_paths(paths: Array) -> void:
 			for di in range(-cells, cells + 1):
 				for dj in range(-cells, cells + 1):
 					_path_grid[Vector2i(ci + di, cj + dj)] = true
+
+	# Build spatial index for intersection clipping (before mesh generation)
+	_build_clip_index(paths)
 
 	for key in ground_groups:
 		var parts: PackedStringArray = key.split("|")
@@ -514,6 +578,7 @@ func _make_path_mesh(paths: Array, hw: String, surface: String) -> MeshInstance3
 	var width   := _hw_width(hw)
 	var hw2     := width * 0.5
 	var skirt   := 0.18  # metres below terrain for edge skirts
+	var my_priority := _hw_y_priority(hw)
 
 	for path in paths:
 		# Per-path tint variation: hash first point for subtle color shift
@@ -592,6 +657,12 @@ func _make_path_mesh(paths: Array, hw: String, surface: String) -> MeshInstance3
 
 		# Build quads between consecutive vertex pairs
 		for i in range(n_pts - 1):
+			# Clip: skip quads entirely inside a higher-priority path
+			var cpx0 := float(pts[i][0]); var cpz0 := float(pts[i][2])
+			var cpx1 := float(pts[i+1][0]); var cpz1 := float(pts[i+1][2])
+			if _inside_higher_path(cpx0, cpz0, my_priority) and _inside_higher_path(cpx1, cpz1, my_priority):
+				continue
+
 			var L0 := lefts[i];  var R0 := rights[i]
 			var L1 := lefts[i+1]; var R1 := rights[i+1]
 			var u0 := cum_u[i]; var u1 := cum_u[i+1]
