@@ -49,8 +49,11 @@ func _ready() -> void:
 	_build_keyframes()
 	_load_heightmap()
 	_setup_environment()
-	_setup_ground()
-	_setup_park()
+	_setup_park()          # park_loader runs first to export tunnel depressions
+	_apply_tunnel_depressions()
+	_setup_ground()        # terrain built after depressions applied
+	if _park_loader and _park_loader.splat_texture:
+		_apply_splat_map(_park_loader.splat_texture)
 	_player = _setup_player()
 	_setup_hud()
 	_apply_time_of_day()
@@ -522,6 +525,76 @@ func _apply_time_of_day() -> void:
 
 
 # ---------------------------------------------------------------------------
+# Carve terrain depressions at tunnel approach ramps + body
+# Each depression: {x, z, dx, dz, length, hw, max_depth}
+# Ramps linearly deepen from 0 at start to max_depth at end.
+# Body sections are at full max_depth.
+# ---------------------------------------------------------------------------
+func _apply_tunnel_depressions() -> void:
+	if _hm_data.is_empty() or _park_loader == null:
+		return
+	var depressions: Array = _park_loader.tunnel_depressions
+	if depressions.is_empty():
+		return
+	var W := _hm_width
+	var H := _hm_depth
+	var half := _hm_world_size * 0.5
+	var cell := _hm_world_size / float(W - 1)
+	var margin := 2.0  # extra metres beyond half-width for smooth edges
+
+	for dep in depressions:
+		var ox: float = dep["x"]
+		var oz: float = dep["z"]
+		var dx: float = dep["dx"]
+		var dz: float = dep["dz"]
+		var seg_len: float = dep["length"]
+		var hw: float = dep["hw"]
+		var max_d: float = dep["max_depth"]
+		# Perpendicular
+		var nx := -dz
+		var nz := dx
+		# Bounding box in world coords
+		var extent := seg_len + margin
+		var bmin_x := minf(ox, ox + dx * seg_len) - absf(nx) * (hw + margin) - margin
+		var bmax_x := maxf(ox, ox + dx * seg_len) + absf(nx) * (hw + margin) + margin
+		var bmin_z := minf(oz, oz + dz * seg_len) - absf(nz) * (hw + margin) - margin
+		var bmax_z := maxf(oz, oz + dz * seg_len) + absf(nz) * (hw + margin) + margin
+		# Convert to heightmap grid indices
+		var xi0 := maxi(0, int(floor((bmin_x + half) / cell)))
+		var xi1 := mini(W - 1, int(ceil((bmax_x + half) / cell)))
+		var zi0 := maxi(0, int(floor((bmin_z + half) / cell)))
+		var zi1 := mini(H - 1, int(ceil((bmax_z + half) / cell)))
+
+		for zi in range(zi0, zi1 + 1):
+			for xi in range(xi0, xi1 + 1):
+				var wx := -half + xi * cell
+				var wz := -half + zi * cell
+				# Project onto depression axis
+				var rx := wx - ox
+				var rz := wz - oz
+				var along := rx * dx + rz * dz  # distance along depression
+				var across := absf(rx * nx + rz * nz)  # distance from centerline
+				if along < -margin or along > seg_len + margin:
+					continue
+				if across > hw + margin:
+					continue
+				# Depth fraction along the segment
+				var t_along := clampf(along / seg_len, 0.0, 1.0)
+				var is_ramp: bool = dep.get("ramp", true)
+				var depth := max_d * t_along if is_ramp else max_d
+				# Smooth lateral falloff at edges
+				var lat_factor := 1.0
+				if across > hw:
+					lat_factor = 1.0 - clampf((across - hw) / margin, 0.0, 1.0)
+				depth *= lat_factor
+				if depth > 0.01:
+					var idx := zi * W + xi
+					_hm_data[idx] = _hm_data[idx] - depth
+
+	print("Terrain: applied ", depressions.size(), " tunnel depressions")
+
+
+# ---------------------------------------------------------------------------
 # Terrain ground – 256×256 height-mapped mesh + HeightMapShape3D collision
 # Falls back to a flat plane when heightmap.json is absent.
 # ---------------------------------------------------------------------------
@@ -854,18 +927,18 @@ void fragment() {
 # ---------------------------------------------------------------------------
 # Central Park geometry (paths + boundary walls from park_data.json)
 # ---------------------------------------------------------------------------
+var _park_loader = null  # reference for tunnel depression + splat map data
+
 func _setup_park() -> void:
 	var loader = load("res://park_loader.gd").new()
 	loader.name = "CentralPark"
 	if not _hm_data.is_empty():
 		loader.set_heightmap(_hm_data, _hm_width, _hm_depth, _hm_world_size)
 	add_child(loader)
+	_park_loader = loader
 	# Grab lamppost material for day/night emission control
 	if loader.lamppost_material:
 		_lamp_mat = loader.lamppost_material
-	# Apply splat map to terrain shader
-	if loader.splat_texture:
-		_apply_splat_map(loader.splat_texture)
 
 
 func _apply_splat_map(splat_tex: ImageTexture) -> void:
