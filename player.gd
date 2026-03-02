@@ -8,6 +8,7 @@ const STEP_HEIGHT   := 0.25  # max step-up height (> 0.17m stair rise)
 
 var head: Node3D    # pitch pivot at eye height
 var _stair_offset: float = 0.0  # camera smoothing for stair steps
+var boundary: PackedVector2Array  # XZ park boundary polygon
 
 
 func _ready() -> void:
@@ -39,8 +40,13 @@ func _ready() -> void:
 
 func _physics_process(delta: float) -> void:
 	_handle_look(delta)
+	var pre_pos := position
 	var pre_y := position.y
 	_handle_movement(delta)
+	# Clamp to park boundary
+	if boundary.size() > 2 and not _point_in_polygon(position.x, position.z):
+		position.x = pre_pos.x
+		position.z = pre_pos.z
 	# Smooth camera on stair step teleports
 	var dy := position.y - pre_y
 	if absf(dy) > 0.1:  # sudden jump = stair step, not normal movement
@@ -122,3 +128,21 @@ func _handle_movement(delta: float) -> void:
 						# floor_snap_length pulls us back down after move_and_slide
 
 		move_and_slide()
+
+
+func _point_in_polygon(px: float, pz: float) -> bool:
+	## Ray-casting algorithm: count crossings of a ray from (px,pz) → +X.
+	var inside := false
+	var n := boundary.size()
+	var j := n - 1
+	for i in range(n):
+		var zi := boundary[i].y
+		var zj := boundary[j].y
+		if (zi > pz) != (zj > pz):
+			var xi := boundary[i].x
+			var xj := boundary[j].x
+			var x_cross := xi + (pz - zi) / (zj - zi) * (xj - xi)
+			if px < x_cross:
+				inside = not inside
+		j = i
+	return inside
