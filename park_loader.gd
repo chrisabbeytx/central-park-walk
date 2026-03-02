@@ -15,6 +15,9 @@ var _hm_data:       Array   = []
 var _hm_width:      int     = 0
 var _hm_depth:      int     = 0
 var _hm_world_size: float   = 5000.0
+var _hm_texture:    ImageTexture  # GPU-side heightmap for vertex shader snapping
+var _hm_min_h:      float   = 0.0
+var _hm_max_h:      float   = 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -110,20 +113,25 @@ func _make_path_material(hw: String, surface: String) -> Material:
 	var tex_alb := _load_tex(prefix + "_Color.jpg")
 	var tex_nrm := _load_tex(prefix + "_NormalGL.jpg")
 	var tex_rgh := _load_tex(prefix + "_Roughness.jpg")
-	if tex_alb == null:
-		var mat        := StandardMaterial3D.new()
-		mat.albedo_color = _path_color(hw, surface)
-		mat.roughness    = 0.85
-		mat.cull_mode    = BaseMaterial3D.CULL_DISABLED
-		return mat
+	# Always use the shader path so vertex-shader terrain snapping works
 	var shader     := Shader.new()
 	shader.code     = _path_shader_code()
 	var mat        := ShaderMaterial.new()
 	mat.shader      = shader
-	mat.set_shader_parameter("tex_alb", tex_alb)
-	mat.set_shader_parameter("tex_nrm", tex_nrm)
-	mat.set_shader_parameter("tex_rgh", tex_rgh)
+	if tex_alb:
+		mat.set_shader_parameter("tex_alb", tex_alb)
+	if tex_nrm:
+		mat.set_shader_parameter("tex_nrm", tex_nrm)
+	if tex_rgh:
+		mat.set_shader_parameter("tex_rgh", tex_rgh)
 	mat.set_shader_parameter("tint",    _path_color(hw, surface))
+	# Heightmap for vertex-shader terrain snapping
+	if _hm_texture:
+		mat.set_shader_parameter("heightmap_tex", _hm_texture)
+		mat.set_shader_parameter("hm_world_size", _hm_world_size)
+		mat.set_shader_parameter("hm_min_h",      _hm_min_h)
+		mat.set_shader_parameter("hm_range",      _hm_max_h - _hm_min_h)
+		mat.set_shader_parameter("hm_res",        float(_hm_width))
 	return mat
 
 
@@ -134,7 +142,51 @@ render_mode cull_disabled;
 uniform sampler2D tex_alb : source_color,      filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D tex_nrm : hint_normal,        filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D tex_rgh : hint_default_white, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D heightmap_tex : filter_nearest, repeat_disable;
 uniform vec4 tint : source_color = vec4(1.0);
+uniform float hm_world_size = 5000.0;
+uniform float hm_min_h      = 0.0;
+uniform float hm_range      = 1.0;
+uniform float hm_res        = 256.0;
+uniform float path_y_offset = 0.08;
+
+float decode_h(vec4 s) {
+	return s.r * (255.0 / 256.0) + s.g * (1.0 / 256.0);
+}
+
+float sample_terrain(vec2 world_xz) {
+	// Replicate the exact same triangle interpolation as the CPU terrain mesh.
+	// The mesh splits each heightmap quad along the i00->i11 diagonal:
+	//   T1 (fz <= fx): i00, i10, i11
+	//   T2 (fz >  fx): i00, i11, i01
+	float half_ws = hm_world_size * 0.5;
+	vec2 grid = (world_xz + half_ws) / hm_world_size * (hm_res - 1.0);
+	vec2 gi = floor(grid);
+	vec2 gf = grid - gi;
+	// Texel centres: pixel (xi, zi) maps to UV = (xi+0.5)/res
+	vec2 uv00 = (gi + 0.5) / hm_res;
+	vec2 uv10 = (gi + vec2(1.5, 0.5)) / hm_res;
+	vec2 uv01 = (gi + vec2(0.5, 1.5)) / hm_res;
+	vec2 uv11 = (gi + vec2(1.5, 1.5)) / hm_res;
+	float h00 = hm_min_h + decode_h(texture(heightmap_tex, uv00)) * hm_range;
+	float h10 = hm_min_h + decode_h(texture(heightmap_tex, uv10)) * hm_range;
+	float h01 = hm_min_h + decode_h(texture(heightmap_tex, uv01)) * hm_range;
+	float h11 = hm_min_h + decode_h(texture(heightmap_tex, uv11)) * hm_range;
+	float fx = gf.x;
+	float fz = gf.y;
+	if (fz <= fx) {
+		return h00 + (h10 - h00) * fx + (h11 - h10) * fz;
+	} else {
+		return h00 + (h11 - h01) * fx + (h01 - h00) * fz;
+	}
+}
+
+void vertex() {
+	vec3 world = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+	float terrain_h = sample_terrain(world.xz);
+	vec3 snapped = (inverse(MODEL_MATRIX) * vec4(world.x, terrain_h + path_y_offset, world.z, 1.0)).xyz;
+	VERTEX.y = snapped.y;
+}
 
 void fragment() {
 	vec3  alb   = texture(tex_alb, UV).rgb;
@@ -163,11 +215,36 @@ func _load_heightmap() -> void:
 	_hm_depth      = int(hm["depth"])
 	_hm_world_size = float(hm["world_size"])
 	_hm_data       = hm["data"]
-	print("ParkLoader: heightmap loaded %d×%d" % [_hm_width, _hm_depth])
+
+	# Build GPU texture for vertex-shader terrain snapping.
+	# Encode heights as 16-bit (RG8) for precision: R = high byte, G = low byte.
+	_hm_min_h = INF; _hm_max_h = -INF
+	for v in _hm_data:
+		var fv := float(v)
+		_hm_min_h = minf(_hm_min_h, fv)
+		_hm_max_h = maxf(_hm_max_h, fv)
+	var h_range := maxf(_hm_max_h - _hm_min_h, 0.01)
+	var img := Image.create(_hm_width, _hm_depth, false, Image.FORMAT_RG8)
+	for zi in _hm_depth:
+		for xi in _hm_width:
+			var h := (float(_hm_data[zi * _hm_width + xi]) - _hm_min_h) / h_range
+			var h16 := int(clampf(h, 0.0, 1.0) * 65535.0)
+			var hi := h16 >> 8        # high byte → R
+			var lo := h16 & 0xFF      # low byte → G
+			img.set_pixel(xi, zi, Color(float(hi) / 255.0, float(lo) / 255.0, 0.0, 1.0))
+	_hm_texture = ImageTexture.create_from_image(img)
+	print("ParkLoader: heightmap loaded %d×%d  GPU texture created (h_range=%.1f)" % [
+		_hm_width, _hm_depth, h_range])
 
 
 func _terrain_y(x: float, z: float) -> float:
-	## Sample the heightmap at world (x, z). Returns 0.0 if no heightmap.
+	## Sample the heightmap at world (x, z) using the SAME triangle interpolation
+	## as the terrain mesh in main.gd.  The mesh splits each quad along the
+	## i00→i11 diagonal (bottom-left to top-right), giving two triangles:
+	##   T1 (fz <= fx): i00, i10, i11
+	##   T2 (fz >  fx): i00, i11, i01
+	## Using bilinear would give different heights between grid points and cause
+	## paths to float above or clip through the rendered terrain.
 	if _hm_data.is_empty():
 		return 0.0
 	var half := _hm_world_size * 0.5
@@ -181,7 +258,13 @@ func _terrain_y(x: float, z: float) -> float:
 	var h10  := float(_hm_data[zi0       * _hm_width + xi0 + 1])
 	var h01  := float(_hm_data[(zi0 + 1) * _hm_width + xi0    ])
 	var h11  := float(_hm_data[(zi0 + 1) * _hm_width + xi0 + 1])
-	return h00*(1.0-fx)*(1.0-fz) + h10*fx*(1.0-fz) + h01*(1.0-fx)*fz + h11*fx*fz
+	# Barycentric interpolation matching the mesh diagonal i00→i11
+	if fz <= fx:
+		# Lower-right triangle: i00(0,0), i10(1,0), i11(1,1)
+		return h00 + (h10 - h00) * fx + (h11 - h10) * fz
+	else:
+		# Upper-left triangle: i00(0,0), i11(1,1), i01(0,1)
+		return h00 + (h11 - h01) * fx + (h01 - h00) * fz
 
 
 # ---------------------------------------------------------------------------
@@ -284,7 +367,7 @@ func _make_path_mesh(paths: Array, hw: String, surface: String) -> MeshInstance3
 	var skirt   := 0.18  # metres below terrain for edge skirts
 
 	for path in paths:
-		var pts: Array = _subdivide_pts(path["points"], 3.0)
+		var pts: Array = _subdivide_pts(path["points"], 1.5)
 		var n_pts := pts.size()
 		if n_pts < 2:
 			continue
