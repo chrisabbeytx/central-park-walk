@@ -38,6 +38,9 @@ const PATH_GRID_CELL := 3.0
 # Slope threshold for furniture placement
 const BENCH_MAX_SLOPE := 0.27  # tan(~15°) — skip benches on steeper terrain
 
+# Exposed for day/night cycle (main.gd writes emission at runtime)
+var lamppost_material: StandardMaterial3D
+
 
 # ---------------------------------------------------------------------------
 # Typed helpers – avoids Dictionary.get() returning Variant (parse error in 4.6)
@@ -4541,6 +4544,10 @@ func _build_furniture(paths: Array) -> void:
 	lamp_mat.albedo_color = Color(0.12, 0.16, 0.10)
 	lamp_mat.roughness    = 0.55
 	lamp_mat.metallic     = 0.3
+	lamp_mat.emission_enabled = true
+	lamp_mat.emission         = Color(1.0, 0.85, 0.45)  # warm yellow glow
+	lamp_mat.emission_energy_multiplier = 2.0
+	lamppost_material = lamp_mat
 
 	var bench_mat := StandardMaterial3D.new()
 	bench_mat.albedo_color = Color(0.35, 0.22, 0.12)

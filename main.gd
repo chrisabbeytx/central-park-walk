@@ -23,14 +23,36 @@ var _coord_label:   Label
 var _heading_label: Label
 var _latlon_label:  Label
 
+# ---------------------------------------------------------------------------
+# Day/night cycle
+# ---------------------------------------------------------------------------
+var _time_of_day: float = 6.0        # hours [0..24), start at dawn
+var _time_speed: float  = 0.004      # game-hours per real-second (~100 min full cycle)
+var _time_speed_idx: int = 0
+const TIME_SPEEDS: Array = [0.004, 0.04, 0.4, 0.0]
+const TIME_SPEED_NAMES: Array = ["1x", "10x", "100x", "Paused"]
+
+var _env: Environment
+var _sky_mat: ProceduralSkyMaterial
+var _sun: DirectionalLight3D
+var _lamp_mat: StandardMaterial3D
+var _time_label: Label
+
+# 5 keyframes defining the full day/night cycle
+# Night (21→5) wraps seamlessly; 8 hours of steady darkness.
+var _keyframes: Array = []
+const _KF_HOURS: Array = [5.0, 6.5, 12.0, 19.0, 21.0]
+
 
 func _ready() -> void:
+	_build_keyframes()
 	_load_heightmap()
 	_setup_environment()
 	_setup_ground()
 	_setup_park()
 	_player = _setup_player()
 	_setup_hud()
+	_apply_time_of_day()
 	# Auto-screenshot for dev review (remove when done)
 	get_tree().create_timer(4.0).timeout.connect(_take_screenshot)
 
@@ -82,9 +104,17 @@ func _terrain_height(x: float, z: float) -> float:
 
 
 # ---------------------------------------------------------------------------
-# Per-frame HUD update
+# Per-frame update: time + HUD
 # ---------------------------------------------------------------------------
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
+	# Advance clock
+	_time_of_day += _time_speed * delta
+	if _time_of_day >= 24.0:
+		_time_of_day -= 24.0
+	elif _time_of_day < 0.0:
+		_time_of_day += 24.0
+	_apply_time_of_day()
+
 	if not _player or not _coord_label:
 		return
 
@@ -102,10 +132,34 @@ func _process(_delta: float) -> void:
 	var lon :=  REF_LON + ( pos.x / METRES_PER_DEG_LON)
 	_latlon_label.text  = "%.6f° N    %.6f° W" % [lat, absf(lon)]
 
+	# Time of day display
+	if _time_label:
+		var h12: int = int(_time_of_day) % 12
+		if h12 == 0:
+			h12 = 12
+		var mins: int = int(fmod(_time_of_day, 1.0) * 60.0)
+		var ampm: String = "AM" if _time_of_day < 12.0 else "PM"
+		_time_label.text = "%d:%02d %s  [%s]" % [h12, mins, ampm, TIME_SPEED_NAMES[_time_speed_idx]]
+
 
 func _compass_label(deg: float) -> String:
 	var labels := ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
 	return labels[int(fmod(deg + 22.5, 360.0) / 45.0) % 8]
+
+
+func _unhandled_input(event: InputEvent) -> void:
+	if not (event is InputEventKey and event.pressed):
+		return
+	if event.keycode == KEY_T:
+		_time_speed_idx = (_time_speed_idx + 1) % TIME_SPEEDS.size()
+		_time_speed = TIME_SPEEDS[_time_speed_idx]
+		print("Time speed: ", TIME_SPEED_NAMES[_time_speed_idx])
+	elif event.keycode == KEY_BRACKETLEFT:
+		_time_of_day = fmod(_time_of_day - 1.0 + 24.0, 24.0)
+		print("Time: %.1f h" % _time_of_day)
+	elif event.keycode == KEY_BRACKETRIGHT:
+		_time_of_day = fmod(_time_of_day + 1.0, 24.0)
+		print("Time: %.1f h" % _time_of_day)
 
 
 # ---------------------------------------------------------------------------
@@ -121,91 +175,344 @@ func _load_img_tex(path: String) -> ImageTexture:
 	return ImageTexture.create_from_image(img)
 
 
-func _load_sky_material() -> Material:
-	var path := "res://textures/sky.hdr"
-	if FileAccess.file_exists(path):
-		var img := Image.load_from_file(path)
-		if img:
-			img.generate_mipmaps()
-			var tex := ImageTexture.create_from_image(img)
-			var pan := PanoramaSkyMaterial.new()
-			pan.panorama          = tex
-			pan.energy_multiplier = 0.6   # dim raw HDR to avoid blowout
-			print("Sky: loaded HDR panorama")
-			return pan
-	print("Sky: procedural fallback")
-	var proc := ProceduralSkyMaterial.new()
-	proc.sky_top_color        = Color(0.13, 0.40, 0.82)
-	proc.sky_horizon_color    = Color(0.58, 0.78, 0.96)
-	proc.ground_bottom_color  = Color(0.06, 0.14, 0.04)
-	proc.ground_horizon_color = Color(0.24, 0.42, 0.14)
-	proc.sun_angle_max        = 30.0
-	proc.sun_curve            = 0.06
-	return proc
-
-
 func _setup_environment() -> void:
-	var sky_mat: Material = _load_sky_material()
+	_sky_mat = ProceduralSkyMaterial.new()
 
 	var sky := Sky.new()
-	sky.sky_material = sky_mat
+	sky.sky_material = _sky_mat
 
-	var env := Environment.new()
-	env.background_mode      = Environment.BG_SKY
-	env.sky                  = sky
-	env.ambient_light_source  = Environment.AMBIENT_SOURCE_SKY
-	env.ambient_light_energy  = 0.30   # was 0.45 — less fill light = more contrast
-	env.tonemap_mode          = Environment.TONE_MAPPER_FILMIC
-	env.tonemap_exposure      = 0.75   # pull down overall exposure
-	env.tonemap_white         = 6.0    # raise white point so highlights compress more gently
-	env.glow_enabled           = true
-	env.glow_intensity         = 0.28   # was 0.10 — sky/water highlights shimmer
-	env.glow_bloom             = 0.04   # was 0.01
-	env.glow_strength          = 1.2
-	env.glow_hdr_threshold     = 0.85
-	env.glow_hdr_luminance_cap = 2.0
-
-	# SSAO — contact shadows at tree bases, path edges, building corners
-	env.ssao_enabled   = true
-	env.ssao_radius    = 1.5
-	env.ssao_intensity = 2.0
-	env.ssao_power     = 1.8
-	env.ssao_detail    = 0.5
-
-	# SSIL — indirect light bounce (grass→tree bases, sky→path edges)
-	env.ssil_enabled   = true
-	env.ssil_radius    = 5.0
-	env.ssil_intensity = 1.2
-	env.ssil_sharpness = 0.98
-
-	# Color grading — richer park greens, snappier midtones
-	env.adjustment_enabled    = true
-	env.adjustment_saturation = 1.18
-	env.adjustment_contrast   = 1.06
-	env.adjustment_brightness = 0.98
-
-	# Atmospheric haze — cool NYC blue-grey, thickens toward horizon
-	env.fog_enabled           = true
-	env.fog_light_color       = Color(0.72, 0.78, 0.88)   # cool blue-grey
-	env.fog_light_energy      = 1.0
-	env.fog_sun_scatter       = 0.25   # subtle glow toward sun direction
-	env.fog_density           = 0.0018 # gentle — noticeable at ~400 m, heavy at ~1.5 km
-	env.fog_aerial_perspective = 0.6   # blend fog with sky at horizon for depth
-	env.fog_sky_affect        = 0.5    # also haze the sky dome slightly
+	_env = Environment.new()
+	_env.background_mode       = Environment.BG_SKY
+	_env.sky                   = sky
+	_env.ambient_light_source  = Environment.AMBIENT_SOURCE_COLOR
+	_env.tonemap_mode          = Environment.TONE_MAPPER_FILMIC
+	_env.glow_enabled          = true
+	_env.ssao_enabled          = true
+	_env.ssao_detail           = 0.5
+	_env.ssil_enabled          = true
+	_env.ssil_radius           = 5.0
+	_env.ssil_sharpness        = 0.98
+	_env.adjustment_enabled    = true
+	_env.fog_enabled           = true
 
 	var world_env := WorldEnvironment.new()
-	world_env.environment = env
+	world_env.environment = _env
 	add_child(world_env)
 
-	var sun := DirectionalLight3D.new()
-	sun.rotation_degrees = Vector3(-55.0, -30.0, 0.0)
-	sun.light_energy     = 1.3
-	sun.light_color      = Color(1.00, 0.95, 0.85)
-	sun.shadow_enabled   = true
-	sun.directional_shadow_max_distance    = 300.0   # was ~100 — shadows visible further
-	sun.directional_shadow_split_1         = 0.08    # tighter near cascade = crisper close shadows
-	sun.directional_shadow_pancake_size    = 20.0
-	add_child(sun)
+	_sun = DirectionalLight3D.new()
+	_sun.shadow_enabled = true
+	_sun.directional_shadow_split_1      = 0.08
+	_sun.directional_shadow_pancake_size = 20.0
+	add_child(_sun)
+
+	print("Sky: day/night cycle — start 6:00 AM")
+
+
+# ---------------------------------------------------------------------------
+# Day/night keyframes
+# ---------------------------------------------------------------------------
+func _build_keyframes() -> void:
+	# ---- 5.0  Pre-dawn ----
+	_keyframes.append({
+		"hour": 5.0,
+		"sky_top":        Color(0.02, 0.03, 0.08),
+		"sky_horizon":    Color(0.10, 0.08, 0.14),
+		"gnd_bottom":     Color(0.01, 0.01, 0.02),
+		"gnd_horizon":    Color(0.06, 0.05, 0.10),
+		"sun_angle_max":  3.0,
+		"sun_curve":      0.01,
+		"ambient_color":  Color(0.06, 0.07, 0.14),
+		"ambient_energy": 0.25,
+		"exposure":       1.3,
+		"white":          5.0,
+		"glow_intensity": 0.6,
+		"glow_bloom":     0.10,
+		"glow_strength":  1.4,
+		"glow_threshold": 0.5,
+		"glow_cap":       3.0,
+		"ssao_radius":    2.0,
+		"ssao_intensity": 2.8,
+		"ssao_power":     2.0,
+		"ssil_intensity": 0.5,
+		"saturation":     0.55,
+		"contrast":       1.10,
+		"brightness":     0.92,
+		"fog_color":      Color(0.06, 0.07, 0.14),
+		"fog_energy":     0.5,
+		"fog_scatter":    0.05,
+		"fog_density":    0.0020,
+		"fog_aerial":     0.7,
+		"fog_sky_affect": 0.8,
+		"sun_energy":     0.6,
+		"sun_color":      Color(0.65, 0.72, 0.95),
+		"sun_pitch":      -10.0,
+		"sun_yaw":        -100.0,
+		"shadow_dist":    180.0,
+		"lamp_emission":  2.0,
+	})
+
+	# ---- 6.5  Sunrise / Golden hour ----
+	_keyframes.append({
+		"hour": 6.5,
+		"sky_top":        Color(0.20, 0.35, 0.65),
+		"sky_horizon":    Color(0.90, 0.55, 0.25),
+		"gnd_bottom":     Color(0.08, 0.06, 0.04),
+		"gnd_horizon":    Color(0.50, 0.35, 0.18),
+		"sun_angle_max":  5.0,
+		"sun_curve":      0.08,
+		"ambient_color":  Color(0.40, 0.30, 0.20),
+		"ambient_energy": 0.35,
+		"exposure":       0.85,
+		"white":          4.0,
+		"glow_intensity": 0.5,
+		"glow_bloom":     0.08,
+		"glow_strength":  1.2,
+		"glow_threshold": 0.8,
+		"glow_cap":       5.0,
+		"ssao_radius":    1.5,
+		"ssao_intensity": 2.0,
+		"ssao_power":     1.8,
+		"ssil_intensity": 0.7,
+		"saturation":     1.05,
+		"contrast":       1.08,
+		"brightness":     1.0,
+		"fog_color":      Color(0.55, 0.38, 0.22),
+		"fog_energy":     0.8,
+		"fog_scatter":    0.35,
+		"fog_density":    0.0015,
+		"fog_aerial":     0.6,
+		"fog_sky_affect": 0.5,
+		"sun_energy":     1.8,
+		"sun_color":      Color(1.0, 0.72, 0.38),
+		"sun_pitch":      -15.0,
+		"sun_yaw":        -95.0,
+		"shadow_dist":    250.0,
+		"lamp_emission":  0.0,
+	})
+
+	# ---- 12.0  Noon ----
+	_keyframes.append({
+		"hour": 12.0,
+		"sky_top":        Color(0.18, 0.38, 0.72),
+		"sky_horizon":    Color(0.50, 0.62, 0.80),
+		"gnd_bottom":     Color(0.10, 0.12, 0.08),
+		"gnd_horizon":    Color(0.35, 0.38, 0.30),
+		"sun_angle_max":  1.5,
+		"sun_curve":      0.15,
+		"ambient_color":  Color(0.35, 0.40, 0.50),
+		"ambient_energy": 0.30,
+		"exposure":       0.75,
+		"white":          3.5,
+		"glow_intensity": 0.3,
+		"glow_bloom":     0.05,
+		"glow_strength":  1.0,
+		"glow_threshold": 1.2,
+		"glow_cap":       8.0,
+		"ssao_radius":    1.5,
+		"ssao_intensity": 2.0,
+		"ssao_power":     1.8,
+		"ssil_intensity": 0.8,
+		"saturation":     1.0,
+		"contrast":       1.05,
+		"brightness":     1.0,
+		"fog_color":      Color(0.42, 0.48, 0.58),
+		"fog_energy":     1.0,
+		"fog_scatter":    0.15,
+		"fog_density":    0.0012,
+		"fog_aerial":     0.5,
+		"fog_sky_affect": 0.3,
+		"sun_energy":     2.2,
+		"sun_color":      Color(1.0, 0.96, 0.88),
+		"sun_pitch":      -55.0,
+		"sun_yaw":        -20.0,
+		"shadow_dist":    300.0,
+		"lamp_emission":  0.0,
+	})
+
+	# ---- 19.0  Sunset / Golden hour ----
+	_keyframes.append({
+		"hour": 19.0,
+		"sky_top":        Color(0.15, 0.22, 0.50),
+		"sky_horizon":    Color(0.92, 0.50, 0.20),
+		"gnd_bottom":     Color(0.06, 0.04, 0.03),
+		"gnd_horizon":    Color(0.45, 0.30, 0.15),
+		"sun_angle_max":  5.0,
+		"sun_curve":      0.08,
+		"ambient_color":  Color(0.35, 0.25, 0.18),
+		"ambient_energy": 0.32,
+		"exposure":       0.90,
+		"white":          4.0,
+		"glow_intensity": 0.5,
+		"glow_bloom":     0.10,
+		"glow_strength":  1.3,
+		"glow_threshold": 0.7,
+		"glow_cap":       5.0,
+		"ssao_radius":    1.8,
+		"ssao_intensity": 2.2,
+		"ssao_power":     1.9,
+		"ssil_intensity": 0.6,
+		"saturation":     1.08,
+		"contrast":       1.08,
+		"brightness":     0.98,
+		"fog_color":      Color(0.50, 0.35, 0.20),
+		"fog_energy":     0.8,
+		"fog_scatter":    0.40,
+		"fog_density":    0.0016,
+		"fog_aerial":     0.6,
+		"fog_sky_affect": 0.5,
+		"sun_energy":     1.6,
+		"sun_color":      Color(1.0, 0.65, 0.30),
+		"sun_pitch":      -12.0,
+		"sun_yaw":        95.0,
+		"shadow_dist":    220.0,
+		"lamp_emission":  0.5,
+	})
+
+	# ---- 21.0  Night ----
+	_keyframes.append({
+		"hour": 21.0,
+		"sky_top":        Color(0.01, 0.015, 0.04),
+		"sky_horizon":    Color(0.03, 0.04, 0.08),
+		"gnd_bottom":     Color(0.005, 0.008, 0.012),
+		"gnd_horizon":    Color(0.02, 0.03, 0.06),
+		"sun_angle_max":  3.0,
+		"sun_curve":      0.01,
+		"ambient_color":  Color(0.05, 0.06, 0.12),
+		"ambient_energy": 0.25,
+		"exposure":       1.4,
+		"white":          5.0,
+		"glow_intensity": 0.6,
+		"glow_bloom":     0.12,
+		"glow_strength":  1.5,
+		"glow_threshold": 0.5,
+		"glow_cap":       3.0,
+		"ssao_radius":    2.0,
+		"ssao_intensity": 3.0,
+		"ssao_power":     2.0,
+		"ssil_intensity": 0.6,
+		"saturation":     0.55,
+		"contrast":       1.12,
+		"brightness":     0.92,
+		"fog_color":      Color(0.06, 0.08, 0.14),
+		"fog_energy":     0.5,
+		"fog_scatter":    0.05,
+		"fog_density":    0.0020,
+		"fog_aerial":     0.7,
+		"fog_sky_affect": 0.8,
+		"sun_energy":     0.8,
+		"sun_color":      Color(0.70, 0.78, 1.00),
+		"sun_pitch":      -65.0,
+		"sun_yaw":        40.0,
+		"shadow_dist":    200.0,
+		"lamp_emission":  2.0,
+	})
+
+
+func _find_keyframe_pair(hour: float) -> Array:
+	## Returns [kf_a: Dictionary, kf_b: Dictionary, t: float]
+	var n: int = _keyframes.size()
+	for i in n:
+		var ha: float = float(_keyframes[i]["hour"])
+		var j: int = (i + 1) % n
+		var hb: float = float(_keyframes[j]["hour"])
+		# Handle wrap-around (night 21→pre-dawn 5 spans midnight)
+		var span: float
+		var off: float
+		if hb <= ha:
+			# Wrapping pair (e.g. 21→5 = 8 hours through midnight)
+			span = (hb + 24.0) - ha
+			if hour >= ha:
+				off = hour - ha
+			else:
+				off = (hour + 24.0) - ha
+		else:
+			span = hb - ha
+			off = hour - ha
+		if off >= 0.0 and off < span:
+			var t: float = off / span
+			return [_keyframes[i], _keyframes[j], t]
+	# Fallback (should not happen)
+	return [_keyframes[0], _keyframes[0], 0.0]
+
+
+func _lerp_kf(key: String, a: Dictionary, b: Dictionary, t: float):
+	var va = a[key]
+	var vb = b[key]
+	if va is Color:
+		return (va as Color).lerp(vb as Color, t)
+	else:
+		return lerpf(float(va), float(vb), t)
+
+
+func _apply_time_of_day() -> void:
+	if not _env or not _sky_mat or not _sun:
+		return
+	var pair: Array = _find_keyframe_pair(_time_of_day)
+	var a: Dictionary = pair[0]
+	var b: Dictionary = pair[1]
+	var t: float = float(pair[2])
+
+	# Sky material
+	_sky_mat.sky_top_color        = _lerp_kf("sky_top", a, b, t)
+	_sky_mat.sky_horizon_color    = _lerp_kf("sky_horizon", a, b, t)
+	_sky_mat.ground_bottom_color  = _lerp_kf("gnd_bottom", a, b, t)
+	_sky_mat.ground_horizon_color = _lerp_kf("gnd_horizon", a, b, t)
+	_sky_mat.sun_angle_max        = _lerp_kf("sun_angle_max", a, b, t)
+	_sky_mat.sun_curve            = _lerp_kf("sun_curve", a, b, t)
+
+	# Ambient
+	_env.ambient_light_color  = _lerp_kf("ambient_color", a, b, t)
+	_env.ambient_light_energy = _lerp_kf("ambient_energy", a, b, t)
+
+	# Tonemapping
+	_env.tonemap_exposure = _lerp_kf("exposure", a, b, t)
+	_env.tonemap_white    = _lerp_kf("white", a, b, t)
+
+	# Glow
+	_env.glow_intensity         = _lerp_kf("glow_intensity", a, b, t)
+	_env.glow_bloom             = _lerp_kf("glow_bloom", a, b, t)
+	_env.glow_strength          = _lerp_kf("glow_strength", a, b, t)
+	_env.glow_hdr_threshold     = _lerp_kf("glow_threshold", a, b, t)
+	_env.glow_hdr_luminance_cap = _lerp_kf("glow_cap", a, b, t)
+
+	# SSAO
+	_env.ssao_radius    = _lerp_kf("ssao_radius", a, b, t)
+	_env.ssao_intensity = _lerp_kf("ssao_intensity", a, b, t)
+	_env.ssao_power     = _lerp_kf("ssao_power", a, b, t)
+
+	# SSIL
+	_env.ssil_intensity = _lerp_kf("ssil_intensity", a, b, t)
+
+	# Colour grading
+	_env.adjustment_saturation = _lerp_kf("saturation", a, b, t)
+	_env.adjustment_contrast   = _lerp_kf("contrast", a, b, t)
+	_env.adjustment_brightness = _lerp_kf("brightness", a, b, t)
+
+	# Fog
+	_env.fog_light_color       = _lerp_kf("fog_color", a, b, t)
+	_env.fog_light_energy      = _lerp_kf("fog_energy", a, b, t)
+	_env.fog_sun_scatter       = _lerp_kf("fog_scatter", a, b, t)
+	_env.fog_density           = _lerp_kf("fog_density", a, b, t)
+	_env.fog_aerial_perspective = _lerp_kf("fog_aerial", a, b, t)
+	_env.fog_sky_affect        = _lerp_kf("fog_sky_affect", a, b, t)
+
+	# Sun / moon directional light
+	_sun.light_energy    = _lerp_kf("sun_energy", a, b, t)
+	_sun.light_color     = _lerp_kf("sun_color", a, b, t)
+	var pitch: float     = _lerp_kf("sun_pitch", a, b, t)
+	var yaw: float       = _lerp_kf("sun_yaw", a, b, t)
+	_sun.rotation_degrees = Vector3(pitch, yaw, 0.0)
+	_sun.directional_shadow_max_distance = _lerp_kf("shadow_dist", a, b, t)
+
+	# Lamppost emission
+	if _lamp_mat:
+		var em: float = _lerp_kf("lamp_emission", a, b, t)
+		_lamp_mat.emission_energy_multiplier = em
+		# Fade albedo brightness slightly when lamps are off (daytime)
+		if em < 0.01:
+			_lamp_mat.emission = Color(0.0, 0.0, 0.0)
+		else:
+			_lamp_mat.emission = Color(1.0, 0.85, 0.45) * em
 
 
 
@@ -456,6 +763,9 @@ func _setup_park() -> void:
 	if not _hm_data.is_empty():
 		loader.set_heightmap(_hm_data, _hm_width, _hm_depth, _hm_world_size)
 	add_child(loader)
+	# Grab lamppost material for day/night emission control
+	if loader.lamppost_material:
+		_lamp_mat = loader.lamppost_material
 
 
 # ---------------------------------------------------------------------------
@@ -515,8 +825,14 @@ func _setup_hud() -> void:
 	_latlon_label.add_theme_color_override("font_color", Color(1.00, 0.95, 0.75))
 	vbox.add_child(_latlon_label)
 
+	_time_label = Label.new()
+	_time_label.text = "6:00 AM  [1x]"
+	_time_label.add_theme_font_size_override("font_size", 22)
+	_time_label.add_theme_color_override("font_color", Color(1.0, 0.88, 0.55))
+	vbox.add_child(_time_label)
+
 	var hint := Label.new()
-	hint.text = "Left stick: walk   Right stick: look"
+	hint.text = "Left stick: walk   Right stick: look   T: time speed   [/]: +/-1 hour"
 	hint.add_theme_font_size_override("font_size", 15)
 	hint.add_theme_color_override("font_color", Color(0.55, 0.55, 0.55))
 	vbox.add_child(hint)
