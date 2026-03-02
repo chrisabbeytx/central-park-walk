@@ -827,7 +827,7 @@ func _build_bridge(path: Dictionary) -> void:
 	var sof_verts   := PackedVector3Array()
 	var sof_normals := PackedVector3Array()
 	var sof_uvs     := PackedVector2Array()
-	var _skip_soffit := total_len < 12.0
+	var _skip_soffit := total_len < 10.0
 	var edge_verts  := PackedVector3Array()
 	var edge_norms  := PackedVector3Array()
 	var u_s := 0.0
@@ -902,7 +902,7 @@ func _build_bridge(path: Dictionary) -> void:
 	# ----------------------------------------------------------------
 	var par_ramp_start := ramp_len * 0.3
 	var par_ramp_end   := total_len - ramp_len * 0.3
-	var _skip_parapets := total_len < 12.0
+	var _skip_parapets := total_len < 6.0
 
 	if not _skip_parapets:
 		match style:
@@ -988,6 +988,81 @@ func _build_bridge(path: Dictionary) -> void:
 		abut_mi.mesh = abut_mesh
 		abut_mi.name = "Bridge_Abutments"
 		add_child(abut_mi)
+
+	# ----------------------------------------------------------------
+	# Deck edge curbs — raised strip along both sides, colored per style
+	# ----------------------------------------------------------------
+	var curb_w := 0.10   # curb width
+	var curb_h := 0.08   # curb height above deck
+	var curb_color := Color(0.65, 0.63, 0.60)  # default grey stone
+	match style:
+		BridgeStyle.CAST_IRON:
+			curb_color = Color(0.15, 0.15, 0.17)  # dark iron
+		BridgeStyle.RUSTIC_WOOD:
+			curb_color = Color(0.40, 0.28, 0.15)  # brown wood
+		BridgeStyle.BRICK:
+			curb_color = Color(0.55, 0.35, 0.25)  # reddish brick
+	var curb_v := PackedVector3Array()
+	var curb_n := PackedVector3Array()
+	for i in range(n_pts - 1):
+		var d1 := cum_len[i]
+		var d2 := cum_len[i + 1]
+		# Only add curbs where railings would be (elevated section)
+		if d2 < par_ramp_start or d1 > par_ramp_end:
+			continue
+		var p1 := Vector3(float(pts[i][0]), pt_y[i], float(pts[i][2]))
+		var p2 := Vector3(float(pts[i+1][0]), pt_y[i+1], float(pts[i+1][2]))
+		var seg2 := Vector2(p2.x - p1.x, p2.z - p1.z)
+		if seg2.length_squared() < 0.0001:
+			continue
+		var dv := seg2.normalized()
+		var nv := Vector2(-dv.y, dv.x)
+		for side in [-1.0, 1.0]:
+			var s: float = float(side)
+			var o_inner := hw2 - curb_w
+			var o_outer := hw2
+			var a := Vector3(p1.x + nv.x * o_inner * s, p1.y, p1.z + nv.y * o_inner * s)
+			var b := Vector3(p1.x + nv.x * o_outer * s, p1.y, p1.z + nv.y * o_outer * s)
+			var c := Vector3(p2.x + nv.x * o_outer * s, p2.y, p2.z + nv.y * o_outer * s)
+			var d := Vector3(p2.x + nv.x * o_inner * s, p2.y, p2.z + nv.y * o_inner * s)
+			# Top face
+			var at := a + Vector3.UP * curb_h
+			var bt := b + Vector3.UP * curb_h
+			var ct := c + Vector3.UP * curb_h
+			var dt := d + Vector3.UP * curb_h
+			curb_v.append_array(PackedVector3Array([at, bt, ct, at, ct, dt]))
+			for _j in range(6):
+				curb_n.append(Vector3.UP)
+			# Outward face
+			curb_v.append_array(PackedVector3Array([b, c, ct, b, ct, bt]))
+			var fn := Vector3(nv.x * s, 0.0, nv.y * s)
+			for _j in range(6):
+				curb_n.append(fn)
+			# Inner face
+			curb_v.append_array(PackedVector3Array([d, a, at, d, at, dt]))
+			for _j in range(6):
+				curb_n.append(-fn)
+	if not curb_v.is_empty():
+		_add_batch_mesh(curb_v, curb_n, curb_color, 0.7, "Bridge_Curbs")
+
+	# ----------------------------------------------------------------
+	# Bridge name label — Label3D for named bridges
+	# ----------------------------------------------------------------
+	if not bridge_name.is_empty() and total_len >= 8.0:
+		var mid_i := n_pts / 2
+		var label_pos := Vector3(float(pts[mid_i][0]), pt_y[mid_i] + PARAPET_H + 1.5,
+				float(pts[mid_i][2]))
+		var lbl := Label3D.new()
+		lbl.text = bridge_name
+		lbl.font_size = 48
+		lbl.pixel_size = 0.01
+		lbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+		lbl.modulate = Color(0.95, 0.90, 0.80)
+		lbl.outline_modulate = Color(0.1, 0.1, 0.1, 0.8)
+		lbl.outline_size = 8
+		lbl.position = label_pos
+		lbl.name = "Bridge_Label"
+		add_child(lbl)
 
 
 # ---------------------------------------------------------------------------
