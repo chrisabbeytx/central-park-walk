@@ -220,7 +220,7 @@ render_mode cull_disabled;
 uniform sampler2D tex_alb : source_color,      filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D tex_nrm : hint_normal,        filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D tex_rgh : hint_default_white, filter_linear_mipmap_anisotropic, repeat_enable;
-uniform sampler2D heightmap_tex : filter_nearest, repeat_disable;
+uniform sampler2D heightmap_tex : filter_linear, repeat_disable;
 uniform vec4 tint : source_color = vec4(1.0);
 uniform float hm_world_size = 5000.0;
 uniform float hm_min_h      = 0.0;
@@ -652,45 +652,44 @@ func _make_path_mesh(paths: Array, hw: String, surface: String) -> MeshInstance3
 
 
 func _build_junction_fills() -> void:
-	## At every node where 2+ path ribbons meet, emit a triangle fan to fill
+	## At every node where 2+ path ribbons meet, place a flat disc to cover
 	## the wedge-shaped gap between ribbons.
 	var verts   := PackedVector3Array()
 	var normals := PackedVector3Array()
 	var uvs     := PackedVector2Array()
+	var disc_segs := 8  # octagon disc
 
 	for jk: Vector2i in _junction_edges:
 		var edges: Array = _junction_edges[jk]
 		if edges.size() < 2:
 			continue
 
-		# Collect all unique edge vertices around this junction
-		# Lower fill slightly so it sits below path ribbons (fills gaps only)
-		var center := Vector3.ZERO
-		var ring: Array[Vector3] = []
+		# Junction center from original data point (decode from key)
+		var cx := float(jk.x) / 10.0
+		var cz := float(jk.y) / 10.0
+		var cy := _terrain_y(cx, cz) + PATH_Y - 0.01  # just below path ribbons
+
+		# Disc radius = max half-width of meeting paths + small margin
+		var max_hw := 0.0
 		for e: Dictionary in edges:
-			var lv: Vector3 = e["left"]
-			var rv: Vector3 = e["right"]
-			lv.y -= 0.02
-			rv.y -= 0.02
-			ring.append(lv)
-			ring.append(rv)
-			center += lv + rv
-		center /= float(ring.size())
+			var hw_str: String = e["hw"]
+			var w := _hw_width(hw_str) * 0.5
+			if w > max_hw:
+				max_hw = w
+		var radius := max_hw + 0.3
 
-		# Sort ring vertices by angle around center (XZ plane)
-		ring.sort_custom(func(a: Vector3, b: Vector3) -> bool:
-			return atan2(a.x - center.x, a.z - center.z) < atan2(b.x - center.x, b.z - center.z))
-
-		# Triangle fan from center
-		var n_ring := ring.size()
-		for i in range(n_ring):
-			var v0 := ring[i]
-			var v1 := ring[(i + 1) % n_ring]
-			verts.append(center); verts.append(v0); verts.append(v1)
+		# Build octagon disc as triangle fan
+		for i in range(disc_segs):
+			var a0 := TAU * float(i) / float(disc_segs)
+			var a1 := TAU * float(i + 1) / float(disc_segs)
+			var v0 := Vector3(cx, cy, cz)
+			var v1 := Vector3(cx + cos(a0) * radius, cy, cz + sin(a0) * radius)
+			var v2 := Vector3(cx + cos(a1) * radius, cy, cz + sin(a1) * radius)
+			verts.append(v0); verts.append(v1); verts.append(v2)
 			normals.append(Vector3.UP); normals.append(Vector3.UP); normals.append(Vector3.UP)
 			uvs.append(Vector2(0.5, 0.5))
-			uvs.append(Vector2(0.0, 0.0))
-			uvs.append(Vector2(1.0, 0.0))
+			uvs.append(Vector2(0.5 + cos(a0) * 0.5, 0.5 + sin(a0) * 0.5))
+			uvs.append(Vector2(0.5 + cos(a1) * 0.5, 0.5 + sin(a1) * 0.5))
 
 	if verts.is_empty():
 		return
@@ -703,7 +702,6 @@ func _build_junction_fills() -> void:
 
 	var mesh := ArrayMesh.new()
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-	# Use a generic paving material — most junctions are paving stones or asphalt
 	mesh.surface_set_material(0, _make_path_material("footway", ""))
 
 	var mi := MeshInstance3D.new()
@@ -1393,6 +1391,7 @@ func _build_iron_railings(pts: Array, pt_y: PackedFloat32Array,
 	mat.albedo_color = Color(0.12, 0.12, 0.14)
 	mat.metallic = 0.6
 	mat.roughness = 0.35
+	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
 	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
 	arrays[Mesh.ARRAY_VERTEX] = rail_verts
 	arrays[Mesh.ARRAY_NORMAL] = rail_normals
@@ -1523,6 +1522,7 @@ func _build_wood_railings(pts: Array, pt_y: PackedFloat32Array,
 	var mat := StandardMaterial3D.new()
 	mat.albedo_color = Color(0.35, 0.25, 0.15)
 	mat.roughness = 0.85
+	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
 	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
 	arrays[Mesh.ARRAY_VERTEX] = rail_verts
 	arrays[Mesh.ARRAY_NORMAL] = rail_normals
@@ -2493,7 +2493,7 @@ func _water_shader_code() -> String:
 	return """shader_type spatial;
 render_mode cull_disabled;
 
-uniform sampler2D heightmap_tex : filter_nearest, repeat_disable;
+uniform sampler2D heightmap_tex : filter_linear, repeat_disable;
 uniform float hm_world_size = 5000.0;
 uniform float hm_min_h      = 0.0;
 uniform float hm_range      = 1.0;
@@ -4697,6 +4697,10 @@ func _build_furniture(paths: Array) -> void:
 					var bz := z1 + nz * off * bench_side
 					var bbk := Vector2i(int(floor(bx / BUILDING_GRID_CELL)), int(floor(bz / BUILDING_GRID_CELL)))
 					if not _building_grid.has(bbk):
+						# Skip if bench would land on another path
+						var bpk := Vector2i(int(floor(bx / PATH_GRID_CELL)), int(floor(bz / PATH_GRID_CELL)))
+						if _path_grid.has(bpk):
+							continue
 						if _terrain_slope(bx, bz) > BENCH_MAX_SLOPE:
 							continue
 						var by := _terrain_y(bx, bz)
