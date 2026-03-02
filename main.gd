@@ -49,9 +49,9 @@ func _ready() -> void:
 	_build_keyframes()
 	_load_heightmap()
 	_setup_environment()
-	_setup_park()          # park_loader runs first to export tunnel depressions
+	_setup_park()
 	_apply_tunnel_depressions()
-	_setup_ground()        # terrain built after depressions applied
+	_setup_ground()
 	if _park_loader and _park_loader.splat_texture:
 		_apply_splat_map(_park_loader.splat_texture)
 	_player = _setup_player()
@@ -523,12 +523,10 @@ func _apply_time_of_day() -> void:
 			_lamp_mat.emission = Color(1.0, 0.85, 0.45) * em
 
 
-
 # ---------------------------------------------------------------------------
-# Carve terrain depressions at tunnel approach ramps + body
-# Each depression: {x, z, dx, dz, length, hw, max_depth}
-# Ramps linearly deepen from 0 at start to max_depth at end.
-# Body sections are at full max_depth.
+# Carve terrain at tunnel locations.
+# Stairwells: {x, z, dx, dz, length, hw, max_depth} — linear ramp
+# Tunnel bodies: {polyline, hw, max_depth, body:true} — distance to polyline
 # ---------------------------------------------------------------------------
 func _apply_tunnel_depressions() -> void:
 	if _hm_data.is_empty() or _park_loader == null:
@@ -540,62 +538,93 @@ func _apply_tunnel_depressions() -> void:
 	var H := _hm_depth
 	var half := _hm_world_size * 0.5
 	var cell := _hm_world_size / float(W - 1)
-	var margin := 2.0  # extra metres beyond half-width for smooth edges
+	var margin := 2.0
 
 	for dep in depressions:
-		var ox: float = dep["x"]
-		var oz: float = dep["z"]
-		var dx: float = dep["dx"]
-		var dz: float = dep["dz"]
-		var seg_len: float = dep["length"]
+		var is_body: bool = dep.get("body", false)
 		var hw: float = dep["hw"]
 		var max_d: float = dep["max_depth"]
-		# Perpendicular
-		var nx := -dz
-		var nz := dx
-		# Bounding box in world coords
-		var extent := seg_len + margin
-		var bmin_x := minf(ox, ox + dx * seg_len) - absf(nx) * (hw + margin) - margin
-		var bmax_x := maxf(ox, ox + dx * seg_len) + absf(nx) * (hw + margin) + margin
-		var bmin_z := minf(oz, oz + dz * seg_len) - absf(nz) * (hw + margin) - margin
-		var bmax_z := maxf(oz, oz + dz * seg_len) + absf(nz) * (hw + margin) + margin
-		# Convert to heightmap grid indices
-		var xi0 := maxi(0, int(floor((bmin_x + half) / cell)))
-		var xi1 := mini(W - 1, int(ceil((bmax_x + half) / cell)))
-		var zi0 := maxi(0, int(floor((bmin_z + half) / cell)))
-		var zi1 := mini(H - 1, int(ceil((bmax_z + half) / cell)))
 
-		for zi in range(zi0, zi1 + 1):
-			for xi in range(xi0, xi1 + 1):
-				var wx := -half + xi * cell
-				var wz := -half + zi * cell
-				# Project onto depression axis
-				var rx := wx - ox
-				var rz := wz - oz
-				var along := rx * dx + rz * dz  # distance along depression
-				var across := absf(rx * nx + rz * nz)  # distance from centerline
-				if along < -margin or along > seg_len + margin:
-					continue
-				if across > hw + margin:
-					continue
-				# Depth fraction along the segment
-				var t_along := clampf(along / seg_len, 0.0, 1.0)
-				var is_ramp: bool = dep.get("ramp", true)
-				var depth := max_d * t_along if is_ramp else max_d
-				# Smooth lateral falloff at edges
-				var lat_factor := 1.0
-				if across > hw:
-					lat_factor = 1.0 - clampf((across - hw) / margin, 0.0, 1.0)
-				depth *= lat_factor
-				if depth > 0.01:
-					var idx := zi * W + xi
-					_hm_data[idx] = _hm_data[idx] - depth
+		if is_body:
+			# Polyline-based: depress all vertices within hw of the polyline
+			var poly: Array = dep["polyline"]
+			if poly.size() < 2:
+				continue
+			# Compute bounding box of polyline + hw
+			var pmin_x := INF; var pmax_x := -INF
+			var pmin_z := INF; var pmax_z := -INF
+			for pt in poly:
+				var px: float = pt[0]; var pz: float = pt[1]
+				pmin_x = minf(pmin_x, px); pmax_x = maxf(pmax_x, px)
+				pmin_z = minf(pmin_z, pz); pmax_z = maxf(pmax_z, pz)
+			pmin_x -= hw; pmax_x += hw; pmin_z -= hw; pmax_z += hw
+			var xi0 := maxi(0, int(floor((pmin_x + half) / cell)))
+			var xi1 := mini(W - 1, int(ceil((pmax_x + half) / cell)))
+			var zi0 := maxi(0, int(floor((pmin_z + half) / cell)))
+			var zi1 := mini(H - 1, int(ceil((pmax_z + half) / cell)))
+
+			for zi in range(zi0, zi1 + 1):
+				for xi in range(xi0, xi1 + 1):
+					var wx := -half + xi * cell
+					var wz := -half + zi * cell
+					# Find minimum distance to any segment of the polyline
+					var min_dist := INF
+					for si in range(poly.size() - 1):
+						var ax: float = poly[si][0]; var az: float = poly[si][1]
+						var bx: float = poly[si+1][0]; var bz: float = poly[si+1][1]
+						var dx := bx - ax; var dz := bz - az
+						var len_sq := dx * dx + dz * dz
+						if len_sq < 0.0001:
+							continue
+						var t := clampf(((wx - ax) * dx + (wz - az) * dz) / len_sq, 0.0, 1.0)
+						var cx := ax + t * dx; var cz := az + t * dz
+						var dist := sqrt((wx - cx) * (wx - cx) + (wz - cz) * (wz - cz))
+						if dist < min_dist:
+							min_dist = dist
+					if min_dist <= hw:
+						var idx := zi * W + xi
+						_hm_data[idx] = _hm_data[idx] - max_d
+		else:
+			# Stairwell: linear ramp depression
+			var ox: float = dep["x"]; var oz: float = dep["z"]
+			var dx: float = dep["dx"]; var dz: float = dep["dz"]
+			var seg_len: float = dep["length"]
+			var nx := -dz; var nz := dx
+			var ext := hw + margin
+			var bmin_x := minf(ox, ox + dx * seg_len) - ext
+			var bmax_x := maxf(ox, ox + dx * seg_len) + ext
+			var bmin_z := minf(oz, oz + dz * seg_len) - ext
+			var bmax_z := maxf(oz, oz + dz * seg_len) + ext
+			var xi0 := maxi(0, int(floor((bmin_x + half) / cell)))
+			var xi1 := mini(W - 1, int(ceil((bmax_x + half) / cell)))
+			var zi0 := maxi(0, int(floor((bmin_z + half) / cell)))
+			var zi1 := mini(H - 1, int(ceil((bmax_z + half) / cell)))
+
+			for zi in range(zi0, zi1 + 1):
+				for xi in range(xi0, xi1 + 1):
+					var wx := -half + xi * cell
+					var wz := -half + zi * cell
+					var rx := wx - ox; var rz := wz - oz
+					var along := rx * dx + rz * dz
+					var across := absf(rx * nx + rz * nz)
+					if along < 0.0 or along > seg_len:
+						continue
+					if across > ext:
+						continue
+					var t_along := clampf(along / seg_len, 0.0, 1.0)
+					# Deepest at tunnel entrance (t=0), surface at far end (t=1)
+					var depth := max_d * (1.0 - t_along)
+					if across > hw:
+						depth *= 1.0 - clampf((across - hw) / margin, 0.0, 1.0)
+					if depth > 0.01:
+						var idx := zi * W + xi
+						_hm_data[idx] = _hm_data[idx] - depth
 
 	print("Terrain: applied ", depressions.size(), " tunnel depressions")
 
 
 # ---------------------------------------------------------------------------
-# Terrain ground – 256×256 height-mapped mesh + HeightMapShape3D collision
+# Terrain ground – height-mapped mesh + HeightMapShape3D collision
 # Falls back to a flat plane when heightmap.json is absent.
 # ---------------------------------------------------------------------------
 func _setup_ground() -> void:
@@ -927,7 +956,7 @@ void fragment() {
 # ---------------------------------------------------------------------------
 # Central Park geometry (paths + boundary walls from park_data.json)
 # ---------------------------------------------------------------------------
-var _park_loader = null  # reference for tunnel depression + splat map data
+var _park_loader = null  # reference for tunnel depressions + splat map data
 
 func _setup_park() -> void:
 	var loader = load("res://park_loader.gd").new()
