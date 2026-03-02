@@ -3585,6 +3585,7 @@ func _build_furniture(paths: Array) -> void:
 		if pts.size() < 2:
 			continue
 
+		var half_w := _hw_width(hw) * 0.5  # path half-width
 		var lamp_cum  := 0.0
 		var bench_cum := 0.0
 		var next_lamp  := rng.randf_range(25.0, 45.0)
@@ -3606,8 +3607,9 @@ func _build_furniture(paths: Array) -> void:
 			if lamp_cum >= next_lamp:
 				lamp_cum = 0.0
 				next_lamp = rng.randf_range(28.0, 40.0)
-				var lx := x1 + nx * 0.3 * lamp_side
-				var lz := z1 + nz * 0.3 * lamp_side
+				var off := half_w + 0.3
+				var lx := x1 + nx * off * lamp_side
+				var lz := z1 + nz * off * lamp_side
 				var ly := _terrain_y(lx, lz)
 				lamp_xf.append(Transform3D(Basis.IDENTITY, Vector3(lx, ly, lz)))
 				lamp_side = -lamp_side
@@ -3615,8 +3617,9 @@ func _build_furniture(paths: Array) -> void:
 			if bench_cum >= next_bench:
 				bench_cum = 0.0
 				next_bench = rng.randf_range(20.0, 30.0)
-				var bx := x1 + nx * 0.5 * bench_side
-				var bz := z1 + nz * 0.5 * bench_side
+				var off := half_w + 0.5
+				var bx := x1 + nx * off * bench_side
+				var bz := z1 + nz * off * bench_side
 				var by := _terrain_y(bx, bz)
 				var angle := atan2(nx, nz)
 				if bench_side < 0.0:
