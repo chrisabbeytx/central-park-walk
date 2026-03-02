@@ -35,19 +35,17 @@ const BUILDING_GRID_CELL := 4.0
 var _path_grid: Dictionary = {}
 const PATH_GRID_CELL := 3.0
 
-# Junction fill: collect ribbon edge vertices at path endpoints
-# Key = Vector2i(round(x*10), round(z*10)) → Array of {left: Vector3, right: Vector3, hw: String, surface: String}
-var _junction_edges: Dictionary = {}
-
-# Spatial index for clipping lower-priority paths at intersections
-var _path_clip_grid: Dictionary = {}  # Vector2i → Array of [x0,z0,x1,z1,half_w,priority]
-const CLIP_CELL := 8.0
 
 # Slope threshold for furniture placement
 const BENCH_MAX_SLOPE := 0.27  # tan(~15°) — skip benches on steeper terrain
 
 # Exposed for day/night cycle (main.gd writes emission at runtime)
 var lamppost_material: StandardMaterial3D
+
+# Splat map: 4096×4096 RG8 — R=material index, G=coverage alpha (smooth edges)
+const SPLAT_RES := 4096
+const SPLAT_FEATHER := 1.5  # metres — soft edge transition width
+var splat_texture: ImageTexture
 
 
 # ---------------------------------------------------------------------------
@@ -404,74 +402,165 @@ func _ready() -> void:
 	print("ParkLoader: done")
 
 
+
 # ---------------------------------------------------------------------------
-# Path intersection clipping – lower-priority paths terminate at higher ones
+# Splat map rasterizer — paints path footprints onto a 4096×4096 R8 texture
 # ---------------------------------------------------------------------------
-func _build_clip_index(paths: Array) -> void:
-	## Index all ground-level path segments so we can clip lower-priority ribbons.
+func _splat_mat_idx(hw: String, surface: String) -> int:
+	## Maps (highway, surface) to material index 1-30 (0 = grass).
+	match surface:
+		"asphalt":            return 1
+		"concrete":           return 2
+		"concrete:plates":    return 3
+		"paving_stones":      return 4
+		"sett":               return 5
+		"unhewn_cobblestone": return 6
+		"pebblestone":        return 7
+		"stone":              return 8
+		"rock":               return 9
+		"brick":              return 10
+		"metal":              return 11
+		"wood":               return 12
+		"paved":              return 13
+		"compacted":          return 14
+		"fine_gravel":        return 15
+		"gravel":             return 16
+		"unpaved":            return 17
+		"dirt":               return 18
+		"ground":             return 19
+		"grass":              return 20
+		"woodchips":          return 21
+		"mulch":              return 22
+		"sand":               return 23
+	match hw:
+		"footway":    return 24
+		"cycleway":   return 25
+		"pedestrian": return 26
+		"path":       return 27
+		"steps":      return 28
+		"track":      return 29
+		_:            return 30
+
+
+func _raster_thick_line(data: PackedByteArray, x0: float, z0: float, x1: float, z1: float, hw2: float, mat_idx: int) -> void:
+	## Rasterize a thick line segment with soft anti-aliased edges into the byte array.
+	## RG8 layout: data[(z*SPLAT_RES + x)*2] = material index, +1 = coverage (0-255).
+	var half := _hm_world_size * 0.5
+	var scale := float(SPLAT_RES) / _hm_world_size
+	var px0 := (x0 + half) * scale
+	var pz0 := (z0 + half) * scale
+	var px1 := (x1 + half) * scale
+	var pz1 := (z1 + half) * scale
+	var pr  := hw2 * scale
+	var feather := SPLAT_FEATHER * scale
+	var outer := pr + feather
+	var inner := maxf(pr - feather, 0.0)
+	var outer_sq := outer * outer
+	var range_inv := 1.0 / maxf(outer - inner, 0.001)
+
+	var bmin_x := clampi(int(floor(minf(px0, px1) - outer)), 0, SPLAT_RES - 1)
+	var bmax_x := clampi(int(ceil(maxf(px0, px1) + outer)), 0, SPLAT_RES - 1)
+	var bmin_z := clampi(int(floor(minf(pz0, pz1) - outer)), 0, SPLAT_RES - 1)
+	var bmax_z := clampi(int(ceil(maxf(pz0, pz1) + outer)), 0, SPLAT_RES - 1)
+
+	var dx := px1 - px0; var dz := pz1 - pz0
+	var len_sq := dx * dx + dz * dz
+	var stride := SPLAT_RES * 2  # bytes per row (RG8)
+
+	for pz in range(bmin_z, bmax_z + 1):
+		var row_off := pz * stride
+		for px in range(bmin_x, bmax_x + 1):
+			var fpx := float(px) + 0.5
+			var fpz := float(pz) + 0.5
+			var dist_sq: float
+			if len_sq < 0.001:
+				dist_sq = (fpx - px0) * (fpx - px0) + (fpz - pz0) * (fpz - pz0)
+			else:
+				var t := clampf(((fpx - px0) * dx + (fpz - pz0) * dz) / len_sq, 0.0, 1.0)
+				var cx := px0 + t * dx; var cz := pz0 + t * dz
+				dist_sq = (fpx - cx) * (fpx - cx) + (fpz - cz) * (fpz - cz)
+			if dist_sq > outer_sq:
+				continue
+			var dist := sqrt(dist_sq)
+			# Smooth coverage: 1.0 inside, transitions to 0.0 at outer edge
+			var s := clampf((dist - inner) * range_inv, 0.0, 1.0)
+			var coverage := 1.0 - s * s * (3.0 - 2.0 * s)  # smoothstep
+			var cov_byte := int(coverage * 255.0)
+			if cov_byte < 1:
+				continue
+			var byte_idx := row_off + px * 2
+			if cov_byte >= data[byte_idx + 1]:
+				data[byte_idx] = mat_idx
+				data[byte_idx + 1] = cov_byte
+
+
+func _generate_splat_map(paths: Array, bridge_centroids: Array) -> ImageTexture:
+	## Create 4096×4096 RG8 splat map. R = material index, G = coverage alpha.
+	## Uses direct byte array access for performance.
+	var data := PackedByteArray()
+	data.resize(SPLAT_RES * SPLAT_RES * 2)
+	data.fill(0)
+
+	# Collect ground paths + tunnel underpasses, sorted by priority ascending
+	var ground_segs: Array = []
 	for path in paths:
-		if bool(path.get("bridge", false)) or bool(path.get("tunnel", false)):
+		var hw: String = str(path.get("highway", "path"))
+		var surf: String = str(path.get("surface", ""))
+		var layer: int = int(path.get("layer", 0))
+		var is_bridge: bool = bool(path.get("bridge", false)) or layer >= 1
+		var is_tunnel: bool = bool(path.get("tunnel", false)) or layer <= -1
+
+		if is_bridge:
 			continue
-		var hw := str(path.get("highway", "path"))
 		if hw == "steps":
 			continue
-		var pts: Array = path["points"]
-		var priority := _hw_y_priority(hw)
-		var half_w := _hw_width(hw) * 0.5
+
+		if is_tunnel:
+			var tpts: Array = path["points"]
+			var tcx := 0.0; var tcz := 0.0
+			for pt in tpts:
+				tcx += float(pt[0]); tcz += float(pt[2])
+			tcx /= tpts.size(); tcz /= tpts.size()
+			var near_bridge := false
+			for bc in bridge_centroids:
+				if Vector2(tcx, tcz).distance_to(bc) < 60.0:
+					near_bridge = true
+					break
+			if not near_bridge:
+				continue
+		ground_segs.append({
+			"points": path["points"],
+			"hw": hw,
+			"surface": surf,
+			"priority": _hw_y_priority(hw)
+		})
+
+	ground_segs.sort_custom(func(a, b): return a["priority"] < b["priority"])
+
+	for seg in ground_segs:
+		var hw: String = seg["hw"]
+		var surf: String = seg["surface"]
+		var mat_idx := _splat_mat_idx(hw, surf)
+		var hw2 := _hw_width(hw) * 0.5
+		var pts: Array = _subdivide_pts(seg["points"], 1.0)
 		for i in range(pts.size() - 1):
-			var x0 := float(pts[i][0]);  var z0 := float(pts[i][2])
-			var x1 := float(pts[i+1][0]); var z1 := float(pts[i+1][2])
-			var seg: Array = [x0, z0, x1, z1, half_w, priority]
-			var bmin_x := minf(x0, x1) - half_w
-			var bmax_x := maxf(x0, x1) + half_w
-			var bmin_z := minf(z0, z1) - half_w
-			var bmax_z := maxf(z0, z1) + half_w
-			for gx in range(int(floor(bmin_x / CLIP_CELL)), int(floor(bmax_x / CLIP_CELL)) + 1):
-				for gz in range(int(floor(bmin_z / CLIP_CELL)), int(floor(bmax_z / CLIP_CELL)) + 1):
-					var key := Vector2i(gx, gz)
-					if key not in _path_clip_grid:
-						_path_clip_grid[key] = []
-					_path_clip_grid[key].append(seg)
+			_raster_thick_line(data, float(pts[i][0]), float(pts[i][2]),
+				float(pts[i+1][0]), float(pts[i+1][2]), hw2, mat_idx)
 
-
-func _inside_higher_path(px: float, pz: float, my_priority: float) -> bool:
-	## Return true if (px, pz) falls within the footprint of any path with
-	## strictly higher priority than my_priority.
-	var key := Vector2i(int(floor(px / CLIP_CELL)), int(floor(pz / CLIP_CELL)))
-	if key not in _path_clip_grid:
-		return false
-	var segs: Array = _path_clip_grid[key]
-	for s_idx in range(segs.size()):
-		var seg: Array = segs[s_idx]
-		var s_pri: float = seg[5]
-		if s_pri <= my_priority:
-			continue
-		var sx0: float = seg[0]; var sz0: float = seg[1]
-		var sx1: float = seg[2]; var sz1: float = seg[3]
-		var shw: float = seg[4]
-		var dx := sx1 - sx0; var dz := sz1 - sz0
-		var len_sq := dx * dx + dz * dz
-		if len_sq < 0.0001:
-			continue
-		var t := clampf(((px - sx0) * dx + (pz - sz0) * dz) / len_sq, 0.0, 1.0)
-		var cx := sx0 + t * dx; var cz := sz0 + t * dz
-		var dist_sq := (px - cx) * (px - cx) + (pz - cz) * (pz - cz)
-		if dist_sq < shw * shw:
-			return true
-	return false
+	var img := Image.create_from_data(SPLAT_RES, SPLAT_RES, false, Image.FORMAT_RG8, data)
+	var tex := ImageTexture.create_from_image(img)
+	print("ParkLoader: splat map generated (%d×%d), %d ground paths" % [SPLAT_RES, SPLAT_RES, ground_segs.size()])
+	return tex
 
 
 # ---------------------------------------------------------------------------
 # Path meshes – one MeshInstance3D per highway type
 # ---------------------------------------------------------------------------
 func _build_paths(paths: Array) -> void:
-	var ground_groups: Dictionary = {}
-	var bridge_paths:  Array      = []
-	var tunnel_paths:  Array      = []
+	var bridge_paths:  Array = []
+	var tunnel_paths:  Array = []
 
 	for path in paths:
-		var hw:    String = str(path.get("highway", "path"))
-		var surf:  String = str(path.get("surface", ""))
 		var layer: int    = int(path.get("layer",   0))
 		var is_bridge: bool = bool(path.get("bridge", false)) or layer >= 1
 		var is_tunnel: bool = bool(path.get("tunnel", false)) or layer <= -1
@@ -480,13 +569,6 @@ func _build_paths(paths: Array) -> void:
 			bridge_paths.append(path)
 		elif is_tunnel:
 			tunnel_paths.append(path)
-		elif hw == "steps":
-			continue  # handled by _build_staircases()
-		else:
-			var key: String = hw + "|" + surf
-			if key not in ground_groups:
-				ground_groups[key] = []
-			ground_groups[key].append(path)
 
 	# Populate path spatial grid for vegetation exclusion
 	for path in paths:
@@ -504,15 +586,6 @@ func _build_paths(paths: Array) -> void:
 				for dj in range(-cells, cells + 1):
 					_path_grid[Vector2i(ci + di, cj + dj)] = true
 
-	# Build spatial index for intersection clipping (before mesh generation)
-	_build_clip_index(paths)
-
-	for key in ground_groups:
-		var parts: PackedStringArray = key.split("|")
-		add_child(_make_path_mesh(ground_groups[key], str(parts[0]), str(parts[1])))
-
-
-
 	# Collect bridge centroids so tunnels can detect if they're an underpass
 	var bridge_centroids: Array = []
 	for bp in bridge_paths:
@@ -523,12 +596,14 @@ func _build_paths(paths: Array) -> void:
 		cx /= bpts.size(); cz /= bpts.size()
 		bridge_centroids.append(Vector2(cx, cz))
 
+	# Generate splat map (ground paths + tunnel underpasses painted onto terrain)
+	splat_texture = _generate_splat_map(paths, bridge_centroids)
+
 	# Populate bridge spatial grid — mark all cells along bridge paths + 8m around endpoints
 	for bp in bridge_paths:
 		var bpts: Array = bp["points"]
 		if bpts.size() < 2:
 			continue
-		# Mark cells along the entire bridge
 		for pt in bpts:
 			var px := float(pt[0]); var pz := float(pt[2])
 			for di in range(-1, 2):
@@ -536,7 +611,6 @@ func _build_paths(paths: Array) -> void:
 					var key := Vector2i(int(floor(px / BRIDGE_GRID_CELL)) + di,
 										int(floor(pz / BRIDGE_GRID_CELL)) + dj)
 					_bridge_grid[key] = true
-		# Extra margin around endpoints (8m radius) to clear approach zones
 		for ep_idx in [0, bpts.size() - 1]:
 			var ex := float(bpts[ep_idx][0]); var ez := float(bpts[ep_idx][2])
 			for di in range(-2, 3):
@@ -560,13 +634,7 @@ func _build_paths(paths: Array) -> void:
 			if Vector2(tcx, tcz).distance_to(bc) < 60.0:
 				near_bridge = true
 				break
-		if near_bridge:
-			# Render as normal ground-level path (bridge overhead provides cover)
-			var hw_t:   String = str(tp.get("highway", "path"))
-			var surf_t: String = str(tp.get("surface", ""))
-			var key_t: String = hw_t + "|" + surf_t
-			add_child(_make_path_mesh([tp], hw_t, surf_t))
-		else:
+		if not near_bridge:
 			_build_tunnel(tp)
 
 
@@ -578,7 +646,6 @@ func _make_path_mesh(paths: Array, hw: String, surface: String) -> MeshInstance3
 	var width   := _hw_width(hw)
 	var hw2     := width * 0.5
 	var skirt   := 0.18  # metres below terrain for edge skirts
-	var my_priority := _hw_y_priority(hw)
 
 	for path in paths:
 		# Per-path tint variation: hash first point for subtle color shift
@@ -645,24 +712,8 @@ func _make_path_mesh(paths: Array, hw: String, surface: String) -> MeshInstance3
 				var dz := pz - float(pts[i-1][2])
 				cum_u[i] = cum_u[i-1] + sqrt(dx*dx + dz*dz) / width
 
-		# Record edge vertices at endpoints for junction fill
-		for ep_idx in [0, n_pts - 1]:
-			var raw_pt: Array = path["points"][0] if ep_idx == 0 else path["points"][path["points"].size() - 1]
-			var jk := Vector2i(roundi(float(raw_pt[0]) * 10.0), roundi(float(raw_pt[2]) * 10.0))
-			if jk not in _junction_edges:
-				_junction_edges[jk] = []
-			(_junction_edges[jk] as Array).append({
-				"left": lefts[ep_idx], "right": rights[ep_idx],
-				"hw": hw, "surface": surface})
-
 		# Build quads between consecutive vertex pairs
 		for i in range(n_pts - 1):
-			# Clip: skip quads entirely inside a higher-priority path
-			var cpx0 := float(pts[i][0]); var cpz0 := float(pts[i][2])
-			var cpx1 := float(pts[i+1][0]); var cpz1 := float(pts[i+1][2])
-			if _inside_higher_path(cpx0, cpz0, my_priority) and _inside_higher_path(cpx1, cpz1, my_priority):
-				continue
-
 			var L0 := lefts[i];  var R0 := rights[i]
 			var L1 := lefts[i+1]; var R1 := rights[i+1]
 			var u0 := cum_u[i]; var u1 := cum_u[i+1]
@@ -721,65 +772,6 @@ func _make_path_mesh(paths: Array, hw: String, surface: String) -> MeshInstance3
 	mi.name = "Paths_" + hw + ("_" + surface if surface else "")
 	return mi
 
-
-func _build_junction_fills() -> void:
-	## At every node where 2+ path ribbons meet, place a flat disc to cover
-	## the wedge-shaped gap between ribbons.
-	var verts   := PackedVector3Array()
-	var normals := PackedVector3Array()
-	var uvs     := PackedVector2Array()
-	var disc_segs := 8  # octagon disc
-
-	for jk: Vector2i in _junction_edges:
-		var edges: Array = _junction_edges[jk]
-		if edges.size() < 2:
-			continue
-
-		# Junction center from original data point (decode from key)
-		var cx := float(jk.x) / 10.0
-		var cz := float(jk.y) / 10.0
-		var cy := _terrain_y(cx, cz) + PATH_Y - 0.01  # just below path ribbons
-
-		# Disc radius = max half-width of meeting paths + small margin
-		var max_hw := 0.0
-		for e: Dictionary in edges:
-			var hw_str: String = e["hw"]
-			var w := _hw_width(hw_str) * 0.5
-			if w > max_hw:
-				max_hw = w
-		var radius := max_hw + 0.3
-
-		# Build octagon disc as triangle fan
-		for i in range(disc_segs):
-			var a0 := TAU * float(i) / float(disc_segs)
-			var a1 := TAU * float(i + 1) / float(disc_segs)
-			var v0 := Vector3(cx, cy, cz)
-			var v1 := Vector3(cx + cos(a0) * radius, cy, cz + sin(a0) * radius)
-			var v2 := Vector3(cx + cos(a1) * radius, cy, cz + sin(a1) * radius)
-			verts.append(v0); verts.append(v1); verts.append(v2)
-			normals.append(Vector3.UP); normals.append(Vector3.UP); normals.append(Vector3.UP)
-			uvs.append(Vector2(0.5, 0.5))
-			uvs.append(Vector2(0.5 + cos(a0) * 0.5, 0.5 + sin(a0) * 0.5))
-			uvs.append(Vector2(0.5 + cos(a1) * 0.5, 0.5 + sin(a1) * 0.5))
-
-	if verts.is_empty():
-		return
-
-	var arrays: Array = []
-	arrays.resize(Mesh.ARRAY_MAX)
-	arrays[Mesh.ARRAY_VERTEX] = verts
-	arrays[Mesh.ARRAY_NORMAL] = normals
-	arrays[Mesh.ARRAY_TEX_UV] = uvs
-
-	var mesh := ArrayMesh.new()
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-	mesh.surface_set_material(0, _make_path_material("footway", ""))
-
-	var mi := MeshInstance3D.new()
-	mi.mesh = mesh
-	mi.name = "JunctionFills"
-	add_child(mi)
-	print("ParkLoader: junction fills = ", _junction_edges.size(), " nodes, ", verts.size() / 3, " tris")
 
 
 # ---------------------------------------------------------------------------
