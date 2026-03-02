@@ -4,11 +4,11 @@ extends Node3D
 ##   • One StaticBody3D with BoxShape3D collision per boundary segment (invisible walls)
 
 const DATA_PATH := "res://park_data.json"
-const HM_PATH   := "res://heightmap.json"
 const PATH_Y    := 0.06   # metres above ground plane
 const WATER_Y   := 0.03   # water sits above ground, below path ribbons
 
-var _tex_cache: Dictionary = {}   # path → ImageTexture (null if missing)
+var _tex_cache:    Dictionary = {}   # path → ImageTexture (null if missing)
+var _shader_cache: Dictionary = {}   # key  → compiled Shader (reused across materials)
 
 # Heightmap for snapping geometry to the rendered terrain surface
 var _hm_data:       Array   = []
@@ -125,6 +125,15 @@ func _load_tex(path: String) -> ImageTexture:
 	return tex
 
 
+func _get_shader(key: String, code: String) -> Shader:
+	if key in _shader_cache:
+		return _shader_cache[key]
+	var sh := Shader.new()
+	sh.code = code
+	_shader_cache[key] = sh
+	return sh
+
+
 func _path_tex_prefix(hw: String, surface: String) -> String:
 	match surface:
 		"asphalt":                              return "res://textures/Asphalt012_1K-JPG"
@@ -149,10 +158,8 @@ func _make_path_material(hw: String, surface: String) -> Material:
 	var tex_nrm := _load_tex(prefix + "_NormalGL.jpg")
 	var tex_rgh := _load_tex(prefix + "_Roughness.jpg")
 	# Always use the shader path so vertex-shader terrain snapping works
-	var shader     := Shader.new()
-	shader.code     = _path_shader_code()
 	var mat        := ShaderMaterial.new()
-	mat.shader      = shader
+	mat.shader      = _get_shader("path", _path_shader_code())
 	if tex_alb:
 		mat.set_shader_parameter("tex_alb", tex_alb)
 	if tex_nrm:
@@ -251,21 +258,20 @@ void fragment() {
 # Heightmap terrain sampler — matches the bilinear interpolation used by the
 # terrain mesh in main.gd so paths/water sit exactly on the rendered surface.
 # ---------------------------------------------------------------------------
-func _load_heightmap() -> void:
-	if not FileAccess.file_exists(HM_PATH):
-		return
-	var fa := FileAccess.open(HM_PATH, FileAccess.READ)
-	var hm  = JSON.parse_string(fa.get_as_text())
-	fa.close()
-	if typeof(hm) != TYPE_DICTIONARY:
-		return
-	_hm_width      = int(hm["width"])
-	_hm_depth      = int(hm["depth"])
-	_hm_world_size = float(hm["world_size"])
-	_hm_data       = hm["data"]
+func set_heightmap(data: Array, width: int, depth: int, world_size: float) -> void:
+	## Receive pre-loaded heightmap data from main.gd (avoids double-parsing JSON).
+	_hm_data       = data
+	_hm_width      = width
+	_hm_depth      = depth
+	_hm_world_size = world_size
+	_build_hm_gpu_texture()
 
-	# Build GPU texture for vertex-shader terrain snapping.
-	# Encode heights as 16-bit (RG8) for precision: R = high byte, G = low byte.
+
+func _build_hm_gpu_texture() -> void:
+	## Build GPU texture for vertex-shader terrain snapping.
+	## Encode heights as 16-bit (RG8) for precision: R = high byte, G = low byte.
+	if _hm_data.is_empty():
+		return
 	_hm_min_h = INF; _hm_max_h = -INF
 	for v in _hm_data:
 		var fv := float(v)
@@ -281,7 +287,7 @@ func _load_heightmap() -> void:
 			var lo := h16 & 0xFF      # low byte → G
 			img.set_pixel(xi, zi, Color(float(hi) / 255.0, float(lo) / 255.0, 0.0, 1.0))
 	_hm_texture = ImageTexture.create_from_image(img)
-	print("ParkLoader: heightmap loaded %d×%d  GPU texture created (h_range=%.1f)" % [
+	print("ParkLoader: heightmap GPU texture created %d×%d (h_range=%.1f)" % [
 		_hm_width, _hm_depth, h_range])
 
 
@@ -321,7 +327,10 @@ func _ready() -> void:
 		push_warning("ParkLoader: park_data.json not found – run convert_to_godot.py first")
 		return
 
-	_load_heightmap()
+	# Heightmap data is passed via set_heightmap() before add_child().
+	# Build GPU texture if not already done (fallback for standalone testing).
+	if _hm_texture == null and not _hm_data.is_empty():
+		_build_hm_gpu_texture()
 
 	var fa   := FileAccess.open(DATA_PATH, FileAccess.READ)
 	var data  = JSON.parse_string(fa.get_as_text())
@@ -1145,10 +1154,8 @@ func _build_tunnel_portals(pts: Array, width: float, height: float, mat: Materia
 func _make_stone_material(alb: ImageTexture, nrm: ImageTexture, rgh: ImageTexture,
 						  tint: Color) -> Material:
 	if alb:
-		var sh  := Shader.new()
-		sh.code  = _stone_shader_code()
 		var sm  := ShaderMaterial.new()
-		sm.shader = sh
+		sm.shader = _get_shader("stone", _stone_shader_code())
 		sm.set_shader_parameter("tex_alb", alb)
 		sm.set_shader_parameter("tex_nrm", nrm)
 		sm.set_shader_parameter("tex_rgh", rgh)
@@ -1275,9 +1282,9 @@ func _build_fountain_pool(pts: Array, wy: float) -> void:
 	arrays[Mesh.ARRAY_NORMAL] = normals
 	var mesh := ArrayMesh.new()
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-	var sh  := Shader.new(); sh.code = _water_shader_code()
-	mesh.surface_set_material(0, ShaderMaterial.new())
-	mesh.surface_get_material(0).shader = sh
+	var wmat := ShaderMaterial.new()
+	wmat.shader = _get_shader("water", _water_shader_code())
+	mesh.surface_set_material(0, wmat)
 	var mi := MeshInstance3D.new(); mi.mesh = mesh; mi.name = "FountainPool"
 	add_child(mi)
 
@@ -1655,13 +1662,6 @@ func _build_shore_vegetation(water: Array) -> void:
 	var rng := RandomNumberGenerator.new()
 	rng.seed = 55555
 
-	var reed_mat := StandardMaterial3D.new()
-	reed_mat.albedo_color       = Color(0.28, 0.48, 0.18, 0.9)
-	reed_mat.transparency       = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
-	reed_mat.alpha_scissor_threshold = 0.3
-	reed_mat.cull_mode          = BaseMaterial3D.CULL_DISABLED
-	reed_mat.shading_mode       = BaseMaterial3D.SHADING_MODE_PER_VERTEX
-
 	var verts   := PackedVector3Array()
 	var normals := PackedVector3Array()
 	var colors  := PackedColorArray()
@@ -1858,10 +1858,8 @@ func _build_water(water: Array) -> void:
 	var mesh := ArrayMesh.new()
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 
-	var sh  := Shader.new()
-	sh.code  = _water_shader_code()
 	var mat := ShaderMaterial.new()
-	mat.shader = sh
+	mat.shader = _get_shader("water", _water_shader_code())
 	# Heightmap for vertex-shader terrain clamping
 	if _hm_texture:
 		mat.set_shader_parameter("heightmap_tex", _hm_texture)
@@ -2088,10 +2086,8 @@ func _add_batch_mesh(verts: PackedVector3Array, normals: PackedVector3Array,
 # Building facade material + shader
 # ---------------------------------------------------------------------------
 func _make_facade_material() -> ShaderMaterial:
-	var sh   := Shader.new()
-	sh.code   = _facade_shader_code()
 	var mat  := ShaderMaterial.new()
-	mat.shader = sh
+	mat.shader = _get_shader("facade", _facade_shader_code())
 	return mat
 
 
@@ -2214,10 +2210,8 @@ func _build_trees(trees: Array) -> void:
 	# Trunk+branches mesh + material
 	var trunk_mesh := _make_trunk_with_branches_mesh()
 
-	var trunk_sh    := Shader.new()
-	trunk_sh.code    = _trunk_shader_code()
 	var trunk_mat   := ShaderMaterial.new()
-	trunk_mat.shader = trunk_sh
+	trunk_mat.shader = _get_shader("trunk", _trunk_shader_code())
 	if bark_alb:
 		trunk_mat.set_shader_parameter("bark_albedo", bark_alb)
 		trunk_mat.set_shader_parameter("bark_normal",  bark_nrm)
@@ -2576,10 +2570,8 @@ func _make_leaf_mat(broad: bool) -> ShaderMaterial:
 	var norm_tex  := _load_tex("res://textures/%s_2K-JPG_NormalGL.jpg" % prefix)
 	var rough_tex := _load_tex("res://textures/%s_2K-JPG_Roughness.jpg" % prefix)
 	var opac_tex  := _load_tex("res://textures/%s_2K-JPG_Opacity.jpg" % prefix)
-	var sh    := Shader.new()
-	sh.code    = _leaf_shader_code()
 	var mat   := ShaderMaterial.new()
-	mat.shader = sh
+	mat.shader = _get_shader("leaf", _leaf_shader_code())
 	if color_tex:
 		mat.set_shader_parameter("leaf_color", color_tex)
 	if norm_tex:
@@ -2847,10 +2839,8 @@ void fragment() {
 
 
 func _make_bush_mat(tex: ImageTexture) -> ShaderMaterial:
-	var sh    := Shader.new()
-	sh.code    = _bush_shader_code()
 	var mat   := ShaderMaterial.new()
-	mat.shader = sh
+	mat.shader = _get_shader("bush", _bush_shader_code())
 	if tex:
 		mat.set_shader_parameter("canopy_tex", tex)
 	return mat
@@ -2990,10 +2980,8 @@ void fragment() {
 
 
 func _make_rock_material(alb: ImageTexture, nrm: ImageTexture, rgh: ImageTexture) -> ShaderMaterial:
-	var sh    := Shader.new()
-	sh.code    = _rock_shader_code()
 	var mat   := ShaderMaterial.new()
-	mat.shader = sh
+	mat.shader = _get_shader("rock", _rock_shader_code())
 	if alb:
 		mat.set_shader_parameter("rock_albedo", alb)
 	if nrm:
@@ -3046,31 +3034,6 @@ func _build_labels(water: Array) -> void:
 		var water_y: float = float(body.get("water_y", 0.0))
 		lbl.position          = Vector3(cx, water_y + height, cz)
 		add_child(lbl)
-
-
-func _append_quad(verts: PackedVector3Array, normals: PackedVector3Array,
-				  p1: Vector3, p2: Vector3, width: float) -> void:
-	var seg2 := Vector2(p2.x - p1.x, p2.z - p1.z)
-	if seg2.length_squared() < 0.0001:
-		return
-
-	var d  := seg2.normalized()
-	var n  := Vector2(-d.y, d.x)
-	var hw := width * 0.5
-
-	var a  := Vector3(p1.x + n.x * hw,  p1.y + PATH_Y,  p1.z + n.y * hw)
-	var b  := Vector3(p1.x - n.x * hw,  p1.y + PATH_Y,  p1.z - n.y * hw)
-	var c  := Vector3(p2.x + n.x * hw,  p2.y + PATH_Y,  p2.z + n.y * hw)
-	var dd := Vector3(p2.x - n.x * hw,  p2.y + PATH_Y,  p2.z - n.y * hw)
-
-	# Compute quad normal from actual geometry so sloped paths light correctly
-	var quad_n := (b - a).cross(c - a).normalized()
-	if quad_n.y < 0.0:
-		quad_n = -quad_n
-
-	verts.append_array(PackedVector3Array([a, b, c,   b, dd, c]))
-	for _i in range(6):
-		normals.append(quad_n)
 
 
 # ---------------------------------------------------------------------------
@@ -3471,6 +3434,8 @@ func _build_statues(statues: Array) -> void:
 	bronze_mat.roughness    = 0.55
 	bronze_mat.metallic     = 0.65
 
+	var statue_col_shapes: Array = []
+
 	for statue in statues:
 		var stype: String = str(statue.get("type", "statue"))
 		var sname: String = str(statue.get("name", ""))
@@ -3525,17 +3490,22 @@ func _build_statues(statues: Array) -> void:
 		lbl.position = Vector3(sx, sy + ped_h + fig_h + 0.5, sz)
 		add_child(lbl)
 
-		# Collision cylinder
-		var col_body := StaticBody3D.new()
-		col_body.name = "Statue_Col"
+		# Collect collision data for batching
 		var cyl := CylinderShape3D.new()
 		cyl.radius = ped_r
 		cyl.height = ped_h + fig_h
 		var col := CollisionShape3D.new()
 		col.shape = cyl
-		col_body.add_child(col)
-		col_body.position = Vector3(sx, sy + (ped_h + fig_h) * 0.5, sz)
-		add_child(col_body)
+		col.position = Vector3(sx, sy + (ped_h + fig_h) * 0.5, sz)
+		statue_col_shapes.append(col)
+
+	# Single StaticBody3D for all statue collision shapes
+	if not statue_col_shapes.is_empty():
+		var body := StaticBody3D.new()
+		body.name = "StatueCollision"
+		for shape in statue_col_shapes:
+			body.add_child(shape)
+		add_child(body)
 
 	print("ParkLoader: statues/monuments = %d" % [statues.size()])
 

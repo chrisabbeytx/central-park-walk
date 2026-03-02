@@ -453,6 +453,8 @@ void fragment() {
 func _setup_park() -> void:
 	var loader = load("res://park_loader.gd").new()
 	loader.name = "CentralPark"
+	if not _hm_data.is_empty():
+		loader.set_heightmap(_hm_data, _hm_width, _hm_depth, _hm_world_size)
 	add_child(loader)
 
 
