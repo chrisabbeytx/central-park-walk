@@ -528,23 +528,6 @@ func _make_path_mesh(paths: Array, hw: String, surface: String) -> MeshInstance3
 		if n_pts < 2:
 			continue
 
-		# Extend ribbon past endpoints to cover junction gaps
-		var overshoot := width * 0.6
-		var fx0 := float(pts[0][0]); var fz0 := float(pts[0][2]); var fy0 := float(pts[0][1])
-		var sx0 := float(pts[1][0]); var sz0 := float(pts[1][2])
-		var edx0 := fx0 - sx0; var edz0 := fz0 - sz0
-		var ed0 := sqrt(edx0 * edx0 + edz0 * edz0)
-		if ed0 > 0.01:
-			pts.insert(0, [fx0 + edx0 / ed0 * overshoot, fy0, fz0 + edz0 / ed0 * overshoot])
-		var li := pts.size() - 1
-		var lx1 := float(pts[li][0]); var lz1 := float(pts[li][2]); var ly1 := float(pts[li][1])
-		var sx1 := float(pts[li - 1][0]); var sz1 := float(pts[li - 1][2])
-		var edx1 := lx1 - sx1; var edz1 := lz1 - sz1
-		var ed1 := sqrt(edx1 * edx1 + edz1 * edz1)
-		if ed1 > 0.01:
-			pts.append([lx1 + edx1 / ed1 * overshoot, ly1, lz1 + edz1 / ed1 * overshoot])
-		n_pts = pts.size()
-
 		# Build continuous ribbon with averaged normals at each vertex.
 		# This eliminates triangular gaps at curves.
 		var lefts  := PackedVector3Array()  # left edge vertices
