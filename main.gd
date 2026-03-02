@@ -36,6 +36,7 @@ var _env: Environment
 var _sky_mat: ProceduralSkyMaterial
 var _sun: DirectionalLight3D
 var _lamp_mat: StandardMaterial3D
+var _terrain_mat: ShaderMaterial
 var _time_label: Label
 
 # 5 keyframes defining the full day/night cycle
@@ -526,13 +527,13 @@ func _setup_ground() -> void:
 	var tex_rgh := _load_img_tex("res://textures/grass_rough.jpg")
 	var shader  := Shader.new()
 	shader.code  = _terrain_shader_textured() if tex_alb != null else _terrain_shader_code()
-	var mat     := ShaderMaterial.new()
-	mat.shader   = shader
+	_terrain_mat = ShaderMaterial.new()
+	_terrain_mat.shader = shader
 	if tex_alb != null:
-		mat.set_shader_parameter("grass_albedo", tex_alb)
-		mat.set_shader_parameter("grass_normal", tex_nrm)
-		mat.set_shader_parameter("grass_rough",  tex_rgh)
-		mat.set_shader_parameter("tile_m",       3.0)
+		_terrain_mat.set_shader_parameter("grass_albedo", tex_alb)
+		_terrain_mat.set_shader_parameter("grass_normal", tex_nrm)
+		_terrain_mat.set_shader_parameter("grass_rough",  tex_rgh)
+		_terrain_mat.set_shader_parameter("tile_m",       3.0)
 		print("Ground: textured grass shader")
 
 	if _hm_data.is_empty():
@@ -543,7 +544,7 @@ func _setup_ground() -> void:
 		plane.subdivide_depth  = 1
 		var mi                := MeshInstance3D.new()
 		mi.mesh                = plane
-		mi.material_override   = mat
+		mi.material_override   = _terrain_mat
 		add_child(mi)
 		var body := StaticBody3D.new()
 		var col  := CollisionShape3D.new()
@@ -601,7 +602,7 @@ func _setup_ground() -> void:
 	arrays[Mesh.ARRAY_INDEX]   = indices
 	var mesh := ArrayMesh.new()
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-	mesh.surface_set_material(0, mat)
+	mesh.surface_set_material(0, _terrain_mat)
 
 	var mi       := MeshInstance3D.new()
 	mi.mesh       = mesh
@@ -631,10 +632,19 @@ func _terrain_shader_textured() -> String:
 	return """shader_type spatial;
 render_mode cull_disabled;
 
+// Grass textures
 uniform sampler2D grass_albedo : source_color,      filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D grass_normal : hint_normal,        filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D grass_rough  : hint_default_white, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform float tile_m = 3.0;
+
+// Splat map + path texture arrays
+uniform sampler2D splat_map : filter_nearest, repeat_disable;
+uniform sampler2DArray path_alb_arr : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2DArray path_nrm_arr : hint_normal, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2DArray path_rgh_arr : hint_default_white, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform float world_size = 5000.0;
+uniform float path_tile_m = 1.5;
 
 varying vec3 world_pos;
 
@@ -655,34 +665,117 @@ float fbm(vec2 p, int oct) {
 	return v;
 }
 
+// Returns vec4(tex_set_index, tint_r, tint_g, tint_b) for material indices 1-30
+vec4 mat_lookup(int idx) {
+	// tex_set: 0=Asphalt, 1=Concrete, 2=PavingStones, 3=Gravel, 4=Wood
+	if (idx == 1)  return vec4(0.0, 0.28, 0.28, 0.30);   // asphalt
+	if (idx == 2)  return vec4(1.0, 0.68, 0.68, 0.66);   // concrete
+	if (idx == 3)  return vec4(1.0, 0.65, 0.65, 0.63);   // concrete:plates
+	if (idx == 4)  return vec4(2.0, 0.78, 0.74, 0.65);   // paving_stones
+	if (idx == 5)  return vec4(2.0, 0.54, 0.52, 0.48);   // sett
+	if (idx == 6)  return vec4(2.0, 0.52, 0.50, 0.44);   // unhewn_cobblestone
+	if (idx == 7)  return vec4(3.0, 0.60, 0.57, 0.50);   // pebblestone
+	if (idx == 8)  return vec4(2.0, 0.60, 0.58, 0.54);   // stone
+	if (idx == 9)  return vec4(2.0, 0.56, 0.54, 0.50);   // rock
+	if (idx == 10) return vec4(2.0, 0.68, 0.38, 0.26);   // brick
+	if (idx == 11) return vec4(1.0, 0.62, 0.63, 0.66);   // metal
+	if (idx == 12) return vec4(4.0, 0.50, 0.34, 0.16);   // wood
+	if (idx == 13) return vec4(1.0, 0.60, 0.60, 0.58);   // paved
+	if (idx == 14) return vec4(3.0, 0.52, 0.42, 0.28);   // compacted
+	if (idx == 15) return vec4(3.0, 0.64, 0.57, 0.44);   // fine_gravel
+	if (idx == 16) return vec4(3.0, 0.60, 0.53, 0.40);   // gravel
+	if (idx == 17) return vec4(3.0, 0.54, 0.43, 0.28);   // unpaved
+	if (idx == 18) return vec4(3.0, 0.50, 0.38, 0.22);   // dirt
+	if (idx == 19) return vec4(3.0, 0.46, 0.38, 0.26);   // ground
+	if (idx == 20) return vec4(3.0, 0.28, 0.52, 0.18);   // grass
+	if (idx == 21) return vec4(3.0, 0.46, 0.32, 0.14);   // woodchips
+	if (idx == 22) return vec4(3.0, 0.40, 0.28, 0.12);   // mulch
+	if (idx == 23) return vec4(3.0, 0.76, 0.70, 0.52);   // sand
+	if (idx == 24) return vec4(2.0, 0.70, 0.64, 0.52);   // hw:footway
+	if (idx == 25) return vec4(0.0, 0.30, 0.30, 0.32);   // hw:cycleway
+	if (idx == 26) return vec4(2.0, 0.78, 0.74, 0.65);   // hw:pedestrian
+	if (idx == 27) return vec4(3.0, 0.54, 0.44, 0.30);   // hw:path
+	if (idx == 28) return vec4(1.0, 0.60, 0.58, 0.54);   // hw:steps
+	if (idx == 29) return vec4(3.0, 0.48, 0.40, 0.26);   // hw:track
+	return vec4(3.0, 0.65, 0.60, 0.48);                   // catchall (30)
+}
+
 void vertex() {
 	world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 }
 
 void fragment() {
+	// --- Splat map sampling (RG8: R=material index, G=coverage alpha) ---
+	vec2 splat_uv = (world_pos.xz + world_size * 0.5) / world_size;
+
+	// Sample 4 nearest texels for bilinear coverage interpolation
+	float splat_res = float(textureSize(splat_map, 0).x);
+	vec2 splat_texel = splat_uv * splat_res - 0.5;
+	vec2 splat_frac = fract(splat_texel);
+	vec2 splat_base = (floor(splat_texel) + 0.5) / splat_res;
+	float splat_step = 1.0 / splat_res;
+
+	vec2 s00 = texture(splat_map, splat_base).rg;
+	vec2 s10 = texture(splat_map, splat_base + vec2(splat_step, 0.0)).rg;
+	vec2 s01 = texture(splat_map, splat_base + vec2(0.0, splat_step)).rg;
+	vec2 s11 = texture(splat_map, splat_base + vec2(splat_step, splat_step)).rg;
+
+	// Bilinear blend of G (coverage) channel — already smooth from rasterizer
+	float path_weight = mix(
+		mix(s00.g, s10.g, splat_frac.x),
+		mix(s01.g, s11.g, splat_frac.x),
+		splat_frac.y
+	);
+
+	// Material index from nearest texel
+	int mat_idx = int(texture(splat_map, splat_uv).r * 255.0 + 0.5);
+	// If center is grass but there's path coverage nearby, use nearest path material
+	if (mat_idx == 0 && path_weight > 0.01) {
+		float best = s00.g;
+		mat_idx = int(s00.r * 255.0 + 0.5);
+		if (s10.g > best) { best = s10.g; mat_idx = int(s10.r * 255.0 + 0.5); }
+		if (s01.g > best) { best = s01.g; mat_idx = int(s01.r * 255.0 + 0.5); }
+		if (s11.g > best) { best = s11.g; mat_idx = int(s11.r * 255.0 + 0.5); }
+	}
+
+	// --- Grass shading ---
 	vec2 uv  = world_pos.xz / tile_m;
-	vec2 uv2 = world_pos.xz / (tile_m * 4.0) + vec2(0.37, 0.61); // coarser, offset
-
-	vec3 alb = texture(grass_albedo, uv).rgb;
-
-	// Blend normals at two scales — breaks up the 'wet floor' specularity
-	vec3 n1 = texture(grass_normal, uv).rgb;
-	vec3 n2 = texture(grass_normal, uv2).rgb;
-	vec3 nrm = normalize(n1 * 0.65 + n2 * 0.35);
-
-	// Large-scale colour variation
+	vec2 uv2 = world_pos.xz / (tile_m * 4.0) + vec2(0.37, 0.61);
+	vec3 grass_alb = texture(grass_albedo, uv).rgb;
+	vec3 grass_n1 = texture(grass_normal, uv).rgb;
+	vec3 grass_n2 = texture(grass_normal, uv2).rgb;
+	vec3 grass_nrm = normalize(grass_n1 * 0.65 + grass_n2 * 0.35);
+	float grass_rgh = clamp(texture(grass_rough, uv).r * 0.15 + 0.85, 0.0, 1.0);
 	float f = clamp(fbm(world_pos.xz * 0.004, 4) * 0.45
 	              + fbm(world_pos.xz * 0.025, 3) * 0.35 + 0.30, 0.48, 1.1);
-
-	// Blend toward brown dirt where noise is low (bare earth patches)
 	vec3 dirt = vec3(0.22, 0.17, 0.10);
 	float wear = smoothstep(0.60, 0.50, f);
-	ALBEDO          = mix(alb * f, dirt, wear * 0.7);
-	NORMAL_MAP      = nrm;
-	NORMAL_MAP_DEPTH = 1.6;   // stronger blade-level detail
-	ROUGHNESS       = clamp(texture(grass_rough, uv).r * 0.15 + 0.85, 0.0, 1.0);
-	SPECULAR        = 0.0;    // no specular highlight on grass
-	METALLIC        = 0.0;
+	grass_alb = mix(grass_alb * f, dirt, wear * 0.7);
+
+	if (mat_idx > 0 && path_weight > 0.001) {
+		// --- Path shading ---
+		vec4 ml = mat_lookup(mat_idx);
+		float tex_set = ml.x;
+		vec3 tint = ml.yzw;
+		vec2 path_uv = world_pos.xz / path_tile_m;
+		vec3 p_alb = texture(path_alb_arr, vec3(path_uv, tex_set)).rgb * tint;
+		vec3 p_nrm = texture(path_nrm_arr, vec3(path_uv, tex_set)).rgb;
+		float p_rgh = clamp(texture(path_rgh_arr, vec3(path_uv, tex_set)).r + 0.10, 0.0, 1.0);
+
+		ALBEDO          = mix(grass_alb, p_alb, path_weight);
+		NORMAL_MAP      = mix(grass_nrm, p_nrm, path_weight);
+		NORMAL_MAP_DEPTH = mix(1.6, 1.0, path_weight);
+		ROUGHNESS       = mix(grass_rgh, p_rgh, path_weight);
+		SPECULAR        = 0.0;
+		METALLIC        = 0.0;
+	} else {
+		ALBEDO          = grass_alb;
+		NORMAL_MAP      = grass_nrm;
+		NORMAL_MAP_DEPTH = 1.6;
+		ROUGHNESS       = grass_rgh;
+		SPECULAR        = 0.0;
+		METALLIC        = 0.0;
+	}
 }
 """
 
@@ -766,6 +859,55 @@ func _setup_park() -> void:
 	# Grab lamppost material for day/night emission control
 	if loader.lamppost_material:
 		_lamp_mat = loader.lamppost_material
+	# Apply splat map to terrain shader
+	if loader.splat_texture:
+		_apply_splat_map(loader.splat_texture)
+
+
+func _apply_splat_map(splat_tex: ImageTexture) -> void:
+	## Load 5 CC0 path texture sets into Texture2DArrays and wire them into
+	## the terrain shader along with the splat map.
+	var prefixes: Array = [
+		"res://textures/Asphalt012_1K-JPG",       # index 0
+		"res://textures/Concrete034_1K-JPG",       # index 1
+		"res://textures/PavingStones130_1K-JPG",   # index 2
+		"res://textures/Gravel021_1K-JPG",         # index 3
+		"res://textures/WoodFloor041_1K-JPG",      # index 4
+	]
+	var suffixes: Array = ["_Color.jpg", "_NormalGL.jpg", "_Roughness.jpg"]
+	var arr_tex: Array = []  # [alb_arr, nrm_arr, rgh_arr]
+
+	for si in range(3):
+		var images: Array[Image] = []
+		for pi in range(prefixes.size()):
+			var path: String = prefixes[pi] + suffixes[si]
+			var img := Image.load_from_file(path)
+			if not img:
+				push_warning("Splat: missing texture " + path)
+				img = Image.create(64, 64, false, Image.FORMAT_RGB8)
+			# Ensure all layers have matching size and format
+			if pi == 0:
+				# First image sets the target size — use its natural size
+				pass
+			else:
+				var target_size := images[0].get_size()
+				if img.get_size() != target_size:
+					img.resize(target_size.x, target_size.y)
+			if img.get_format() != images[0].get_format() if pi > 0 else false:
+				img.convert(images[0].get_format())
+			img.generate_mipmaps()
+			images.append(img)
+		var tex2d_arr := Texture2DArray.new()
+		tex2d_arr.create_from_images(images)
+		arr_tex.append(tex2d_arr)
+
+	_terrain_mat.set_shader_parameter("splat_map",    splat_tex)
+	_terrain_mat.set_shader_parameter("path_alb_arr", arr_tex[0])
+	_terrain_mat.set_shader_parameter("path_nrm_arr", arr_tex[1])
+	_terrain_mat.set_shader_parameter("path_rgh_arr", arr_tex[2])
+	_terrain_mat.set_shader_parameter("world_size",   _hm_world_size)
+	_terrain_mat.set_shader_parameter("path_tile_m",  1.5)
+	print("Terrain: splat map + path texture arrays applied")
 
 
 # ---------------------------------------------------------------------------
