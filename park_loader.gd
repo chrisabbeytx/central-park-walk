@@ -1596,8 +1596,13 @@ func _build_fountain(body: Dictionary) -> void:
 		var dx := float(pt[0]) - cx; var dz := float(pt[1]) - cz
 		max_r = maxf(max_r, sqrt(dx * dx + dz * dz))
 
+	# Sample terrain at all polygon vertices and use the MAX so the rim
+	# never sinks below the terrain on any side.
 	var base_y := _terrain_y(cx, cz)
-	var pool_y := base_y + WATER_Y
+	for pt in pts:
+		base_y = maxf(base_y, _terrain_y(float(pt[0]), float(pt[1])))
+	# Fountain water fills to just below the rim lip (rim_h ≈ 0.45 for Bethesda)
+	var pool_y := base_y + 0.35
 
 	# Textures for stone basin
 	var rw_alb := _load_tex("res://textures/rock_wall_diff.jpg")
@@ -1855,8 +1860,11 @@ func _add_cascade_ring(x: float, top_y: float, z: float,
 # -- Bethesda Fountain: ~29m pool, two-tier sandstone basin, angel column ---
 func _build_bethesda_fountain(cx: float, cz: float, base_y: float, pool_r: float,
 							  alb: ImageTexture, nrm: ImageTexture, rgh: ImageTexture) -> void:
-	# Warm sandstone tint (olive-mustard)
-	var stone := _make_stone_material(alb, nrm, rgh, Color(0.85, 0.78, 0.60))
+	# Smooth granite for the rim/basins (Concrete034 is smoother than rock_wall)
+	var con_alb := _load_tex("res://textures/Concrete034_1K-JPG_Color.jpg")
+	var con_nrm := _load_tex("res://textures/Concrete034_1K-JPG_NormalGL.jpg")
+	var con_rgh := _load_tex("res://textures/Concrete034_1K-JPG_Roughness.jpg")
+	var stone := _make_stone_material(con_alb, con_nrm, con_rgh, Color(0.82, 0.76, 0.65))
 	var bronze := StandardMaterial3D.new()
 	bronze.albedo_color = Color(0.35, 0.45, 0.30)  # green-brown patina
 	bronze.roughness    = 0.55
