@@ -1064,6 +1064,8 @@ func _setup_player() -> CharacterBody3D:
 	var p: CharacterBody3D = load("res://player.gd").new()
 	p.name       = "Player"
 	p.position.y = _hm_origin_height + 2.0
+	if _park_loader and _park_loader.boundary_polygon.size() > 2:
+		p.boundary = _park_loader.boundary_polygon
 	add_child(p)
 	return p
 

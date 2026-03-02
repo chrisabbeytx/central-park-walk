@@ -51,6 +51,7 @@ const SPLAT_RES := 4096
 const SPLAT_FEATHER := 1.5  # metres — soft edge transition width
 var splat_texture: ImageTexture
 var tunnel_depressions: Array = []  # stairwell depressions for terrain carving
+var boundary_polygon: PackedVector2Array  # XZ boundary for player clamping
 
 
 # ---------------------------------------------------------------------------
@@ -464,6 +465,7 @@ func _ready() -> void:
 	_build_meadow_grass(data.get("trees", []))
 	_build_ground_cover(data.get("trees", []), data.get("water", []), data.get("buildings", []))
 	_build_boundary(data.get("boundary", []))
+	_build_boundary_facades()
 	print("ParkLoader: done")
 
 
@@ -4683,6 +4685,11 @@ func _build_boundary(boundary: Array) -> void:
 		push_warning("ParkLoader: boundary too small – skipping walls")
 		return
 
+	# Store polygon for player clamping (XZ coords as Vector2)
+	boundary_polygon.resize(boundary.size())
+	for i in range(boundary.size()):
+		boundary_polygon[i] = Vector2(float(boundary[i][0]), float(boundary[i][1]))
+
 	var body := StaticBody3D.new()
 	body.name = "BoundaryWalls"
 	add_child(body)
@@ -4700,14 +4707,260 @@ func _build_boundary(boundary: Array) -> void:
 		var dir := (p2 - p1) / seg_len
 
 		var box  := BoxShape3D.new()
-		box.size  = Vector3(seg_len, 12.0, 0.5)
+		box.size  = Vector3(seg_len, 80.0, 0.5)
 
 		var col      := CollisionShape3D.new()
 		col.shape     = box
-		col.position  = Vector3(mid.x, 6.0, mid.y)
+		col.position  = Vector3(mid.x, 40.0, mid.y)
 		col.rotation.y = atan2(-dir.y, dir.x)
 
 		body.add_child(col)
+
+
+func _build_boundary_facades() -> void:
+	## NYC building facades along the park boundary, matching real skyline.
+	## Coordinate mapping: Z = 1967 - (street - 59) * 74.7
+	##   +Z = south (59th St), -Z = north (110th St)
+	##   +X = east (Fifth Ave ≈ +1019), -X = west (CPW ≈ -1228)
+	if boundary_polygon.size() < 3:
+		return
+
+	# Centroid for inward-normal detection
+	var cx := 0.0
+	var cz := 0.0
+	for pt in boundary_polygon:
+		cx += pt.x; cz += pt.y
+	cx /= float(boundary_polygon.size())
+	cz /= float(boundary_polygon.size())
+
+	# 5 style buckets reusing existing building materials
+	# 0=LIMESTONE 1=GLASS 2=RED_BRICK 3=BUFF_BRICK 4=DARK_STONE
+	var sv: Array = []; var sn: Array = []; var su: Array = []; var sc: Array = []
+	for _i in range(5):
+		sv.append(PackedVector3Array())
+		sn.append(PackedVector3Array())
+		su.append(PackedVector2Array())
+		sc.append(PackedColorArray())
+	var roof_v := PackedVector3Array()
+	var roof_n := PackedVector3Array()
+	var roof_c := PackedColorArray()
+
+	# --- Landmark tables: [z_min, z_max, height, style] ---
+	# East side (Fifth Avenue): cream limestone co-ops, 12-18 stories
+	# Z coords: 59th=1967, 70th=1145, 72nd=996, 80th=398, 84th=99, 88th=-199, 110th=-1842
+	var east_lm := [
+		[1890.0, 1970.0, 77.0,  3],  # Plaza Hotel — 18 stories, white/buff brick
+		[1100.0, 1200.0, 15.0,  0],  # Frick Collection — 3-story limestone mansion
+		[99.0,   398.0,  28.0,  0],  # Metropolitan Museum — wide, low, limestone/granite
+		[-275.0, -199.0, 28.0,  0],  # Guggenheim Museum — white concrete spiral
+		[-1320.0,-946.0, 50.0,  1],  # Mount Sinai Hospital — institutional glass/brick
+	]
+	# West side (Central Park West): Art Deco twin-towers + buff brick
+	var west_lm := [
+		[1890.0, 1970.0, 200.0, 1],  # Deutsche Bank Center (Time Warner) — 55-story glass
+		[1750.0, 1830.0, 115.0, 0],  # 15 CPW — modern limestone, 35 stories
+		[1670.0, 1750.0, 91.0,  3],  # The Century — Art Deco twin tower, 30 stories
+		[996.0,  1071.0, 106.0, 3],  # The Majestic — Art Deco twin tower, 30 stories
+		[920.0,  996.0,  30.0,  3],  # The Dakota — Victorian Gothic, 9 stories, yellow brick
+		[772.0,  920.0,  122.0, 3],  # The San Remo — twin tower, 27 stories, most iconic
+		[324.0,  622.0,  25.0,  0],  # Am. Museum of Natural History — wide low limestone
+		[250.0,  324.0,  70.0,  3],  # The Beresford — triple tower, 22 stories
+		[-424.0, -349.0, 119.0, 3],  # The El Dorado — Art Deco twin tower, 29 stories
+	]
+	# South side (59th St / CPS): Art Deco hotels + supertall backdrop
+	# Uses X coordinate instead of Z
+	var south_lm := [
+		[800.0,  1020.0, 77.0,  3],  # Plaza Hotel (east end)
+		[500.0,  650.0,  220.0, 0],  # 432 Park Avenue vicinity — white concrete grid
+		[-150.0, -50.0,  150.0, 3],  # Essex House — 44-story Art Deco, cream brick
+		[-300.0, -200.0, 120.0, 3],  # Hampshire House — white brick Art Deco
+		[-500.0, -350.0, 250.0, 1],  # Central Park Tower vicinity — 98-story glass
+		[-150.0, 0.0,    200.0, 1],  # One57 / Steinway Tower vicinity — glass
+	]
+
+	var n := boundary_polygon.size()
+	var cum_dist := 0.0
+
+	for i in range(n):
+		var p1 := boundary_polygon[i]
+		var p2 := boundary_polygon[(i + 1) % n]
+		var seg := p2 - p1
+		var seg_len := seg.length()
+		if seg_len < 0.3:
+			cum_dist += seg_len
+			continue
+
+		var dir := seg / seg_len
+		var mid := (p1 + p2) * 0.5
+		var mx := mid.x
+		var mz := mid.y  # Z stored in Vector2.y
+
+		# Outward offset (2m outside boundary)
+		var left_n := Vector2(-dir.y, dir.x)
+		var to_center := Vector2(cx - mx, cz - mz)
+		if left_n.dot(to_center) < 0.0:
+			left_n = -left_n
+		var inward := left_n
+		var face_offset := -inward * 2.0
+		var fp1 := p1 + face_offset
+		var fp2 := p2 + face_offset
+		var norm3 := Vector3(inward.x, 0.0, inward.y)
+
+		# Building block index for height variation (30m blocks)
+		var block_idx := int(floor(cum_dist / 30.0))
+		var bh := fmod(abs(float(block_idx) * 73.7 + 17.3), 1.0)  # 0..1 hash
+
+		# --- Classify side and determine height + style ---
+		var bld_h: float
+		var style: int
+		var tint := Color(1.0, 1.0, 1.0)
+		var matched_lm := false
+
+		if mx > 500.0 and mz > -1700.0 and mz < 1800.0:
+			# ═══ EAST SIDE — Fifth Avenue ═══
+			# Default: cream Indiana limestone co-ops, 12-18 stories (40-60m)
+			style = 0  # LIMESTONE
+			bld_h = 40.0 + bh * 20.0
+			tint = Color(1.02, 1.0, 0.96)  # warm cream
+			# Check landmarks
+			for lm in east_lm:
+				if mz >= lm[0] and mz <= lm[1]:
+					bld_h = lm[2]; style = int(lm[3]); matched_lm = true; break
+			# North of 103rd: transition to shorter red brick (East Harlem)
+			if not matched_lm and mz < -1320.0:
+				bld_h = 18.0 + bh * 8.0; style = 2
+				tint = Color(0.98, 0.94, 0.90)
+
+		elif mx < -700.0 and mz > -1700.0 and mz < 1800.0:
+			# ═══ WEST SIDE — Central Park West ═══
+			# Default: tan/buff brick pre-war apartments, 8-12 stories (28-42m)
+			style = 3  # BUFF_BRICK
+			bld_h = 28.0 + bh * 14.0
+			tint = Color(1.0, 0.98, 0.94)
+			for lm in west_lm:
+				if mz >= lm[0] and mz <= lm[1]:
+					bld_h = lm[2]; style = int(lm[3]); matched_lm = true; break
+			# Dakota special tint (pale yellow brick)
+			if matched_lm and mz >= 920.0 and mz < 996.0:
+				tint = Color(1.05, 1.02, 0.86)
+			# North of 98th: transition to shorter brick
+			if not matched_lm and mz < -700.0:
+				bld_h = 20.0 + bh * 10.0; style = 2
+				tint = Color(0.96, 0.93, 0.88)
+
+		elif mz > 1700.0:
+			# ═══ SOUTH SIDE — Central Park South / 59th St ═══
+			# Default: Art Deco hotels, 30-44 stories (100-145m)
+			style = 3  # BUFF_BRICK (Art Deco cream brick)
+			bld_h = 100.0 + bh * 45.0
+			tint = Color(1.0, 0.98, 0.95)
+			# Check landmarks by X coordinate
+			for lm in south_lm:
+				if mx >= lm[0] and mx <= lm[1]:
+					bld_h = lm[2]; style = int(lm[3]); matched_lm = true; break
+
+		else:
+			# ═══ NORTH SIDE — 110th St / Central Park North ═══
+			# Low brownstone/brick mix, 4-7 stories (15-22m)
+			style = 2  # RED_BRICK
+			bld_h = 15.0 + bh * 8.0
+			tint = Color(0.98, 0.94, 0.90)
+			# Occasional newer glass mid-rise
+			if bh > 0.85:
+				bld_h = 35.0 + bh * 20.0; style = 1
+
+		# Per-building tint variation
+		var rv := fmod(abs(float(block_idx) * 17.3), 0.10) - 0.05
+		var gv := fmod(abs(float(block_idx) * 11.1), 0.06) - 0.03
+		tint.r += rv; tint.g += gv
+
+		var base_y := _terrain_y(mx, mz) - 1.0
+		var top_y := base_y + bld_h
+
+		# Wall quad
+		var a := Vector3(fp1.x, base_y, fp1.y)
+		var b := Vector3(fp2.x, base_y, fp2.y)
+		var c := Vector3(fp2.x, top_y,  fp2.y)
+		var d := Vector3(fp1.x, top_y,  fp1.y)
+		sv[style].append_array(PackedVector3Array([a, b, c, a, c, d]))
+		for _j in range(6):
+			sn[style].append(norm3)
+			sc[style].append(tint)
+		su[style].append_array(PackedVector2Array([
+			Vector2(0.0,     0.0),
+			Vector2(seg_len, 0.0),
+			Vector2(seg_len, bld_h),
+			Vector2(0.0,     0.0),
+			Vector2(seg_len, bld_h),
+			Vector2(0.0,     bld_h),
+		]))
+
+		# Roof quad (8m deep)
+		var ro := -inward * 8.0
+		var rd := Vector3(fp1.x + ro.x, top_y, fp1.y + ro.y)
+		var re := Vector3(fp2.x + ro.x, top_y, fp2.y + ro.y)
+		roof_v.append_array(PackedVector3Array([d, c, re, d, re, rd]))
+		var roof_rv := fmod(abs(float(block_idx) * 11.3 + mz * 0.17), 10.0)
+		var roof_col := Color(0.18, 0.17, 0.16)
+		if roof_rv >= 3.0 and roof_rv < 6.0:
+			roof_col = Color(0.52, 0.50, 0.48)
+		elif roof_rv >= 6.0 and roof_rv < 8.0:
+			roof_col = Color(0.34, 0.28, 0.20)
+		elif roof_rv >= 8.0:
+			roof_col = Color(0.28, 0.36, 0.26)
+		for _j in range(6):
+			roof_n.append(Vector3.UP)
+			roof_c.append(roof_col)
+
+		cum_dist += seg_len
+
+	# Build facade meshes per style
+	var style_names := ["Limestone", "Glass", "RedBrick", "BuffBrick", "DarkStone"]
+	var style_mats := [
+		_make_facade_limestone(),
+		_make_facade_glass(),
+		_make_facade_red_brick(),
+		_make_facade_buff_brick(),
+		_make_facade_dark_stone(),
+	]
+	var total_quads := 0
+	for s in range(5):
+		if sv[s].is_empty():
+			continue
+		var arrays: Array = []
+		arrays.resize(Mesh.ARRAY_MAX)
+		arrays[Mesh.ARRAY_VERTEX] = sv[s]
+		arrays[Mesh.ARRAY_NORMAL] = sn[s]
+		arrays[Mesh.ARRAY_TEX_UV] = su[s]
+		arrays[Mesh.ARRAY_COLOR]  = sc[s]
+		var mesh := ArrayMesh.new()
+		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+		mesh.surface_set_material(0, style_mats[s])
+		var mi := MeshInstance3D.new()
+		mi.mesh = mesh
+		mi.name = "BoundaryFacade_" + style_names[s]
+		add_child(mi)
+		total_quads += sv[s].size() / 6
+
+	# Roof mesh
+	if not roof_v.is_empty():
+		var r_arrays: Array = []
+		r_arrays.resize(Mesh.ARRAY_MAX)
+		r_arrays[Mesh.ARRAY_VERTEX] = roof_v
+		r_arrays[Mesh.ARRAY_NORMAL] = roof_n
+		r_arrays[Mesh.ARRAY_COLOR]  = roof_c
+		var r_mesh := ArrayMesh.new()
+		r_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, r_arrays)
+		var r_mat := StandardMaterial3D.new()
+		r_mat.vertex_color_use_as_albedo = true
+		r_mat.roughness = 0.92
+		r_mesh.surface_set_material(0, r_mat)
+		var r_mi := MeshInstance3D.new()
+		r_mi.mesh = r_mesh
+		r_mi.name = "BoundaryFacade_Roofs"
+		add_child(r_mi)
+
+	print("ParkLoader: boundary facades = %d segments" % total_quads)
 
 
 # ---------------------------------------------------------------------------
