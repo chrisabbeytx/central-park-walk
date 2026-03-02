@@ -2641,6 +2641,7 @@ func _build_undergrowth(trees: Array, paths: Array) -> void:
 		var pts: Array = path["points"]
 		if pts.size() < 2:
 			continue
+		var half_w := _hw_width(hw) * 0.5
 		var cum := 0.0
 		var next_at := rng.randf_range(4.0, 8.0)
 		for pi in range(1, pts.size()):
@@ -2652,7 +2653,7 @@ func _build_undergrowth(trees: Array, paths: Array) -> void:
 				next_at = rng.randf_range(4.0, 8.0)
 				var px := float(pts[pi][0]); var pz := float(pts[pi][2])
 				var side := 1.0 if rng.randf() > 0.5 else -1.0
-				var off := rng.randf_range(0.5, 3.0)
+				var off := half_w + rng.randf_range(0.5, 3.0)
 				# Perpendicular offset
 				var tlen := sqrt(dx * dx + dz * dz)
 				if tlen < 0.01:
