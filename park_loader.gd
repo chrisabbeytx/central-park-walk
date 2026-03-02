@@ -3475,107 +3475,125 @@ func _make_leaf_card_mesh(is_conifer: bool) -> ArrayMesh:
 	var card_defs: Array = []  # [position, half_size, tilt_axis, tilt_angle]
 
 	if not is_conifer:
-		# --- Broadleaf: dense dome with many small cards ---
-		# Equator ring: 16 quads
+		# --- Broadleaf: dense dome, heavily overlapping varied-size leaf cards ---
+		# ~130 cards. half_size 0.18-0.30, jittered per card.
+		# At 10m canopy: 3.6–6m cards. Dense overlap → solid canopy.
+		# Outer shell ring 1 (equator): 16 quads
 		for i in 16:
 			var a := TAU * float(i) / 16.0 + 0.2
 			var r := 0.72
-			var pos := Vector3(cos(a) * r, -0.10 + float(i % 4) * 0.06, sin(a) * r)
+			var hs := 0.24 + fmod(float(i) * 0.618, 1.0) * 0.06
+			var pos := Vector3(cos(a) * r, -0.12 + float(i % 5) * 0.05, sin(a) * r)
 			var tilt_ax := Vector3(-sin(a), 0.0, cos(a))
-			card_defs.append([pos, 0.055, tilt_ax, 18.0 + float(i) * 3.5])
-		# 20° ring: 14 quads
+			card_defs.append([pos, hs, tilt_ax, 16.0 + float(i) * 3.2])
+		# Outer shell ring 2 (~20°): 14 quads
 		for i in 14:
 			var a := TAU * float(i) / 14.0 + 0.45
 			var r := 0.64
-			var pos := Vector3(cos(a) * r, 0.18 + float(i % 3) * 0.06, sin(a) * r)
+			var hs := 0.22 + fmod(float(i) * 0.382, 1.0) * 0.06
+			var pos := Vector3(cos(a) * r, 0.15 + float(i % 4) * 0.06, sin(a) * r)
 			var tilt_ax := Vector3(-sin(a), 0.0, cos(a))
-			card_defs.append([pos, 0.05, tilt_ax, 25.0 + float(i) * 3.0])
-		# 40° ring: 12 quads
+			card_defs.append([pos, hs, tilt_ax, 22.0 + float(i) * 3.0])
+		# Mid ring (~40°): 12 quads
 		for i in 12:
 			var a := TAU * float(i) / 12.0 + 0.7
 			var r := 0.52
-			var pos := Vector3(cos(a) * r, 0.40 + float(i % 2) * 0.07, sin(a) * r)
+			var hs := 0.21 + fmod(float(i) * 0.517, 1.0) * 0.06
+			var pos := Vector3(cos(a) * r, 0.38 + float(i % 3) * 0.06, sin(a) * r)
 			var tilt_ax := Vector3(-sin(a), 0.0, cos(a))
-			card_defs.append([pos, 0.05, tilt_ax, 32.0 + float(i) * 4.0])
-		# 60° ring: 8 quads
-		for i in 8:
-			var a := TAU * float(i) / 8.0 + 0.95
-			var r := 0.36
-			var pos := Vector3(cos(a) * r, 0.60, sin(a) * r)
-			var tilt_ax := Vector3(-sin(a), 0.0, cos(a))
-			card_defs.append([pos, 0.045, tilt_ax, 40.0 + float(i) * 5.0])
-		# 75° ring: 6 quads
-		for i in 6:
-			var a := TAU * float(i) / 6.0 + 1.2
-			var r := 0.20
-			var pos := Vector3(cos(a) * r, 0.78, sin(a) * r)
-			var tilt_ax := Vector3(cos(a + 1.0), 0.0, sin(a + 1.0))
-			card_defs.append([pos, 0.04, tilt_ax, 45.0 + float(i) * 6.0])
-		# Inner fill: 20 quads crossing through center for density
-		for i in 20:
-			var a := TAU * float(i) / 20.0 + 0.35
-			var iy := -0.05 + float(i) * 0.045
-			var ir := 0.15 + float(i % 5) * 0.06
-			var pos := Vector3(cos(a) * ir, iy, sin(a) * ir)
-			var tilt_ax := Vector3(cos(a + 0.5), 0.0, sin(a + 0.5))
-			card_defs.append([pos, 0.06, tilt_ax, 22.0 + float(i) * 5.0])
-		# Top caps: 4 nearly horizontal quads
-		for i in 4:
-			var a2 := TAU * float(i) / 4.0 + 0.3
-			var pos := Vector3(cos(a2) * 0.08, 0.86 + float(i) * 0.02, sin(a2) * 0.08)
-			card_defs.append([pos, 0.04, Vector3(1.0, 0.0, 0.0), 8.0 + float(i) * 3.0])
-		# Bottom fill: 4 quads under canopy
-		for i in 4:
-			var a2 := TAU * float(i) / 4.0 + 1.5
-			var pos := Vector3(cos(a2) * 0.50, -0.18, sin(a2) * 0.50)
-			var tilt_ax := Vector3(-sin(a2), 0.0, cos(a2))
-			card_defs.append([pos, 0.055, tilt_ax, 15.0 + float(i) * 7.0])
-	else:
-		# --- Conifer: conical tiers with small cards ---
-		# Tier 1 (bottom): 10 quads
+			card_defs.append([pos, hs, tilt_ax, 30.0 + float(i) * 3.8])
+		# Upper ring (~60°): 10 quads
 		for i in 10:
-			var a := TAU * float(i) / 10.0 + 0.15
-			var pos := Vector3(cos(a) * 0.65, -0.55, sin(a) * 0.65)
+			var a := TAU * float(i) / 10.0 + 0.95
+			var r := 0.36
+			var hs := 0.20 + fmod(float(i) * 0.293, 1.0) * 0.05
+			var pos := Vector3(cos(a) * r, 0.58 + float(i % 2) * 0.05, sin(a) * r)
 			var tilt_ax := Vector3(-sin(a), 0.0, cos(a))
-			card_defs.append([pos, 0.05, tilt_ax, 35.0 + float(i) * 2.5])
-		# Tier 2: 8 quads
+			card_defs.append([pos, hs, tilt_ax, 38.0 + float(i) * 4.5])
+		# Crown ring (~75°): 8 quads
 		for i in 8:
-			var a := TAU * float(i) / 8.0 + 0.4
-			var pos := Vector3(cos(a) * 0.52, -0.25, sin(a) * 0.52)
-			var tilt_ax := Vector3(-sin(a), 0.0, cos(a))
-			card_defs.append([pos, 0.045, tilt_ax, 40.0 + float(i) * 3.0])
-		# Tier 3: 8 quads
-		for i in 8:
-			var a := TAU * float(i) / 8.0 + 0.65
-			var pos := Vector3(cos(a) * 0.40, 0.05, sin(a) * 0.40)
-			var tilt_ax := Vector3(-sin(a), 0.0, cos(a))
-			card_defs.append([pos, 0.04, tilt_ax, 42.0 + float(i) * 3.5])
-		# Tier 4: 6 quads
-		for i in 6:
-			var a := TAU * float(i) / 6.0 + 0.9
-			var pos := Vector3(cos(a) * 0.28, 0.30, sin(a) * 0.28)
-			var tilt_ax := Vector3(-sin(a), 0.0, cos(a))
-			card_defs.append([pos, 0.035, tilt_ax, 46.0 + float(i) * 4.0])
-		# Tier 5: 4 quads
-		for i in 4:
-			var a := TAU * float(i) / 4.0 + 1.1
-			var pos := Vector3(cos(a) * 0.16, 0.55, sin(a) * 0.16)
-			var tilt_ax := Vector3(-sin(a), 0.0, cos(a))
-			card_defs.append([pos, 0.03, tilt_ax, 50.0 + float(i) * 5.0])
-		# Tip: 2 quads
-		for i in 2:
-			var a := TAU * float(i) / 2.0 + 0.9
-			var pos := Vector3(cos(a) * 0.06, 0.78, sin(a) * 0.06)
-			var tilt_ax := Vector3(-sin(a), 0.0, cos(a))
-			card_defs.append([pos, 0.03, tilt_ax, 55.0])
-		# Inner fill: 12 quads for density
-		for i in 12:
-			var a := TAU * float(i) / 12.0 + 0.3
-			var iy := -0.45 + float(i) * 0.10
-			var ir := 0.10 + float(i % 4) * 0.07
+			var a := TAU * float(i) / 8.0 + 1.2
+			var r := 0.20
+			var hs := 0.18 + fmod(float(i) * 0.764, 1.0) * 0.04
+			var pos := Vector3(cos(a) * r, 0.76, sin(a) * r)
+			var tilt_ax := Vector3(cos(a + 1.0), 0.0, sin(a + 1.0))
+			card_defs.append([pos, hs, tilt_ax, 44.0 + float(i) * 5.5])
+		# Inner fill: 40 quads crossing through center for solid core
+		for i in 40:
+			var a := TAU * float(i) / 40.0 + 0.35
+			var iy := -0.10 + float(i) * 0.024
+			var ir := 0.10 + fmod(float(i) * 0.447, 1.0) * 0.35
+			var hs := 0.22 + fmod(float(i) * 0.831, 1.0) * 0.08
 			var pos := Vector3(cos(a) * ir, iy, sin(a) * ir)
 			var tilt_ax := Vector3(cos(a + 0.5), 0.0, sin(a + 0.5))
-			card_defs.append([pos, 0.04, tilt_ax, 38.0 + float(i) * 4.0])
+			card_defs.append([pos, hs, tilt_ax, 20.0 + float(i) * 3.0])
+		# Top caps: 8 nearly horizontal quads for solid crown
+		for i in 8:
+			var a2 := TAU * float(i) / 8.0 + 0.3
+			var hs := 0.18 + fmod(float(i) * 0.618, 1.0) * 0.06
+			var pos := Vector3(cos(a2) * 0.12, 0.82 + float(i) * 0.012, sin(a2) * 0.12)
+			card_defs.append([pos, hs, Vector3(1.0, 0.0, 0.0), 6.0 + float(i) * 2.5])
+		# Bottom skirt: 10 quads hanging under canopy edge
+		for i in 10:
+			var a2 := TAU * float(i) / 10.0 + 1.5
+			var hs := 0.20 + fmod(float(i) * 0.382, 1.0) * 0.06
+			var pos := Vector3(cos(a2) * 0.58, -0.20 + float(i % 3) * 0.04, sin(a2) * 0.58)
+			var tilt_ax := Vector3(-sin(a2), 0.0, cos(a2))
+			card_defs.append([pos, hs, tilt_ax, 14.0 + float(i) * 5.0])
+	else:
+		# --- Conifer: conical tiers, heavily overlapping varied-size cards ---
+		# ~80 cards. half_size 0.12-0.22, jittered.
+		# Tier 1 (bottom): 12 quads
+		for i in 12:
+			var a := TAU * float(i) / 12.0 + 0.15
+			var hs := 0.20 + fmod(float(i) * 0.618, 1.0) * 0.05
+			var pos := Vector3(cos(a) * 0.66, -0.55, sin(a) * 0.66)
+			var tilt_ax := Vector3(-sin(a), 0.0, cos(a))
+			card_defs.append([pos, hs, tilt_ax, 33.0 + float(i) * 2.2])
+		# Tier 2: 10 quads
+		for i in 10:
+			var a := TAU * float(i) / 10.0 + 0.4
+			var hs := 0.18 + fmod(float(i) * 0.382, 1.0) * 0.05
+			var pos := Vector3(cos(a) * 0.54, -0.25, sin(a) * 0.54)
+			var tilt_ax := Vector3(-sin(a), 0.0, cos(a))
+			card_defs.append([pos, hs, tilt_ax, 38.0 + float(i) * 2.8])
+		# Tier 3: 10 quads
+		for i in 10:
+			var a := TAU * float(i) / 10.0 + 0.65
+			var hs := 0.16 + fmod(float(i) * 0.517, 1.0) * 0.04
+			var pos := Vector3(cos(a) * 0.42, 0.05, sin(a) * 0.42)
+			var tilt_ax := Vector3(-sin(a), 0.0, cos(a))
+			card_defs.append([pos, hs, tilt_ax, 40.0 + float(i) * 3.2])
+		# Tier 4: 8 quads
+		for i in 8:
+			var a := TAU * float(i) / 8.0 + 0.9
+			var hs := 0.14 + fmod(float(i) * 0.293, 1.0) * 0.04
+			var pos := Vector3(cos(a) * 0.30, 0.30, sin(a) * 0.30)
+			var tilt_ax := Vector3(-sin(a), 0.0, cos(a))
+			card_defs.append([pos, hs, tilt_ax, 44.0 + float(i) * 3.8])
+		# Tier 5: 6 quads
+		for i in 6:
+			var a := TAU * float(i) / 6.0 + 1.1
+			var hs := 0.12 + fmod(float(i) * 0.764, 1.0) * 0.03
+			var pos := Vector3(cos(a) * 0.18, 0.55, sin(a) * 0.18)
+			var tilt_ax := Vector3(-sin(a), 0.0, cos(a))
+			card_defs.append([pos, hs, tilt_ax, 48.0 + float(i) * 4.5])
+		# Tip: 4 quads
+		for i in 4:
+			var a := TAU * float(i) / 4.0 + 0.9
+			var hs := 0.12 + fmod(float(i) * 0.618, 1.0) * 0.03
+			var pos := Vector3(cos(a) * 0.08, 0.75 + float(i) * 0.03, sin(a) * 0.08)
+			var tilt_ax := Vector3(-sin(a), 0.0, cos(a))
+			card_defs.append([pos, hs, tilt_ax, 52.0 + float(i) * 5.0])
+		# Inner fill: 24 quads for solid density
+		for i in 24:
+			var a := TAU * float(i) / 24.0 + 0.3
+			var iy := -0.50 + float(i) * 0.054
+			var ir := 0.06 + fmod(float(i) * 0.447, 1.0) * 0.28
+			var hs := 0.15 + fmod(float(i) * 0.831, 1.0) * 0.06
+			var pos := Vector3(cos(a) * ir, iy, sin(a) * ir)
+			var tilt_ax := Vector3(cos(a + 0.5), 0.0, sin(a + 0.5))
+			card_defs.append([pos, hs, tilt_ax, 36.0 + float(i) * 3.0])
 
 	# Build each card as a quad (2 tris)
 	for ci in card_defs.size():
@@ -3634,30 +3652,30 @@ func _make_bush_leaf_mesh() -> ArrayMesh:
 		var r := 0.62
 		var pos := Vector3(cos(a) * r, -0.05 + float(i % 3) * 0.06, sin(a) * r)
 		var tilt_ax := Vector3(-sin(a), 0.0, cos(a))
-		card_defs.append([pos, 0.13, tilt_ax, 20.0 + float(i) * 5.0])
+		card_defs.append([pos, 0.28, tilt_ax, 20.0 + float(i) * 5.0])
 	# Mid ring: 6 quads
 	for i in 6:
 		var a := TAU * float(i) / 6.0 + 0.6
 		var r := 0.44
 		var pos := Vector3(cos(a) * r, 0.20 + float(i % 2) * 0.06, sin(a) * r)
 		var tilt_ax := Vector3(-sin(a), 0.0, cos(a))
-		card_defs.append([pos, 0.12, tilt_ax, 30.0 + float(i) * 6.0])
+		card_defs.append([pos, 0.25, tilt_ax, 30.0 + float(i) * 6.0])
 	# Upper ring: 4 quads
 	for i in 4:
 		var a := TAU * float(i) / 4.0 + 0.9
 		var r := 0.28
 		var pos := Vector3(cos(a) * r, 0.38, sin(a) * r)
 		var tilt_ax := Vector3(-sin(a), 0.0, cos(a))
-		card_defs.append([pos, 0.11, tilt_ax, 36.0 + float(i) * 7.0])
+		card_defs.append([pos, 0.22, tilt_ax, 36.0 + float(i) * 7.0])
 	# Inner fill: 4 quads
 	for i in 4:
 		var a := TAU * float(i) / 4.0 + 0.15
 		var pos := Vector3(cos(a) * 0.18, 0.05 + float(i) * 0.08, sin(a) * 0.18)
 		var tilt_ax := Vector3(cos(a + 0.5), 0.0, sin(a + 0.5))
-		card_defs.append([pos, 0.12, tilt_ax, 25.0 + float(i) * 8.0])
+		card_defs.append([pos, 0.26, tilt_ax, 25.0 + float(i) * 8.0])
 	# Top caps: 2 nearly horizontal quads
-	card_defs.append([Vector3(0.08, 0.46, 0.04), 0.10, Vector3(1.0, 0.0, 0.0), 10.0])
-	card_defs.append([Vector3(-0.05, 0.43, -0.06), 0.10, Vector3(0.0, 0.0, 1.0), 14.0])
+	card_defs.append([Vector3(0.08, 0.46, 0.04), 0.22, Vector3(1.0, 0.0, 0.0), 10.0])
+	card_defs.append([Vector3(-0.05, 0.43, -0.06), 0.20, Vector3(0.0, 0.0, 1.0), 14.0])
 
 	for cd in card_defs:
 		var pos: Vector3 = cd[0] as Vector3
@@ -3764,8 +3782,8 @@ void fragment() {
 	float opac = texture(leaf_opacity, UV).r;
 	float rgh  = texture(leaf_rough, UV).r;
 
-	// Alpha cutout from opacity map
-	float alpha = smoothstep(0.08, 0.45, opac);
+	// Alpha cutout from opacity map — wide smoothstep for more solid coverage
+	float alpha = smoothstep(0.05, 0.30, opac);
 	if (alpha < 0.01) discard;
 	ALPHA = alpha;
 
@@ -3788,7 +3806,8 @@ void fragment() {
 
 	ALBEDO     = clamp(col, 0.0, 1.0);
 	NORMAL_MAP = texture(leaf_normal, UV).rgb;
-	ROUGHNESS  = clamp(rgh * 0.3 + 0.60, 0.0, 1.0);
+	ROUGHNESS  = clamp(rgh * 0.15 + 0.82, 0.0, 1.0);
+	SPECULAR   = 0.0;
 	METALLIC   = 0.0;
 }
 """
