@@ -2519,21 +2519,51 @@ void fragment() {
 # ---------------------------------------------------------------------------
 # Buildings – extruded footprint polygons; walls + flat roofs batched separately
 # ---------------------------------------------------------------------------
+func _building_style(cx: float, cz: float, h: float) -> int:
+	# 0=LIMESTONE, 1=GLASS, 2=RED_BRICK, 3=BUFF_BRICK, 4=DARK_STONE
+	if h > 80.0:
+		return 1  # supertall → glass tower
+	if h > 50.0 and cz > 1000.0:
+		return 1  # tall south buildings → glass
+	if cx > 420.0:
+		return 0  # east (Fifth Avenue) → limestone
+	if cx < -420.0:
+		return 3  # west (CPW) → buff brick art deco
+	if cz < -1200.0:
+		return 2  # north (Harlem) → red brick
+	if abs(cx) < 350.0 and h < 15.0:
+		return 4  # in-park short buildings → dark stone
+	# Mixed zone: deterministic hash
+	var hv := fmod(abs(cx * 7.3 + cz * 13.1), 10.0)
+	if hv < 3.0: return 0
+	if hv < 5.5: return 2
+	if hv < 7.5: return 3
+	if hv < 8.5: return 1
+	return 0
+
+
 func _build_buildings(buildings: Array) -> void:
 	if buildings.is_empty():
 		return
 
-	var wall_verts   := PackedVector3Array()
-	var wall_normals := PackedVector3Array()
-	var wall_uvs     := PackedVector2Array()
+	# 5 style groups: 0=LIMESTONE, 1=GLASS, 2=RED_BRICK, 3=BUFF_BRICK, 4=DARK_STONE
+	var sv: Array = []  # verts per style
+	var sn: Array = []  # normals
+	var su: Array = []  # uvs
+	var sc: Array = []  # vertex colors
+	for _i in range(5):
+		sv.append(PackedVector3Array())
+		sn.append(PackedVector3Array())
+		su.append(PackedVector2Array())
+		sc.append(PackedColorArray())
 	var roof_verts   := PackedVector3Array()
 	var roof_normals := PackedVector3Array()
+
+	var rng := RandomNumberGenerator.new()
 
 	for bld in buildings:
 		var pts:  Array = bld["points"]
 		var h:    float = float(bld["height"])
-		# Snap base to minimum terrain height across footprint so building
-		# doesn't float above terrain on any side
 		var base := INF
 		for pt in pts:
 			base = minf(base, _terrain_y(float(pt[0]), float(pt[1])))
@@ -2544,7 +2574,21 @@ func _build_buildings(buildings: Array) -> void:
 		if n < 3:
 			continue
 
-		# Mark building footprint cells + 2m margin for furniture exclusion
+		# Centroid for style assignment
+		var cx := 0.0; var cz := 0.0
+		for pt in pts:
+			cx += float(pt[0]); cz += float(pt[1])
+		cx /= float(n); cz /= float(n)
+		var style := _building_style(cx, cz, h)
+
+		# Per-building tint variation via vertex color
+		rng.seed = int(abs(cx * 73.7 + cz * 131.1)) + 12345
+		var rv := rng.randf_range(-0.06, 0.06)
+		var gv := rng.randf_range(-0.04, 0.04)
+		var bv := rng.randf_range(-0.03, 0.03)
+		var bld_tint := Color(1.0 + rv, 1.0 + gv, 1.0 + bv)
+
+		# Mark building footprint cells
 		for pt in pts:
 			var bx := float(pt[0]); var bz := float(pt[1])
 			for di in range(-1, 2):
@@ -2566,10 +2610,11 @@ func _build_buildings(buildings: Array) -> void:
 			var b := Vector3(p2.x, base, p2.y)
 			var c := Vector3(p2.x, top,  p2.y)
 			var d := Vector3(p1.x, top,  p1.y)
-			wall_verts.append_array(PackedVector3Array([a, b, c, a, c, d]))
+			sv[style].append_array(PackedVector3Array([a, b, c, a, c, d]))
 			for _j in range(6):
-				wall_normals.append(norm)
-			wall_uvs.append_array(PackedVector2Array([
+				sn[style].append(norm)
+				sc[style].append(bld_tint)
+			su[style].append_array(PackedVector2Array([
 				Vector2(0.0,     0.0),
 				Vector2(seg_len, 0.0),
 				Vector2(seg_len, h),
@@ -2590,16 +2635,28 @@ func _build_buildings(buildings: Array) -> void:
 			for _j in range(3):
 				roof_normals.append(Vector3.UP)
 
-	# Walls: facade shader with window grid
-	if not wall_verts.is_empty():
+	# Build wall meshes per style
+	var style_names := ["Limestone", "Glass", "RedBrick", "BuffBrick", "DarkStone"]
+	var style_mats := [
+		_make_facade_limestone(),
+		_make_facade_glass(),
+		_make_facade_red_brick(),
+		_make_facade_buff_brick(),
+		_make_facade_dark_stone(),
+	]
+	for s in range(5):
+		if sv[s].is_empty():
+			continue
 		var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
-		arrays[Mesh.ARRAY_VERTEX] = wall_verts
-		arrays[Mesh.ARRAY_NORMAL] = wall_normals
-		arrays[Mesh.ARRAY_TEX_UV] = wall_uvs
+		arrays[Mesh.ARRAY_VERTEX] = sv[s]
+		arrays[Mesh.ARRAY_NORMAL] = sn[s]
+		arrays[Mesh.ARRAY_TEX_UV] = su[s]
+		arrays[Mesh.ARRAY_COLOR]  = sc[s]
 		var mesh := ArrayMesh.new()
 		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-		mesh.surface_set_material(0, _make_facade_material())
-		var mi := MeshInstance3D.new(); mi.mesh = mesh; mi.name = "BuildingWalls"
+		mesh.surface_set_material(0, style_mats[s])
+		var mi := MeshInstance3D.new(); mi.mesh = mesh
+		mi.name = "BuildingWalls_" + style_names[s]
 		add_child(mi)
 
 	_add_batch_mesh(roof_verts, roof_normals, Color(0.38, 0.36, 0.34), 0.92, "BuildingRoofs")
@@ -2627,24 +2684,26 @@ func _add_batch_mesh(verts: PackedVector3Array, normals: PackedVector3Array,
 
 
 # ---------------------------------------------------------------------------
-# Building facade material + shader
+# Building facade materials + shaders (5 architectural styles)
 # ---------------------------------------------------------------------------
-func _make_facade_material() -> ShaderMaterial:
-	var mat  := ShaderMaterial.new()
-	mat.shader = _get_shader("facade", _facade_shader_code())
-	return mat
 
-
-func _facade_shader_code() -> String:
+# Procedural facade shader (limestone, glass tower, dark stone)
+func _facade_shader_procedural() -> String:
 	return """shader_type spatial;
 render_mode cull_disabled;
 
-// Window grid dimensions (metres)
-const float WIN_W  = 1.5;   // window width
-const float WIN_H  = 2.0;   // window height
-const float GAP_X  = 0.6;   // horizontal gap between windows
-const float GAP_Y  = 0.8;   // floor-to-floor gap (sill + lintel)
-const float GROUND = 3.5;   // metres of solid base before first windows
+uniform vec3 wall_tint = vec3(0.78, 0.72, 0.62);
+uniform float wall_rough = 0.88;
+uniform float wall_metal = 0.0;
+uniform vec3 glass_a = vec3(0.10, 0.13, 0.16);
+uniform vec3 glass_b = vec3(0.35, 0.48, 0.58);
+uniform float glass_rough = 0.12;
+uniform float glass_metal = 0.15;
+uniform float win_w = 1.5;
+uniform float win_h = 2.0;
+uniform float gap_x = 0.6;
+uniform float gap_y = 0.8;
+uniform float ground_h = 3.5;
 
 varying vec3 world_pos;
 
@@ -2659,57 +2718,29 @@ void vertex() {
 }
 
 void fragment() {
-	float cell_w = WIN_W + GAP_X;
-	float cell_h = WIN_H + GAP_Y;
-
-	// Local position within a window cell
+	float cell_w = win_w + gap_x;
+	float cell_h = win_h + gap_y;
 	float lx = fract(UV.x / cell_w);
-	float ly = fract((UV.y - GROUND) / cell_h);
+	float ly = fract((UV.y - ground_h) / cell_h);
+	bool in_win = (lx < win_w / cell_w) && (ly < win_h / cell_h) && (UV.y > ground_h);
 
-	bool in_win = (lx < WIN_W / cell_w) && (ly < WIN_H / cell_h) && (UV.y > GROUND);
-
-	// Building identity from snapped world position
 	vec2 bld = floor(world_pos.xz * 0.03);
-	// Style: 0 = limestone pre-war, 1 = glass tower
-	float style = step(0.5, hash2(bld * 1.7));
-
-	// Per-window light/glass variation
-	vec2 cell = vec2(floor(UV.x / cell_w), floor((UV.y - GROUND) / cell_h));
+	vec2 cell = vec2(floor(UV.x / cell_w), floor((UV.y - ground_h) / cell_h));
 	float wrand = hash2(bld * 0.5 + cell * 0.13);
 
 	vec3 col;
 	float rough;
-	float metal = 0.0;
+	float metal;
 
 	if (in_win) {
-		if (style < 0.5) {
-			// Limestone: dark recess windows, slight warm tint
-			vec3 dark_glass = vec3(0.10, 0.13, 0.16);
-			vec3 refl_glass = vec3(0.35, 0.48, 0.58);
-			col   = mix(dark_glass, refl_glass, wrand * 0.5);
-			rough = 0.12;
-			metal = 0.15;
-		} else {
-			// Glass tower: reflective blue-grey curtain wall
-			vec3 g1 = vec3(0.28, 0.38, 0.52);
-			vec3 g2 = vec3(0.48, 0.58, 0.70);
-			col   = mix(g1, g2, wrand);
-			rough = 0.10;
-			metal = 0.35;
-		}
+		col = mix(glass_a, glass_b, wrand * 0.6);
+		rough = glass_rough;
+		metal = glass_metal;
 	} else {
-		// Wall surface
-		float var_ = hash2(world_pos.xz * 0.15) * 0.10;
-		if (style < 0.5) {
-			// Warm limestone / granite
-			col   = vec3(0.78, 0.72, 0.62) * (0.90 + var_);
-			rough = 0.88;
-		} else {
-			// Cool aluminium spandrel panel
-			col   = vec3(0.55, 0.58, 0.62) * (0.90 + var_);
-			rough = 0.45;
-			metal = 0.30;
-		}
+		float var_ = hash2(world_pos.xz * 0.15) * 0.08;
+		col = wall_tint * COLOR.rgb * (0.92 + var_);
+		rough = wall_rough;
+		metal = wall_metal;
 	}
 
 	ALBEDO    = clamp(col, 0.0, 1.0);
@@ -2717,6 +2748,157 @@ void fragment() {
 	METALLIC  = metal;
 }
 """
+
+
+# Textured brick facade shader (red brick, buff brick)
+func _facade_shader_textured() -> String:
+	return """shader_type spatial;
+render_mode cull_disabled;
+
+uniform sampler2D brick_alb;
+uniform sampler2D brick_nrm : hint_normal;
+uniform sampler2D brick_rgh;
+uniform float tex_scale = 0.5;
+uniform vec3 glass_a = vec3(0.10, 0.13, 0.16);
+uniform vec3 glass_b = vec3(0.25, 0.35, 0.45);
+uniform float glass_rough = 0.12;
+uniform float glass_metal = 0.15;
+uniform float win_w = 1.4;
+uniform float win_h = 1.8;
+uniform float gap_x = 0.7;
+uniform float gap_y = 1.0;
+uniform float ground_h = 3.0;
+
+varying vec3 world_pos;
+
+float hash2(vec2 p) {
+	p = fract(p * vec2(127.1, 311.7));
+	p += dot(p, p + 43.21);
+	return fract(p.x * p.y);
+}
+
+void vertex() {
+	world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+}
+
+void fragment() {
+	float cell_w = win_w + gap_x;
+	float cell_h = win_h + gap_y;
+	float lx = fract(UV.x / cell_w);
+	float ly = fract((UV.y - ground_h) / cell_h);
+	bool in_win = (lx < win_w / cell_w) && (ly < win_h / cell_h) && (UV.y > ground_h);
+
+	vec2 bld = floor(world_pos.xz * 0.03);
+	vec2 cell = vec2(floor(UV.x / cell_w), floor((UV.y - ground_h) / cell_h));
+	float wrand = hash2(bld * 0.5 + cell * 0.13);
+
+	vec2 tex_uv = UV * tex_scale;
+
+	if (in_win) {
+		ALBEDO    = mix(glass_a, glass_b, wrand);
+		ROUGHNESS = glass_rough;
+		METALLIC  = glass_metal;
+	} else {
+		vec3 brick_col = texture(brick_alb, tex_uv).rgb * COLOR.rgb;
+		ALBEDO    = clamp(brick_col, 0.0, 1.0);
+		ROUGHNESS = texture(brick_rgh, tex_uv).r;
+		METALLIC  = 0.0;
+		NORMAL_MAP = texture(brick_nrm, tex_uv).rgb;
+	}
+}
+"""
+
+
+func _make_facade_limestone() -> ShaderMaterial:
+	var mat := ShaderMaterial.new()
+	mat.shader = _get_shader("facade_proc", _facade_shader_procedural())
+	mat.set_shader_parameter("wall_tint", Vector3(0.78, 0.72, 0.62))
+	mat.set_shader_parameter("wall_rough", 0.88)
+	mat.set_shader_parameter("wall_metal", 0.0)
+	mat.set_shader_parameter("glass_a", Vector3(0.10, 0.13, 0.16))
+	mat.set_shader_parameter("glass_b", Vector3(0.35, 0.48, 0.58))
+	mat.set_shader_parameter("glass_rough", 0.12)
+	mat.set_shader_parameter("glass_metal", 0.15)
+	mat.set_shader_parameter("win_w", 1.5)
+	mat.set_shader_parameter("win_h", 2.0)
+	mat.set_shader_parameter("gap_x", 0.6)
+	mat.set_shader_parameter("gap_y", 0.8)
+	mat.set_shader_parameter("ground_h", 3.5)
+	return mat
+
+
+func _make_facade_glass() -> ShaderMaterial:
+	var mat := ShaderMaterial.new()
+	mat.shader = _get_shader("facade_proc", _facade_shader_procedural())
+	mat.set_shader_parameter("wall_tint", Vector3(0.50, 0.54, 0.58))
+	mat.set_shader_parameter("wall_rough", 0.40)
+	mat.set_shader_parameter("wall_metal", 0.35)
+	mat.set_shader_parameter("glass_a", Vector3(0.22, 0.32, 0.48))
+	mat.set_shader_parameter("glass_b", Vector3(0.42, 0.55, 0.68))
+	mat.set_shader_parameter("glass_rough", 0.08)
+	mat.set_shader_parameter("glass_metal", 0.40)
+	mat.set_shader_parameter("win_w", 2.0)
+	mat.set_shader_parameter("win_h", 2.5)
+	mat.set_shader_parameter("gap_x", 0.3)
+	mat.set_shader_parameter("gap_y", 0.5)
+	mat.set_shader_parameter("ground_h", 4.5)
+	return mat
+
+
+func _make_facade_red_brick() -> ShaderMaterial:
+	var mat := ShaderMaterial.new()
+	mat.shader = _get_shader("facade_brick", _facade_shader_textured())
+	mat.set_shader_parameter("brick_alb", _load_tex("res://textures/Bricks059_2K-JPG_Color.jpg"))
+	mat.set_shader_parameter("brick_nrm", _load_tex("res://textures/Bricks059_2K-JPG_NormalGL.jpg"))
+	mat.set_shader_parameter("brick_rgh", _load_tex("res://textures/Bricks059_2K-JPG_Roughness.jpg"))
+	mat.set_shader_parameter("tex_scale", 0.5)
+	mat.set_shader_parameter("glass_a", Vector3(0.08, 0.10, 0.14))
+	mat.set_shader_parameter("glass_b", Vector3(0.22, 0.30, 0.40))
+	mat.set_shader_parameter("glass_rough", 0.14)
+	mat.set_shader_parameter("glass_metal", 0.12)
+	mat.set_shader_parameter("win_w", 1.3)
+	mat.set_shader_parameter("win_h", 1.7)
+	mat.set_shader_parameter("gap_x", 0.8)
+	mat.set_shader_parameter("gap_y", 1.0)
+	mat.set_shader_parameter("ground_h", 3.0)
+	return mat
+
+
+func _make_facade_buff_brick() -> ShaderMaterial:
+	var mat := ShaderMaterial.new()
+	mat.shader = _get_shader("facade_brick", _facade_shader_textured())
+	mat.set_shader_parameter("brick_alb", _load_tex("res://textures/Bricks031_2K-JPG_Color.jpg"))
+	mat.set_shader_parameter("brick_nrm", _load_tex("res://textures/Bricks031_2K-JPG_NormalGL.jpg"))
+	mat.set_shader_parameter("brick_rgh", _load_tex("res://textures/Bricks031_2K-JPG_Roughness.jpg"))
+	mat.set_shader_parameter("tex_scale", 0.5)
+	mat.set_shader_parameter("glass_a", Vector3(0.10, 0.12, 0.16))
+	mat.set_shader_parameter("glass_b", Vector3(0.30, 0.40, 0.50))
+	mat.set_shader_parameter("glass_rough", 0.12)
+	mat.set_shader_parameter("glass_metal", 0.15)
+	mat.set_shader_parameter("win_w", 1.5)
+	mat.set_shader_parameter("win_h", 2.0)
+	mat.set_shader_parameter("gap_x", 0.6)
+	mat.set_shader_parameter("gap_y", 0.8)
+	mat.set_shader_parameter("ground_h", 3.5)
+	return mat
+
+
+func _make_facade_dark_stone() -> ShaderMaterial:
+	var mat := ShaderMaterial.new()
+	mat.shader = _get_shader("facade_proc", _facade_shader_procedural())
+	mat.set_shader_parameter("wall_tint", Vector3(0.32, 0.28, 0.24))
+	mat.set_shader_parameter("wall_rough", 0.92)
+	mat.set_shader_parameter("wall_metal", 0.0)
+	mat.set_shader_parameter("glass_a", Vector3(0.06, 0.08, 0.10))
+	mat.set_shader_parameter("glass_b", Vector3(0.18, 0.22, 0.28))
+	mat.set_shader_parameter("glass_rough", 0.20)
+	mat.set_shader_parameter("glass_metal", 0.05)
+	mat.set_shader_parameter("win_w", 1.2)
+	mat.set_shader_parameter("win_h", 1.5)
+	mat.set_shader_parameter("gap_x", 1.0)
+	mat.set_shader_parameter("gap_y", 1.2)
+	mat.set_shader_parameter("ground_h", 2.5)
+	return mat
 
 
 # ---------------------------------------------------------------------------
