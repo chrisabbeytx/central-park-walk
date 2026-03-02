@@ -1657,7 +1657,6 @@ func _build_water(water: Array) -> void:
 			continue
 
 		# Water level = minimum terrain height along the shore + small offset.
-		# This ensures the water surface never floats above the surrounding terrain.
 		var wy := INF
 		for pt in pts:
 			var hh := _terrain_y(float(pt[0]), float(pt[1]))
@@ -1672,11 +1671,14 @@ func _build_water(water: Array) -> void:
 		if indices.is_empty():
 			continue
 
+		# Each vertex Y = max(water_level, terrain_y + WATER_Y) so the water
+		# surface stays flat over the lake but never pokes below terrain at edges.
 		for i in range(0, indices.size(), 3):
-			verts.append(Vector3(polygon[indices[i    ]].x, wy, polygon[indices[i    ]].y))
-			verts.append(Vector3(polygon[indices[i + 1]].x, wy, polygon[indices[i + 1]].y))
-			verts.append(Vector3(polygon[indices[i + 2]].x, wy, polygon[indices[i + 2]].y))
-			for _j in range(3):
+			for vi in range(3):
+				var px: float = polygon[indices[i + vi]].x
+				var pz: float = polygon[indices[i + vi]].y
+				var ty: float = _terrain_y(px, pz) + WATER_Y
+				verts.append(Vector3(px, maxf(wy, ty), pz))
 				normals.append(Vector3.UP)
 
 	if verts.is_empty():
@@ -1694,6 +1696,13 @@ func _build_water(water: Array) -> void:
 	sh.code  = _water_shader_code()
 	var mat := ShaderMaterial.new()
 	mat.shader = sh
+	# Heightmap for vertex-shader terrain clamping
+	if _hm_texture:
+		mat.set_shader_parameter("heightmap_tex", _hm_texture)
+		mat.set_shader_parameter("hm_world_size", _hm_world_size)
+		mat.set_shader_parameter("hm_min_h",      _hm_min_h)
+		mat.set_shader_parameter("hm_range",      _hm_max_h - _hm_min_h)
+		mat.set_shader_parameter("hm_res",        float(_hm_width))
 	mesh.surface_set_material(0, mat)
 
 	var mi := MeshInstance3D.new()
@@ -1706,7 +1715,41 @@ func _water_shader_code() -> String:
 	return """shader_type spatial;
 render_mode cull_disabled;
 
+uniform sampler2D heightmap_tex : filter_nearest, repeat_disable;
+uniform float hm_world_size = 5000.0;
+uniform float hm_min_h      = 0.0;
+uniform float hm_range      = 1.0;
+uniform float hm_res        = 256.0;
+uniform float water_y_offset = 0.03;
+
 varying vec3 world_pos;
+
+// Decode 16-bit height from RG8
+float decode_h(vec4 s) {
+	return s.r * (255.0 / 256.0) + s.g * (1.0 / 256.0);
+}
+
+float sample_terrain(vec2 world_xz) {
+	float half_ws = hm_world_size * 0.5;
+	vec2 grid = (world_xz + half_ws) / hm_world_size * (hm_res - 1.0);
+	vec2 gi = floor(grid);
+	vec2 gf = grid - gi;
+	vec2 uv00 = (gi + 0.5) / hm_res;
+	vec2 uv10 = (gi + vec2(1.5, 0.5)) / hm_res;
+	vec2 uv01 = (gi + vec2(0.5, 1.5)) / hm_res;
+	vec2 uv11 = (gi + vec2(1.5, 1.5)) / hm_res;
+	float h00 = hm_min_h + decode_h(texture(heightmap_tex, uv00)) * hm_range;
+	float h10 = hm_min_h + decode_h(texture(heightmap_tex, uv10)) * hm_range;
+	float h01 = hm_min_h + decode_h(texture(heightmap_tex, uv01)) * hm_range;
+	float h11 = hm_min_h + decode_h(texture(heightmap_tex, uv11)) * hm_range;
+	float fx = gf.x;
+	float fz = gf.y;
+	if (fz <= fx) {
+		return h00 + (h10 - h00) * fx + (h11 - h10) * fz;
+	} else {
+		return h00 + (h11 - h01) * fx + (h01 - h00) * fz;
+	}
+}
 
 // Gradient noise (returns -1..1)
 vec2 ghash(vec2 p) {
@@ -1728,7 +1771,6 @@ vec3 wave_normal(vec2 uv) {
 	vec2 o1  = vec2( t * 0.11,  t * 0.07);
 	vec2 o2  = vec2(-t * 0.09,  t * 0.13);
 	float e  = 0.05;
-	// Height field: coarse + fine layer
 	float h   = gnoise(uv       + o1) * 0.65 + gnoise(uv * 1.9       + o2) * 0.35;
 	float hx  = gnoise(uv+vec2(e,0)+o1)*0.65 + gnoise((uv+vec2(e,0))*1.9+o2)*0.35;
 	float hz  = gnoise(uv+vec2(0,e)+o1)*0.65 + gnoise((uv+vec2(0,e))*1.9+o2)*0.35;
@@ -1736,27 +1778,32 @@ vec3 wave_normal(vec2 uv) {
 }
 
 void vertex() {
-	world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+	vec3 w = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+	// Clamp water Y so it never pokes below the terrain surface
+	float terrain_h = sample_terrain(w.xz) + water_y_offset;
+	if (w.y < terrain_h) {
+		vec3 snapped = (inverse(MODEL_MATRIX) * vec4(w.x, terrain_h, w.z, 1.0)).xyz;
+		VERTEX.y = snapped.y;
+		w.y = terrain_h;
+	}
+	world_pos = w;
 }
 
 void fragment() {
-	vec2 uv      = world_pos.xz / 7.0;   // wave tile ~7 m
-	vec3 wave_nrm = wave_normal(uv);      // world-space
+	vec2 uv      = world_pos.xz / 7.0;
+	vec3 wave_nrm = wave_normal(uv);
 
-	// Wave height for colour modulation (-1..1)
 	float wave_h = gnoise(uv + vec2(TIME * 0.11, TIME * 0.07));
 
-	// Deep blue-grey ↔ lighter teal at crests
 	vec3 deep    = vec3(0.04, 0.16, 0.34);
 	vec3 shallow = vec3(0.10, 0.34, 0.58);
 	vec3 col     = mix(deep, shallow, wave_h * 0.5 + 0.5);
 
-	// Convert world-space normal → view-space for Godot lighting
 	NORMAL    = normalize((VIEW_MATRIX * vec4(wave_nrm, 0.0)).xyz);
 	ALBEDO    = col;
-	ROUGHNESS = 0.04;   // very smooth — strong specular glint
+	ROUGHNESS = 0.04;
 	METALLIC  = 0.08;
-	SPECULAR  = 1.0;    // PBR Fresnel gives edge reflectivity automatically
+	SPECULAR  = 1.0;
 }
 """
 
