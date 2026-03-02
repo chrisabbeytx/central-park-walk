@@ -218,7 +218,7 @@ void fragment() {
 	float rough = texture(tex_rgh, UV).r;
 	ALBEDO     = alb * tint.rgb;
 	NORMAL_MAP = texture(tex_nrm, UV).rgb;
-	ROUGHNESS  = clamp(rough * 0.9 + 0.05, 0.0, 1.0);
+	ROUGHNESS  = clamp(rough + 0.10, 0.0, 1.0);
 	METALLIC   = 0.0;
 }
 """
@@ -981,6 +981,22 @@ func _build_tunnel(path: Dictionary) -> void:
 		var mi := MeshInstance3D.new(); mi.mesh = mesh; mi.name = "Tunnel_Walls"
 		add_child(mi)
 
+	# Tunnel collision — combine ceiling + wall triangles into one concave shape
+	var tun_col_faces := PackedVector3Array()
+	if not ceil_verts.is_empty():
+		tun_col_faces.append_array(ceil_verts)
+	if not wall_verts.is_empty():
+		tun_col_faces.append_array(wall_verts)
+	if not tun_col_faces.is_empty():
+		var tun_body := StaticBody3D.new()
+		tun_body.name = "Tunnel_Collision"
+		var tun_shape := ConcavePolygonShape3D.new()
+		tun_shape.set_faces(tun_col_faces)
+		var tun_col := CollisionShape3D.new()
+		tun_col.shape = tun_shape
+		tun_body.add_child(tun_col)
+		add_child(tun_body)
+
 	# Portal arches at each entrance/exit — stone arch framing the opening
 	_build_tunnel_portals(pts, width, TUNNEL_H, tun_mat)
 
@@ -1124,7 +1140,7 @@ void fragment() {
 	          + texture(tex_rgh, world_pos.yz / tile).r * blend.x;
 	ALBEDO     = alb * tint.rgb;
 	NORMAL_MAP = nrm;
-	ROUGHNESS  = clamp(rgh * 0.9 + 0.05, 0.0, 1.0);
+	ROUGHNESS  = clamp(rgh + 0.05, 0.0, 1.0);
 	METALLIC   = 0.0;
 }
 """
@@ -1168,6 +1184,18 @@ func _build_fountain(body: Dictionary) -> void:
 	else:
 		# Generic fountain: simple basin rim + central column
 		_build_generic_fountain(cx, cz, base_y, max_r, rw_alb, rw_nrm, rw_rgh)
+	# Fountain basin collision — cylinder around the basin
+	var ftn_body := StaticBody3D.new()
+	ftn_body.name = "Fountain_Collision"
+	var cyl := CylinderShape3D.new()
+	cyl.radius = max_r * 0.9
+	cyl.height = 1.5
+	var ftn_col := CollisionShape3D.new()
+	ftn_col.shape = cyl
+	ftn_body.add_child(ftn_col)
+	ftn_body.position = Vector3(cx, base_y + 0.75, cz)
+	add_child(ftn_body)
+
 	print("ParkLoader: built fountain '%s' at (%.0f, %.0f)" % [bname, cx, cz])
 
 
@@ -1878,15 +1906,15 @@ void fragment() {
 
 	float wave_h = gnoise(uv + vec2(TIME * 0.11, TIME * 0.07));
 
-	vec3 deep    = vec3(0.04, 0.16, 0.34);
-	vec3 shallow = vec3(0.10, 0.34, 0.58);
+	vec3 deep    = vec3(0.03, 0.08, 0.06);
+	vec3 shallow = vec3(0.08, 0.18, 0.12);
 	vec3 col     = mix(deep, shallow, wave_h * 0.5 + 0.5);
 
 	NORMAL    = normalize((VIEW_MATRIX * vec4(wave_nrm, 0.0)).xyz);
 	ALBEDO    = col;
-	ROUGHNESS = 0.04;
-	METALLIC  = 0.08;
-	SPECULAR  = 1.0;
+	ROUGHNESS = 0.18;
+	METALLIC  = 0.0;
+	SPECULAR  = 0.5;
 }
 """
 
@@ -2055,14 +2083,14 @@ void fragment() {
 			vec3 dark_glass = vec3(0.10, 0.13, 0.16);
 			vec3 refl_glass = vec3(0.35, 0.48, 0.58);
 			col   = mix(dark_glass, refl_glass, wrand * 0.5);
-			rough = 0.08;
+			rough = 0.12;
 			metal = 0.15;
 		} else {
 			// Glass tower: reflective blue-grey curtain wall
 			vec3 g1 = vec3(0.28, 0.38, 0.52);
 			vec3 g2 = vec3(0.48, 0.58, 0.70);
 			col   = mix(g1, g2, wrand);
-			rough = 0.04;
+			rough = 0.10;
 			metal = 0.35;
 		}
 	} else {
@@ -2533,7 +2561,7 @@ void fragment() {
 
 	ALBEDO     = clamp(col, 0.0, 1.0);
 	NORMAL_MAP = texture(bark_normal, uv).rgb;
-	ROUGHNESS  = clamp(rgh * 0.90 + 0.08, 0.0, 1.0);
+	ROUGHNESS  = clamp(rgh + 0.08, 0.0, 1.0);
 	METALLIC   = 0.0;
 }
 """
