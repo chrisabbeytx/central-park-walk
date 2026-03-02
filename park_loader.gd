@@ -2197,27 +2197,22 @@ func _build_trees(trees: Array) -> void:
 		[18.0, 32.0, 0.16, 0.26, 0.40, 2.30],   # 4 conifer
 	]
 
-	# Textures
-	var broad_tex := _load_tex("res://textures/tree_canopy_broad.png")
-	var conif_tex := _load_tex("res://textures/tree_canopy_conifer.png")
+	# Bark textures
 	var bark_alb  := _load_tex("res://textures/Bark007_1K-JPG_Color.jpg")
 	var bark_nrm  := _load_tex("res://textures/Bark007_1K-JPG_NormalGL.jpg")
 	var bark_rgh  := _load_tex("res://textures/Bark007_1K-JPG_Roughness.jpg")
 	var bark_ao   := _load_tex("res://textures/Bark007_1K-JPG_AmbientOcclusion.jpg")
 
-	# Shared canopy planes mesh (3 crossed vertical quads)
-	var planes_mesh := _make_canopy_volume_mesh()
+	# Leaf card meshes (broadleaf dome / conifer cone)
+	var broad_leaf_mesh := _make_leaf_card_mesh(false)
+	var conif_leaf_mesh := _make_leaf_card_mesh(true)
 
-	# Canopy materials
-	var broad_mat := _make_canopy_mat(broad_tex)
-	var conif_mat := _make_canopy_mat(conif_tex)
+	# Leaf materials (4 PBR textures each)
+	var broad_mat := _make_leaf_mat(true)   # broad = true → LeafSet005
+	var conif_mat := _make_leaf_mat(false)   # broad = false → LeafSet019
 
-	# Trunk mesh + material
-	var trunk_mesh            := CylinderMesh.new()
-	trunk_mesh.height          = 1.0
-	trunk_mesh.top_radius      = 0.60
-	trunk_mesh.bottom_radius   = 1.0
-	trunk_mesh.radial_segments = 7
+	# Trunk+branches mesh + material
+	var trunk_mesh := _make_trunk_with_branches_mesh()
 
 	var trunk_sh    := Shader.new()
 	trunk_sh.code    = _trunk_shader_code()
@@ -2255,10 +2250,15 @@ func _build_trees(trees: Array) -> void:
 		var sy      := float(ap[5])
 		var canopy_r := trunk_h * rng.randf_range(0.32, 0.56)
 
+		# Per-tree random Y rotation for variety
+		var y_rot := rng.randf() * TAU
+		var rot_basis := Basis(Vector3.UP, y_rot)
+
 		var cbasis := Basis(
 			Vector3(canopy_r * sx, 0.0,           0.0),
 			Vector3(0.0,           canopy_r * sy, 0.0),
 			Vector3(0.0,           0.0,           canopy_r * sx))
+		cbasis = rot_basis * cbasis
 		var canopy_tf := Transform3D(cbasis, Vector3(tx, ty + trunk_h, tz))
 		if arch == 4:
 			conif_xf.append(canopy_tf)
@@ -2269,11 +2269,12 @@ func _build_trees(trees: Array) -> void:
 			Vector3(trunk_r, 0.0,     0.0),
 			Vector3(0.0,     trunk_h, 0.0),
 			Vector3(0.0,     0.0,     trunk_r))
+		tbasis = rot_basis * tbasis
 		trunk_xf.append(Transform3D(tbasis, Vector3(tx, ty + trunk_h * 0.5, tz)))
 
-	_spawn_multimesh(planes_mesh, broad_mat, broad_xf, "TreeCanopies_Broad")
-	_spawn_multimesh(planes_mesh, conif_mat, conif_xf, "TreeCanopies_Conifer")
-	_spawn_multimesh(trunk_mesh,  trunk_mat, trunk_xf, "TreeTrunks")
+	_spawn_multimesh(broad_leaf_mesh, broad_mat, broad_xf, "TreeCanopies_Broad")
+	_spawn_multimesh(conif_leaf_mesh, conif_mat, conif_xf, "TreeCanopies_Conifer")
+	_spawn_multimesh(trunk_mesh,      trunk_mat, trunk_xf, "TreeTrunks")
 	_build_tree_collision(trunk_xf)
 
 
@@ -2281,12 +2282,12 @@ func _build_tree_collision(trunk_xf: Array) -> void:
 	if trunk_xf.is_empty():
 		return
 	# One StaticBody3D with a CylinderShape3D per trunk.
-	# trunk_xf basis encodes: x.x = trunk_r, y.y = trunk_h (see _build_trees).
+	# trunk_xf basis encodes scale + Y rotation. Extract via column lengths.
 	var body := StaticBody3D.new()
 	body.name = "TreeTrunkCollision"
 	for tf: Transform3D in trunk_xf:
-		var r: float = tf.basis.x.x   # trunk_r
-		var h: float = tf.basis.y.y   # trunk_h
+		var r: float = tf.basis.x.length()   # trunk_r (x column length)
+		var h: float = tf.basis.y.y           # trunk_h (y unaffected by Y rotation)
 		var shape        := CylinderShape3D.new()
 		shape.radius      = r
 		shape.height      = h
@@ -2297,33 +2298,84 @@ func _build_tree_collision(trunk_xf: Array) -> void:
 	add_child(body)
 
 
-func _make_canopy_planes_mesh() -> ArrayMesh:
-	# 3 crossed vertical unit planes, 60° apart around Y axis
+func _make_trunk_with_branches_mesh() -> ArrayMesh:
+	# Procedural trunk cylinder + 5 angled branches. Unit scale:
+	# trunk height=1.0, bottom_r=1.0, top_r=0.5. Bark UVs wrap.
 	var verts   := PackedVector3Array()
 	var normals := PackedVector3Array()
 	var uvs     := PackedVector2Array()
 	var indices := PackedInt32Array()
-	for pi in 3:
-		var a  := PI * float(pi) / 3.0
-		var c  := cos(a); var sa := sin(a)
-		var base := verts.size()
-		# corners: left-bottom, right-bottom, right-top, left-top
-		verts.append_array(PackedVector3Array([
-			Vector3(-c, -1.0, -sa),
-			Vector3( c, -1.0,  sa),
-			Vector3( c,  1.0,  sa),
-			Vector3(-c,  1.0, -sa),
-		]))
-		# V=0 at top (y=+1), V=1 at bottom (y=-1) – matches texture orientation
-		uvs.append_array(PackedVector2Array([
-			Vector2(0.0, 1.0), Vector2(1.0, 1.0),
-			Vector2(1.0, 0.0), Vector2(0.0, 0.0),
-		]))
-		var n := Vector3(-sa, 0.0, c)
-		for _j in 4: normals.append(n)
+	var segs := 8  # radial segments
+
+	# --- Trunk cylinder (centered: Y from -0.5 to +0.5, matching CylinderMesh) ---
+	for i in range(segs + 1):
+		var a := TAU * float(i) / float(segs)
+		var ca := cos(a); var sa := sin(a)
+		var u := float(i) / float(segs) * 2.0
+		# Bottom ring
+		verts.append(Vector3(ca * 1.0, -0.5, sa * 1.0))
+		normals.append(Vector3(ca, 0.0, sa))
+		uvs.append(Vector2(u, 1.0))
+		# Top ring
+		verts.append(Vector3(ca * 0.5, 0.5, sa * 0.5))
+		normals.append(Vector3(ca, 0.0, sa))
+		uvs.append(Vector2(u, 0.0))
+	for i in range(segs):
+		var b := i * 2
 		indices.append_array(PackedInt32Array([
-			base, base+1, base+2, base, base+2, base+3,
+			b, b + 2, b + 3, b, b + 3, b + 1,
 		]))
+
+	# --- 5 branches ---
+	var branch_segs := 6
+	var branch_configs := [
+		[0.60, 0.40, 50.0,   0.0],  # height, length, angle_from_vertical, azimuth_deg
+		[0.70, 0.35, 45.0,  72.0],
+		[0.80, 0.45, 55.0, 144.0],
+		[0.75, 0.30, 40.0, 216.0],
+		[0.90, 0.50, 48.0, 288.0],
+	]
+	for bc in branch_configs:
+		var bh: float     = bc[0]  # height on trunk where branch starts
+		var blen: float   = bc[1]  # branch length (unit scale)
+		var bangle: float = deg_to_rad(bc[2])  # from vertical
+		var bazimuth: float = deg_to_rad(bc[3])
+		# Trunk radius at branch height
+		var trunk_r_at_h: float = lerp(1.0, 0.5, bh)
+		# Branch direction
+		var dir := Vector3(sin(bangle) * cos(bazimuth), cos(bangle), sin(bangle) * sin(bazimuth))
+		# Start point on trunk surface (shifted -0.5 to match centered trunk)
+		var start := Vector3(cos(bazimuth) * trunk_r_at_h, bh - 0.5, sin(bazimuth) * trunk_r_at_h)
+		var end_pt := start + dir * blen
+		# Build branch as tapered cylinder along dir
+		var br_base_r := 0.18
+		var br_tip_r  := 0.06
+		# Local coordinate frame for branch cross-section
+		var up := Vector3.UP
+		if abs(dir.dot(up)) > 0.95:
+			up = Vector3.RIGHT
+		var right := dir.cross(up).normalized()
+		var fwd   := right.cross(dir).normalized()
+		var base_idx := verts.size()
+		for ring in 2:  # 0 = base, 1 = tip
+			var r := br_base_r if ring == 0 else br_tip_r
+			var center := start if ring == 0 else end_pt
+			var v_uv := float(ring)
+			for si in range(branch_segs + 1):
+				var a := TAU * float(si) / float(branch_segs)
+				var ca := cos(a); var sa := sin(a)
+				var pos := center + (right * ca + fwd * sa) * r
+				var nrm := (right * ca + fwd * sa).normalized()
+				verts.append(pos)
+				normals.append(nrm)
+				uvs.append(Vector2(float(si) / float(branch_segs) * 1.0, v_uv))
+		for si in range(branch_segs):
+			var b0 := base_idx + si
+			var b1 := base_idx + branch_segs + 1 + si
+			indices.append_array(PackedInt32Array([
+				b0, b0 + 1, b1 + 1, b0, b1 + 1, b1,
+			]))
+
 	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
 	arrays[Mesh.ARRAY_VERTEX] = verts
 	arrays[Mesh.ARRAY_NORMAL] = normals
@@ -2334,106 +2386,124 @@ func _make_canopy_planes_mesh() -> ArrayMesh:
 	return mesh
 
 
-func _make_canopy_volume_mesh() -> ArrayMesh:
-	# 3-layer volumetric canopy: outer shell (6 planes) + caps (2) + inner core (3)
-	# 44 verts / 22 tris — single draw call, uses COLOR.r for layer ID
+func _make_leaf_card_mesh(is_conifer: bool) -> ArrayMesh:
+	# Cluster of textured quads simulating leaf masses.
+	# Broadleaf: 16 quads in dome pattern. Conifer: 14 quads in conical pattern.
 	var verts   := PackedVector3Array()
 	var normals := PackedVector3Array()
 	var uvs     := PackedVector2Array()
-	var colors  := PackedColorArray()
 	var indices := PackedInt32Array()
 
-	# --- Outer shell: 6 vertical planes at 30° spacing, varied push ---
-	for pi in 6:
-		var a   := PI * float(pi) / 6.0
-		var ca  := cos(a); var sa := sin(a)
-		var push := 0.25 + fmod(float(pi) * 0.618, 1.0) * 0.20  # 0.25-0.45 range
-		var ox  := sa * push   # push outward from center
-		var oz  := -ca * push
-		var hw  := 0.7         # half-width
-		var base := verts.size()
-		verts.append_array(PackedVector3Array([
-			Vector3(ox - ca * hw, -1.0, oz - sa * hw),
-			Vector3(ox + ca * hw, -1.0, oz + sa * hw),
-			Vector3(ox + ca * hw,  1.0, oz + sa * hw),
-			Vector3(ox - ca * hw,  1.0, oz - sa * hw),
-		]))
-		uvs.append_array(PackedVector2Array([
-			Vector2(0.0, 1.0), Vector2(1.0, 1.0),
-			Vector2(1.0, 0.0), Vector2(0.0, 0.0),
-		]))
-		var n := Vector3(-sa, 0.0, ca)
-		for _j in 4:
-			normals.append(n)
-			colors.append(Color(0.0, 0.0, 0.0))  # layer_id = 0.0
-		indices.append_array(PackedInt32Array([
-			base, base+1, base+2, base, base+2, base+3,
-		]))
+	var card_defs: Array = []  # [position, half_size, tilt_axis, tilt_angle]
 
-	# --- Horizontal caps: 2 tilted quads filling the top-down view gap ---
-	var cap_configs := [
-		[0.3, 15.0, Vector3(1.0, 0.0, 0.0)],   # upper cap tilted around X
-		[-0.1, 15.0, Vector3(0.0, 0.0, 1.0)],   # lower cap tilted around Z
-	]
-	for cfg in cap_configs:
-		var cy: float   = cfg[0]
-		var tilt: float = deg_to_rad(cfg[1])
-		var axis: Vector3 = cfg[2]
-		var base := verts.size()
+	if not is_conifer:
+		# --- Broadleaf: dense dome arrangement with small overlapping cards ---
+		# Lower ring: 8 quads around equator
+		for i in 8:
+			var a := TAU * float(i) / 8.0 + 0.2
+			var r := 0.70
+			var pos := Vector3(cos(a) * r, -0.10 + float(i % 3) * 0.08, sin(a) * r)
+			var tilt_ax := Vector3(-sin(a), 0.0, cos(a))
+			card_defs.append([pos, 0.35, tilt_ax, 20.0 + float(i) * 5.0])
+		# Mid ring: 8 quads at ~30° elevation
+		for i in 8:
+			var a := TAU * float(i) / 8.0 + 0.6
+			var r := 0.58
+			var pos := Vector3(cos(a) * r, 0.30 + float(i % 2) * 0.10, sin(a) * r)
+			var tilt_ax := Vector3(-sin(a), 0.0, cos(a))
+			card_defs.append([pos, 0.32, tilt_ax, 30.0 + float(i) * 4.0])
+		# Upper ring: 6 quads at ~60° elevation
+		for i in 6:
+			var a := TAU * float(i) / 6.0 + 0.9
+			var r := 0.40
+			var pos := Vector3(cos(a) * r, 0.58, sin(a) * r)
+			var tilt_ax := Vector3(-sin(a), 0.0, cos(a))
+			card_defs.append([pos, 0.30, tilt_ax, 40.0 + float(i) * 6.0])
+		# Crown: 4 quads near top
+		for i in 4:
+			var a := TAU * float(i) / 4.0 + 1.2
+			var r := 0.22
+			var pos := Vector3(cos(a) * r, 0.78, sin(a) * r)
+			var tilt_ax := Vector3(cos(a + 1.0), 0.0, sin(a + 1.0))
+			card_defs.append([pos, 0.28, tilt_ax, 45.0 + float(i) * 7.0])
+		# Inner fill: 6 quads crossing through center for density
+		for i in 6:
+			var a := TAU * float(i) / 6.0 + 0.35
+			var pos := Vector3(cos(a) * 0.20, 0.10 + float(i) * 0.10, sin(a) * 0.20)
+			var tilt_ax := Vector3(cos(a + 0.5), 0.0, sin(a + 0.5))
+			card_defs.append([pos, 0.38, tilt_ax, 25.0 + float(i) * 8.0])
+		# Top caps: 2 nearly horizontal quads
+		card_defs.append([Vector3(0.12, 0.85, 0.05), 0.30, Vector3(1.0, 0.0, 0.0), 8.0])
+		card_defs.append([Vector3(-0.08, 0.80, -0.10), 0.28, Vector3(0.0, 0.0, 1.0), 12.0])
+	else:
+		# --- Conifer: conical tiers with smaller cards ---
+		# Bottom tier: 7 quads
+		for i in 7:
+			var a := TAU * float(i) / 7.0 + 0.15
+			var pos := Vector3(cos(a) * 0.62, -0.55, sin(a) * 0.62)
+			var tilt_ax := Vector3(-sin(a), 0.0, cos(a))
+			card_defs.append([pos, 0.30, tilt_ax, 35.0 + float(i) * 3.0])
+		# Mid-lower: 6 quads
+		for i in 6:
+			var a := TAU * float(i) / 6.0 + 0.4
+			var pos := Vector3(cos(a) * 0.48, -0.15, sin(a) * 0.48)
+			var tilt_ax := Vector3(-sin(a), 0.0, cos(a))
+			card_defs.append([pos, 0.26, tilt_ax, 40.0 + float(i) * 4.0])
+		# Mid-upper: 5 quads
+		for i in 5:
+			var a := TAU * float(i) / 5.0 + 0.7
+			var pos := Vector3(cos(a) * 0.32, 0.25, sin(a) * 0.32)
+			var tilt_ax := Vector3(-sin(a), 0.0, cos(a))
+			card_defs.append([pos, 0.22, tilt_ax, 45.0 + float(i) * 5.0])
+		# Upper: 4 quads
+		for i in 4:
+			var a := TAU * float(i) / 4.0 + 1.0
+			var pos := Vector3(cos(a) * 0.18, 0.55, sin(a) * 0.18)
+			var tilt_ax := Vector3(-sin(a), 0.0, cos(a))
+			card_defs.append([pos, 0.18, tilt_ax, 50.0 + float(i) * 6.0])
+		# Top: 2 quads
+		for i in 2:
+			var a := TAU * float(i) / 2.0 + 0.9
+			var pos := Vector3(cos(a) * 0.08, 0.78, sin(a) * 0.08)
+			var tilt_ax := Vector3(-sin(a), 0.0, cos(a))
+			card_defs.append([pos, 0.15, tilt_ax, 55.0])
+
+	# Build each card as a quad (2 tris)
+	for ci in card_defs.size():
+		var cd: Array = card_defs[ci]
+		var pos: Vector3     = cd[0]
+		var hs: float        = cd[1]
+		var tilt_ax: Vector3 = cd[2]
+		var tilt_deg: float  = cd[3]
+		# Start with a vertical quad facing +Z
 		var corners := [
-			Vector3(-0.7, cy, -0.7),
-			Vector3( 0.7, cy, -0.7),
-			Vector3( 0.7, cy,  0.7),
-			Vector3(-0.7, cy,  0.7),
+			Vector3(-hs, -hs, 0.0),
+			Vector3( hs, -hs, 0.0),
+			Vector3( hs,  hs, 0.0),
+			Vector3(-hs,  hs, 0.0),
 		]
-		for ci in 4:
-			# Rotate corner around axis by tilt
-			var v: Vector3 = corners[ci]
-			v = v.rotated(axis, tilt)
+		# Rotate by unique angle per card for variety
+		var spin := float(ci) * 0.618 * TAU
+		var spin_basis := Basis(Vector3.UP, spin)
+		var tilt_basis := Basis(tilt_ax.normalized(), deg_to_rad(tilt_deg))
+		var base := verts.size()
+		var n := (tilt_basis * spin_basis * Vector3(0.0, 0.0, 1.0)).normalized()
+		for vi in 4:
+			var v: Vector3 = tilt_basis * (spin_basis * (corners[vi] as Vector3)) + pos
 			verts.append(v)
+			normals.append(n)
 		uvs.append_array(PackedVector2Array([
 			Vector2(0.0, 1.0), Vector2(1.0, 1.0),
 			Vector2(1.0, 0.0), Vector2(0.0, 0.0),
 		]))
-		var n := Vector3(0.0, 1.0, 0.0).rotated(axis, tilt)
-		for _j in 4:
-			normals.append(n)
-			colors.append(Color(0.5, 0.0, 0.0))  # layer_id = 0.5
 		indices.append_array(PackedInt32Array([
-			base, base+1, base+2, base, base+2, base+3,
-		]))
-
-	# --- Inner core: 3 vertical planes at 60° spacing, smaller ---
-	for pi in 3:
-		var a   := PI * float(pi) / 3.0
-		var ca  := cos(a); var sa := sin(a)
-		var hw  := 0.55    # half-width (smaller than outer)
-		var hh  := 0.7     # half-height
-		var base := verts.size()
-		verts.append_array(PackedVector3Array([
-			Vector3(-ca * hw, -hh, -sa * hw),
-			Vector3( ca * hw, -hh,  sa * hw),
-			Vector3( ca * hw,  hh,  sa * hw),
-			Vector3(-ca * hw,  hh, -sa * hw),
-		]))
-		# UVs shrunk to [0.15, 0.85] — samples dense center of texture
-		uvs.append_array(PackedVector2Array([
-			Vector2(0.15, 0.85), Vector2(0.85, 0.85),
-			Vector2(0.85, 0.15), Vector2(0.15, 0.15),
-		]))
-		var n := Vector3(-sa, 0.0, ca)
-		for _j in 4:
-			normals.append(n)
-			colors.append(Color(1.0, 0.0, 0.0))  # layer_id = 1.0
-		indices.append_array(PackedInt32Array([
-			base, base+1, base+2, base, base+2, base+3,
+			base, base + 1, base + 2, base, base + 2, base + 3,
 		]))
 
 	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
 	arrays[Mesh.ARRAY_VERTEX] = verts
 	arrays[Mesh.ARRAY_NORMAL] = normals
 	arrays[Mesh.ARRAY_TEX_UV] = uvs
-	arrays[Mesh.ARRAY_COLOR]  = colors
 	arrays[Mesh.ARRAY_INDEX]  = indices
 	var mesh := ArrayMesh.new()
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
@@ -2500,13 +2570,24 @@ func _make_bush_volume_mesh() -> ArrayMesh:
 	return mesh
 
 
-func _make_canopy_mat(tex: ImageTexture) -> ShaderMaterial:
+func _make_leaf_mat(broad: bool) -> ShaderMaterial:
+	var prefix := "LeafSet005" if broad else "LeafSet019"
+	var color_tex := _load_tex("res://textures/%s_2K-JPG_Color.jpg" % prefix)
+	var norm_tex  := _load_tex("res://textures/%s_2K-JPG_NormalGL.jpg" % prefix)
+	var rough_tex := _load_tex("res://textures/%s_2K-JPG_Roughness.jpg" % prefix)
+	var opac_tex  := _load_tex("res://textures/%s_2K-JPG_Opacity.jpg" % prefix)
 	var sh    := Shader.new()
-	sh.code    = _canopy_shader_code()
+	sh.code    = _leaf_shader_code()
 	var mat   := ShaderMaterial.new()
 	mat.shader = sh
-	if tex:
-		mat.set_shader_parameter("canopy_tex", tex)
+	if color_tex:
+		mat.set_shader_parameter("leaf_color", color_tex)
+	if norm_tex:
+		mat.set_shader_parameter("leaf_normal", norm_tex)
+	if rough_tex:
+		mat.set_shader_parameter("leaf_rough", rough_tex)
+	if opac_tex:
+		mat.set_shader_parameter("leaf_opacity", opac_tex)
 	return mat
 
 
@@ -2527,14 +2608,16 @@ func _spawn_multimesh(mesh: Mesh, mat: Material,
 	add_child(mmi)
 
 
-func _canopy_shader_code() -> String:
+func _leaf_shader_code() -> String:
 	return """shader_type spatial;
 render_mode cull_disabled, depth_prepass_alpha;
 
-uniform sampler2D canopy_tex : source_color, filter_linear_mipmap_anisotropic;
+uniform sampler2D leaf_color   : source_color,      filter_linear_mipmap_anisotropic;
+uniform sampler2D leaf_normal  : hint_normal,        filter_linear_mipmap_anisotropic;
+uniform sampler2D leaf_rough   : hint_default_white, filter_linear_mipmap_anisotropic;
+uniform sampler2D leaf_opacity : hint_default_white, filter_linear_mipmap_anisotropic;
 
 varying vec3 tree_origin;
-varying float layer_id;
 
 float hash21(vec2 p) {
 	p = fract(p * vec2(127.1, 311.7));
@@ -2544,51 +2627,43 @@ float hash21(vec2 p) {
 
 void vertex() {
 	tree_origin = (MODEL_MATRIX * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
-	layer_id = COLOR.r;
 
 	// Wind sway: phase from tree world position, weight by local height
 	float sway = max(VERTEX.y, 0.0);
 	VERTEX.x += sin(TIME * 0.7 + tree_origin.x * 0.04 + tree_origin.z * 0.06) * 0.09 * sway;
 	VERTEX.z += sin(TIME * 1.1 + tree_origin.z * 0.05) * 0.05 * sway;
 
-	// Cap billow: gentle vertical bob for horizontal caps (layer_id ~ 0.5)
-	float is_cap = step(0.4, layer_id) * step(layer_id, 0.6);
-	VERTEX.y += is_cap * sin(TIME * 0.9 + tree_origin.x * 0.05) * 0.06;
+	// Leaf flutter: small high-frequency jitter per-card
+	float flutter = sin(TIME * 3.5 + VERTEX.x * 11.0 + VERTEX.z * 7.0) * 0.012;
+	VERTEX.y += flutter * sway;
 }
 
 void fragment() {
-	vec4 tex = texture(canopy_tex, UV);
+	vec3 alb   = texture(leaf_color, UV).rgb;
+	float opac = texture(leaf_opacity, UV).r;
+	float rgh  = texture(leaf_rough, UV).r;
 
-	// Soft alpha edge: rougher cutoff for more ragged silhouettes
-	float alpha = smoothstep(0.12, 0.55, tex.a);
-	// Inner core (layer_id=1.0) gets opacity boost for dense center
-	alpha = mix(alpha, min(alpha * 1.4, 1.0), layer_id);
+	// Alpha cutout from opacity map
+	float alpha = smoothstep(0.08, 0.45, opac);
 	if (alpha < 0.01) discard;
 	ALPHA = alpha;
 
-	// Depth darkening: inner core darker, outer shell brighter
-	float depth_dim = mix(1.0, 0.65, layer_id);
-
 	// Per-tree colour variation from world position hash
 	float h = hash21(floor(tree_origin.xz * 0.025));
-	float bright = 0.60 + h * 0.55;
-	float warm   = (h - 0.5) * 0.22;
-	vec3 col = tex.rgb * bright * depth_dim;
+	float bright = 0.65 + h * 0.50;
+	float warm   = (h - 0.5) * 0.20;
+	vec3 col = alb * bright;
 	col.r += warm;
 	col.b -= warm * 0.4;
 
 	// Fake subsurface scattering: rim glows yellow-green (backlit leaves)
-	float sss = pow(1.0 - max(dot(NORMAL, VIEW), 0.0), 3.0) * 0.20;
+	float sss = pow(1.0 - max(dot(NORMAL, VIEW), 0.0), 3.0) * 0.22;
 	col += vec3(0.09, 0.13, 0.01) * sss;
 
-	// Normal perturbation: hash-based jitter breaks flat-plane lighting
-	vec2 nj = vec2(hash21(UV * 73.1 + tree_origin.xz) - 0.5,
-	               hash21(UV * 91.3 + tree_origin.zx) - 0.5) * 0.25;
-	NORMAL = normalize(NORMAL + vec3(nj.x, 0.0, nj.y));
-
-	ALBEDO    = clamp(col, 0.0, 1.0);
-	ROUGHNESS = 0.88;
-	METALLIC  = 0.0;
+	ALBEDO     = clamp(col, 0.0, 1.0);
+	NORMAL_MAP = texture(leaf_normal, UV).rgb;
+	ROUGHNESS  = clamp(rgh * 0.3 + 0.60, 0.0, 1.0);
+	METALLIC   = 0.0;
 }
 """
 
