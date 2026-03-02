@@ -617,15 +617,25 @@ const BRIDGE_NAME_STYLE := {
 	"Green Gap Arch": BridgeStyle.BRICK,
 }
 
-func _bridge_style(bname: String) -> int:
-	if bname.is_empty():
+func _bridge_style(bname: String, surface: String = "", length: float = 0.0) -> int:
+	# Named bridge — exact or partial match
+	if not bname.is_empty():
+		if BRIDGE_NAME_STYLE.has(bname):
+			return BRIDGE_NAME_STYLE[bname]
+		if bname.to_lower().contains("drive"):
+			return BridgeStyle.DRIVE
 		return BridgeStyle.STONE
-	if BRIDGE_NAME_STYLE.has(bname):
-		return BRIDGE_NAME_STYLE[bname]
-	# Partial match for Drive segments
-	var lower := bname.to_lower()
-	if lower.contains("drive"):
-		return BridgeStyle.DRIVE
+	# Unnamed bridge — classify by surface and length
+	if surface == "wood":
+		return BridgeStyle.RUSTIC_WOOD
+	if surface == "unhewn_cobblestone":
+		return BridgeStyle.BRICK
+	if surface == "metal":
+		return BridgeStyle.CAST_IRON
+	if length >= 20.0:
+		return BridgeStyle.CAST_IRON
+	if length < 8.0:
+		return BridgeStyle.RUSTIC_WOOD
 	return BridgeStyle.STONE
 
 func _subdivide_pts(pts: Array, max_seg: float) -> Array:
@@ -647,12 +657,6 @@ func _build_bridge(path: Dictionary) -> void:
 	var hw:   String = str(path.get("highway", "path"))
 	var surf: String = str(path.get("surface", ""))
 	var bridge_name: String = str(path.get("bridge_name", ""))
-	var style: int = _bridge_style(bridge_name)
-	if not bridge_name.is_empty():
-		var style_names := {BridgeStyle.STONE: "STONE", BridgeStyle.CAST_IRON: "CAST_IRON",
-			BridgeStyle.RUSTIC_WOOD: "RUSTIC_WOOD", BridgeStyle.BRICK: "BRICK",
-			BridgeStyle.DRIVE: "DRIVE"}
-		print("  Bridge: ", bridge_name, " → ", style_names.get(style, "STONE"))
 	var raw_pts: Array = path["points"]
 	if raw_pts.size() < 2:
 		return
@@ -672,19 +676,6 @@ func _build_bridge(path: Dictionary) -> void:
 	var rw_nrm := _load_tex("res://textures/rock_wall_nrm.jpg")
 	var rw_rgh := _load_tex("res://textures/rock_wall_rgh.jpg")
 
-	# Per-style material tints
-	var soffit_tint := Color(0.78, 0.76, 0.72)
-	var parapet_tint := Color(0.82, 0.80, 0.76)
-	var abut_tint := Color(0.80, 0.78, 0.74)
-	match style:
-		BridgeStyle.CAST_IRON:
-			soffit_tint = Color(0.72, 0.70, 0.68)
-			abut_tint = Color(0.70, 0.68, 0.65)
-		BridgeStyle.BRICK:
-			soffit_tint = Color(0.60, 0.40, 0.30)
-			parapet_tint = Color(0.65, 0.42, 0.32)
-			abut_tint = Color(0.62, 0.41, 0.31)
-
 	# ----------------------------------------------------------------
 	# Cumulative arc lengths
 	# ----------------------------------------------------------------
@@ -699,6 +690,27 @@ func _build_bridge(path: Dictionary) -> void:
 	if total_len < 0.1:
 		return
 	var ramp_len := total_len * BRIDGE_RAMP_FRAC
+
+	# Determine bridge style (needs total_len for unnamed heuristics)
+	var style: int = _bridge_style(bridge_name, surf, total_len)
+	var _style_names := {BridgeStyle.STONE: "STONE", BridgeStyle.CAST_IRON: "CAST_IRON",
+		BridgeStyle.RUSTIC_WOOD: "RUSTIC_WOOD", BridgeStyle.BRICK: "BRICK",
+		BridgeStyle.DRIVE: "DRIVE"}
+	var _label: String = bridge_name if not bridge_name.is_empty() else "(unnamed %.0fm)" % total_len
+	print("  Bridge: ", _label, " → ", _style_names.get(style, "STONE"))
+
+	# Per-style material tints
+	var soffit_tint := Color(0.78, 0.76, 0.72)
+	var parapet_tint := Color(0.82, 0.80, 0.76)
+	var abut_tint := Color(0.80, 0.78, 0.74)
+	match style:
+		BridgeStyle.CAST_IRON:
+			soffit_tint = Color(0.72, 0.70, 0.68)
+			abut_tint = Color(0.70, 0.68, 0.65)
+		BridgeStyle.BRICK:
+			soffit_tint = Color(0.60, 0.40, 0.30)
+			parapet_tint = Color(0.65, 0.42, 0.32)
+			abut_tint = Color(0.62, 0.41, 0.31)
 
 	# Terrain heights at the two endpoints
 	var y_start := float(pts[0][1])
@@ -1029,16 +1041,18 @@ func _build_solid_parapets(pts: Array, pt_y: PackedFloat32Array,
 func _build_iron_railings(pts: Array, pt_y: PackedFloat32Array,
 		cum_len: PackedFloat32Array, n_pts: int, hw2: float,
 		ramp_start: float, ramp_end: float) -> void:
-	## Cast-iron railings: thin posts every ~2m + 3 horizontal rails at 15%/50%/95% of PARAPET_H.
+	## Cast-iron railings: posts every ~2m + 3 inner rails + continuous cap rail at top.
 	var rail_verts   := PackedVector3Array()
 	var rail_normals := PackedVector3Array()
-	var rail_h := [PARAPET_H * 0.15, PARAPET_H * 0.50, PARAPET_H * 0.95]
-	var rail_thick := 0.03   # horizontal rail thickness
-	var post_w := 0.05       # post width (square cross-section)
+	var rail_h := [PARAPET_H * 0.15, PARAPET_H * 0.50, PARAPET_H * 0.80]
+	var rail_thick := 0.05   # horizontal rail thickness
+	var cap_h := 0.06        # cap rail height
+	var cap_hw := 0.05       # cap rail half-width (total 0.10m)
+	var post_w := 0.08       # post width (square cross-section)
 	var post_spacing := 2.0  # metres between posts
 	var ohw := hw2 + 0.02    # slight offset from deck edge
 
-	# Horizontal rails: continuous quads per segment
+	# Horizontal inner rails + cap rail: continuous quads per segment
 	for i in range(n_pts - 1):
 		if cum_len[i + 1] < ramp_start or cum_len[i] > ramp_end:
 			continue
@@ -1049,6 +1063,7 @@ func _build_iron_railings(pts: Array, pt_y: PackedFloat32Array,
 			continue
 		var dv := seg2.normalized()
 		var nv := Vector2(-dv.y, dv.x)
+		# Inner rails (outward-facing quads)
 		for rh in rail_h:
 			for side in [-1.0, 1.0]:
 				var s: float = float(side)
@@ -1062,12 +1077,36 @@ func _build_iron_railings(pts: Array, pt_y: PackedFloat32Array,
 				var wall_n := Vector3(nv.x * s, 0.0, nv.y * s)
 				for _j in range(6):
 					rail_normals.append(wall_n)
+		# Cap rail — outward face + top face per side
+		for side in [-1.0, 1.0]:
+			var s: float = float(side)
+			var ox := nv.x * ohw * s
+			var oz := nv.y * ohw * s
+			var cap_base := PARAPET_H
+			var cap_top  := PARAPET_H + cap_h
+			# Outward face
+			var ca := Vector3(p1.x + ox, p1.y + cap_base, p1.z + oz)
+			var cb := Vector3(p2.x + ox, p2.y + cap_base, p2.z + oz)
+			var cc := Vector3(p2.x + ox, p2.y + cap_top,  p2.z + oz)
+			var cd := Vector3(p1.x + ox, p1.y + cap_top,  p1.z + oz)
+			rail_verts.append_array(PackedVector3Array([ca, cb, cc, ca, cc, cd]))
+			var wall_n := Vector3(nv.x * s, 0.0, nv.y * s)
+			for _j in range(6):
+				rail_normals.append(wall_n)
+			# Top face (flat cap visible from above)
+			var inx := nv.x * (ohw - cap_hw * 2.0) * s
+			var inz := nv.y * (ohw - cap_hw * 2.0) * s
+			var ta := Vector3(p1.x + ox,  p1.y + cap_top, p1.z + oz)
+			var tb := Vector3(p2.x + ox,  p2.y + cap_top, p2.z + oz)
+			var tc := Vector3(p2.x + inx, p2.y + cap_top, p2.z + inz)
+			var td := Vector3(p1.x + inx, p1.y + cap_top, p1.z + inz)
+			rail_verts.append_array(PackedVector3Array([ta, tb, tc, ta, tc, td]))
+			for _j in range(6):
+				rail_normals.append(Vector3.UP)
 
 	# Vertical posts
-	var total_len := cum_len[n_pts - 1]
 	var d := ramp_start
 	while d <= ramp_end:
-		# Find interpolated position along path at distance d
 		var idx := 0
 		for k in range(n_pts - 1):
 			if cum_len[k + 1] >= d:
@@ -1091,32 +1130,31 @@ func _build_iron_railings(pts: Array, pt_y: PackedFloat32Array,
 			var s: float = float(side)
 			var cx := px + nv.x * ohw * s
 			var cz := pz + nv.y * ohw * s
-			# Post as 4 quads (front/back/left/right faces)
 			var phw := post_w * 0.5
 			for face in range(4):
 				var fn: Vector3
 				var c0: Vector3; var c1: Vector3; var c2: Vector3; var c3: Vector3
 				var base_y := py
-				var top_y := py + PARAPET_H
-				if face == 0:   # +X face
+				var top_y := py + PARAPET_H + cap_h
+				if face == 0:
 					fn = Vector3(1, 0, 0)
 					c0 = Vector3(cx + phw, base_y, cz - phw)
 					c1 = Vector3(cx + phw, base_y, cz + phw)
 					c2 = Vector3(cx + phw, top_y,  cz + phw)
 					c3 = Vector3(cx + phw, top_y,  cz - phw)
-				elif face == 1: # -X face
+				elif face == 1:
 					fn = Vector3(-1, 0, 0)
 					c0 = Vector3(cx - phw, base_y, cz + phw)
 					c1 = Vector3(cx - phw, base_y, cz - phw)
 					c2 = Vector3(cx - phw, top_y,  cz - phw)
 					c3 = Vector3(cx - phw, top_y,  cz + phw)
-				elif face == 2: # +Z face
+				elif face == 2:
 					fn = Vector3(0, 0, 1)
 					c0 = Vector3(cx + phw, base_y, cz + phw)
 					c1 = Vector3(cx - phw, base_y, cz + phw)
 					c2 = Vector3(cx - phw, top_y,  cz + phw)
 					c3 = Vector3(cx + phw, top_y,  cz + phw)
-				else:           # -Z face
+				else:
 					fn = Vector3(0, 0, -1)
 					c0 = Vector3(cx - phw, base_y, cz - phw)
 					c1 = Vector3(cx + phw, base_y, cz - phw)
@@ -1148,16 +1186,17 @@ func _build_iron_railings(pts: Array, pt_y: PackedFloat32Array,
 func _build_wood_railings(pts: Array, pt_y: PackedFloat32Array,
 		cum_len: PackedFloat32Array, n_pts: int, hw2: float,
 		ramp_start: float, ramp_end: float) -> void:
-	## Rustic wood railings: chunky posts every ~2.5m + 2 horizontal rails at 35%/85% of PARAPET_H.
+	## Rustic wood railings: chunky posts every ~2.5m + 2 thick beam rails with depth.
 	var rail_verts   := PackedVector3Array()
 	var rail_normals := PackedVector3Array()
 	var rail_h := [PARAPET_H * 0.35, PARAPET_H * 0.85]
-	var rail_thick := 0.06   # thicker than iron
-	var post_w := 0.10       # chunky square posts
+	var rail_thick := 0.08   # rail height (visible from side)
+	var rail_depth := 0.06   # rail depth (visible from above)
+	var post_w := 0.12       # chunky square posts
 	var post_spacing := 2.5
 	var ohw := hw2 + 0.02
 
-	# Horizontal rails
+	# Horizontal rails — outward face + top face per rail
 	for i in range(n_pts - 1):
 		if cum_len[i + 1] < ramp_start or cum_len[i] > ramp_end:
 			continue
@@ -1173,6 +1212,7 @@ func _build_wood_railings(pts: Array, pt_y: PackedFloat32Array,
 				var s: float = float(side)
 				var ox := nv.x * ohw * s
 				var oz := nv.y * ohw * s
+				# Outward face
 				var ra := Vector3(p1.x + ox, p1.y + rh, p1.z + oz)
 				var rb := Vector3(p2.x + ox, p2.y + rh, p2.z + oz)
 				var rc := Vector3(p2.x + ox, p2.y + rh + rail_thick, p2.z + oz)
@@ -1181,8 +1221,20 @@ func _build_wood_railings(pts: Array, pt_y: PackedFloat32Array,
 				var wall_n := Vector3(nv.x * s, 0.0, nv.y * s)
 				for _j in range(6):
 					rail_normals.append(wall_n)
+				# Top face (makes rail look like a solid beam)
+				var inx := nv.x * (ohw - rail_depth) * s
+				var inz := nv.y * (ohw - rail_depth) * s
+				var top_y1: float = p1.y + rh + rail_thick
+				var top_y2: float = p2.y + rh + rail_thick
+				var ta := Vector3(p1.x + ox,  top_y1, p1.z + oz)
+				var tb := Vector3(p2.x + ox,  top_y2, p2.z + oz)
+				var tc := Vector3(p2.x + inx, top_y2, p2.z + inz)
+				var td := Vector3(p1.x + inx, top_y1, p1.z + inz)
+				rail_verts.append_array(PackedVector3Array([ta, tb, tc, ta, tc, td]))
+				for _j in range(6):
+					rail_normals.append(Vector3.UP)
 
-	# Vertical posts (same logic as iron but chunkier)
+	# Vertical posts
 	var d := ramp_start
 	while d <= ramp_end:
 		var idx := 0
