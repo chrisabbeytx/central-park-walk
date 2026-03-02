@@ -206,11 +206,21 @@ float sample_terrain(vec2 world_xz) {
 	}
 }
 
+varying flat float depth_jitter;
+
+float pos_hash(vec2 p) {
+	p = fract(p * vec2(127.1, 311.7));
+	p += dot(p, p + 43.21);
+	return fract(p.x * p.y);
+}
+
 void vertex() {
 	vec3 world = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 	float terrain_h = sample_terrain(world.xz);
 	vec3 snapped = (inverse(MODEL_MATRIX) * vec4(world.x, terrain_h + path_y_offset, world.z, 1.0)).xyz;
 	VERTEX.y = snapped.y;
+	// Per-triangle depth jitter to break z-fighting at same-type intersections
+	depth_jitter = pos_hash(floor(world.xz * 0.5)) * 0.0003;
 }
 
 void fragment() {
@@ -220,6 +230,7 @@ void fragment() {
 	NORMAL_MAP = texture(tex_nrm, UV).rgb;
 	ROUGHNESS  = clamp(rough + 0.10, 0.0, 1.0);
 	METALLIC   = 0.0;
+	DEPTH = gl_FragCoord.z - depth_jitter;
 }
 """
 
@@ -3621,9 +3632,8 @@ func _build_furniture(paths: Array) -> void:
 				var bx := x1 + nx * off * bench_side
 				var bz := z1 + nz * off * bench_side
 				var by := _terrain_y(bx, bz)
-				var angle := atan2(nx, nz)
-				if bench_side < 0.0:
-					angle += PI
+				# Face bench toward the path (opposite of offset direction)
+				var angle := atan2(-nx * bench_side, -nz * bench_side)
 				var basis := Basis(Vector3.UP, angle)
 				bench_xf.append(Transform3D(basis, Vector3(bx, by, bz)))
 				bench_side = -bench_side
