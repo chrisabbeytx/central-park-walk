@@ -60,6 +60,8 @@ func _load_heightmap() -> void:
 
 
 func _terrain_height(x: float, z: float) -> float:
+	## Barycentric interpolation matching the terrain mesh's triangle split.
+	## The mesh diagonal runs from i00 to i11 (bottom-left to top-right).
 	if _hm_data.is_empty():
 		return 0.0
 	var half := _hm_world_size * 0.5
@@ -73,7 +75,10 @@ func _terrain_height(x: float, z: float) -> float:
 	var h10  := float(_hm_data[zi0       * _hm_width + xi0 + 1])
 	var h01  := float(_hm_data[(zi0 + 1) * _hm_width + xi0    ])
 	var h11  := float(_hm_data[(zi0 + 1) * _hm_width + xi0 + 1])
-	return h00*(1.0-fx)*(1.0-fz) + h10*fx*(1.0-fz) + h01*(1.0-fx)*fz + h11*fx*fz
+	if fz <= fx:
+		return h00 + (h10 - h00) * fx + (h11 - h10) * fz
+	else:
+		return h00 + (h11 - h01) * fx + (h01 - h00) * fz
 
 
 # ---------------------------------------------------------------------------
@@ -454,7 +459,7 @@ func _setup_park() -> void:
 func _setup_player() -> CharacterBody3D:
 	var p: CharacterBody3D = load("res://player.gd").new()
 	p.name       = "Player"
-	p.position.y = _hm_origin_height + 2.0   # spawn above terrain; physics settles
+	p.position.y = _hm_origin_height + 2.0
 	add_child(p)
 	return p
 
