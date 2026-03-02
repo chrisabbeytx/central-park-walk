@@ -31,6 +31,13 @@ const BRIDGE_GRID_CELL := 5.0
 var _building_grid: Dictionary = {}  # Vector2i → true
 const BUILDING_GRID_CELL := 4.0
 
+# Spatial hash of path zones — keep shore vegetation off paths
+var _path_grid: Dictionary = {}
+const PATH_GRID_CELL := 3.0
+
+# Slope threshold for furniture placement
+const BENCH_MAX_SLOPE := 0.27  # tan(~15°) — skip benches on steeper terrain
+
 
 # ---------------------------------------------------------------------------
 # Typed helpers – avoids Dictionary.get() returning Variant (parse error in 4.6)
@@ -245,11 +252,11 @@ void vertex() {
 void fragment() {
 	vec3  alb   = texture(tex_alb, UV).rgb;
 	float rough = texture(tex_rgh, UV).r;
-	ALBEDO     = alb * tint.rgb;
+	ALBEDO     = alb * tint.rgb * COLOR.rgb;
 	NORMAL_MAP = texture(tex_nrm, UV).rgb;
 	ROUGHNESS  = clamp(rough + 0.10, 0.0, 1.0);
 	METALLIC   = 0.0;
-	DEPTH = gl_FragCoord.z - depth_jitter;
+	DEPTH = FRAGCOORD.z - depth_jitter;
 }
 """
 
@@ -321,6 +328,14 @@ func _terrain_y(x: float, z: float) -> float:
 		return h00 + (h11 - h01) * fx + (h01 - h00) * fz
 
 
+func _terrain_slope(x: float, z: float) -> float:
+	## Returns terrain slope magnitude at (x, z) by sampling a 1m cross.
+	var d := 0.5
+	var gx := (_terrain_y(x + d, z) - _terrain_y(x - d, z)) / (2.0 * d)
+	var gz := (_terrain_y(x, z + d) - _terrain_y(x, z - d)) / (2.0 * d)
+	return sqrt(gx * gx + gz * gz)
+
+
 # ---------------------------------------------------------------------------
 func _ready() -> void:
 	if not FileAccess.file_exists(DATA_PATH):
@@ -384,6 +399,22 @@ func _build_paths(paths: Array) -> void:
 			if key not in ground_groups:
 				ground_groups[key] = []
 			ground_groups[key].append(path)
+
+	# Populate path spatial grid for vegetation exclusion
+	for path in paths:
+		if bool(path.get("bridge", false)) or bool(path.get("tunnel", false)):
+			continue
+		var ppts: Array = path["points"]
+		var phw := _hw_width(str(path.get("highway", "path")))
+		var margin := phw * 0.5 + 1.5
+		var cells := int(ceil(margin / PATH_GRID_CELL)) + 1
+		for pt in ppts:
+			var ppx := float(pt[0]); var ppz := float(pt[2])
+			var ci := int(floor(ppx / PATH_GRID_CELL))
+			var cj := int(floor(ppz / PATH_GRID_CELL))
+			for di in range(-cells, cells + 1):
+				for dj in range(-cells, cells + 1):
+					_path_grid[Vector2i(ci + di, cj + dj)] = true
 
 	for key in ground_groups:
 		var parts: PackedStringArray = key.split("|")
@@ -450,11 +481,19 @@ func _make_path_mesh(paths: Array, hw: String, surface: String) -> MeshInstance3
 	var verts   := PackedVector3Array()
 	var normals := PackedVector3Array()
 	var uvs     := PackedVector2Array()
+	var colors  := PackedColorArray()
 	var width   := _hw_width(hw)
 	var hw2     := width * 0.5
 	var skirt   := 0.18  # metres below terrain for edge skirts
 
 	for path in paths:
+		# Per-path tint variation: hash first point for subtle color shift
+		var p0: Array = path["points"][0]
+		var ph := fmod(abs(float(p0[0]) * 127.1 + float(p0[2]) * 311.7), 1000.0) / 1000.0
+		var path_tint := Color(
+			1.0 + (ph - 0.5) * 0.16,
+			1.0 + (fmod(ph * 7.37, 1.0) - 0.5) * 0.12,
+			1.0 + (fmod(ph * 13.19, 1.0) - 0.5) * 0.10)
 		var pts: Array = _subdivide_pts(path["points"], 1.5)
 		var n_pts := pts.size()
 		if n_pts < 2:
@@ -529,6 +568,8 @@ func _make_path_mesh(paths: Array, hw: String, surface: String) -> MeshInstance3
 				Vector2(u0, 0.0), Vector2(u0, 1.0), Vector2(u1, 0.0),
 				Vector2(u0, 1.0), Vector2(u1, 1.0), Vector2(u1, 0.0),
 			]))
+			for _j in range(6):
+				colors.append(path_tint)
 
 			# Left skirt
 			verts.append_array(PackedVector3Array([
@@ -539,6 +580,8 @@ func _make_path_mesh(paths: Array, hw: String, surface: String) -> MeshInstance3
 				Vector2(u0, 0.0), Vector2(u0, 0.0), Vector2(u1, 0.0),
 				Vector2(u0, 0.0), Vector2(u1, 0.0), Vector2(u1, 0.0),
 			]))
+			for _j in range(6):
+				colors.append(path_tint)
 
 			# Right skirt
 			verts.append_array(PackedVector3Array([
@@ -549,12 +592,15 @@ func _make_path_mesh(paths: Array, hw: String, surface: String) -> MeshInstance3
 				Vector2(u0, 1.0), Vector2(u0, 1.0), Vector2(u1, 1.0),
 				Vector2(u0, 1.0), Vector2(u1, 1.0), Vector2(u1, 1.0),
 			]))
+			for _j in range(6):
+				colors.append(path_tint)
 
 	var arrays: Array = []
 	arrays.resize(Mesh.ARRAY_MAX)
 	arrays[Mesh.ARRAY_VERTEX] = verts
 	arrays[Mesh.ARRAY_NORMAL] = normals
 	arrays[Mesh.ARRAY_TEX_UV] = uvs
+	arrays[Mesh.ARRAY_COLOR]  = colors
 
 	var mesh := ArrayMesh.new()
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
@@ -2132,6 +2178,9 @@ func _build_shore_vegetation(water: Array) -> void:
 		var step := maxi(1, pts.size() / 200)  # ~200 reeds per water body
 		for pi in range(0, pts.size(), step):
 			var sx := float(pts[pi][0]); var sz := float(pts[pi][1])
+			var pgk := Vector2i(int(floor(sx / PATH_GRID_CELL)), int(floor(sz / PATH_GRID_CELL)))
+			if _path_grid.has(pgk):
+				continue
 			var sy := _terrain_y(sx, sz)
 
 			# 3-6 reed stalks in a small cluster
@@ -2197,6 +2246,9 @@ func _build_shore_vegetation(water: Array) -> void:
 			var nx := -dz / tlen; var nz := dx / tlen
 			var off := rng.randf_range(1.0, 3.0)
 			var gx := sx + nx * off; var gz := sz + nz * off
+			var pgk := Vector2i(int(floor(gx / PATH_GRID_CELL)), int(floor(gz / PATH_GRID_CELL)))
+			if _path_grid.has(pgk):
+				continue
 			var gy := _terrain_y(gx, gz)
 			# 2–4 short grass blades per cluster
 			var n_blades := rng.randi_range(2, 4)
@@ -3957,8 +4009,8 @@ func _build_boundary(boundary: Array) -> void:
 # ---------------------------------------------------------------------------
 # Lampposts & Benches – procedural furniture along paths
 # ---------------------------------------------------------------------------
-func _make_lamppost_mesh() -> ArrayMesh:
-	## Procedural lamppost: thin post + arm + lantern head (~40 tris)
+func _make_lamppost_mesh_a() -> ArrayMesh:
+	## Variant A: Standard Bishop's crook — post + arm + lantern (~40 tris)
 	var verts   := PackedVector3Array()
 	var normals := PackedVector3Array()
 	var indices := PackedInt32Array()
@@ -4029,8 +4081,111 @@ func _make_lamppost_mesh() -> ArrayMesh:
 	return mesh
 
 
-func _make_bench_mesh() -> ArrayMesh:
-	## Procedural park bench: seat + backrest + 4 legs + 2 armrests (~60 tris)
+func _make_lamppost_mesh_b() -> ArrayMesh:
+	## Variant B: Double lantern — taller post, two arms, two lanterns
+	var verts   := PackedVector3Array()
+	var normals := PackedVector3Array()
+	var indices := PackedInt32Array()
+	var segments := 6
+	# Post: r=0.065, h=4.0
+	var post_r := 0.065; var post_h := 4.0
+	for i in segments:
+		var a0 := TAU * float(i) / float(segments)
+		var a1 := TAU * float(i + 1) / float(segments)
+		var c0 := cos(a0); var s0 := sin(a0)
+		var c1 := cos(a1); var s1 := sin(a1)
+		var base := verts.size()
+		verts.append(Vector3(c0 * post_r, 0.0, s0 * post_r))
+		verts.append(Vector3(c1 * post_r, 0.0, s1 * post_r))
+		verts.append(Vector3(c1 * post_r, post_h, s1 * post_r))
+		verts.append(Vector3(c0 * post_r, post_h, s0 * post_r))
+		var n0 := Vector3(c0, 0.0, s0); var n1 := Vector3(c1, 0.0, s1)
+		normals.append(n0); normals.append(n1); normals.append(n1); normals.append(n0)
+		indices.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
+	# Two arms at y=3.8, opposite X directions
+	var arm_y := 3.8; var arm_r := 0.03; var arm_len := 0.25
+	for arm_dir in [-1.0, 1.0]:
+		for i in segments:
+			var a0 := TAU * float(i) / float(segments)
+			var a1 := TAU * float(i + 1) / float(segments)
+			var base := verts.size()
+			verts.append(Vector3(0.0, arm_y + cos(a0) * arm_r, sin(a0) * arm_r))
+			verts.append(Vector3(arm_len * arm_dir, arm_y + cos(a0) * arm_r, sin(a0) * arm_r))
+			verts.append(Vector3(arm_len * arm_dir, arm_y + cos(a1) * arm_r, sin(a1) * arm_r))
+			verts.append(Vector3(0.0, arm_y + cos(a1) * arm_r, sin(a1) * arm_r))
+			var n := Vector3(0.0, cos(a0), sin(a0)).normalized()
+			for _j in 4: normals.append(n)
+			indices.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
+		# Lantern at arm end
+		var lx: float = arm_len * arm_dir
+		var ly := arm_y - 0.14; var lw := 0.08; var lh := 0.26; var ld := 0.08
+		var box_faces := [
+			[Vector3(lx-lw,ly,ld), Vector3(lx+lw,ly,ld), Vector3(lx+lw,ly+lh,ld), Vector3(lx-lw,ly+lh,ld), Vector3(0,0,1)],
+			[Vector3(lx+lw,ly,-ld), Vector3(lx-lw,ly,-ld), Vector3(lx-lw,ly+lh,-ld), Vector3(lx+lw,ly+lh,-ld), Vector3(0,0,-1)],
+			[Vector3(lx+lw,ly,ld), Vector3(lx+lw,ly,-ld), Vector3(lx+lw,ly+lh,-ld), Vector3(lx+lw,ly+lh,ld), Vector3(1,0,0)],
+			[Vector3(lx-lw,ly,-ld), Vector3(lx-lw,ly,ld), Vector3(lx-lw,ly+lh,ld), Vector3(lx-lw,ly+lh,-ld), Vector3(-1,0,0)],
+			[Vector3(lx-lw,ly+lh,ld), Vector3(lx+lw,ly+lh,ld), Vector3(lx+lw,ly+lh,-ld), Vector3(lx-lw,ly+lh,-ld), Vector3(0,1,0)],
+			[Vector3(lx-lw,ly,-ld), Vector3(lx+lw,ly,-ld), Vector3(lx+lw,ly,ld), Vector3(lx-lw,ly,ld), Vector3(0,-1,0)],
+		]
+		for face in box_faces:
+			var base := verts.size()
+			verts.append(face[0]); verts.append(face[1]); verts.append(face[2]); verts.append(face[3])
+			for _j in 4: normals.append(face[4])
+			indices.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
+	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts; arrays[Mesh.ARRAY_NORMAL] = normals
+	arrays[Mesh.ARRAY_INDEX] = indices
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	return mesh
+
+
+func _make_lamppost_mesh_c() -> ArrayMesh:
+	## Variant C: Globe top — shorter post, no arm, wider globe lantern on top
+	var verts   := PackedVector3Array()
+	var normals := PackedVector3Array()
+	var indices := PackedInt32Array()
+	var segments := 6
+	# Post: r=0.055, h=3.0
+	var post_r := 0.055; var post_h := 3.0
+	for i in segments:
+		var a0 := TAU * float(i) / float(segments)
+		var a1 := TAU * float(i + 1) / float(segments)
+		var c0 := cos(a0); var s0 := sin(a0)
+		var c1 := cos(a1); var s1 := sin(a1)
+		var base := verts.size()
+		verts.append(Vector3(c0 * post_r, 0.0, s0 * post_r))
+		verts.append(Vector3(c1 * post_r, 0.0, s1 * post_r))
+		verts.append(Vector3(c1 * post_r, post_h, s1 * post_r))
+		verts.append(Vector3(c0 * post_r, post_h, s0 * post_r))
+		var n0 := Vector3(c0, 0.0, s0); var n1 := Vector3(c1, 0.0, s1)
+		normals.append(n0); normals.append(n1); normals.append(n1); normals.append(n0)
+		indices.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
+	# Globe lantern directly on top: wider box (0.12 × 0.22 × 0.12)
+	var lx := 0.0; var ly := post_h - 0.05; var lw := 0.12; var lh := 0.22; var ld := 0.12
+	var box_faces := [
+		[Vector3(lx-lw,ly,ld), Vector3(lx+lw,ly,ld), Vector3(lx+lw,ly+lh,ld), Vector3(lx-lw,ly+lh,ld), Vector3(0,0,1)],
+		[Vector3(lx+lw,ly,-ld), Vector3(lx-lw,ly,-ld), Vector3(lx-lw,ly+lh,-ld), Vector3(lx+lw,ly+lh,-ld), Vector3(0,0,-1)],
+		[Vector3(lx+lw,ly,ld), Vector3(lx+lw,ly,-ld), Vector3(lx+lw,ly+lh,-ld), Vector3(lx+lw,ly+lh,ld), Vector3(1,0,0)],
+		[Vector3(lx-lw,ly,-ld), Vector3(lx-lw,ly,ld), Vector3(lx-lw,ly+lh,ld), Vector3(lx-lw,ly+lh,-ld), Vector3(-1,0,0)],
+		[Vector3(lx-lw,ly+lh,ld), Vector3(lx+lw,ly+lh,ld), Vector3(lx+lw,ly+lh,-ld), Vector3(lx-lw,ly+lh,-ld), Vector3(0,1,0)],
+		[Vector3(lx-lw,ly,-ld), Vector3(lx+lw,ly,-ld), Vector3(lx+lw,ly,ld), Vector3(lx-lw,ly,ld), Vector3(0,-1,0)],
+	]
+	for face in box_faces:
+		var base := verts.size()
+		verts.append(face[0]); verts.append(face[1]); verts.append(face[2]); verts.append(face[3])
+		for _j in 4: normals.append(face[4])
+		indices.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
+	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts; arrays[Mesh.ARRAY_NORMAL] = normals
+	arrays[Mesh.ARRAY_INDEX] = indices
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	return mesh
+
+
+func _make_bench_mesh_a() -> ArrayMesh:
+	## Variant A: Standard park bench — seat + backrest + 4 legs + 2 armrests (~60 tris)
 	var verts   := PackedVector3Array()
 	var normals := PackedVector3Array()
 	var indices := PackedInt32Array()
@@ -4076,6 +4231,82 @@ func _make_bench_mesh() -> ArrayMesh:
 	return mesh
 
 
+func _make_bench_mesh_b() -> ArrayMesh:
+	## Variant B: Wide backless slab bench — 1.8m seat, no backrest/armrests
+	var verts   := PackedVector3Array()
+	var normals := PackedVector3Array()
+	var indices := PackedInt32Array()
+	var _add_box := func(cx: float, cy: float, cz: float,
+						 hx: float, hy: float, hz: float) -> void:
+		var faces := [
+			[Vector3(cx-hx,cy-hy,cz+hz), Vector3(cx+hx,cy-hy,cz+hz), Vector3(cx+hx,cy+hy,cz+hz), Vector3(cx-hx,cy+hy,cz+hz), Vector3(0,0,1)],
+			[Vector3(cx+hx,cy-hy,cz-hz), Vector3(cx-hx,cy-hy,cz-hz), Vector3(cx-hx,cy+hy,cz-hz), Vector3(cx+hx,cy+hy,cz-hz), Vector3(0,0,-1)],
+			[Vector3(cx+hx,cy-hy,cz+hz), Vector3(cx+hx,cy-hy,cz-hz), Vector3(cx+hx,cy+hy,cz-hz), Vector3(cx+hx,cy+hy,cz+hz), Vector3(1,0,0)],
+			[Vector3(cx-hx,cy-hy,cz-hz), Vector3(cx-hx,cy-hy,cz+hz), Vector3(cx-hx,cy+hy,cz+hz), Vector3(cx-hx,cy+hy,cz-hz), Vector3(-1,0,0)],
+			[Vector3(cx-hx,cy+hy,cz+hz), Vector3(cx+hx,cy+hy,cz+hz), Vector3(cx+hx,cy+hy,cz-hz), Vector3(cx-hx,cy+hy,cz-hz), Vector3(0,1,0)],
+			[Vector3(cx-hx,cy-hy,cz-hz), Vector3(cx+hx,cy-hy,cz-hz), Vector3(cx+hx,cy-hy,cz+hz), Vector3(cx-hx,cy-hy,cz+hz), Vector3(0,-1,0)],
+		]
+		for face in faces:
+			var base := verts.size()
+			verts.append(face[0]); verts.append(face[1])
+			verts.append(face[2]); verts.append(face[3])
+			for _j in 4: normals.append(face[4])
+			indices.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
+	# Wider seat slab: 1.8m × 0.06m thick × 0.50m deep, at y=0.42
+	_add_box.call(0.0, 0.42, 0.0, 0.90, 0.03, 0.25)
+	# 4 legs (wider apart)
+	_add_box.call(-0.78, 0.21, 0.20, 0.03, 0.21, 0.03)
+	_add_box.call( 0.78, 0.21, 0.20, 0.03, 0.21, 0.03)
+	_add_box.call(-0.78, 0.21, -0.20, 0.03, 0.21, 0.03)
+	_add_box.call( 0.78, 0.21, -0.20, 0.03, 0.21, 0.03)
+	# Cross-bar under seat
+	_add_box.call(0.0, 0.30, 0.0, 0.78, 0.015, 0.015)
+	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts; arrays[Mesh.ARRAY_NORMAL] = normals
+	arrays[Mesh.ARRAY_INDEX] = indices
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	return mesh
+
+
+func _make_bench_mesh_c() -> ArrayMesh:
+	## Variant C: Compact bench — 1.2m seat, tall backrest, no armrests
+	var verts   := PackedVector3Array()
+	var normals := PackedVector3Array()
+	var indices := PackedInt32Array()
+	var _add_box := func(cx: float, cy: float, cz: float,
+						 hx: float, hy: float, hz: float) -> void:
+		var faces := [
+			[Vector3(cx-hx,cy-hy,cz+hz), Vector3(cx+hx,cy-hy,cz+hz), Vector3(cx+hx,cy+hy,cz+hz), Vector3(cx-hx,cy+hy,cz+hz), Vector3(0,0,1)],
+			[Vector3(cx+hx,cy-hy,cz-hz), Vector3(cx-hx,cy-hy,cz-hz), Vector3(cx-hx,cy+hy,cz-hz), Vector3(cx+hx,cy+hy,cz-hz), Vector3(0,0,-1)],
+			[Vector3(cx+hx,cy-hy,cz+hz), Vector3(cx+hx,cy-hy,cz-hz), Vector3(cx+hx,cy+hy,cz-hz), Vector3(cx+hx,cy+hy,cz+hz), Vector3(1,0,0)],
+			[Vector3(cx-hx,cy-hy,cz-hz), Vector3(cx-hx,cy-hy,cz+hz), Vector3(cx-hx,cy+hy,cz+hz), Vector3(cx-hx,cy+hy,cz-hz), Vector3(-1,0,0)],
+			[Vector3(cx-hx,cy+hy,cz+hz), Vector3(cx+hx,cy+hy,cz+hz), Vector3(cx+hx,cy+hy,cz-hz), Vector3(cx-hx,cy+hy,cz-hz), Vector3(0,1,0)],
+			[Vector3(cx-hx,cy-hy,cz-hz), Vector3(cx+hx,cy-hy,cz-hz), Vector3(cx+hx,cy-hy,cz+hz), Vector3(cx-hx,cy-hy,cz+hz), Vector3(0,-1,0)],
+		]
+		for face in faces:
+			var base := verts.size()
+			verts.append(face[0]); verts.append(face[1])
+			verts.append(face[2]); verts.append(face[3])
+			for _j in 4: normals.append(face[4])
+			indices.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
+	# Narrower seat: 1.2m × 0.04m thick × 0.42m deep, at y=0.45
+	_add_box.call(0.0, 0.45, 0.0, 0.60, 0.02, 0.21)
+	# Taller backrest
+	_add_box.call(0.0, 0.72, -0.22, 0.60, 0.22, 0.01)
+	# 4 legs (closer together)
+	_add_box.call(-0.50, 0.225, 0.16, 0.02, 0.225, 0.02)
+	_add_box.call( 0.50, 0.225, 0.16, 0.02, 0.225, 0.02)
+	_add_box.call(-0.50, 0.225, -0.16, 0.02, 0.225, 0.02)
+	_add_box.call( 0.50, 0.225, -0.16, 0.02, 0.225, 0.02)
+	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts; arrays[Mesh.ARRAY_NORMAL] = normals
+	arrays[Mesh.ARRAY_INDEX] = indices
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	return mesh
+
+
 func _build_furniture(paths: Array) -> void:
 	if paths.is_empty():
 		return
@@ -4083,8 +4314,8 @@ func _build_furniture(paths: Array) -> void:
 	var rng := RandomNumberGenerator.new()
 	rng.seed = 88888
 
-	var lamp_mesh  := _make_lamppost_mesh()
-	var bench_mesh := _make_bench_mesh()
+	var lamp_meshes: Array = [_make_lamppost_mesh_a(), _make_lamppost_mesh_b(), _make_lamppost_mesh_c()]
+	var bench_meshes: Array = [_make_bench_mesh_a(), _make_bench_mesh_b(), _make_bench_mesh_c()]
 
 	var lamp_mat := StandardMaterial3D.new()
 	lamp_mat.albedo_color = Color(0.12, 0.16, 0.10)
@@ -4095,8 +4326,8 @@ func _build_furniture(paths: Array) -> void:
 	bench_mat.albedo_color = Color(0.35, 0.22, 0.12)
 	bench_mat.roughness    = 0.75
 
-	var lamp_xf:  Array = []
-	var bench_xf: Array = []
+	var lamp_xf:  Array = [[], [], []]
+	var bench_xf: Array = [[], [], []]
 
 	for path in paths:
 		var hw: String = str(path.get("highway", "path"))
@@ -4141,8 +4372,11 @@ func _build_furniture(paths: Array) -> void:
 					var lz := z1 + nz * off * lamp_side
 					var lbk := Vector2i(int(floor(lx / BUILDING_GRID_CELL)), int(floor(lz / BUILDING_GRID_CELL)))
 					if not _building_grid.has(lbk):
+						if _terrain_slope(lx, lz) > 0.35:
+							continue
 						var ly := _terrain_y(lx, lz)
-						lamp_xf.append(Transform3D(Basis.IDENTITY, Vector3(lx, ly, lz)))
+						var lv := rng.randi_range(0, 2)
+						lamp_xf[lv].append(Transform3D(Basis.IDENTITY, Vector3(lx, ly, lz)))
 
 			if bench_cum >= next_bench:
 				bench_cum = 0.0
@@ -4153,26 +4387,35 @@ func _build_furniture(paths: Array) -> void:
 					var bz := z1 + nz * off * bench_side
 					var bbk := Vector2i(int(floor(bx / BUILDING_GRID_CELL)), int(floor(bz / BUILDING_GRID_CELL)))
 					if not _building_grid.has(bbk):
+						if _terrain_slope(bx, bz) > BENCH_MAX_SLOPE:
+							continue
 						var by := _terrain_y(bx, bz)
 						# Face bench toward the path (opposite of offset direction)
 						var angle := atan2(-nx * bench_side, -nz * bench_side)
 						var basis := Basis(Vector3.UP, angle)
-						bench_xf.append(Transform3D(basis, Vector3(bx, by, bz)))
+						var bv := rng.randi_range(0, 2)
+						bench_xf[bv].append(Transform3D(basis, Vector3(bx, by, bz)))
 
 	# Build spatial hash of bench front zones (bench pos + area toward path)
-	for xf in bench_xf:
-		var pos: Vector3 = xf.origin
-		var fwd: Vector3 = xf.basis.z  # bench faces +Z local = toward path
-		# Mark cells at bench and 3m in front of it
-		for step in 4:  # 0, 1, 2, 3m in front
-			var px := pos.x + fwd.x * float(step)
-			var pz := pos.z + fwd.z * float(step)
-			var key := Vector2i(int(floor(px / BENCH_GRID_CELL)), int(floor(pz / BENCH_GRID_CELL)))
-			_bench_grid[key] = true
+	for variant_xf in bench_xf:
+		for xf in variant_xf:
+			var pos: Vector3 = xf.origin
+			var fwd: Vector3 = xf.basis.z  # bench faces +Z local = toward path
+			# Mark cells at bench and 3m in front of it
+			for step in 4:  # 0, 1, 2, 3m in front
+				var px := pos.x + fwd.x * float(step)
+				var pz := pos.z + fwd.z * float(step)
+				var key := Vector2i(int(floor(px / BENCH_GRID_CELL)), int(floor(pz / BENCH_GRID_CELL)))
+				_bench_grid[key] = true
 
-	print("ParkLoader: lampposts = ", lamp_xf.size(), "  benches = ", bench_xf.size())
-	_spawn_multimesh(lamp_mesh, lamp_mat, lamp_xf, "Lampposts")
-	_spawn_multimesh(bench_mesh, bench_mat, bench_xf, "Benches")
+	var total_lamps: int = lamp_xf[0].size() + lamp_xf[1].size() + lamp_xf[2].size()
+	var total_bench: int = bench_xf[0].size() + bench_xf[1].size() + bench_xf[2].size()
+	print("ParkLoader: lampposts = ", total_lamps, "  benches = ", total_bench)
+	for vi in 3:
+		if not lamp_xf[vi].is_empty():
+			_spawn_multimesh(lamp_meshes[vi], lamp_mat, lamp_xf[vi], "Lampposts_%d" % vi)
+		if not bench_xf[vi].is_empty():
+			_spawn_multimesh(bench_meshes[vi], bench_mat, bench_xf[vi], "Benches_%d" % vi)
 
 
 # ---------------------------------------------------------------------------
