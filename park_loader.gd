@@ -447,7 +447,7 @@ func _build_paths(paths: Array) -> void:
 		var parts: PackedStringArray = key.split("|")
 		add_child(_make_path_mesh(ground_groups[key], str(parts[0]), str(parts[1])))
 
-	_build_junction_fills()
+
 
 	# Collect bridge centroids so tunnels can detect if they're an underpass
 	var bridge_centroids: Array = []
@@ -527,6 +527,23 @@ func _make_path_mesh(paths: Array, hw: String, surface: String) -> MeshInstance3
 		var n_pts := pts.size()
 		if n_pts < 2:
 			continue
+
+		# Extend ribbon past endpoints to cover junction gaps
+		var overshoot := width * 0.6
+		var fx0 := float(pts[0][0]); var fz0 := float(pts[0][2]); var fy0 := float(pts[0][1])
+		var sx0 := float(pts[1][0]); var sz0 := float(pts[1][2])
+		var edx0 := fx0 - sx0; var edz0 := fz0 - sz0
+		var ed0 := sqrt(edx0 * edx0 + edz0 * edz0)
+		if ed0 > 0.01:
+			pts.insert(0, [fx0 + edx0 / ed0 * overshoot, fy0, fz0 + edz0 / ed0 * overshoot])
+		var li := pts.size() - 1
+		var lx1 := float(pts[li][0]); var lz1 := float(pts[li][2]); var ly1 := float(pts[li][1])
+		var sx1 := float(pts[li - 1][0]); var sz1 := float(pts[li - 1][2])
+		var edx1 := lx1 - sx1; var edz1 := lz1 - sz1
+		var ed1 := sqrt(edx1 * edx1 + edz1 * edz1)
+		if ed1 > 0.01:
+			pts.append([lx1 + edx1 / ed1 * overshoot, ly1, lz1 + edz1 / ed1 * overshoot])
+		n_pts = pts.size()
 
 		# Build continuous ribbon with averaged normals at each vertex.
 		# This eliminates triangular gaps at curves.
@@ -4697,10 +4714,6 @@ func _build_furniture(paths: Array) -> void:
 					var bz := z1 + nz * off * bench_side
 					var bbk := Vector2i(int(floor(bx / BUILDING_GRID_CELL)), int(floor(bz / BUILDING_GRID_CELL)))
 					if not _building_grid.has(bbk):
-						# Skip if bench would land on another path
-						var bpk := Vector2i(int(floor(bx / PATH_GRID_CELL)), int(floor(bz / PATH_GRID_CELL)))
-						if _path_grid.has(bpk):
-							continue
 						if _terrain_slope(bx, bz) > BENCH_MAX_SLOPE:
 							continue
 						var by := _terrain_y(bx, bz)
