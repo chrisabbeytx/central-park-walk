@@ -159,6 +159,26 @@ func _path_tex_prefix(hw: String, surface: String) -> String:
 		_:            return "res://textures/Gravel021_1K-JPG"
 
 
+func _make_bridge_deck_material(hw: String, surface: String) -> Material:
+	## Like path material but with no vertex terrain-snapping (bridge decks are pre-elevated)
+	var prefix  := _path_tex_prefix(hw, surface)
+	var tex_alb := _load_tex(prefix + "_Color.jpg")
+	var tex_nrm := _load_tex(prefix + "_NormalGL.jpg")
+	var tex_rgh := _load_tex(prefix + "_Roughness.jpg")
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = _path_color(hw, surface)
+	if tex_alb:
+		mat.albedo_texture = tex_alb
+	if tex_nrm:
+		mat.normal_enabled = true
+		mat.normal_texture = tex_nrm
+	if tex_rgh:
+		mat.roughness_texture = tex_rgh
+	mat.roughness = 0.85
+	mat.uv1_scale = Vector3(1, 1, 1)
+	return mat
+
+
 func _make_path_material(hw: String, surface: String) -> Material:
 	var prefix  := _path_tex_prefix(hw, surface)
 	var tex_alb := _load_tex(prefix + "_Color.jpg")
@@ -851,7 +871,7 @@ func _build_bridge(path: Dictionary) -> void:
 		arrays[Mesh.ARRAY_TEX_UV] = uvs
 		var deck_mesh := ArrayMesh.new()
 		deck_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-		deck_mesh.surface_set_material(0, _make_path_material(hw, surf))
+		deck_mesh.surface_set_material(0, _make_bridge_deck_material(hw, surf))
 		var deck_mi := MeshInstance3D.new()
 		deck_mi.mesh = deck_mesh
 		deck_mi.name = "Bridge_Deck"
@@ -2338,6 +2358,11 @@ func _build_water(water: Array) -> void:
 		var polygon := PackedVector2Array()
 		for pt in pts:
 			polygon.append(Vector2(float(pt[0]), float(pt[1])))
+
+		# Expand polygon slightly (3m) so water fills under bridge crossings
+		var expanded := Geometry2D.offset_polygon(polygon, 3.0)
+		if not expanded.is_empty():
+			polygon = expanded[0]
 
 		var indices := Geometry2D.triangulate_polygon(polygon)
 		if indices.is_empty():
