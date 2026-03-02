@@ -1600,8 +1600,10 @@ func _build_wood_railings(pts: Array, pt_y: PackedFloat32Array,
 
 
 # ---------------------------------------------------------------------------
-# Tunnel geometry — ceiling ribbon + side walls + floor path
+# Tunnel geometry — approach ramps + ceiling + side walls + floor
 # ---------------------------------------------------------------------------
+const RAMP_LEN := 10.0  # metres of approach ramp at each tunnel end
+
 func _build_tunnel(path: Dictionary) -> void:
 	var hw:   String = str(path.get("highway", "path"))
 	var surf: String = str(path.get("surface", ""))
@@ -1620,180 +1622,148 @@ func _build_tunnel(path: Dictionary) -> void:
 	var cw_nrm := _load_tex("res://textures/concrete_wall_nrm.jpg")
 	var cw_rgh := _load_tex("res://textures/concrete_wall_rgh.jpg")
 	var tun_mat := _make_stone_material(cw_alb, cw_nrm, cw_rgh, Color(0.72, 0.71, 0.70))
+	var deck_mat := _make_bridge_deck_material(hw, surf)
 
-	var ceil_verts   := PackedVector3Array()
-	var ceil_normals := PackedVector3Array()
-	var ceil_uvs     := PackedVector2Array()
-	var wall_verts   := PackedVector3Array()
-	var wall_normals := PackedVector3Array()
-	var wall_uvs     := PackedVector2Array()
-	var u_c := 0.0
-	var u_w := 0.0
+	# --- Build extended point list with ramp sections ---
+	# Each point becomes [x, terrain_y, z, depth] where depth is how far
+	# below terrain the floor sits (0 at ramp start, TUNNEL_H in tunnel body)
+	var ext_pts: Array = []  # [x, terrain_y, z, depth]
 
-	# Floor is lowered by TUNNEL_H so the ceiling ends up at terrain level.
-	# Visual geometry uses full height; collision is built separately with
-	# wall tops trimmed 0.5m below terrain to avoid blocking surface walkers.
-	var ceil_drop := 0.0
-	for i in range(pts.size() - 1):
-		var fy1 := float(pts[i][1])   + PATH_Y - TUNNEL_H
-		var fy2 := float(pts[i+1][1]) + PATH_Y - TUNNEL_H
-		var p1  := Vector3(float(pts[i][0]),   fy1, float(pts[i][2]))
-		var p2  := Vector3(float(pts[i+1][0]), fy2, float(pts[i+1][2]))
-		var seg2 := Vector2(p2.x - p1.x, p2.z - p1.z)
-		if seg2.length_squared() < 0.0001:
-			continue
-		var seg_len := seg2.length()
-		var dv  := seg2 / seg_len
-		var nv  := Vector2(-dv.y, dv.x)
-		var cy1 := p1.y + TUNNEL_H - ceil_drop  # slightly below terrain
-		var cy2 := p2.y + TUNNEL_H - ceil_drop
+	# Entry ramp: 3 points going from surface → tunnel depth
+	var p_first := Vector3(float(pts[0][0]), float(pts[0][1]), float(pts[0][2]))
+	var p_second := Vector3(float(pts[1][0]), float(pts[1][1]), float(pts[1][2]))
+	var dir_in := Vector2(p_second.x - p_first.x, p_second.z - p_first.z).normalized()
+	# Ramp start (at surface, RAMP_LEN before tunnel)
+	var ramp_s_x := p_first.x - dir_in.x * RAMP_LEN
+	var ramp_s_z := p_first.z - dir_in.y * RAMP_LEN
+	var ramp_s_ty := _terrain_y(ramp_s_x, ramp_s_z)
+	ext_pts.append([ramp_s_x, ramp_s_ty, ramp_s_z, 0.0])
+	# Ramp midpoint
+	var ramp_m_x := p_first.x - dir_in.x * RAMP_LEN * 0.5
+	var ramp_m_z := p_first.z - dir_in.y * RAMP_LEN * 0.5
+	var ramp_m_ty := _terrain_y(ramp_m_x, ramp_m_z)
+	ext_pts.append([ramp_m_x, ramp_m_ty, ramp_m_z, TUNNEL_H * 0.5])
+	# Tunnel body points (full depth)
+	for i in range(pts.size()):
+		ext_pts.append([pts[i][0], pts[i][1], pts[i][2], TUNNEL_H])
+	# Exit ramp: midpoint → surface
+	var p_last := Vector3(float(pts[pts.size()-1][0]), float(pts[pts.size()-1][1]), float(pts[pts.size()-1][2]))
+	var p_prev := Vector3(float(pts[pts.size()-2][0]), float(pts[pts.size()-2][1]), float(pts[pts.size()-2][2]))
+	var dir_out := Vector2(p_last.x - p_prev.x, p_last.z - p_prev.z).normalized()
+	var ramp_em_x := p_last.x + dir_out.x * RAMP_LEN * 0.5
+	var ramp_em_z := p_last.z + dir_out.y * RAMP_LEN * 0.5
+	var ramp_em_ty := _terrain_y(ramp_em_x, ramp_em_z)
+	ext_pts.append([ramp_em_x, ramp_em_ty, ramp_em_z, TUNNEL_H * 0.5])
+	var ramp_e_x := p_last.x + dir_out.x * RAMP_LEN
+	var ramp_e_z := p_last.z + dir_out.y * RAMP_LEN
+	var ramp_e_ty := _terrain_y(ramp_e_x, ramp_e_z)
+	ext_pts.append([ramp_e_x, ramp_e_ty, ramp_e_z, 0.0])
 
-		# Ceiling (downward-facing, sits at terrain level)
-		var ca := Vector3(p1.x + nv.x * hw2, cy1, p1.z + nv.y * hw2)
-		var cb := Vector3(p1.x - nv.x * hw2, cy1, p1.z - nv.y * hw2)
-		var cc := Vector3(p2.x + nv.x * hw2, cy2, p2.z + nv.y * hw2)
-		var cd := Vector3(p2.x - nv.x * hw2, cy2, p2.z - nv.y * hw2)
-		var u2_c := u_c + seg_len / width
-		ceil_verts.append_array(PackedVector3Array([ca, cc, cb, cb, cc, cd]))
-		for _i in range(6):
-			ceil_normals.append(Vector3.DOWN)
-		ceil_uvs.append_array(PackedVector2Array([
-			Vector2(u_c, 0.0), Vector2(u2_c, 0.0), Vector2(u_c,  1.0),
-			Vector2(u_c, 1.0), Vector2(u2_c, 0.0), Vector2(u2_c, 1.0),
-		]))
-		u_c = u2_c
-
-		# Side walls (inward-facing, floor to ceiling)
-		var u2_w := u_w + seg_len / TUNNEL_H
-		for side in [-1.0, 1.0]:
-			var s: float = float(side)
-			var ox := nv.x * hw2 * s
-			var oz := nv.y * hw2 * s
-			var wa := Vector3(p1.x + ox, p1.y, p1.z + oz)
-			var wb := Vector3(p2.x + ox, p2.y, p2.z + oz)
-			var wc := Vector3(p2.x + ox, cy2,  p2.z + oz)
-			var wd := Vector3(p1.x + ox, cy1,  p1.z + oz)
-			var wall_n := Vector3(-nv.x * s, 0.0, -nv.y * s)
-			wall_verts.append_array(PackedVector3Array([wa, wb, wc, wa, wc, wd]))
-			for _j in range(6):
-				wall_normals.append(wall_n)
-			wall_uvs.append_array(PackedVector2Array([
-				Vector2(u_w,  0.0), Vector2(u2_w, 0.0), Vector2(u2_w, 1.0),
-				Vector2(u_w,  0.0), Vector2(u2_w, 1.0), Vector2(u_w,  1.0),
-			]))
-		u_w = u2_w
-
-	if not ceil_verts.is_empty():
-		var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
-		arrays[Mesh.ARRAY_VERTEX] = ceil_verts
-		arrays[Mesh.ARRAY_NORMAL] = ceil_normals
-		arrays[Mesh.ARRAY_TEX_UV] = ceil_uvs
-		var mesh := ArrayMesh.new()
-		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-		mesh.surface_set_material(0, tun_mat)
-		var mi := MeshInstance3D.new(); mi.mesh = mesh; mi.name = "Tunnel_Ceiling"
-		add_child(mi)
-
-	if not wall_verts.is_empty():
-		var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
-		arrays[Mesh.ARRAY_VERTEX] = wall_verts
-		arrays[Mesh.ARRAY_NORMAL] = wall_normals
-		arrays[Mesh.ARRAY_TEX_UV] = wall_uvs
-		var mesh := ArrayMesh.new()
-		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-		mesh.surface_set_material(0, tun_mat)
-		var mi := MeshInstance3D.new(); mi.mesh = mesh; mi.name = "Tunnel_Walls"
-		add_child(mi)
-
-	# Tunnel collision — ceiling + floor as-is, walls trimmed 0.5m below
-	# terrain so they don't block players walking on the surface above.
-	var col_wall_trim := 0.5
-	var tun_col_faces := PackedVector3Array()
-	# Floor collision (so player can walk on the tunnel floor)
-	for i in range(pts.size() - 1):
-		var cffy1 := float(pts[i][1])   + PATH_Y - TUNNEL_H
-		var cffy2 := float(pts[i+1][1]) + PATH_Y - TUNNEL_H
-		var cfp1  := Vector3(float(pts[i][0]),   cffy1, float(pts[i][2]))
-		var cfp2  := Vector3(float(pts[i+1][0]), cffy2, float(pts[i+1][2]))
-		var cfseg := Vector2(cfp2.x - cfp1.x, cfp2.z - cfp1.z)
-		if cfseg.length_squared() < 0.0001:
-			continue
-		var cfdv  := cfseg.normalized()
-		var cfnv  := Vector2(-cfdv.y, cfdv.x)
-		var cfa := Vector3(cfp1.x + cfnv.x * hw2, cffy1, cfp1.z + cfnv.y * hw2)
-		var cfb := Vector3(cfp1.x - cfnv.x * hw2, cffy1, cfp1.z - cfnv.y * hw2)
-		var cfc := Vector3(cfp2.x + cfnv.x * hw2, cffy2, cfp2.z + cfnv.y * hw2)
-		var cfd := Vector3(cfp2.x - cfnv.x * hw2, cffy2, cfp2.z - cfnv.y * hw2)
-		tun_col_faces.append_array(PackedVector3Array([cfa, cfb, cfc, cfb, cfd, cfc]))
-	if not ceil_verts.is_empty():
-		tun_col_faces.append_array(ceil_verts)
-	# Build trimmed wall collision (same geometry but tops lowered)
-	for i in range(pts.size() - 1):
-		var cfy1 := float(pts[i][1])   + PATH_Y - TUNNEL_H
-		var cfy2 := float(pts[i+1][1]) + PATH_Y - TUNNEL_H
-		var cp1  := Vector3(float(pts[i][0]),   cfy1, float(pts[i][2]))
-		var cp2  := Vector3(float(pts[i+1][0]), cfy2, float(pts[i+1][2]))
-		var cseg := Vector2(cp2.x - cp1.x, cp2.z - cp1.z)
-		if cseg.length_squared() < 0.0001:
-			continue
-		var clen := cseg.length()
-		var cdv  := cseg / clen
-		var cnv  := Vector2(-cdv.y, cdv.x)
-		# Wall tops trimmed below terrain
-		var ccy1 := cp1.y + TUNNEL_H - col_wall_trim
-		var ccy2 := cp2.y + TUNNEL_H - col_wall_trim
-		for side in [-1.0, 1.0]:
-			var s: float = float(side)
-			var cox := cnv.x * hw2 * s
-			var coz := cnv.y * hw2 * s
-			var cwa := Vector3(cp1.x + cox, cp1.y, cp1.z + coz)
-			var cwb := Vector3(cp2.x + cox, cp2.y, cp2.z + coz)
-			var cwc := Vector3(cp2.x + cox, ccy2,  cp2.z + coz)
-			var cwd := Vector3(cp1.x + cox, ccy1,  cp1.z + coz)
-			tun_col_faces.append_array(PackedVector3Array([cwa, cwb, cwc, cwa, cwc, cwd]))
-	if not tun_col_faces.is_empty():
-		var tun_body := StaticBody3D.new()
-		tun_body.name = "Tunnel_Collision"
-		var tun_shape := ConcavePolygonShape3D.new()
-		tun_shape.set_faces(tun_col_faces)
-		var tun_col := CollisionShape3D.new()
-		tun_col.shape = tun_shape
-		tun_body.add_child(tun_col)
-		add_child(tun_body)
-
-	# Portal arches at each entrance/exit — stone arch framing the opening
-	_build_tunnel_portals(pts, width, TUNNEL_H, tun_mat)
-
-	# Floor surface at lowered depth — built directly (not via _make_path_mesh
-	# which resamples _terrain_y and would place the floor at terrain level)
+	# --- Build geometry from extended points ---
+	var all_verts   := PackedVector3Array()
+	var all_normals := PackedVector3Array()
+	var all_uvs     := PackedVector2Array()
 	var floor_verts   := PackedVector3Array()
 	var floor_normals := PackedVector3Array()
 	var floor_uvs     := PackedVector2Array()
+	var col_faces := PackedVector3Array()
+	var u_c := 0.0
+	var u_w := 0.0
 	var u_f := 0.0
-	for i in range(pts.size() - 1):
-		var fy1 := float(pts[i][1])   + PATH_Y - TUNNEL_H
-		var fy2 := float(pts[i+1][1]) + PATH_Y - TUNNEL_H
-		var fp1 := Vector3(float(pts[i][0]),   fy1, float(pts[i][2]))
-		var fp2 := Vector3(float(pts[i+1][0]), fy2, float(pts[i+1][2]))
-		var fseg := Vector2(fp2.x - fp1.x, fp2.z - fp1.z)
-		if fseg.length_squared() < 0.0001:
+
+	for i in range(ext_pts.size() - 1):
+		var ep1: Array = ext_pts[i]
+		var ep2: Array = ext_pts[i + 1]
+		var x1 := float(ep1[0]); var ty1 := float(ep1[1]); var z1 := float(ep1[2]); var d1 := float(ep1[3])
+		var x2 := float(ep2[0]); var ty2 := float(ep2[1]); var z2 := float(ep2[2]); var d2 := float(ep2[3])
+
+		var floor_y1 := ty1 + PATH_Y - d1
+		var floor_y2 := ty2 + PATH_Y - d2
+		var ceil_y1  := ty1 + PATH_Y  # ceiling always at terrain level
+		var ceil_y2  := ty2 + PATH_Y
+
+		var seg2 := Vector2(x2 - x1, z2 - z1)
+		if seg2.length_squared() < 0.0001:
 			continue
-		var flen := fseg.length()
-		var fdv  := fseg / flen
-		var fnv  := Vector2(-fdv.y, fdv.x)
-		var u2_f := u_f + flen / width
-		var fa := Vector3(fp1.x + fnv.x * hw2, fy1, fp1.z + fnv.y * hw2)
-		var fb := Vector3(fp1.x - fnv.x * hw2, fy1, fp1.z - fnv.y * hw2)
-		var fc := Vector3(fp2.x + fnv.x * hw2, fy2, fp2.z + fnv.y * hw2)
-		var fd := Vector3(fp2.x - fnv.x * hw2, fy2, fp2.z - fnv.y * hw2)
+		var seg_len := seg2.length()
+		var dv := seg2 / seg_len
+		var nv := Vector2(-dv.y, dv.x)
+
+		# --- Floor (faces up) ---
+		var u2_f := u_f + seg_len / width
+		var fa := Vector3(x1 + nv.x * hw2, floor_y1, z1 + nv.y * hw2)
+		var fb := Vector3(x1 - nv.x * hw2, floor_y1, z1 - nv.y * hw2)
+		var fc := Vector3(x2 + nv.x * hw2, floor_y2, z2 + nv.y * hw2)
+		var fd := Vector3(x2 - nv.x * hw2, floor_y2, z2 - nv.y * hw2)
+		# Floor normal angled for ramp
+		var rise := floor_y2 - floor_y1
+		var floor_n := Vector3(0.0, seg_len, -rise).normalized() if absf(rise) > 0.01 else Vector3.UP
+		# Rotate floor_n to align with segment direction
+		floor_n = Vector3(0.0, 1.0, 0.0)  # simplified — up is fine for visual
 		floor_verts.append_array(PackedVector3Array([fa, fb, fc, fb, fd, fc]))
 		for _fi in range(6):
-			floor_normals.append(Vector3.UP)
+			floor_normals.append(floor_n)
 		floor_uvs.append_array(PackedVector2Array([
 			Vector2(u_f, 0.0), Vector2(u_f, 1.0), Vector2(u2_f, 0.0),
 			Vector2(u_f, 1.0), Vector2(u2_f, 1.0), Vector2(u2_f, 0.0),
 		]))
+		# Floor collision
+		col_faces.append_array(PackedVector3Array([fa, fb, fc, fb, fd, fc]))
 		u_f = u2_f
+
+		# --- Ceiling (faces down) — only where depth > 0 (not at ramp surface) ---
+		if d1 > 0.1 or d2 > 0.1:
+			var u2_c := u_c + seg_len / width
+			var ca := Vector3(x1 + nv.x * hw2, ceil_y1, z1 + nv.y * hw2)
+			var cb := Vector3(x1 - nv.x * hw2, ceil_y1, z1 - nv.y * hw2)
+			var cc := Vector3(x2 + nv.x * hw2, ceil_y2, z2 + nv.y * hw2)
+			var cd := Vector3(x2 - nv.x * hw2, ceil_y2, z2 - nv.y * hw2)
+			all_verts.append_array(PackedVector3Array([ca, cc, cb, cb, cc, cd]))
+			for _ci in range(6):
+				all_normals.append(Vector3.DOWN)
+			all_uvs.append_array(PackedVector2Array([
+				Vector2(u_c, 0.0), Vector2(u2_c, 0.0), Vector2(u_c, 1.0),
+				Vector2(u_c, 1.0), Vector2(u2_c, 0.0), Vector2(u2_c, 1.0),
+			]))
+			col_faces.append_array(PackedVector3Array([ca, cc, cb, cb, cc, cd]))
+			u_c = u2_c
+
+		# --- Side walls (faces inward) ---
+		var wall_h1 := d1  # wall height = depth at this point
+		var wall_h2 := d2
+		if wall_h1 > 0.1 or wall_h2 > 0.1:
+			var u2_w := u_w + seg_len / maxf(d1 + d2, 1.0) * 0.5
+			for side in [-1.0, 1.0]:
+				var s: float = float(side)
+				var ox := nv.x * hw2 * s
+				var oz := nv.y * hw2 * s
+				var wa := Vector3(x1 + ox, floor_y1, z1 + oz)
+				var wb := Vector3(x2 + ox, floor_y2, z2 + oz)
+				var wc := Vector3(x2 + ox, ceil_y2,  z2 + oz)
+				var wd := Vector3(x1 + ox, ceil_y1,  z1 + oz)
+				var wall_n := Vector3(-nv.x * s, 0.0, -nv.y * s)
+				all_verts.append_array(PackedVector3Array([wa, wb, wc, wa, wc, wd]))
+				for _wj in range(6):
+					all_normals.append(wall_n)
+				all_uvs.append_array(PackedVector2Array([
+					Vector2(u_w, 0.0), Vector2(u2_w, 0.0), Vector2(u2_w, 1.0),
+					Vector2(u_w, 0.0), Vector2(u2_w, 1.0), Vector2(u_w, 1.0),
+				]))
+				col_faces.append_array(PackedVector3Array([wa, wb, wc, wa, wc, wd]))
+			u_w = u2_w
+
+	# --- Create visual meshes ---
+	if not all_verts.is_empty():
+		var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
+		arrays[Mesh.ARRAY_VERTEX] = all_verts
+		arrays[Mesh.ARRAY_NORMAL] = all_normals
+		arrays[Mesh.ARRAY_TEX_UV] = all_uvs
+		var mesh := ArrayMesh.new()
+		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+		mesh.surface_set_material(0, tun_mat)
+		var mi := MeshInstance3D.new(); mi.mesh = mesh; mi.name = "Tunnel_Structure"
+		add_child(mi)
+
 	if not floor_verts.is_empty():
 		var f_arrays: Array = []; f_arrays.resize(Mesh.ARRAY_MAX)
 		f_arrays[Mesh.ARRAY_VERTEX] = floor_verts
@@ -1801,11 +1771,24 @@ func _build_tunnel(path: Dictionary) -> void:
 		f_arrays[Mesh.ARRAY_TEX_UV] = floor_uvs
 		var f_mesh := ArrayMesh.new()
 		f_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, f_arrays)
-		f_mesh.surface_set_material(0, _make_bridge_deck_material(hw, surf))
+		f_mesh.surface_set_material(0, deck_mat)
 		var floor_mi := MeshInstance3D.new()
-		floor_mi.mesh = f_mesh
-		floor_mi.name = "Tunnel_Floor"
+		floor_mi.mesh = f_mesh; floor_mi.name = "Tunnel_Floor"
 		add_child(floor_mi)
+
+	# --- Collision ---
+	if not col_faces.is_empty():
+		var tun_body := StaticBody3D.new()
+		tun_body.name = "Tunnel_Collision"
+		var tun_shape := ConcavePolygonShape3D.new()
+		tun_shape.set_faces(col_faces)
+		var tun_col := CollisionShape3D.new()
+		tun_col.shape = tun_shape
+		tun_body.add_child(tun_col)
+		add_child(tun_body)
+
+	# Portal arches at tunnel body entrance/exit (not at ramp start)
+	_build_tunnel_portals(pts, width, TUNNEL_H, tun_mat)
 
 
 func _build_tunnel_portals(pts: Array, width: float, height: float, mat: Material) -> void:

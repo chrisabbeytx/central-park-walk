@@ -54,13 +54,8 @@ func _ready() -> void:
 	_player = _setup_player()
 	_setup_hud()
 	_apply_time_of_day()
-	# Auto-screenshot for dev review (remove when done)
-	get_tree().create_timer(4.0).timeout.connect(_take_screenshot)
-
-func _take_screenshot() -> void:
-	var img := get_viewport().get_texture().get_image()
-	img.save_png("/tmp/godot_screenshot.png")
-	print("Screenshot saved to /tmp/godot_screenshot.png")
+var _screenshot_timer := 0.0
+var _screenshot_done  := false
 
 
 # ---------------------------------------------------------------------------
@@ -108,6 +103,15 @@ func _terrain_height(x: float, z: float) -> float:
 # Per-frame update: time + HUD
 # ---------------------------------------------------------------------------
 func _process(delta: float) -> void:
+	# Auto-screenshot for dev review
+	if not _screenshot_done:
+		_screenshot_timer += delta
+		if _screenshot_timer >= 4.0:
+			_screenshot_done = true
+			var img := get_viewport().get_texture().get_image()
+			if img:
+				img.save_png("/tmp/godot_screenshot.png")
+				print("Screenshot saved to /tmp/godot_screenshot.png")
 	# Advance clock
 	_time_of_day += _time_speed * delta
 	if _time_of_day >= 24.0:
