@@ -19,6 +19,10 @@ var _hm_texture:    ImageTexture  # GPU-side heightmap for vertex shader snappin
 var _hm_min_h:      float   = 0.0
 var _hm_max_h:      float   = 1.0
 
+# Spatial hash of bench positions — used to keep undergrowth clear in front
+var _bench_grid:    Dictionary = {}  # Vector2i → true
+const BENCH_GRID_CELL := 4.0
+
 
 # ---------------------------------------------------------------------------
 # Typed helpers – avoids Dictionary.get() returning Variant (parse error in 4.6)
@@ -326,12 +330,12 @@ func _ready() -> void:
 	_build_shore_vegetation(data.get("water", []))
 	_build_labels(data.get("water", []))
 	_build_trees(data.get("trees", []))
+	_build_furniture(data.get("paths", []))
 	_build_undergrowth(data.get("trees", []), data.get("paths", []))
 	_build_rocks(data.get("trees", []), data.get("water", []))
 	_build_barriers(data.get("barriers", []))
 	_build_staircases(data.get("paths", []))
 	_build_statues(data.get("statues", []))
-	_build_furniture(data.get("paths", []))
 	_build_tree_dirt(data.get("trees", []))
 	_build_boundary(data.get("boundary", []))
 	print("ParkLoader: done")
@@ -2655,6 +2659,10 @@ func _build_undergrowth(trees: Array, paths: Array) -> void:
 					continue
 				var nx := -dz / tlen * side; var nz := dx / tlen * side
 				var bx := px + nx * off; var bz := pz + nz * off
+				# Skip if in front of a bench
+				var gk := Vector2i(int(floor(bx / BENCH_GRID_CELL)), int(floor(bz / BENCH_GRID_CELL)))
+				if _bench_grid.has(gk):
+					continue
 				var by := _terrain_y(bx, bz)
 				var r  := rng.randf_range(0.6, 1.5)
 				var h  := rng.randf_range(0.4, 1.2)
@@ -3636,6 +3644,17 @@ func _build_furniture(paths: Array) -> void:
 				var angle := atan2(-nx * bench_side, -nz * bench_side)
 				var basis := Basis(Vector3.UP, angle)
 				bench_xf.append(Transform3D(basis, Vector3(bx, by, bz)))
+
+	# Build spatial hash of bench front zones (bench pos + area toward path)
+	for xf in bench_xf:
+		var pos: Vector3 = xf.origin
+		var fwd: Vector3 = xf.basis.z  # bench faces +Z local = toward path
+		# Mark cells at bench and 3m in front of it
+		for step in 4:  # 0, 1, 2, 3m in front
+			var px := pos.x + fwd.x * float(step)
+			var pz := pos.z + fwd.z * float(step)
+			var key := Vector2i(int(floor(px / BENCH_GRID_CELL)), int(floor(pz / BENCH_GRID_CELL)))
+			_bench_grid[key] = true
 
 	print("ParkLoader: lampposts = ", lamp_xf.size(), "  benches = ", bench_xf.size())
 	_spawn_multimesh(lamp_mesh, lamp_mat, lamp_xf, "Lampposts")
