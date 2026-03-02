@@ -27,6 +27,10 @@ const BENCH_GRID_CELL := 4.0
 var _bridge_grid:   Dictionary = {}  # Vector2i → true
 const BRIDGE_GRID_CELL := 5.0
 
+# Spatial hash of building footprints — keep furniture out of walls
+var _building_grid: Dictionary = {}  # Vector2i → true
+const BUILDING_GRID_CELL := 4.0
+
 
 # ---------------------------------------------------------------------------
 # Typed helpers – avoids Dictionary.get() returning Variant (parse error in 4.6)
@@ -1998,6 +2002,15 @@ func _build_buildings(buildings: Array) -> void:
 		if n < 3:
 			continue
 
+		# Mark building footprint cells + 2m margin for furniture exclusion
+		for pt in pts:
+			var bx := float(pt[0]); var bz := float(pt[1])
+			for di in range(-1, 2):
+				for dj in range(-1, 2):
+					var key := Vector2i(int(floor(bx / BUILDING_GRID_CELL)) + di,
+										int(floor(bz / BUILDING_GRID_CELL)) + dj)
+					_building_grid[key] = true
+
 		# Walls – UV.x = metres along wall, UV.y = metres above base
 		for i in n:
 			var p1 := Vector2(float(pts[i][0]),           float(pts[i][1]))
@@ -3672,8 +3685,10 @@ func _build_furniture(paths: Array) -> void:
 					var off := half_w + 0.8
 					var lx := x1 + nx * off * lamp_side
 					var lz := z1 + nz * off * lamp_side
-					var ly := _terrain_y(lx, lz)
-					lamp_xf.append(Transform3D(Basis.IDENTITY, Vector3(lx, ly, lz)))
+					var lbk := Vector2i(int(floor(lx / BUILDING_GRID_CELL)), int(floor(lz / BUILDING_GRID_CELL)))
+					if not _building_grid.has(lbk):
+						var ly := _terrain_y(lx, lz)
+						lamp_xf.append(Transform3D(Basis.IDENTITY, Vector3(lx, ly, lz)))
 
 			if bench_cum >= next_bench:
 				bench_cum = 0.0
@@ -3682,11 +3697,13 @@ func _build_furniture(paths: Array) -> void:
 					var off := half_w + 1.2
 					var bx := x1 + nx * off * bench_side
 					var bz := z1 + nz * off * bench_side
-					var by := _terrain_y(bx, bz)
-					# Face bench toward the path (opposite of offset direction)
-					var angle := atan2(-nx * bench_side, -nz * bench_side)
-					var basis := Basis(Vector3.UP, angle)
-					bench_xf.append(Transform3D(basis, Vector3(bx, by, bz)))
+					var bbk := Vector2i(int(floor(bx / BUILDING_GRID_CELL)), int(floor(bz / BUILDING_GRID_CELL)))
+					if not _building_grid.has(bbk):
+						var by := _terrain_y(bx, bz)
+						# Face bench toward the path (opposite of offset direction)
+						var angle := atan2(-nx * bench_side, -nz * bench_side)
+						var basis := Basis(Vector3.UP, angle)
+						bench_xf.append(Transform3D(basis, Vector3(bx, by, bz)))
 
 	# Build spatial hash of bench front zones (bench pos + area toward path)
 	for xf in bench_xf:
