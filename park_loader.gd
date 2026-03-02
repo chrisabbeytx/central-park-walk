@@ -153,20 +153,20 @@ func _get_shader(key: String, code: String) -> Shader:
 
 func _path_tex_prefix(hw: String, surface: String) -> String:
 	match surface:
-		"asphalt":                              return "res://textures/Asphalt012_1K-JPG"
-		"concrete", "concrete:plates", "paved": return "res://textures/Concrete034_1K-JPG"
+		"asphalt":                              return "res://textures/Asphalt012_2K-JPG"
+		"concrete", "concrete:plates", "paved": return "res://textures/Concrete034_2K-JPG"
 		"paving_stones", "sett", "unhewn_cobblestone", \
-		"stone", "brick":                       return "res://textures/PavingStones130_1K-JPG"
+		"stone", "brick":                       return "res://textures/PavingStones130_2K-JPG"
 		"gravel", "fine_gravel", "compacted", "pebblestone", \
 		"unpaved", "dirt", "ground", "woodchips", \
-		"mulch", "sand":                        return "res://textures/Gravel021_1K-JPG"
-		"wood":                                 return "res://textures/WoodFloor041_1K-JPG"
+		"mulch", "sand":                        return "res://textures/Gravel021_2K-JPG"
+		"wood":                                 return "res://textures/WoodFloor041_2K-JPG"
 	match hw:
-		"cycleway":   return "res://textures/Asphalt012_1K-JPG"
-		"steps":      return "res://textures/Concrete034_1K-JPG"
-		"pedestrian": return "res://textures/PavingStones130_1K-JPG"
-		"footway":    return "res://textures/PavingStones130_1K-JPG"
-		_:            return "res://textures/Gravel021_1K-JPG"
+		"cycleway":   return "res://textures/Asphalt012_2K-JPG"
+		"steps":      return "res://textures/Concrete034_2K-JPG"
+		"pedestrian": return "res://textures/PavingStones130_2K-JPG"
+		"footway":    return "res://textures/PavingStones130_2K-JPG"
+		_:            return "res://textures/Gravel021_2K-JPG"
 
 
 func _make_bridge_deck_material(hw: String, surface: String) -> Material:
@@ -2277,9 +2277,9 @@ func _add_cascade_ring(x: float, top_y: float, z: float,
 func _build_bethesda_fountain(cx: float, cz: float, base_y: float, pool_r: float,
 							  alb: ImageTexture, nrm: ImageTexture, rgh: ImageTexture) -> void:
 	# Smooth granite for the rim/basins (Concrete034 is smoother than rock_wall)
-	var con_alb := _load_tex("res://textures/Concrete034_1K-JPG_Color.jpg")
-	var con_nrm := _load_tex("res://textures/Concrete034_1K-JPG_NormalGL.jpg")
-	var con_rgh := _load_tex("res://textures/Concrete034_1K-JPG_Roughness.jpg")
+	var con_alb := _load_tex("res://textures/Concrete034_2K-JPG_Color.jpg")
+	var con_nrm := _load_tex("res://textures/Concrete034_2K-JPG_NormalGL.jpg")
+	var con_rgh := _load_tex("res://textures/Concrete034_2K-JPG_Roughness.jpg")
 	var stone := _make_stone_material(con_alb, con_nrm, con_rgh, Color(0.82, 0.76, 0.65))
 	var bronze := StandardMaterial3D.new()
 	bronze.albedo_color = Color(0.35, 0.45, 0.30)  # green-brown patina
@@ -2751,7 +2751,7 @@ vec3 wave_normal(vec2 uv) {
 	float hz  = gnoise((uv + vec2(0.0, e)) * 0.7 + o1) * 0.4
 	          + gnoise((uv + vec2(0.0, e)) * 1.8 + o2) * 0.35
 	          + gnoise((uv + vec2(0.0, e)) * 4.5 + o3) * 0.25;
-	return normalize(vec3(-(hx - h) / e * 0.12, 1.0, -(hz - h) / e * 0.12));
+	return normalize(vec3(-(hx - h) / e * 0.20, 1.0, -(hz - h) / e * 0.20));
 }
 
 void vertex() {
@@ -2767,7 +2767,7 @@ void vertex() {
 }
 
 void fragment() {
-	vec2 uv      = world_pos.xz / 3.5;   // finer scale = less blobby
+	vec2 uv      = world_pos.xz / 12.0;   // natural wave scale
 	vec3 wave_nrm = wave_normal(uv);
 
 	// Three noise layers at different scales for natural variation
@@ -2777,8 +2777,8 @@ void fragment() {
 	float n_fine  = gnoise(uv * 3.5 + vec2(t * 0.15, -t * 0.12));
 	float wave_h  = n_large * 0.4 + n_med * 0.35 + n_fine * 0.25;
 
-	vec3 deep    = vec3(0.025, 0.065, 0.055);
-	vec3 shallow = vec3(0.06, 0.14, 0.10);
+	vec3 deep    = vec3(0.020, 0.055, 0.048);
+	vec3 shallow = vec3(0.055, 0.12, 0.09);
 	// Subtle blend — mostly deep, shallow only at wave peaks
 	vec3 col     = mix(deep, shallow, smoothstep(-0.3, 0.6, wave_h));
 
@@ -2833,6 +2833,7 @@ func _build_buildings(buildings: Array) -> void:
 		sc.append(PackedColorArray())
 	var roof_verts   := PackedVector3Array()
 	var roof_normals := PackedVector3Array()
+	var roof_colors  := PackedColorArray()
 
 	var rng := RandomNumberGenerator.new()
 
@@ -2898,17 +2899,27 @@ func _build_buildings(buildings: Array) -> void:
 				Vector2(0.0,     h),
 			]))
 
-		# Flat roof
+		# Flat roof with randomized color
 		var polygon := PackedVector2Array()
 		for pt in pts:
 			polygon.append(Vector2(float(pt[0]), float(pt[1])))
 		var indices := Geometry2D.triangulate_polygon(polygon)
+		# Per-building roof color: dark tar (30%), light concrete (30%), brown (20%), greenish (20%)
+		var roof_rv := fmod(abs(cx * 11.3 + cz * 17.7), 10.0)
+		var roof_col := Color(0.18, 0.17, 0.16)  # dark tar default
+		if roof_rv >= 3.0 and roof_rv < 6.0:
+			roof_col = Color(0.52, 0.50, 0.48)    # light concrete
+		elif roof_rv >= 6.0 and roof_rv < 8.0:
+			roof_col = Color(0.34, 0.28, 0.20)    # brown
+		elif roof_rv >= 8.0:
+			roof_col = Color(0.28, 0.36, 0.26)    # greenish patina
 		for i in range(0, indices.size(), 3):
 			roof_verts.append(Vector3(polygon[indices[i    ]].x, top, polygon[indices[i    ]].y))
 			roof_verts.append(Vector3(polygon[indices[i + 1]].x, top, polygon[indices[i + 1]].y))
 			roof_verts.append(Vector3(polygon[indices[i + 2]].x, top, polygon[indices[i + 2]].y))
 			for _j in range(3):
 				roof_normals.append(Vector3.UP)
+				roof_colors.append(roof_col)
 
 	# Build wall meshes per style
 	var style_names := ["Limestone", "Glass", "RedBrick", "BuffBrick", "DarkStone"]
@@ -2934,7 +2945,23 @@ func _build_buildings(buildings: Array) -> void:
 		mi.name = "BuildingWalls_" + style_names[s]
 		add_child(mi)
 
-	_add_batch_mesh(roof_verts, roof_normals, Color(0.38, 0.36, 0.34), 0.92, "BuildingRoofs")
+	# Roof mesh with per-building vertex colors
+	if not roof_verts.is_empty():
+		var r_arrays: Array = []; r_arrays.resize(Mesh.ARRAY_MAX)
+		r_arrays[Mesh.ARRAY_VERTEX] = roof_verts
+		r_arrays[Mesh.ARRAY_NORMAL] = roof_normals
+		r_arrays[Mesh.ARRAY_COLOR]  = roof_colors
+		var r_mesh := ArrayMesh.new()
+		r_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, r_arrays)
+		var r_mat := StandardMaterial3D.new()
+		r_mat.vertex_color_use_as_albedo = true
+		r_mat.roughness = 0.92
+		r_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+		r_mesh.surface_set_material(0, r_mat)
+		var r_mi := MeshInstance3D.new()
+		r_mi.mesh = r_mesh
+		r_mi.name = "BuildingRoofs"
+		add_child(r_mi)
 
 
 func _add_batch_mesh(verts: PackedVector3Array, normals: PackedVector3Array,
@@ -2996,13 +3023,29 @@ void vertex() {
 }
 
 void fragment() {
-	float cell_w = win_w + gap_x;
-	float cell_h = win_h + gap_y;
+	// Per-building hash for window size jitter
+	vec2 bld = floor(world_pos.xz * 0.03);
+	float bld_hash = hash2(bld * 0.7);
+	float actual_win_w = win_w * (0.8 + bld_hash * 0.4);
+	float actual_gap_x = gap_x * (0.8 + fract(bld_hash * 7.3) * 0.4);
+	float actual_win_h = win_h * (0.85 + fract(bld_hash * 3.1) * 0.3);
+
+	float cell_w = actual_win_w + actual_gap_x;
+	float cell_h = actual_win_h + gap_y;
 	float lx = fract(UV.x / cell_w);
 	float ly = fract((UV.y - ground_h) / cell_h);
-	bool in_win = (lx < win_w / cell_w) && (ly < win_h / cell_h) && (UV.y > ground_h);
 
-	vec2 bld = floor(world_pos.xz * 0.03);
+	// Ground floor: wider, darker storefront openings
+	bool is_ground = UV.y < ground_h && UV.y > 0.5;
+	float gnd_lx = fract(UV.x / (cell_w * 1.5));
+	bool gnd_win = is_ground && (gnd_lx < 0.65) && (UV.y > 1.2);
+
+	bool in_win = ((lx < actual_win_w / cell_w) && (ly < actual_win_h / cell_h) && (UV.y > ground_h)) || gnd_win;
+
+	// Cornice bands every 4 floors
+	float floor_num = (UV.y - ground_h) / cell_h;
+	bool is_cornice = (UV.y > ground_h) && (fract(floor_num / 4.0) < 0.08);
+
 	vec2 cell = vec2(floor(UV.x / cell_w), floor((UV.y - ground_h) / cell_h));
 	float wrand = hash2(bld * 0.5 + cell * 0.13);
 
@@ -3011,12 +3054,19 @@ void fragment() {
 	float metal;
 
 	if (in_win) {
-		col = mix(glass_a, glass_b, wrand * 0.6);
+		if (gnd_win) {
+			col = mix(glass_a * 0.7, glass_b * 0.6, wrand * 0.4);
+		} else {
+			col = mix(glass_a, glass_b, wrand * 0.6);
+		}
 		rough = glass_rough;
 		metal = glass_metal;
 	} else {
 		float var_ = hash2(world_pos.xz * 0.15) * 0.08;
 		col = wall_tint * COLOR.rgb * (0.92 + var_);
+		if (is_cornice) {
+			col *= 0.78;
+		}
 		rough = wall_rough;
 		metal = wall_metal;
 	}
@@ -3060,24 +3110,47 @@ void vertex() {
 }
 
 void fragment() {
-	float cell_w = win_w + gap_x;
-	float cell_h = win_h + gap_y;
+	// Per-building hash for window size jitter
+	vec2 bld = floor(world_pos.xz * 0.03);
+	float bld_hash = hash2(bld * 0.7);
+	float actual_win_w = win_w * (0.8 + bld_hash * 0.4);
+	float actual_gap_x = gap_x * (0.8 + fract(bld_hash * 7.3) * 0.4);
+	float actual_win_h = win_h * (0.85 + fract(bld_hash * 3.1) * 0.3);
+
+	float cell_w = actual_win_w + actual_gap_x;
+	float cell_h = actual_win_h + gap_y;
 	float lx = fract(UV.x / cell_w);
 	float ly = fract((UV.y - ground_h) / cell_h);
-	bool in_win = (lx < win_w / cell_w) && (ly < win_h / cell_h) && (UV.y > ground_h);
 
-	vec2 bld = floor(world_pos.xz * 0.03);
+	// Ground floor storefront
+	bool is_ground = UV.y < ground_h && UV.y > 0.5;
+	float gnd_lx = fract(UV.x / (cell_w * 1.5));
+	bool gnd_win = is_ground && (gnd_lx < 0.65) && (UV.y > 1.2);
+
+	bool in_win = ((lx < actual_win_w / cell_w) && (ly < actual_win_h / cell_h) && (UV.y > ground_h)) || gnd_win;
+
+	// Cornice bands every 4 floors
+	float floor_num = (UV.y - ground_h) / cell_h;
+	bool is_cornice = (UV.y > ground_h) && (fract(floor_num / 4.0) < 0.08);
+
 	vec2 cell = vec2(floor(UV.x / cell_w), floor((UV.y - ground_h) / cell_h));
 	float wrand = hash2(bld * 0.5 + cell * 0.13);
 
 	vec2 tex_uv = UV * tex_scale;
 
 	if (in_win) {
-		ALBEDO    = mix(glass_a, glass_b, wrand);
+		if (gnd_win) {
+			ALBEDO = mix(glass_a * 0.7, glass_b * 0.6, wrand * 0.4);
+		} else {
+			ALBEDO = mix(glass_a, glass_b, wrand);
+		}
 		ROUGHNESS = glass_rough;
 		METALLIC  = glass_metal;
 	} else {
 		vec3 brick_col = texture(brick_alb, tex_uv).rgb * COLOR.rgb;
+		if (is_cornice) {
+			brick_col *= 0.78;
+		}
 		ALBEDO    = clamp(brick_col, 0.0, 1.0);
 		ROUGHNESS = texture(brick_rgh, tex_uv).r;
 		METALLIC  = 0.0;
@@ -3198,18 +3271,20 @@ func _build_trees(trees: Array) -> void:
 	]
 
 	# Bark textures
-	var bark_alb  := _load_tex("res://textures/Bark007_1K-JPG_Color.jpg")
-	var bark_nrm  := _load_tex("res://textures/Bark007_1K-JPG_NormalGL.jpg")
-	var bark_rgh  := _load_tex("res://textures/Bark007_1K-JPG_Roughness.jpg")
-	var bark_ao   := _load_tex("res://textures/Bark007_1K-JPG_AmbientOcclusion.jpg")
+	var bark_alb  := _load_tex("res://textures/Bark007_2K-JPG_Color.jpg")
+	var bark_nrm  := _load_tex("res://textures/Bark007_2K-JPG_NormalGL.jpg")
+	var bark_rgh  := _load_tex("res://textures/Bark007_2K-JPG_Roughness.jpg")
+	var bark_ao   := _load_tex("res://textures/Bark007_2K-JPG_AmbientOcclusion.jpg")
 
 	# Leaf card meshes (broadleaf dome / conifer cone)
 	var broad_leaf_mesh := _make_leaf_card_mesh(false)
 	var conif_leaf_mesh := _make_leaf_card_mesh(true)
 
-	# Leaf materials (4 PBR textures each)
-	var broad_mat := _make_leaf_mat(true)   # broad = true → LeafSet005
-	var conif_mat := _make_leaf_mat(false)   # broad = false → LeafSet019
+	# Per-species leaf materials: oak=LeafSet003, maple+shrub=LeafSet005, elm=LeafSet009, conifer=LeafSet019
+	var oak_mat   := _make_leaf_mat(true, "LeafSet003")   # broader, rounder
+	var maple_mat := _make_leaf_mat(true, "LeafSet005")   # existing
+	var elm_mat   := _make_leaf_mat(true, "LeafSet009")   # smaller, denser
+	var conif_mat := _make_leaf_mat(false)                 # LeafSet019
 
 	# Trunk+branches mesh + material
 	var trunk_mesh := _make_trunk_with_branches_mesh()
@@ -3222,8 +3297,10 @@ func _build_trees(trees: Array) -> void:
 		trunk_mat.set_shader_parameter("bark_rough",   bark_rgh)
 		trunk_mat.set_shader_parameter("bark_ao",      bark_ao)
 
-	# Collect transforms per group
-	var broad_xf: Array = []
+	# Collect transforms per group: oak / maple+shrub / elm / conifer
+	var oak_xf:   Array = []
+	var maple_xf: Array = []
+	var elm_xf:   Array = []
 	var conif_xf: Array = []
 	var trunk_xf: Array = []
 
@@ -3258,10 +3335,11 @@ func _build_trees(trees: Array) -> void:
 			Vector3(0.0,           0.0,           canopy_r * sx))
 		cbasis = rot_basis * cbasis
 		var canopy_tf := Transform3D(cbasis, Vector3(tx, ty + trunk_h, tz))
-		if arch == 4:
-			conif_xf.append(canopy_tf)
-		else:
-			broad_xf.append(canopy_tf)
+		match arch:
+			0: oak_xf.append(canopy_tf)
+			1, 3: maple_xf.append(canopy_tf)
+			2: elm_xf.append(canopy_tf)
+			4: conif_xf.append(canopy_tf)
 
 		var tbasis := Basis(
 			Vector3(trunk_r, 0.0,     0.0),
@@ -3270,7 +3348,9 @@ func _build_trees(trees: Array) -> void:
 		tbasis = rot_basis * tbasis
 		trunk_xf.append(Transform3D(tbasis, Vector3(tx, ty + trunk_h * 0.5, tz)))
 
-	_spawn_multimesh(broad_leaf_mesh, broad_mat, broad_xf, "TreeCanopies_Broad")
+	_spawn_multimesh(broad_leaf_mesh, oak_mat,   oak_xf,   "TreeCanopies_Oak")
+	_spawn_multimesh(broad_leaf_mesh, maple_mat, maple_xf, "TreeCanopies_Maple")
+	_spawn_multimesh(broad_leaf_mesh, elm_mat,   elm_xf,   "TreeCanopies_Elm")
 	_spawn_multimesh(conif_leaf_mesh, conif_mat, conif_xf, "TreeCanopies_Conifer")
 	_spawn_multimesh(trunk_mesh,      trunk_mat, trunk_xf, "TreeTrunks")
 	_build_tree_collision(trunk_xf)
@@ -3395,76 +3475,107 @@ func _make_leaf_card_mesh(is_conifer: bool) -> ArrayMesh:
 	var card_defs: Array = []  # [position, half_size, tilt_axis, tilt_angle]
 
 	if not is_conifer:
-		# --- Broadleaf: dense dome arrangement with small overlapping cards ---
-		# Lower ring: 8 quads around equator
-		for i in 8:
-			var a := TAU * float(i) / 8.0 + 0.2
-			var r := 0.70
-			var pos := Vector3(cos(a) * r, -0.10 + float(i % 3) * 0.08, sin(a) * r)
+		# --- Broadleaf: dense dome with many small cards ---
+		# Equator ring: 16 quads
+		for i in 16:
+			var a := TAU * float(i) / 16.0 + 0.2
+			var r := 0.72
+			var pos := Vector3(cos(a) * r, -0.10 + float(i % 4) * 0.06, sin(a) * r)
 			var tilt_ax := Vector3(-sin(a), 0.0, cos(a))
-			card_defs.append([pos, 0.35, tilt_ax, 20.0 + float(i) * 5.0])
-		# Mid ring: 8 quads at ~30° elevation
-		for i in 8:
-			var a := TAU * float(i) / 8.0 + 0.6
-			var r := 0.58
-			var pos := Vector3(cos(a) * r, 0.30 + float(i % 2) * 0.10, sin(a) * r)
+			card_defs.append([pos, 0.055, tilt_ax, 18.0 + float(i) * 3.5])
+		# 20° ring: 14 quads
+		for i in 14:
+			var a := TAU * float(i) / 14.0 + 0.45
+			var r := 0.64
+			var pos := Vector3(cos(a) * r, 0.18 + float(i % 3) * 0.06, sin(a) * r)
 			var tilt_ax := Vector3(-sin(a), 0.0, cos(a))
-			card_defs.append([pos, 0.32, tilt_ax, 30.0 + float(i) * 4.0])
-		# Upper ring: 6 quads at ~60° elevation
+			card_defs.append([pos, 0.05, tilt_ax, 25.0 + float(i) * 3.0])
+		# 40° ring: 12 quads
+		for i in 12:
+			var a := TAU * float(i) / 12.0 + 0.7
+			var r := 0.52
+			var pos := Vector3(cos(a) * r, 0.40 + float(i % 2) * 0.07, sin(a) * r)
+			var tilt_ax := Vector3(-sin(a), 0.0, cos(a))
+			card_defs.append([pos, 0.05, tilt_ax, 32.0 + float(i) * 4.0])
+		# 60° ring: 8 quads
+		for i in 8:
+			var a := TAU * float(i) / 8.0 + 0.95
+			var r := 0.36
+			var pos := Vector3(cos(a) * r, 0.60, sin(a) * r)
+			var tilt_ax := Vector3(-sin(a), 0.0, cos(a))
+			card_defs.append([pos, 0.045, tilt_ax, 40.0 + float(i) * 5.0])
+		# 75° ring: 6 quads
 		for i in 6:
-			var a := TAU * float(i) / 6.0 + 0.9
-			var r := 0.40
-			var pos := Vector3(cos(a) * r, 0.58, sin(a) * r)
-			var tilt_ax := Vector3(-sin(a), 0.0, cos(a))
-			card_defs.append([pos, 0.30, tilt_ax, 40.0 + float(i) * 6.0])
-		# Crown: 4 quads near top
-		for i in 4:
-			var a := TAU * float(i) / 4.0 + 1.2
-			var r := 0.22
+			var a := TAU * float(i) / 6.0 + 1.2
+			var r := 0.20
 			var pos := Vector3(cos(a) * r, 0.78, sin(a) * r)
 			var tilt_ax := Vector3(cos(a + 1.0), 0.0, sin(a + 1.0))
-			card_defs.append([pos, 0.28, tilt_ax, 45.0 + float(i) * 7.0])
-		# Inner fill: 6 quads crossing through center for density
-		for i in 6:
-			var a := TAU * float(i) / 6.0 + 0.35
-			var pos := Vector3(cos(a) * 0.20, 0.10 + float(i) * 0.10, sin(a) * 0.20)
+			card_defs.append([pos, 0.04, tilt_ax, 45.0 + float(i) * 6.0])
+		# Inner fill: 20 quads crossing through center for density
+		for i in 20:
+			var a := TAU * float(i) / 20.0 + 0.35
+			var iy := -0.05 + float(i) * 0.045
+			var ir := 0.15 + float(i % 5) * 0.06
+			var pos := Vector3(cos(a) * ir, iy, sin(a) * ir)
 			var tilt_ax := Vector3(cos(a + 0.5), 0.0, sin(a + 0.5))
-			card_defs.append([pos, 0.38, tilt_ax, 25.0 + float(i) * 8.0])
-		# Top caps: 2 nearly horizontal quads
-		card_defs.append([Vector3(0.12, 0.85, 0.05), 0.30, Vector3(1.0, 0.0, 0.0), 8.0])
-		card_defs.append([Vector3(-0.08, 0.80, -0.10), 0.28, Vector3(0.0, 0.0, 1.0), 12.0])
-	else:
-		# --- Conifer: conical tiers with smaller cards ---
-		# Bottom tier: 7 quads
-		for i in 7:
-			var a := TAU * float(i) / 7.0 + 0.15
-			var pos := Vector3(cos(a) * 0.62, -0.55, sin(a) * 0.62)
-			var tilt_ax := Vector3(-sin(a), 0.0, cos(a))
-			card_defs.append([pos, 0.30, tilt_ax, 35.0 + float(i) * 3.0])
-		# Mid-lower: 6 quads
-		for i in 6:
-			var a := TAU * float(i) / 6.0 + 0.4
-			var pos := Vector3(cos(a) * 0.48, -0.15, sin(a) * 0.48)
-			var tilt_ax := Vector3(-sin(a), 0.0, cos(a))
-			card_defs.append([pos, 0.26, tilt_ax, 40.0 + float(i) * 4.0])
-		# Mid-upper: 5 quads
-		for i in 5:
-			var a := TAU * float(i) / 5.0 + 0.7
-			var pos := Vector3(cos(a) * 0.32, 0.25, sin(a) * 0.32)
-			var tilt_ax := Vector3(-sin(a), 0.0, cos(a))
-			card_defs.append([pos, 0.22, tilt_ax, 45.0 + float(i) * 5.0])
-		# Upper: 4 quads
+			card_defs.append([pos, 0.06, tilt_ax, 22.0 + float(i) * 5.0])
+		# Top caps: 4 nearly horizontal quads
 		for i in 4:
-			var a := TAU * float(i) / 4.0 + 1.0
-			var pos := Vector3(cos(a) * 0.18, 0.55, sin(a) * 0.18)
+			var a2 := TAU * float(i) / 4.0 + 0.3
+			var pos := Vector3(cos(a2) * 0.08, 0.86 + float(i) * 0.02, sin(a2) * 0.08)
+			card_defs.append([pos, 0.04, Vector3(1.0, 0.0, 0.0), 8.0 + float(i) * 3.0])
+		# Bottom fill: 4 quads under canopy
+		for i in 4:
+			var a2 := TAU * float(i) / 4.0 + 1.5
+			var pos := Vector3(cos(a2) * 0.50, -0.18, sin(a2) * 0.50)
+			var tilt_ax := Vector3(-sin(a2), 0.0, cos(a2))
+			card_defs.append([pos, 0.055, tilt_ax, 15.0 + float(i) * 7.0])
+	else:
+		# --- Conifer: conical tiers with small cards ---
+		# Tier 1 (bottom): 10 quads
+		for i in 10:
+			var a := TAU * float(i) / 10.0 + 0.15
+			var pos := Vector3(cos(a) * 0.65, -0.55, sin(a) * 0.65)
 			var tilt_ax := Vector3(-sin(a), 0.0, cos(a))
-			card_defs.append([pos, 0.18, tilt_ax, 50.0 + float(i) * 6.0])
-		# Top: 2 quads
+			card_defs.append([pos, 0.05, tilt_ax, 35.0 + float(i) * 2.5])
+		# Tier 2: 8 quads
+		for i in 8:
+			var a := TAU * float(i) / 8.0 + 0.4
+			var pos := Vector3(cos(a) * 0.52, -0.25, sin(a) * 0.52)
+			var tilt_ax := Vector3(-sin(a), 0.0, cos(a))
+			card_defs.append([pos, 0.045, tilt_ax, 40.0 + float(i) * 3.0])
+		# Tier 3: 8 quads
+		for i in 8:
+			var a := TAU * float(i) / 8.0 + 0.65
+			var pos := Vector3(cos(a) * 0.40, 0.05, sin(a) * 0.40)
+			var tilt_ax := Vector3(-sin(a), 0.0, cos(a))
+			card_defs.append([pos, 0.04, tilt_ax, 42.0 + float(i) * 3.5])
+		# Tier 4: 6 quads
+		for i in 6:
+			var a := TAU * float(i) / 6.0 + 0.9
+			var pos := Vector3(cos(a) * 0.28, 0.30, sin(a) * 0.28)
+			var tilt_ax := Vector3(-sin(a), 0.0, cos(a))
+			card_defs.append([pos, 0.035, tilt_ax, 46.0 + float(i) * 4.0])
+		# Tier 5: 4 quads
+		for i in 4:
+			var a := TAU * float(i) / 4.0 + 1.1
+			var pos := Vector3(cos(a) * 0.16, 0.55, sin(a) * 0.16)
+			var tilt_ax := Vector3(-sin(a), 0.0, cos(a))
+			card_defs.append([pos, 0.03, tilt_ax, 50.0 + float(i) * 5.0])
+		# Tip: 2 quads
 		for i in 2:
 			var a := TAU * float(i) / 2.0 + 0.9
-			var pos := Vector3(cos(a) * 0.08, 0.78, sin(a) * 0.08)
+			var pos := Vector3(cos(a) * 0.06, 0.78, sin(a) * 0.06)
 			var tilt_ax := Vector3(-sin(a), 0.0, cos(a))
-			card_defs.append([pos, 0.15, tilt_ax, 55.0])
+			card_defs.append([pos, 0.03, tilt_ax, 55.0])
+		# Inner fill: 12 quads for density
+		for i in 12:
+			var a := TAU * float(i) / 12.0 + 0.3
+			var iy := -0.45 + float(i) * 0.10
+			var ir := 0.10 + float(i % 4) * 0.07
+			var pos := Vector3(cos(a) * ir, iy, sin(a) * ir)
+			var tilt_ax := Vector3(cos(a + 0.5), 0.0, sin(a + 0.5))
+			card_defs.append([pos, 0.04, tilt_ax, 38.0 + float(i) * 4.0])
 
 	# Build each card as a quad (2 tris)
 	for ci in card_defs.size():
@@ -3509,8 +3620,7 @@ func _make_leaf_card_mesh(is_conifer: bool) -> ArrayMesh:
 
 
 func _make_bush_leaf_mesh() -> ArrayMesh:
-	# 10 leaf card quads in a low dome for understorey bushes.
-	# Bottom ring (5) + upper ring (3) + top caps (2) = 10 quads, 20 tris.
+	# 24 leaf card quads in a low dome for understorey bushes.
 	var verts   := PackedVector3Array()
 	var normals := PackedVector3Array()
 	var uvs     := PackedVector2Array()
@@ -3518,23 +3628,36 @@ func _make_bush_leaf_mesh() -> ArrayMesh:
 
 	var card_defs: Array = []  # [position, half_size, tilt_axis, tilt_angle]
 
-	# Bottom ring: 5 quads around equator
-	for i in 5:
-		var a := TAU * float(i) / 5.0 + 0.3
-		var r := 0.60
-		var pos := Vector3(cos(a) * r, -0.05 + float(i % 2) * 0.08, sin(a) * r)
+	# Bottom ring: 8 quads around equator
+	for i in 8:
+		var a := TAU * float(i) / 8.0 + 0.3
+		var r := 0.62
+		var pos := Vector3(cos(a) * r, -0.05 + float(i % 3) * 0.06, sin(a) * r)
 		var tilt_ax := Vector3(-sin(a), 0.0, cos(a))
-		card_defs.append([pos, 0.38, tilt_ax, 22.0 + float(i) * 6.0])
-	# Upper ring: 3 quads at ~40° elevation
-	for i in 3:
-		var a := TAU * float(i) / 3.0 + 0.7
-		var r := 0.38
-		var pos := Vector3(cos(a) * r, 0.30, sin(a) * r)
+		card_defs.append([pos, 0.13, tilt_ax, 20.0 + float(i) * 5.0])
+	# Mid ring: 6 quads
+	for i in 6:
+		var a := TAU * float(i) / 6.0 + 0.6
+		var r := 0.44
+		var pos := Vector3(cos(a) * r, 0.20 + float(i % 2) * 0.06, sin(a) * r)
 		var tilt_ax := Vector3(-sin(a), 0.0, cos(a))
-		card_defs.append([pos, 0.34, tilt_ax, 35.0 + float(i) * 8.0])
+		card_defs.append([pos, 0.12, tilt_ax, 30.0 + float(i) * 6.0])
+	# Upper ring: 4 quads
+	for i in 4:
+		var a := TAU * float(i) / 4.0 + 0.9
+		var r := 0.28
+		var pos := Vector3(cos(a) * r, 0.38, sin(a) * r)
+		var tilt_ax := Vector3(-sin(a), 0.0, cos(a))
+		card_defs.append([pos, 0.11, tilt_ax, 36.0 + float(i) * 7.0])
+	# Inner fill: 4 quads
+	for i in 4:
+		var a := TAU * float(i) / 4.0 + 0.15
+		var pos := Vector3(cos(a) * 0.18, 0.05 + float(i) * 0.08, sin(a) * 0.18)
+		var tilt_ax := Vector3(cos(a + 0.5), 0.0, sin(a + 0.5))
+		card_defs.append([pos, 0.12, tilt_ax, 25.0 + float(i) * 8.0])
 	# Top caps: 2 nearly horizontal quads
-	card_defs.append([Vector3(0.10, 0.45, 0.05), 0.32, Vector3(1.0, 0.0, 0.0), 10.0])
-	card_defs.append([Vector3(-0.06, 0.42, -0.08), 0.30, Vector3(0.0, 0.0, 1.0), 14.0])
+	card_defs.append([Vector3(0.08, 0.46, 0.04), 0.10, Vector3(1.0, 0.0, 0.0), 10.0])
+	card_defs.append([Vector3(-0.05, 0.43, -0.06), 0.10, Vector3(0.0, 0.0, 1.0), 14.0])
 
 	for cd in card_defs:
 		var pos: Vector3 = cd[0] as Vector3
@@ -3569,8 +3692,8 @@ func _make_bush_leaf_mesh() -> ArrayMesh:
 	return mesh
 
 
-func _make_leaf_mat(broad: bool) -> ShaderMaterial:
-	var prefix := "LeafSet005" if broad else "LeafSet019"
+func _make_leaf_mat(broad: bool, leaf_set: String = "") -> ShaderMaterial:
+	var prefix := leaf_set if leaf_set != "" else ("LeafSet005" if broad else "LeafSet019")
 	var color_tex := _load_tex("res://textures/%s_2K-JPG_Color.jpg" % prefix)
 	var norm_tex  := _load_tex("res://textures/%s_2K-JPG_NormalGL.jpg" % prefix)
 	var rough_tex := _load_tex("res://textures/%s_2K-JPG_Roughness.jpg" % prefix)
@@ -3692,7 +3815,7 @@ void vertex() {
 }
 
 void fragment() {
-	vec2 uv   = vec2(UV.x * 2.0, UV.y * 4.0);
+	vec2 uv   = vec2(UV.x * 3.0, UV.y * 6.0);
 	vec3 alb  = texture(bark_albedo, uv).rgb;
 	float rgh = texture(bark_rough,  uv).r;
 	float ao  = texture(bark_ao,     uv).r;

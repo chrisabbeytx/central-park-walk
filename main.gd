@@ -639,8 +639,17 @@ func _setup_ground() -> void:
 		_terrain_mat.set_shader_parameter("grass_albedo", tex_alb)
 		_terrain_mat.set_shader_parameter("grass_normal", tex_nrm)
 		_terrain_mat.set_shader_parameter("grass_rough",  tex_rgh)
-		_terrain_mat.set_shader_parameter("tile_m",       3.0)
-		print("Ground: textured grass shader")
+		_terrain_mat.set_shader_parameter("tile_m",       5.0)
+		# Meadow/wild grass blend
+		var m_alb := _load_img_tex("res://textures/Ground037_2K-JPG_Color.jpg")
+		var m_nrm := _load_img_tex("res://textures/Ground037_2K-JPG_NormalGL.jpg")
+		var m_rgh := _load_img_tex("res://textures/Ground037_2K-JPG_Roughness.jpg")
+		if m_alb:
+			_terrain_mat.set_shader_parameter("meadow_albedo", m_alb)
+			_terrain_mat.set_shader_parameter("meadow_normal", m_nrm)
+			_terrain_mat.set_shader_parameter("meadow_rough",  m_rgh)
+			_terrain_mat.set_shader_parameter("meadow_tile_m", 4.0)
+		print("Ground: textured grass shader + meadow blend")
 
 	if _hm_data.is_empty():
 		# Flat fallback
@@ -742,7 +751,13 @@ render_mode cull_disabled;
 uniform sampler2D grass_albedo : source_color,      filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D grass_normal : hint_normal,        filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D grass_rough  : hint_default_white, filter_linear_mipmap_anisotropic, repeat_enable;
-uniform float tile_m = 3.0;
+uniform float tile_m = 5.0;
+
+// Meadow/wild grass blend
+uniform sampler2D meadow_albedo : source_color,      filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D meadow_normal : hint_normal,        filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D meadow_rough  : hint_default_white, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform float meadow_tile_m = 4.0;
 
 // Splat map + path texture arrays
 uniform sampler2D splat_map : filter_nearest, repeat_disable;
@@ -750,7 +765,7 @@ uniform sampler2DArray path_alb_arr : source_color, filter_linear_mipmap_anisotr
 uniform sampler2DArray path_nrm_arr : hint_normal, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2DArray path_rgh_arr : hint_default_white, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform float world_size = 5000.0;
-uniform float path_tile_m = 1.5;
+uniform float path_tile_m = 2.5;
 
 varying vec3 world_pos;
 
@@ -857,6 +872,18 @@ void fragment() {
 	vec3 dirt = vec3(0.22, 0.17, 0.10);
 	float wear = smoothstep(0.60, 0.50, f);
 	grass_alb = mix(grass_alb * f, dirt, wear * 0.7);
+
+	// Meadow/wild grass blend — large-scale FBM patches
+	vec2 muv = world_pos.xz / meadow_tile_m;
+	vec3 m_alb = texture(meadow_albedo, muv).rgb;
+	vec3 m_nrm = texture(meadow_normal, muv).rgb;
+	float m_rgh = clamp(texture(meadow_rough, muv).r * 0.15 + 0.85, 0.0, 1.0);
+	float meadow_noise = fbm(world_pos.xz * 0.003, 3) * 0.6
+	                    + fbm(world_pos.xz * 0.018, 2) * 0.4;
+	float meadow_blend = smoothstep(0.42, 0.58, meadow_noise);
+	grass_alb = mix(grass_alb, m_alb * f, meadow_blend);
+	grass_nrm = mix(grass_nrm, m_nrm, meadow_blend);
+	grass_rgh = mix(grass_rgh, m_rgh, meadow_blend);
 
 	if (mat_idx > 0 && path_weight > 0.001) {
 		// --- Path shading ---
@@ -974,11 +1001,11 @@ func _apply_splat_map(splat_tex: ImageTexture) -> void:
 	## Load 5 CC0 path texture sets into Texture2DArrays and wire them into
 	## the terrain shader along with the splat map.
 	var prefixes: Array = [
-		"res://textures/Asphalt012_1K-JPG",       # index 0
-		"res://textures/Concrete034_1K-JPG",       # index 1
-		"res://textures/PavingStones130_1K-JPG",   # index 2
-		"res://textures/Gravel021_1K-JPG",         # index 3
-		"res://textures/WoodFloor041_1K-JPG",      # index 4
+		"res://textures/Asphalt012_2K-JPG",       # index 0
+		"res://textures/Concrete034_2K-JPG",       # index 1
+		"res://textures/PavingStones130_2K-JPG",   # index 2
+		"res://textures/Gravel021_2K-JPG",         # index 3
+		"res://textures/WoodFloor041_2K-JPG",      # index 4
 	]
 	var suffixes: Array = ["_Color.jpg", "_NormalGL.jpg", "_Roughness.jpg"]
 	var arr_tex: Array = []  # [alb_arr, nrm_arr, rgh_arr]
@@ -1012,7 +1039,7 @@ func _apply_splat_map(splat_tex: ImageTexture) -> void:
 	_terrain_mat.set_shader_parameter("path_nrm_arr", arr_tex[1])
 	_terrain_mat.set_shader_parameter("path_rgh_arr", arr_tex[2])
 	_terrain_mat.set_shader_parameter("world_size",   _hm_world_size)
-	_terrain_mat.set_shader_parameter("path_tile_m",  1.5)
+	_terrain_mat.set_shader_parameter("path_tile_m",  2.5)
 	print("Terrain: splat map + path texture arrays applied")
 
 

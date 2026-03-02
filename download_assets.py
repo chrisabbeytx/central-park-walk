@@ -82,6 +82,57 @@ def download_grass():
 
 
 # ---------------------------------------------------------------------------
+# ambientCG CC0 texture packs (2K upgrades + new sets)
+# ---------------------------------------------------------------------------
+
+# Each entry: (texture_id, suffixes_to_extract)
+# Files land at textures/{ID}_{suffix}
+AMBIENTCG_PACKS = [
+    # Meadow grass blend
+    ("Ground037_2K-JPG", ["Color.jpg", "NormalGL.jpg", "Roughness.jpg"]),
+    # Oak leaves (broader, rounder)
+    ("LeafSet003_2K-JPG", ["Color.jpg", "NormalGL.jpg", "Roughness.jpg", "Opacity.jpg"]),
+    # Elm leaves (smaller, denser)
+    ("LeafSet009_2K-JPG", ["Color.jpg", "NormalGL.jpg", "Roughness.jpg", "Opacity.jpg"]),
+    # 2K upgrades for path textures (replace 1K versions)
+    ("Asphalt012_2K-JPG", ["Color.jpg", "NormalGL.jpg", "Roughness.jpg"]),
+    ("Concrete034_2K-JPG", ["Color.jpg", "NormalGL.jpg", "Roughness.jpg"]),
+    ("PavingStones130_2K-JPG", ["Color.jpg", "NormalGL.jpg", "Roughness.jpg"]),
+    ("Gravel021_2K-JPG", ["Color.jpg", "NormalGL.jpg", "Roughness.jpg"]),
+    ("WoodFloor041_2K-JPG", ["Color.jpg", "NormalGL.jpg", "Roughness.jpg"]),
+    # 2K bark upgrade
+    ("Bark007_2K-JPG", ["Color.jpg", "NormalGL.jpg", "Roughness.jpg", "AmbientOcclusion.jpg"]),
+]
+
+def download_ambientcg_packs():
+    for tex_id, suffixes in AMBIENTCG_PACKS:
+        targets = [f"{OUT}/{tex_id}_{s}" for s in suffixes]
+        if _exists(*targets):
+            print(f"{tex_id} already downloaded, skipping.")
+            continue
+        print(f"Downloading {tex_id} from ambientCG …")
+        url = f"https://ambientcg.com/get?file={tex_id}.zip"
+        raw = _get(url, tex_id + ".zip", timeout=120)
+        if not raw:
+            continue
+        try:
+            with zipfile.ZipFile(io.BytesIO(raw)) as z:
+                names = z.namelist()
+                for suffix in suffixes:
+                    src = f"{tex_id}_{suffix}"
+                    dst = f"{OUT}/{src}"
+                    if src in names:
+                        with z.open(src) as f:
+                            _save(dst, f.read())
+                        print(f"  → {dst}")
+                    else:
+                        print(f"  WARNING: {src} not found in zip", file=sys.stderr)
+        except zipfile.BadZipFile:
+            print(f"  ERROR: bad zip for {tex_id}", file=sys.stderr)
+        print(f"{tex_id} done.")
+
+
+# ---------------------------------------------------------------------------
 # Sky HDRI (Poly Haven, CC0)
 # ---------------------------------------------------------------------------
 
@@ -116,4 +167,6 @@ if __name__ == "__main__":
     download_grass()
     print()
     download_sky()
+    print()
+    download_ambientcg_packs()
     print("\nDone.")
