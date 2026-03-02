@@ -3601,6 +3601,7 @@ func _build_furniture(paths: Array) -> void:
 		var bench_cum := 0.0
 		var next_lamp  := rng.randf_range(25.0, 45.0)
 		var next_bench := rng.randf_range(18.0, 32.0)
+		# Lamps on one side, benches on the other (fixed per path)
 		var lamp_side  := 1.0 if rng.randf() > 0.5 else -1.0
 		var bench_side := -lamp_side
 
@@ -3618,17 +3619,16 @@ func _build_furniture(paths: Array) -> void:
 			if lamp_cum >= next_lamp:
 				lamp_cum = 0.0
 				next_lamp = rng.randf_range(28.0, 40.0)
-				var off := half_w + 0.3
+				var off := half_w + 0.8
 				var lx := x1 + nx * off * lamp_side
 				var lz := z1 + nz * off * lamp_side
 				var ly := _terrain_y(lx, lz)
 				lamp_xf.append(Transform3D(Basis.IDENTITY, Vector3(lx, ly, lz)))
-				lamp_side = -lamp_side
 
 			if bench_cum >= next_bench:
 				bench_cum = 0.0
 				next_bench = rng.randf_range(20.0, 30.0)
-				var off := half_w + 0.5
+				var off := half_w + 1.2
 				var bx := x1 + nx * off * bench_side
 				var bz := z1 + nz * off * bench_side
 				var by := _terrain_y(bx, bz)
@@ -3636,7 +3636,6 @@ func _build_furniture(paths: Array) -> void:
 				var angle := atan2(-nx * bench_side, -nz * bench_side)
 				var basis := Basis(Vector3.UP, angle)
 				bench_xf.append(Transform3D(basis, Vector3(bx, by, bz)))
-				bench_side = -bench_side
 
 	print("ParkLoader: lampposts = ", lamp_xf.size(), "  benches = ", bench_xf.size())
 	_spawn_multimesh(lamp_mesh, lamp_mat, lamp_xf, "Lampposts")
