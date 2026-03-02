@@ -44,8 +44,8 @@ HIGHWAY_WIDTH = {
 
 TERRAIN_Z   = 15           # zoom level matching download_terrain.py
 TERRAIN_DIR = "terrain_tiles"
-GRID_W      = 256          # heightmap output resolution
-GRID_H      = 256
+GRID_W      = 2048         # heightmap output resolution (~2.4 m/cell)
+GRID_H      = 2048
 WORLD_SIZE  = 5000.0       # metres – must match main.gd ground plane size
 
 
@@ -135,17 +135,54 @@ def build_height_grid() -> tuple[list, float, float]:
         return h00*(1-fx)*(1-fy) + h10*fx*(1-fy) + h01*(1-fx)*fy + h11*fx*fy
 
     # Sample GRID_W × GRID_H world grid (row-major: row=z, col=x)
+    # Pre-compute per-row (ry) and per-column (rx) raster coordinates
+    # since lat depends only on zi and lon depends only on xi.
     half = WORLD_SIZE / 2.0
     cell = WORLD_SIZE / (GRID_W - 1)
-    grid = [0.0] * (GRID_W * GRID_H)
+
+    rx_col = []  # rx for each column xi
+    for xi in range(GRID_W):
+        x_w = -half + xi * cell
+        lon = REF_LON + (x_w / METRES_PER_DEG_LON)
+        fx  = (lon + 180.0) / 360.0 * n
+        rx  = (fx - x0) * TILE_PX
+        rx_col.append(max(0.0, min(rx, raster_w - 1.001)))
+
+    ry_row = []  # ry for each row zi
     for zi in range(GRID_H):
+        z_w = -half + zi * cell
+        lat   = REF_LAT + (-z_w / METRES_PER_DEG_LAT)
+        lat_r = math.radians(lat)
+        fy    = (1.0 - math.log(math.tan(lat_r) + 1.0 / math.cos(lat_r)) / math.pi) / 2.0 * n
+        ry    = (fy - y0) * TILE_PX
+        ry_row.append(max(0.0, min(ry, raster_h - 1.001)))
+
+    # Pre-compute integer indices and fractions for bilinear interpolation
+    ix_col  = [int(r) for r in rx_col]
+    fx_col  = [r - int(r) for r in rx_col]
+    iy_row  = [int(r) for r in ry_row]
+    fy_row  = [r - int(r) for r in ry_row]
+
+    grid = [0.0] * (GRID_W * GRID_H)
+    rw = raster_w
+    print(f"  Sampling {GRID_W}×{GRID_H} grid…")
+    for zi in range(GRID_H):
+        iy = iy_row[zi]
+        fy = fy_row[zi]
+        iy1 = min(iy + 1, raster_h - 1)
+        row0 = iy * rw
+        row1 = iy1 * rw
+        base = zi * GRID_W
         for xi in range(GRID_W):
-            x_w = -half + xi * cell
-            z_w = -half + zi * cell
-            lat  = REF_LAT + (-z_w / METRES_PER_DEG_LAT)
-            lon  = REF_LON + ( x_w / METRES_PER_DEG_LON)
-            rx, ry = latlon_to_raster(lat, lon)
-            grid[zi * GRID_W + xi] = sample_raster(rx, ry)
+            ix = ix_col[xi]
+            fx = fx_col[xi]
+            h00 = raster[row0 + ix]
+            h10 = raster[row0 + ix + 1]
+            h01 = raster[row1 + ix]
+            h11 = raster[row1 + ix + 1]
+            h = h00 * (1.0 - fx) * (1.0 - fy) + h10 * fx * (1.0 - fy) + \
+                h01 * (1.0 - fx) * fy + h11 * fx * fy
+            grid[base + xi] = max(h, 0.0)
 
     min_elev = min(grid)
 

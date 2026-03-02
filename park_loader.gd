@@ -1712,8 +1712,9 @@ func _build_tunnel(path: Dictionary) -> void:
 		col_faces.append_array(PackedVector3Array([fa, fb, fc, fb, fd, fc]))
 		u_f = u2_f
 
-		# --- Ceiling (faces down) — only where depth > 0 (not at ramp surface) ---
-		if d1 > 0.1 or d2 > 0.1:
+		# --- Ceiling (faces down) — only in tunnel body (both endpoints at full depth) ---
+		var body_thresh := TUNNEL_H * 0.9
+		if d1 >= body_thresh and d2 >= body_thresh:
 			var u2_c := u_c + seg_len / width
 			var ca := Vector3(x1 + nv.x * hw2, ceil_y1, z1 + nv.y * hw2)
 			var cb := Vector3(x1 - nv.x * hw2, ceil_y1, z1 - nv.y * hw2)

@@ -35,6 +35,20 @@ QUERY = f"""[out:json][timeout:180];
     ({BBOX});
   way["building"]
     ({BBOX});
+  way["barrier"]
+    ({BBOX});
+  node["barrier"]
+    ({BBOX});
+  way["historic"]
+    ({BBOX});
+  node["historic"]
+    ({BBOX});
+  node["tourism"="artwork"]
+    ({BBOX});
+  way["man_made"]
+    ({BBOX});
+  node["man_made"]
+    ({BBOX});
 );
 out body;
 >;
