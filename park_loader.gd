@@ -1630,8 +1630,10 @@ func _build_tunnel(path: Dictionary) -> void:
 	var u_c := 0.0
 	var u_w := 0.0
 
-	# Floor is lowered by TUNNEL_H so the ceiling ends up flush with terrain level.
-	# This puts the tunnel underground where it belongs.
+	# Floor is lowered by TUNNEL_H so the ceiling ends up below terrain level.
+	# Ceiling sits 1.0m below terrain so walls don't block surface movement
+	# and ceiling doesn't poke through the coarse (256×256) terrain mesh.
+	var ceil_drop := 1.0
 	for i in range(pts.size() - 1):
 		var fy1 := float(pts[i][1])   + PATH_Y - TUNNEL_H
 		var fy2 := float(pts[i+1][1]) + PATH_Y - TUNNEL_H
@@ -1643,8 +1645,8 @@ func _build_tunnel(path: Dictionary) -> void:
 		var seg_len := seg2.length()
 		var dv  := seg2 / seg_len
 		var nv  := Vector2(-dv.y, dv.x)
-		var cy1 := p1.y + TUNNEL_H   # ≈ original terrain y — ceiling at grade
-		var cy2 := p2.y + TUNNEL_H
+		var cy1 := p1.y + TUNNEL_H - ceil_drop  # slightly below terrain
+		var cy2 := p2.y + TUNNEL_H - ceil_drop
 
 		# Ceiling (downward-facing, sits at terrain level)
 		var ca := Vector3(p1.x + nv.x * hw2, cy1, p1.z + nv.y * hw2)
@@ -1722,15 +1724,48 @@ func _build_tunnel(path: Dictionary) -> void:
 	# Portal arches at each entrance/exit — stone arch framing the opening
 	_build_tunnel_portals(pts, width, TUNNEL_H, tun_mat)
 
-	# Floor surface at lowered depth
-	var mod_path := path.duplicate()
-	var mod_pts  := []
-	for pt in pts:
-		mod_pts.append([pt[0], float(pt[1]) - TUNNEL_H, pt[2]])
-	mod_path["points"] = mod_pts
-	var floor_mi := _make_path_mesh([mod_path], hw, surf)
-	floor_mi.name = "Tunnel_Floor"
-	add_child(floor_mi)
+	# Floor surface at lowered depth — built directly (not via _make_path_mesh
+	# which resamples _terrain_y and would place the floor at terrain level)
+	var floor_verts   := PackedVector3Array()
+	var floor_normals := PackedVector3Array()
+	var floor_uvs     := PackedVector2Array()
+	var u_f := 0.0
+	for i in range(pts.size() - 1):
+		var fy1 := float(pts[i][1])   + PATH_Y - TUNNEL_H
+		var fy2 := float(pts[i+1][1]) + PATH_Y - TUNNEL_H
+		var fp1 := Vector3(float(pts[i][0]),   fy1, float(pts[i][2]))
+		var fp2 := Vector3(float(pts[i+1][0]), fy2, float(pts[i+1][2]))
+		var fseg := Vector2(fp2.x - fp1.x, fp2.z - fp1.z)
+		if fseg.length_squared() < 0.0001:
+			continue
+		var flen := fseg.length()
+		var fdv  := fseg / flen
+		var fnv  := Vector2(-fdv.y, fdv.x)
+		var u2_f := u_f + flen / width
+		var fa := Vector3(fp1.x + fnv.x * hw2, fy1, fp1.z + fnv.y * hw2)
+		var fb := Vector3(fp1.x - fnv.x * hw2, fy1, fp1.z - fnv.y * hw2)
+		var fc := Vector3(fp2.x + fnv.x * hw2, fy2, fp2.z + fnv.y * hw2)
+		var fd := Vector3(fp2.x - fnv.x * hw2, fy2, fp2.z - fnv.y * hw2)
+		floor_verts.append_array(PackedVector3Array([fa, fb, fc, fb, fd, fc]))
+		for _fi in range(6):
+			floor_normals.append(Vector3.UP)
+		floor_uvs.append_array(PackedVector2Array([
+			Vector2(u_f, 0.0), Vector2(u_f, 1.0), Vector2(u2_f, 0.0),
+			Vector2(u_f, 1.0), Vector2(u2_f, 1.0), Vector2(u2_f, 0.0),
+		]))
+		u_f = u2_f
+	if not floor_verts.is_empty():
+		var f_arrays: Array = []; f_arrays.resize(Mesh.ARRAY_MAX)
+		f_arrays[Mesh.ARRAY_VERTEX] = floor_verts
+		f_arrays[Mesh.ARRAY_NORMAL] = floor_normals
+		f_arrays[Mesh.ARRAY_TEX_UV] = floor_uvs
+		var f_mesh := ArrayMesh.new()
+		f_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, f_arrays)
+		f_mesh.surface_set_material(0, _make_bridge_deck_material(hw, surf))
+		var floor_mi := MeshInstance3D.new()
+		floor_mi.mesh = f_mesh
+		floor_mi.name = "Tunnel_Floor"
+		add_child(floor_mi)
 
 
 func _build_tunnel_portals(pts: Array, width: float, height: float, mat: Material) -> void:
