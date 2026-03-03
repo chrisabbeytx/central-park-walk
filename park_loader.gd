@@ -426,6 +426,37 @@ func _is_excluded(x: float, z: float) -> bool:
 	return false
 
 
+# Park boundary rectangle — 4 corners of Central Park's tilted rectangle.
+# The OSM boundary polygon doesn't form a proper closed ring (assembly gap),
+# so we use a hardcoded rectangle derived from the park's known geometry:
+#   South center (-642.8, 1966.7) to North center (648.8, -1842.2)
+#   Length 4022m, perpendicular half-width 600m (generous, facades hide overshoot).
+var _park_rect: PackedVector2Array = PackedVector2Array([
+	Vector2(-1211.0, 1774.0),   # SW
+	Vector2(-74.6, 2159.4),     # SE
+	Vector2(1217.0, -1649.5),   # NE
+	Vector2(80.6, -2034.9),     # NW
+])
+
+func _in_boundary(px: float, pz: float) -> bool:
+	## Point-in-rectangle test using the park's tilted rectangular boundary.
+	## Uses ray-casting for a 4-vertex convex polygon.
+	var inside := false
+	var n := _park_rect.size()
+	var j := n - 1
+	for i in range(n):
+		var zi := _park_rect[i].y
+		var zj := _park_rect[j].y
+		if (zi > pz) != (zj > pz):
+			var xi := _park_rect[i].x
+			var xj := _park_rect[j].x
+			var x_cross := xi + (pz - zi) / (zj - zi) * (xj - xi)
+			if px < x_cross:
+				inside = not inside
+		j = i
+	return inside
+
+
 # ---------------------------------------------------------------------------
 func _ready() -> void:
 	if not FileAccess.file_exists(DATA_PATH):
@@ -444,6 +475,13 @@ func _ready() -> void:
 	if typeof(data) != TYPE_DICTIONARY:
 		push_error("ParkLoader: failed to parse park_data.json")
 		return
+
+	# Populate boundary polygon FIRST so all builders can clip to it
+	var raw_boundary: Array = data.get("boundary", [])
+	if raw_boundary.size() >= 3:
+		boundary_polygon.resize(raw_boundary.size())
+		for i in range(raw_boundary.size()):
+			boundary_polygon[i] = Vector2(float(raw_boundary[i][0]), float(raw_boundary[i][1]))
 
 	print("ParkLoader: building path meshes…")
 	_build_buildings(data.get("buildings", []))
@@ -684,7 +722,12 @@ func _build_paths(paths: Array) -> void:
 					_bridge_grid[key] = true
 
 	for bp in bridge_paths:
-		_build_bridge(bp)
+		var _bpts: Array = bp["points"]
+		if _bpts.size() >= 2:
+			var _bcx := (float(_bpts[0][0]) + float(_bpts[_bpts.size()-1][0])) * 0.5
+			var _bcz := (float(_bpts[0][2]) + float(_bpts[_bpts.size()-1][2])) * 0.5
+			if _in_boundary(_bcx, _bcz):
+				_build_bridge(bp)
 
 	for tp in tunnel_paths:
 		# Check if this tunnel is near a bridge (= underpass, not a rock tunnel)
@@ -693,6 +736,8 @@ func _build_paths(paths: Array) -> void:
 		for pt in tpts:
 			tcx += float(pt[0]); tcz += float(pt[2])
 		tcx /= tpts.size(); tcz /= tpts.size()
+		if not _in_boundary(tcx, tcz):
+			continue
 		var near_bridge := false
 		for bc in bridge_centroids:
 			if Vector2(tcx, tcz).distance_to(bc) < 60.0:
@@ -2536,6 +2581,8 @@ func _build_shore_vegetation(water: Array) -> void:
 		var step := maxi(1, pts.size() / 200)  # ~200 reeds per water body
 		for pi in range(0, pts.size(), step):
 			var sx := float(pts[pi][0]); var sz := float(pts[pi][1])
+			if not _in_boundary(sx, sz):
+				continue
 			var pgk := Vector2i(int(floor(sx / PATH_GRID_CELL)), int(floor(sz / PATH_GRID_CELL)))
 			if _path_grid.has(pgk):
 				continue
@@ -2678,6 +2725,13 @@ func _build_water(water: Array) -> void:
 	for body in water:
 		var pts: Array = body["points"]
 		if pts.size() < 3:
+			continue
+		# Skip water bodies whose centroid is outside the park
+		var _wcx := 0.0; var _wcz := 0.0
+		for _wpt in pts:
+			_wcx += float(_wpt[0]); _wcz += float(_wpt[1])
+		_wcx /= float(pts.size()); _wcz /= float(pts.size())
+		if not _in_boundary(_wcx, _wcz):
 			continue
 
 		# Check if this water body is a fountain — build 3D structure instead
@@ -2902,6 +2956,13 @@ func _build_buildings(buildings: Array) -> void:
 
 	for bld in buildings:
 		var pts:  Array = bld["points"]
+		# Skip buildings whose centroid is outside the park boundary
+		var _cx := 0.0; var _cz := 0.0
+		for _pt in pts:
+			_cx += float(_pt[0]); _cz += float(_pt[1])
+		_cx /= float(pts.size()); _cz /= float(pts.size())
+		if not _in_boundary(_cx, _cz):
+			continue
 		var h:    float = float(bld["height"])
 		var base := INF
 		for pt in pts:
@@ -3370,6 +3431,8 @@ func _build_trees(trees: Array) -> void:
 	for i in trees.size():
 		var pt: Array = trees[i]
 		var tx := float(pt[0]); var tz := float(pt[2])
+		if not _in_boundary(tx, tz):
+			continue
 		var ty := _terrain_y(tx, tz)
 		rng.seed = i * 1234567891 + 987654321
 
@@ -3940,15 +4003,19 @@ func _build_undergrowth(trees: Array, paths: Array) -> void:
 			continue
 		var pt: Array = trees[i]
 		var tx := float(pt[0]); var tz := float(pt[2])
+		if not _in_boundary(tx, tz):
+			continue
 		var n_bushes := rng.randi_range(1, 4)
 		for _b in range(n_bushes):
 			var angle := rng.randf() * TAU
 			var dist  := rng.randf_range(3.0, 12.0)
 			var bx := tx + cos(angle) * dist
 			var bz := tz + sin(angle) * dist
-			# Skip if near a bridge
+			# Skip if near a bridge or outside boundary
 			var bgk := Vector2i(int(floor(bx / BRIDGE_GRID_CELL)), int(floor(bz / BRIDGE_GRID_CELL)))
 			if _bridge_grid.has(bgk):
+				continue
+			if not _in_boundary(bx, bz):
 				continue
 			var by := _terrain_y(bx, bz)
 			var r  := rng.randf_range(0.8, 2.2)
@@ -3995,6 +4062,8 @@ func _build_undergrowth(trees: Array, paths: Array) -> void:
 					continue
 				var bgk := Vector2i(int(floor(bx / BRIDGE_GRID_CELL)), int(floor(bz / BRIDGE_GRID_CELL)))
 				if _bridge_grid.has(bgk):
+					continue
+				if not _in_boundary(bx, bz):
 					continue
 				var by := _terrain_y(bx, bz)
 				var r  := rng.randf_range(0.6, 1.5)
@@ -4055,6 +4124,8 @@ func _build_rocks(trees: Array, water: Array) -> void:
 			var nx := -dz / tlen; var nz := dx / tlen
 			var off := rng.randf_range(0.5, 4.0)
 			var rx := sx + nx * off; var rz := sz + nz * off
+			if not _in_boundary(rx, rz):
+				continue
 			var ry := _terrain_y(rx, rz)
 			var scale := rng.randf_range(0.15, 0.55)
 			var sy := scale * rng.randf_range(0.4, 0.8)  # flattened
@@ -4070,6 +4141,8 @@ func _build_rocks(trees: Array, water: Array) -> void:
 		rng.seed = i * 135791 + 246810
 		var pt: Array = trees[i]
 		var tx := float(pt[0]); var tz := float(pt[2])
+		if not _in_boundary(tx, tz):
+			continue
 		var n_rocks := rng.randi_range(1, 3)
 		for _r in range(n_rocks):
 			var angle := rng.randf() * TAU
@@ -4170,6 +4243,7 @@ func _build_labels(water: Array) -> void:
 		# Centroid and bounding-box diagonal for sizing
 		var cx := 0.0
 		var cz := 0.0
+		# (boundary check after centroid computed below)
 		var min_x :=  1e9; var max_x := -1e9
 		var min_z :=  1e9; var max_z := -1e9
 		for pt in pts:
@@ -4181,6 +4255,8 @@ func _build_labels(water: Array) -> void:
 			if pz > max_z: max_z = pz
 		cx /= pts.size()
 		cz /= pts.size()
+		if not _in_boundary(cx, cz):
+			continue
 		var diag := Vector2(max_x - min_x, max_z - min_z).length()
 
 		# Taller label for larger features, clamped to a sensible range
@@ -4222,6 +4298,11 @@ func _build_barriers(barriers: Array) -> void:
 		var height: float = float(barrier.get("height", 1.2))
 		var raw_pts: Array = barrier.get("points", [])
 		if raw_pts.size() < 2:
+			continue
+		# Skip barriers whose midpoint is outside the park
+		var _bmx := (float(raw_pts[0][0]) + float(raw_pts[raw_pts.size()-1][0])) * 0.5
+		var _bmz := (float(raw_pts[0][1]) + float(raw_pts[raw_pts.size()-1][1])) * 0.5
+		if not _in_boundary(_bmx, _bmz):
 			continue
 		var pts: Array = _subdivide_pts(raw_pts, 3.0)
 
@@ -4392,6 +4473,11 @@ func _build_staircases(paths: Array) -> void:
 			continue
 		var raw_pts: Array = path.get("points", [])
 		if raw_pts.size() < 2:
+			continue
+		# Skip staircases outside the park
+		var _smx := (float(raw_pts[0][0]) + float(raw_pts[raw_pts.size()-1][0])) * 0.5
+		var _smz := (float(raw_pts[0][2]) + float(raw_pts[raw_pts.size()-1][2])) * 0.5
+		if not _in_boundary(_smx, _smz):
 			continue
 
 		var width: float = _hw_width("steps")
@@ -4605,6 +4691,8 @@ func _build_statues(statues: Array) -> void:
 		var sname: String = str(statue.get("name", ""))
 		var pos: Array = statue.get("position", [0, 0, 0])
 		var sx := float(pos[0]); var sz := float(pos[2])
+		if not _in_boundary(sx, sz):
+			continue
 		var sy := _terrain_y(sx, sz)
 
 		# Skip murals/graffiti/street_art — 2D art, no 3D geometry
@@ -4682,11 +4770,7 @@ func _build_boundary(boundary: Array) -> void:
 		push_warning("ParkLoader: boundary too small – skipping walls")
 		return
 
-	# Store polygon for player clamping (XZ coords as Vector2)
-	boundary_polygon.resize(boundary.size())
-	for i in range(boundary.size()):
-		boundary_polygon[i] = Vector2(float(boundary[i][0]), float(boundary[i][1]))
-
+	# Polygon already populated early in _ready() — just build collision walls
 	var body := StaticBody3D.new()
 	body.name = "BoundaryWalls"
 	add_child(body)
@@ -5371,6 +5455,8 @@ func _build_furniture(paths: Array) -> void:
 					if not _building_grid.has(lbk):
 						if _terrain_slope(lx, lz) > 0.35:
 							continue
+						if not _in_boundary(lx, lz):
+							continue
 						var ly := _terrain_y(lx, lz)
 						var lv := rng.randi_range(0, 2)
 						lamp_xf[lv].append(Transform3D(Basis.IDENTITY, Vector3(lx, ly, lz)))
@@ -5385,6 +5471,8 @@ func _build_furniture(paths: Array) -> void:
 					var bbk := Vector2i(int(floor(bx / BUILDING_GRID_CELL)), int(floor(bz / BUILDING_GRID_CELL)))
 					if not _building_grid.has(bbk):
 						if _terrain_slope(bx, bz) > BENCH_MAX_SLOPE:
+							continue
+						if not _in_boundary(bx, bz):
 							continue
 						var by := _terrain_y(bx, bz)
 						# Face bench toward the path (opposite of offset direction)
@@ -5461,6 +5549,8 @@ func _build_tree_dirt(trees: Array) -> void:
 	for i in trees.size():
 		var pt: Array = trees[i]
 		var tx := float(pt[0]); var tz := float(pt[2])
+		if not _in_boundary(tx, tz):
+			continue
 		var ty := _terrain_y(tx, tz) + 0.02
 		rng.seed = i * 271828 + 31415
 		var r := rng.randf_range(2.0, 4.0)
@@ -5941,6 +6031,8 @@ func _build_blossoms(trees: Array) -> void:
 	for i in trees.size():
 		var pt: Array = trees[i]
 		var tx := float(pt[0]); var tz := float(pt[2])
+		if not _in_boundary(tx, tz):
+			continue
 		var ty := _terrain_y(tx, tz)
 
 		# Reconstruct identical RNG sequence as _build_trees
