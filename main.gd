@@ -51,6 +51,7 @@ func _ready() -> void:
 	_setup_environment()
 	_setup_park()
 	_apply_tunnel_depressions()
+	_perturb_heightmap()
 	_setup_ground()
 	if _park_loader and _park_loader.splat_texture:
 		_apply_splat_map(_park_loader.splat_texture)
@@ -251,7 +252,7 @@ void sky() {
 
 		float n = sky_fbm(cloud_uv * 3.0, 5);
 		// Coverage threshold — higher coverage = more clouds
-		float cloud_mask = smoothstep(1.0 - cloud_coverage, 1.0 - cloud_coverage + 0.3, n);
+		float cloud_mask = smoothstep(1.0 - cloud_coverage - 0.1, 1.0 - cloud_coverage + 0.2, n);
 		cloud_mask *= cloud_density;
 
 		// Cloud shading: top lit by sun, bottom darker
@@ -350,233 +351,233 @@ func _setup_environment() -> void:
 # Day/night keyframes
 # ---------------------------------------------------------------------------
 func _build_keyframes() -> void:
-	# ---- 5.0  Pre-dawn ----
+	# ---- 5.0  Pre-dawn (autumn overcast) ----
 	_keyframes.append({
 		"hour": 5.0,
-		"sky_top":        Color(0.02, 0.03, 0.08),
-		"sky_horizon":    Color(0.10, 0.08, 0.14),
+		"sky_top":        Color(0.04, 0.04, 0.10),
+		"sky_horizon":    Color(0.12, 0.10, 0.16),
 		"gnd_bottom":     Color(0.01, 0.01, 0.02),
-		"gnd_horizon":    Color(0.06, 0.05, 0.10),
+		"gnd_horizon":    Color(0.08, 0.06, 0.10),
 		"sun_angle_max":  3.0,
 		"sun_curve":      0.01,
-		"ambient_color":  Color(0.06, 0.07, 0.14),
-		"ambient_energy": 0.25,
+		"ambient_color":  Color(0.08, 0.08, 0.14),
+		"ambient_energy": 0.35,
 		"exposure":       1.3,
 		"white":          5.0,
-		"glow_intensity": 0.6,
-		"glow_bloom":     0.10,
+		"glow_intensity": 0.7,
+		"glow_bloom":     0.20,
 		"glow_strength":  1.4,
-		"glow_threshold": 0.5,
+		"glow_threshold": 0.25,
 		"glow_cap":       3.0,
 		"ssao_radius":    2.0,
 		"ssao_intensity": 2.8,
 		"ssao_power":     2.0,
 		"ssil_intensity": 0.5,
-		"saturation":     0.55,
+		"saturation":     0.50,
 		"contrast":       1.10,
 		"brightness":     0.92,
-		"fog_color":      Color(0.06, 0.07, 0.14),
+		"fog_color":      Color(0.12, 0.10, 0.14),
 		"fog_energy":     0.5,
 		"fog_scatter":    0.05,
-		"fog_density":    0.0020,
+		"fog_density":    0.0050,
 		"fog_aerial":     0.7,
 		"fog_sky_affect": 0.8,
-		"sun_energy":     0.6,
+		"sun_energy":     0.4,
 		"sun_color":      Color(0.65, 0.72, 0.95),
 		"sun_pitch":      -10.0,
 		"sun_yaw":        -100.0,
 		"shadow_dist":    180.0,
 		"lamp_emission":  2.0,
-		"vol_fog_density":    0.0015,
+		"vol_fog_density":    0.0030,
 		"vol_fog_anisotropy": 0.15,
-		"cloud_coverage":     0.70,
-		"cloud_density":      0.45,
-		"cloud_color_top":    Color(0.50, 0.48, 0.52),
-		"cloud_color_bottom": Color(0.20, 0.18, 0.22),
+		"cloud_coverage":     0.93,
+		"cloud_density":      0.78,
+		"cloud_color_top":    Color(0.42, 0.40, 0.44),
+		"cloud_color_bottom": Color(0.16, 0.14, 0.18),
 		"cloud_speed":        0.003,
 	})
 
-	# ---- 6.5  Sunrise / Golden hour ----
+	# ---- 6.5  Sunrise / Golden hour (autumn overcast) ----
 	_keyframes.append({
 		"hour": 6.5,
-		"sky_top":        Color(0.20, 0.35, 0.65),
-		"sky_horizon":    Color(0.90, 0.55, 0.25),
+		"sky_top":        Color(0.30, 0.28, 0.38),
+		"sky_horizon":    Color(0.70, 0.45, 0.28),
 		"gnd_bottom":     Color(0.08, 0.06, 0.04),
-		"gnd_horizon":    Color(0.50, 0.35, 0.18),
+		"gnd_horizon":    Color(0.40, 0.30, 0.18),
 		"sun_angle_max":  5.0,
 		"sun_curve":      0.08,
-		"ambient_color":  Color(0.45, 0.32, 0.18),
-		"ambient_energy": 0.35,
-		"exposure":       0.85,
+		"ambient_color":  Color(0.40, 0.30, 0.20),
+		"ambient_energy": 0.50,
+		"exposure":       0.78,
 		"white":          4.0,
-		"glow_intensity": 0.7,
-		"glow_bloom":     0.15,
+		"glow_intensity": 0.8,
+		"glow_bloom":     0.25,
 		"glow_strength":  1.2,
-		"glow_threshold": 0.8,
+		"glow_threshold": 0.55,
 		"glow_cap":       5.0,
 		"ssao_radius":    1.5,
 		"ssao_intensity": 2.0,
 		"ssao_power":     1.8,
 		"ssil_intensity": 0.7,
-		"saturation":     1.18,
+		"saturation":     0.88,
 		"contrast":       1.08,
 		"brightness":     1.0,
-		"fog_color":      Color(0.55, 0.38, 0.22),
+		"fog_color":      Color(0.52, 0.38, 0.30),
 		"fog_energy":     0.8,
 		"fog_scatter":    0.35,
-		"fog_density":    0.0015,
+		"fog_density":    0.0040,
 		"fog_aerial":     0.6,
 		"fog_sky_affect": 0.5,
-		"sun_energy":     2.2,
+		"sun_energy":     1.4,
 		"sun_color":      Color(1.0, 0.68, 0.32),
 		"sun_pitch":      -15.0,
 		"sun_yaw":        -95.0,
 		"shadow_dist":    250.0,
 		"lamp_emission":  0.0,
-		"vol_fog_density":    0.0010,
+		"vol_fog_density":    0.0020,
 		"vol_fog_anisotropy": 0.75,
-		"cloud_coverage":     0.60,
-		"cloud_density":      0.50,
-		"cloud_color_top":    Color(0.95, 0.88, 0.70),
-		"cloud_color_bottom": Color(0.55, 0.45, 0.35),
+		"cloud_coverage":     0.92,
+		"cloud_density":      0.75,
+		"cloud_color_top":    Color(0.80, 0.72, 0.58),
+		"cloud_color_bottom": Color(0.45, 0.38, 0.30),
 		"cloud_speed":        0.004,
 	})
 
-	# ---- 12.0  Noon ----
+	# ---- 12.0  Noon (autumn overcast) ----
 	_keyframes.append({
 		"hour": 12.0,
-		"sky_top":        Color(0.18, 0.38, 0.72),
-		"sky_horizon":    Color(0.55, 0.58, 0.68),
-		"gnd_bottom":     Color(0.10, 0.12, 0.08),
-		"gnd_horizon":    Color(0.35, 0.38, 0.30),
+		"sky_top":        Color(0.35, 0.35, 0.42),
+		"sky_horizon":    Color(0.52, 0.48, 0.45),
+		"gnd_bottom":     Color(0.10, 0.10, 0.08),
+		"gnd_horizon":    Color(0.32, 0.30, 0.26),
 		"sun_angle_max":  1.5,
 		"sun_curve":      0.15,
-		"ambient_color":  Color(0.42, 0.38, 0.28),
-		"ambient_energy": 0.35,
-		"exposure":       0.75,
+		"ambient_color":  Color(0.42, 0.38, 0.30),
+		"ambient_energy": 0.55,
+		"exposure":       0.68,
 		"white":          3.5,
-		"glow_intensity": 0.6,
-		"glow_bloom":     0.15,
+		"glow_intensity": 0.8,
+		"glow_bloom":     0.25,
 		"glow_strength":  1.2,
-		"glow_threshold": 0.8,
+		"glow_threshold": 0.55,
 		"glow_cap":       8.0,
 		"ssao_radius":    2.0,
 		"ssao_intensity": 2.0,
 		"ssao_power":     1.8,
 		"ssil_intensity": 0.8,
-		"saturation":     1.18,
+		"saturation":     0.85,
 		"contrast":       1.05,
 		"brightness":     1.0,
-		"fog_color":      Color(0.48, 0.45, 0.38),
+		"fog_color":      Color(0.48, 0.42, 0.38),
 		"fog_energy":     1.0,
 		"fog_scatter":    0.15,
-		"fog_density":    0.0012,
+		"fog_density":    0.0035,
 		"fog_aerial":     0.5,
 		"fog_sky_affect": 0.3,
-		"sun_energy":     2.2,
+		"sun_energy":     1.5,
 		"sun_color":      Color(1.0, 0.94, 0.82),
 		"sun_pitch":      -55.0,
 		"sun_yaw":        -20.0,
 		"shadow_dist":    300.0,
 		"lamp_emission":  0.0,
-		"vol_fog_density":    0.0005,
+		"vol_fog_density":    0.0010,
 		"vol_fog_anisotropy": 0.20,
-		"cloud_coverage":     0.55,
-		"cloud_density":      0.55,
-		"cloud_color_top":    Color(0.95, 0.95, 0.98),
-		"cloud_color_bottom": Color(0.55, 0.55, 0.58),
+		"cloud_coverage":     0.91,
+		"cloud_density":      0.76,
+		"cloud_color_top":    Color(0.78, 0.74, 0.70),
+		"cloud_color_bottom": Color(0.48, 0.44, 0.40),
 		"cloud_speed":        0.005,
 	})
 
-	# ---- 19.0  Sunset / Golden hour ----
+	# ---- 19.0  Sunset / Golden hour (autumn overcast) ----
 	_keyframes.append({
 		"hour": 19.0,
-		"sky_top":        Color(0.15, 0.22, 0.50),
-		"sky_horizon":    Color(0.92, 0.50, 0.20),
+		"sky_top":        Color(0.22, 0.20, 0.35),
+		"sky_horizon":    Color(0.68, 0.42, 0.25),
 		"gnd_bottom":     Color(0.06, 0.04, 0.03),
-		"gnd_horizon":    Color(0.45, 0.30, 0.15),
+		"gnd_horizon":    Color(0.38, 0.28, 0.16),
 		"sun_angle_max":  5.0,
 		"sun_curve":      0.08,
-		"ambient_color":  Color(0.40, 0.28, 0.16),
-		"ambient_energy": 0.32,
-		"exposure":       0.90,
+		"ambient_color":  Color(0.38, 0.28, 0.18),
+		"ambient_energy": 0.48,
+		"exposure":       0.82,
 		"white":          4.0,
-		"glow_intensity": 0.85,
-		"glow_bloom":     0.22,
+		"glow_intensity": 0.95,
+		"glow_bloom":     0.32,
 		"glow_strength":  1.5,
-		"glow_threshold": 0.7,
+		"glow_threshold": 0.45,
 		"glow_cap":       5.0,
 		"ssao_radius":    2.0,
 		"ssao_intensity": 2.2,
 		"ssao_power":     1.9,
 		"ssil_intensity": 0.6,
-		"saturation":     1.25,
+		"saturation":     0.90,
 		"contrast":       1.08,
 		"brightness":     0.98,
-		"fog_color":      Color(0.85, 0.82, 0.75),
+		"fog_color":      Color(0.65, 0.48, 0.35),
 		"fog_energy":     0.8,
 		"fog_scatter":    0.40,
-		"fog_density":    0.0016,
+		"fog_density":    0.0045,
 		"fog_aerial":     0.6,
 		"fog_sky_affect": 0.5,
-		"sun_energy":     2.0,
+		"sun_energy":     1.3,
 		"sun_color":      Color(1.0, 0.60, 0.25),
 		"sun_pitch":      -12.0,
 		"sun_yaw":        95.0,
 		"shadow_dist":    220.0,
 		"lamp_emission":  0.5,
-		"vol_fog_density":    0.0012,
+		"vol_fog_density":    0.0024,
 		"vol_fog_anisotropy": 0.78,
-		"cloud_coverage":     0.65,
-		"cloud_density":      0.50,
-		"cloud_color_top":    Color(0.92, 0.65, 0.45),
-		"cloud_color_bottom": Color(0.60, 0.30, 0.18),
+		"cloud_coverage":     0.93,
+		"cloud_density":      0.78,
+		"cloud_color_top":    Color(0.75, 0.52, 0.38),
+		"cloud_color_bottom": Color(0.48, 0.25, 0.15),
 		"cloud_speed":        0.004,
 	})
 
-	# ---- 21.0  Night ----
+	# ---- 21.0  Night (autumn overcast) ----
 	_keyframes.append({
 		"hour": 21.0,
-		"sky_top":        Color(0.01, 0.015, 0.04),
-		"sky_horizon":    Color(0.03, 0.04, 0.08),
+		"sky_top":        Color(0.02, 0.02, 0.05),
+		"sky_horizon":    Color(0.04, 0.04, 0.08),
 		"gnd_bottom":     Color(0.005, 0.008, 0.012),
 		"gnd_horizon":    Color(0.02, 0.03, 0.06),
 		"sun_angle_max":  3.0,
 		"sun_curve":      0.01,
-		"ambient_color":  Color(0.05, 0.06, 0.12),
-		"ambient_energy": 0.25,
+		"ambient_color":  Color(0.06, 0.06, 0.12),
+		"ambient_energy": 0.35,
 		"exposure":       1.4,
 		"white":          5.0,
-		"glow_intensity": 0.6,
-		"glow_bloom":     0.15,
+		"glow_intensity": 0.7,
+		"glow_bloom":     0.25,
 		"glow_strength":  1.5,
-		"glow_threshold": 0.5,
+		"glow_threshold": 0.25,
 		"glow_cap":       3.0,
 		"ssao_radius":    2.0,
 		"ssao_intensity": 3.0,
 		"ssao_power":     2.0,
 		"ssil_intensity": 0.6,
-		"saturation":     0.60,
+		"saturation":     0.50,
 		"contrast":       1.12,
 		"brightness":     0.92,
-		"fog_color":      Color(0.06, 0.08, 0.14),
+		"fog_color":      Color(0.08, 0.08, 0.12),
 		"fog_energy":     0.5,
 		"fog_scatter":    0.05,
-		"fog_density":    0.0020,
+		"fog_density":    0.0050,
 		"fog_aerial":     0.7,
 		"fog_sky_affect": 0.8,
-		"sun_energy":     0.8,
+		"sun_energy":     0.5,
 		"sun_color":      Color(0.70, 0.78, 1.00),
 		"sun_pitch":      -65.0,
 		"sun_yaw":        40.0,
 		"shadow_dist":    200.0,
 		"lamp_emission":  2.0,
-		"vol_fog_density":    0.0015,
+		"vol_fog_density":    0.0030,
 		"vol_fog_anisotropy": 0.10,
-		"cloud_coverage":     0.72,
-		"cloud_density":      0.40,
-		"cloud_color_top":    Color(0.15, 0.16, 0.25),
-		"cloud_color_bottom": Color(0.06, 0.06, 0.10),
+		"cloud_coverage":     0.95,
+		"cloud_density":      0.80,
+		"cloud_color_top":    Color(0.12, 0.12, 0.18),
+		"cloud_color_bottom": Color(0.05, 0.05, 0.08),
 		"cloud_speed":        0.003,
 	})
 
@@ -800,6 +801,18 @@ func _apply_tunnel_depressions() -> void:
 						_hm_data[idx] = _hm_data[idx] - depth
 
 	print("Terrain: applied ", depressions.size(), " tunnel depressions")
+
+
+func _perturb_heightmap() -> void:
+	## Add ±2cm micro-randomization to the heightmap for subtle terrain undulation.
+	if _hm_data.is_empty():
+		return
+	for zi in _hm_depth:
+		for xi in _hm_width:
+			var idx := zi * _hm_width + xi
+			var h := fmod(abs(float(xi) * 127.1 + float(zi) * 311.7), 1000.0) / 1000.0
+			_hm_data[idx] = _hm_data[idx] + (h - 0.5) * 0.04  # ±2cm
+	print("Terrain: micro-randomization applied (±2cm)")
 
 
 # ---------------------------------------------------------------------------
@@ -1056,17 +1069,30 @@ void fragment() {
 
 	// --- Grass shading ---
 	vec2 uv  = world_pos.xz / tile_m;
+	// Per-cell UV offset to break grass tiling repeat
+	float gcell = hash2(floor(world_pos.xz / (tile_m * 1.5)));
+	uv += vec2(gcell * 0.37, fract(gcell * 7.13) * 0.37);
 	vec2 uv2 = world_pos.xz / (tile_m * 4.0) + vec2(0.37, 0.61);
+	vec2 uv3 = world_pos.xz / (tile_m * 0.5) + vec2(0.13, 0.79);
 	vec3 grass_alb = texture(grass_albedo, uv).rgb;
 	vec3 grass_n1 = texture(grass_normal, uv).rgb;
 	vec3 grass_n2 = texture(grass_normal, uv2).rgb;
-	vec3 grass_nrm = normalize(grass_n1 * 0.65 + grass_n2 * 0.35);
+	vec3 grass_n3 = texture(grass_normal, uv3).rgb;
+	vec3 grass_nrm = normalize(grass_n1 * 0.50 + grass_n2 * 0.30 + grass_n3 * 0.20);
 	float grass_rgh = clamp(texture(grass_rough, uv).r * 0.15 + 0.72, 0.0, 1.0);
+	// Roughness micro-variation — wet/dry patches at ~8m scale
+	float rgh_var = vnoise(world_pos.xz * 0.125) * 0.16 - 0.08;
+	grass_rgh = clamp(grass_rgh + rgh_var, 0.0, 1.0);
 	float f = clamp(fbm(world_pos.xz * 0.004, 4) * 0.45
 	              + fbm(world_pos.xz * 0.025, 3) * 0.35 + 0.30, 0.48, 1.1);
 	vec3 dirt = vec3(0.28, 0.20, 0.10);
 	float wear = smoothstep(0.60, 0.50, f);
 	grass_alb = mix(grass_alb * f, dirt, wear * 0.7);
+	// Macro color variation — warm vs cool patches at ~20m scale
+	float color_var = vnoise(world_pos.xz * 0.05 + vec2(17.3, 41.7));
+	vec3 warm_tint = grass_alb * vec3(1.10, 0.95, 0.75);  // golden
+	vec3 cool_tint = grass_alb * vec3(0.92, 0.95, 0.80);  // olive
+	grass_alb = mix(cool_tint, warm_tint, color_var);
 
 	// Meadow/wild grass blend — large-scale FBM patches
 	vec2 muv = world_pos.xz / meadow_tile_m;
@@ -1092,10 +1118,15 @@ void fragment() {
 	grass_nrm.rg += vec2(bump_dx, bump_dz) * 0.15;
 	grass_nrm = normalize(grass_nrm);
 
-	// Warm green push — richer green, subtle
-	grass_alb.r *= 1.02;
-	grass_alb.g *= 1.06;
-	grass_alb.b *= 0.88;
+	// Autumn lawn push — warm golden-brown
+	grass_alb.r *= 1.15;
+	grass_alb.g *= 0.88;
+	grass_alb.b *= 0.65;
+	// Camera-distance detail — fine grain albedo variation fading beyond 15m
+	float cam_dist = length(world_pos.xyz - INV_VIEW_MATRIX[3].xyz);
+	float detail_fade = 1.0 - smoothstep(5.0, 15.0, cam_dist);
+	float fine_detail = vnoise(world_pos.xz * 50.0) * 0.12 - 0.06;
+	grass_alb += fine_detail * detail_fade;
 
 	// Flower carpet — per-pixel flower dots for bluebell carpet illusion
 	// Large-scale patch mask matches CPU wildflower placement noise
@@ -1104,28 +1135,31 @@ void fragment() {
 	carpet_mask *= (1.0 - wear * 0.8);
 	float canopy_shade = 1.0 - smoothstep(0.35, 0.65, fbm(world_pos.xz * 0.15, 3));
 	carpet_mask *= mix(0.15, 1.0, canopy_shade);
-	// High-frequency flower dots — multi-scale with size variation
-	float dot_n1 = vnoise(world_pos.xz * 10.0);
-	float dot_n2 = vnoise(world_pos.xz * 22.0 + vec2(33.7, 17.1));
+	// Domain-warped flower dots — breaks lattice grid artifacts
+	vec2 warp = vec2(vnoise(world_pos.xz * 2.3 + vec2(41.0, 73.0)),
+	                 vnoise(world_pos.xz * 2.7 + vec2(91.0, 37.0))) * 0.4;
+	vec2 warped = world_pos.xz + warp;
+	float dot_n1 = vnoise(warped * 7.3);
+	float dot_n2 = vnoise(warped * 31.7 + vec2(33.7, 17.1));
 	float dot_combined = dot_n1 * 0.65 + dot_n2 * 0.35;
 	// Dot size varies with secondary noise — some tight, some diffuse
-	float size_var = vnoise(world_pos.xz * 6.0 + vec2(7.1, 19.3));
+	float size_var = vnoise(warped * 5.1 + vec2(7.1, 19.3));
 	float dot_lo = 0.34 + size_var * 0.08;  // 0.34–0.42
 	float dot_hi = dot_lo + 0.16;
 	float dot_mask = smoothstep(dot_lo, dot_hi, dot_combined);
-	// 3 color bands: blue-purple (dominant 85%), white-cream (10%), pale yellow (5%)
-	float hue_var = vnoise(world_pos.xz * 4.0);
-	float band_sel = vnoise(world_pos.xz * 7.5 + vec2(42.0, 13.0));
+	// 3 autumn color bands: russet/brown (70%), goldenrod (20%), cream aster (10%)
+	float hue_var = vnoise(warped * 4.0);
+	float band_sel = vnoise(warped * 7.5 + vec2(42.0, 13.0));
 	vec3 flower_col;
-	if (band_sel > 0.95) {
-		// Pale yellow (5%)
-		flower_col = mix(vec3(0.55, 0.52, 0.20), vec3(0.62, 0.58, 0.25), hue_var);
-	} else if (band_sel > 0.85) {
-		// White-cream (10%)
-		flower_col = mix(vec3(0.65, 0.62, 0.55), vec3(0.72, 0.68, 0.60), hue_var);
+	if (band_sel > 0.90) {
+		// Cream aster (10%)
+		flower_col = mix(vec3(0.68, 0.62, 0.50), vec3(0.72, 0.66, 0.55), hue_var);
+	} else if (band_sel > 0.70) {
+		// Goldenrod (20%)
+		flower_col = mix(vec3(0.65, 0.55, 0.12), vec3(0.72, 0.60, 0.15), hue_var);
 	} else {
-		// Blue-purple (dominant)
-		flower_col = mix(vec3(0.14, 0.12, 0.45), vec3(0.22, 0.16, 0.52), hue_var);
+		// Russet/brown (dominant)
+		flower_col = mix(vec3(0.40, 0.25, 0.10), vec3(0.50, 0.32, 0.14), hue_var);
 	}
 	// Vary density: denser near canopy shade → more saturated
 	float density_boost = canopy_shade * 0.3;
@@ -1138,7 +1172,7 @@ void fragment() {
 	             + fbm(world_pos.xz * 0.4, 2) * 0.3
 	             + fbm(world_pos.xz * 1.2, 2) * 0.2;
 	float sun_patch = smoothstep(0.38, 0.62, dapple);
-	vec3 sun_tint = vec3(1.12, 1.06, 0.85); // warm golden highlight
+	vec3 sun_tint = vec3(1.15, 1.02, 0.75); // warmer amber highlight
 	grass_alb *= mix(vec3(1.0), sun_tint, sun_patch * 0.45);
 
 	if (mat_idx > 0 && path_weight > 0.001) {
@@ -1147,6 +1181,14 @@ void fragment() {
 		float tex_set = ml.x;
 		vec3 tint = ml.yzw;
 		vec2 path_uv = world_pos.xz / path_tile_m;
+		// Stochastic UV rotation — random 0/90/180/270 per tile cell to break repeat
+		float cell_hash = hash2(floor(world_pos.xz / path_tile_m));
+		float rot_idx = floor(cell_hash * 4.0);
+		vec2 cell_uv = fract(path_uv);
+		if (rot_idx > 2.5) cell_uv = vec2(cell_uv.y, 1.0 - cell_uv.x);
+		else if (rot_idx > 1.5) cell_uv = 1.0 - cell_uv;
+		else if (rot_idx > 0.5) cell_uv = vec2(1.0 - cell_uv.y, cell_uv.x);
+		path_uv = floor(path_uv) + cell_uv;
 		vec3 p_alb = texture(path_alb_arr, vec3(path_uv, tex_set)).rgb * tint;
 		vec3 p_nrm = texture(path_nrm_arr, vec3(path_uv, tex_set)).rgb;
 		float p_rgh = clamp(texture(path_rgh_arr, vec3(path_uv, tex_set)).r + 0.10, 0.0, 1.0);
