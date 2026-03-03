@@ -866,9 +866,9 @@ vec4 mat_lookup(int idx) {
 	if (idx == 21) return vec4(3.0, 0.46, 0.32, 0.14);   // woodchips
 	if (idx == 22) return vec4(3.0, 0.40, 0.28, 0.12);   // mulch
 	if (idx == 23) return vec4(3.0, 0.76, 0.70, 0.52);   // sand
-	if (idx == 24) return vec4(2.0, 0.74, 0.66, 0.50);   // hw:footway
+	if (idx == 24) return vec4(1.0, 0.72, 0.68, 0.62);   // hw:footway → concrete sidewalk
 	if (idx == 25) return vec4(0.0, 0.30, 0.30, 0.32);   // hw:cycleway
-	if (idx == 26) return vec4(2.0, 0.80, 0.74, 0.62);   // hw:pedestrian
+	if (idx == 26) return vec4(1.0, 0.76, 0.72, 0.66);   // hw:pedestrian → concrete plaza
 	if (idx == 27) return vec4(3.0, 0.54, 0.44, 0.30);   // hw:path
 	if (idx == 28) return vec4(1.0, 0.64, 0.58, 0.48);   // hw:steps
 	if (idx == 29) return vec4(3.0, 0.48, 0.40, 0.26);   // hw:track
@@ -976,17 +976,34 @@ void fragment() {
 	carpet_mask *= (1.0 - wear * 0.8);
 	float canopy_shade = 1.0 - smoothstep(0.35, 0.65, fbm(world_pos.xz * 0.15, 3));
 	carpet_mask *= mix(0.15, 1.0, canopy_shade);
-	// High-frequency flower dots — multi-scale for organic pattern
+	// High-frequency flower dots — multi-scale with size variation
 	float dot_n1 = vnoise(world_pos.xz * 10.0);
 	float dot_n2 = vnoise(world_pos.xz * 22.0 + vec2(33.7, 17.1));
 	float dot_combined = dot_n1 * 0.65 + dot_n2 * 0.35;
-	float dot_mask = smoothstep(0.38, 0.56, dot_combined);
-	// Color variation between individual dots
+	// Dot size varies with secondary noise — some tight, some diffuse
+	float size_var = vnoise(world_pos.xz * 6.0 + vec2(7.1, 19.3));
+	float dot_lo = 0.34 + size_var * 0.08;  // 0.34–0.42
+	float dot_hi = dot_lo + 0.16;
+	float dot_mask = smoothstep(dot_lo, dot_hi, dot_combined);
+	// 3 color bands: blue-purple (dominant 85%), white-cream (10%), pale yellow (5%)
 	float hue_var = vnoise(world_pos.xz * 4.0);
-	vec3 flower_col = mix(vec3(0.14, 0.12, 0.45), vec3(0.22, 0.16, 0.52), hue_var);
+	float band_sel = vnoise(world_pos.xz * 7.5 + vec2(42.0, 13.0));
+	vec3 flower_col;
+	if (band_sel > 0.95) {
+		// Pale yellow (5%)
+		flower_col = mix(vec3(0.55, 0.52, 0.20), vec3(0.62, 0.58, 0.25), hue_var);
+	} else if (band_sel > 0.85) {
+		// White-cream (10%)
+		flower_col = mix(vec3(0.65, 0.62, 0.55), vec3(0.72, 0.68, 0.60), hue_var);
+	} else {
+		// Blue-purple (dominant)
+		flower_col = mix(vec3(0.14, 0.12, 0.45), vec3(0.22, 0.16, 0.52), hue_var);
+	}
+	// Vary density: denser near canopy shade → more saturated
+	float density_boost = canopy_shade * 0.3;
 	// Darken grass between flower dots for depth
-	vec3 carpet_ground = mix(grass_alb * 0.70, flower_col, dot_mask);
-	grass_alb = mix(grass_alb, carpet_ground, carpet_mask * 0.55);
+	vec3 carpet_ground = mix(grass_alb * 0.70, flower_col, dot_mask + density_boost * dot_mask);
+	grass_alb = mix(grass_alb, carpet_ground, carpet_mask * 0.35);
 
 	// Dappled sunlight — simulates light filtering through tree canopy
 	float dapple = fbm(world_pos.xz * 0.15, 3) * 0.5
