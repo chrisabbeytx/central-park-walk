@@ -33,7 +33,7 @@ const TIME_SPEEDS: Array = [0.001, 0.01, 0.1, 0.0]
 const TIME_SPEED_NAMES: Array = ["1x", "10x", "100x", "Paused"]
 
 var _env: Environment
-var _sky_mat: ProceduralSkyMaterial
+var _sky_mat: ShaderMaterial
 var _sun: DirectionalLight3D
 var _lamp_mat: StandardMaterial3D
 var _terrain_mat: ShaderMaterial
@@ -185,11 +185,103 @@ func _load_img_tex(path: String) -> ImageTexture:
 	return ImageTexture.create_from_image(img)
 
 
+func _cloud_sky_shader_code() -> String:
+	return """shader_type sky;
+
+uniform vec3 sky_top_color = vec3(0.18, 0.38, 0.72);
+uniform vec3 sky_horizon_color = vec3(0.55, 0.58, 0.68);
+uniform vec3 ground_bottom_color = vec3(0.10, 0.12, 0.08);
+uniform vec3 ground_horizon_color = vec3(0.35, 0.38, 0.30);
+
+uniform float cloud_coverage = 0.65;
+uniform float cloud_density = 0.50;
+uniform float cloud_speed = 0.004;
+uniform vec3 cloud_color_top = vec3(0.90, 0.90, 0.92);
+uniform vec3 cloud_color_bottom = vec3(0.45, 0.45, 0.50);
+
+float sky_hash(vec2 p) {
+	p = fract(p * vec2(127.1, 311.7));
+	p += dot(p, p + 43.21);
+	return fract(p.x * p.y);
+}
+float sky_vnoise(vec2 p) {
+	vec2 i = floor(p); vec2 f = fract(p);
+	vec2 u = f * f * (3.0 - 2.0 * f);
+	return mix(mix(sky_hash(i), sky_hash(i + vec2(1.0, 0.0)), u.x),
+	           mix(sky_hash(i + vec2(0.0, 1.0)), sky_hash(i + vec2(1.0, 1.0)), u.x), u.y);
+}
+float sky_fbm(vec2 p, int oct) {
+	float v = 0.0, a = 0.5;
+	for (int i = 0; i < oct; i++) {
+		v += a * sky_vnoise(p);
+		p *= 2.13;
+		a *= 0.47;
+	}
+	return v;
+}
+
+void sky() {
+	vec3 dir = EYEDIR;
+	float elev = dir.y;
+
+	// --- Sky gradient ---
+	vec3 sky_col;
+	if (elev >= 0.0) {
+		float t = clamp(elev * 2.5, 0.0, 1.0);
+		sky_col = mix(sky_horizon_color, sky_top_color, t);
+	} else {
+		float t = clamp(-elev * 4.0, 0.0, 1.0);
+		sky_col = mix(ground_horizon_color, ground_bottom_color, t);
+	}
+
+	// --- Sun disc ---
+	float sun_dot = dot(dir, LIGHT0_DIRECTION);
+	float sun_disc = smoothstep(0.9992, 0.9998, sun_dot);
+	vec3 sun_col = LIGHT0_COLOR * LIGHT0_ENERGY * 2.0;
+	// Sun glow halo
+	float sun_glow = pow(max(sun_dot, 0.0), 64.0) * 0.3;
+	sky_col += sun_col * (sun_disc + sun_glow);
+
+	// --- FBM cloud layer ---
+	if (elev > -0.05) {
+		// Project onto cloud dome — higher elevation = closer to zenith
+		float cloud_y = max(elev, 0.01);
+		vec2 cloud_uv = dir.xz / (cloud_y + 0.1) * 0.8;
+		cloud_uv += vec2(TIME * cloud_speed, TIME * cloud_speed * 0.7);
+
+		float n = sky_fbm(cloud_uv * 3.0, 5);
+		// Coverage threshold — higher coverage = more clouds
+		float cloud_mask = smoothstep(1.0 - cloud_coverage, 1.0 - cloud_coverage + 0.3, n);
+		cloud_mask *= cloud_density;
+
+		// Cloud shading: top lit by sun, bottom darker
+		float sun_illum = max(dot(LIGHT0_DIRECTION, vec3(0.0, 1.0, 0.0)), 0.0);
+		float edge_lit = pow(max(sun_dot, 0.0), 4.0) * 0.4;
+		vec3 cloud_col = mix(cloud_color_bottom, cloud_color_top, sun_illum * 0.6 + 0.4);
+		// Sun-facing edges get warm highlight
+		cloud_col += LIGHT0_COLOR * edge_lit * 0.5;
+
+		// Fade clouds near horizon to blend with haze
+		float horizon_fade = smoothstep(0.0, 0.12, elev);
+		cloud_mask *= horizon_fade;
+
+		sky_col = mix(sky_col, cloud_col, cloud_mask);
+	}
+
+	COLOR = sky_col;
+}
+"""
+
+
 func _setup_environment() -> void:
-	_sky_mat = ProceduralSkyMaterial.new()
+	var sky_shader := Shader.new()
+	sky_shader.code = _cloud_sky_shader_code()
+	_sky_mat = ShaderMaterial.new()
+	_sky_mat.shader = sky_shader
 
 	var sky := Sky.new()
 	sky.sky_material = _sky_mat
+	sky.process_mode = Sky.PROCESS_MODE_REALTIME
 
 	_env = Environment.new()
 	_env.background_mode       = Environment.BG_SKY
@@ -213,18 +305,19 @@ func _setup_environment() -> void:
 	_env.adjustment_brightness = 1.02
 	_env.fog_enabled           = true
 
-	# Volumetric fog — light shafts, depth haze, ground fog
-	_env.volumetric_fog_enabled = false
+	# Volumetric fog — light shafts (god rays at sunrise/sunset via high anisotropy)
+	_env.volumetric_fog_enabled = true
 	_env.volumetric_fog_density = 0.0008
 	_env.volumetric_fog_albedo = Color(1.0, 1.0, 1.0)
-	_env.volumetric_fog_emission = Color(0, 0, 0)
+	_env.volumetric_fog_emission = Color(0.8, 0.85, 0.9)
+	_env.volumetric_fog_emission_energy = 0.05
 	_env.volumetric_fog_anisotropy = 0.3
 	_env.volumetric_fog_length = 200.0
 	_env.volumetric_fog_detail_spread = 2.0
 	_env.volumetric_fog_ambient_inject = 0.5
 	_env.volumetric_fog_gi_inject = 0.0
 	_env.volumetric_fog_sky_affect = 0.15
-	_env.volumetric_fog_temporal_reprojection_enabled = false
+	_env.volumetric_fog_temporal_reprojection_enabled = true
 
 	# SDFGI — global illumination (green bounce under canopies, warm path reflections)
 	_env.sdfgi_enabled = false
@@ -295,7 +388,12 @@ func _build_keyframes() -> void:
 		"shadow_dist":    180.0,
 		"lamp_emission":  2.0,
 		"vol_fog_density":    0.0015,
-		"vol_fog_anisotropy": 0.1,
+		"vol_fog_anisotropy": 0.15,
+		"cloud_coverage":     0.70,
+		"cloud_density":      0.45,
+		"cloud_color_top":    Color(0.50, 0.48, 0.52),
+		"cloud_color_bottom": Color(0.20, 0.18, 0.22),
+		"cloud_speed":        0.003,
 	})
 
 	# ---- 6.5  Sunrise / Golden hour ----
@@ -336,7 +434,12 @@ func _build_keyframes() -> void:
 		"shadow_dist":    250.0,
 		"lamp_emission":  0.0,
 		"vol_fog_density":    0.0010,
-		"vol_fog_anisotropy": 0.5,
+		"vol_fog_anisotropy": 0.75,
+		"cloud_coverage":     0.60,
+		"cloud_density":      0.50,
+		"cloud_color_top":    Color(0.95, 0.88, 0.70),
+		"cloud_color_bottom": Color(0.55, 0.45, 0.35),
+		"cloud_speed":        0.004,
 	})
 
 	# ---- 12.0  Noon ----
@@ -377,7 +480,12 @@ func _build_keyframes() -> void:
 		"shadow_dist":    300.0,
 		"lamp_emission":  0.0,
 		"vol_fog_density":    0.0005,
-		"vol_fog_anisotropy": 0.3,
+		"vol_fog_anisotropy": 0.20,
+		"cloud_coverage":     0.55,
+		"cloud_density":      0.55,
+		"cloud_color_top":    Color(0.95, 0.95, 0.98),
+		"cloud_color_bottom": Color(0.55, 0.55, 0.58),
+		"cloud_speed":        0.005,
 	})
 
 	# ---- 19.0  Sunset / Golden hour ----
@@ -418,7 +526,12 @@ func _build_keyframes() -> void:
 		"shadow_dist":    220.0,
 		"lamp_emission":  0.5,
 		"vol_fog_density":    0.0012,
-		"vol_fog_anisotropy": 0.6,
+		"vol_fog_anisotropy": 0.78,
+		"cloud_coverage":     0.65,
+		"cloud_density":      0.50,
+		"cloud_color_top":    Color(0.92, 0.65, 0.45),
+		"cloud_color_bottom": Color(0.60, 0.30, 0.18),
+		"cloud_speed":        0.004,
 	})
 
 	# ---- 21.0  Night ----
@@ -459,7 +572,12 @@ func _build_keyframes() -> void:
 		"shadow_dist":    200.0,
 		"lamp_emission":  2.0,
 		"vol_fog_density":    0.0015,
-		"vol_fog_anisotropy": 0.1,
+		"vol_fog_anisotropy": 0.10,
+		"cloud_coverage":     0.72,
+		"cloud_density":      0.40,
+		"cloud_color_top":    Color(0.15, 0.16, 0.25),
+		"cloud_color_bottom": Color(0.06, 0.06, 0.10),
+		"cloud_speed":        0.003,
 	})
 
 
@@ -507,13 +625,23 @@ func _apply_time_of_day() -> void:
 	var b: Dictionary = pair[1]
 	var t: float = float(pair[2])
 
-	# Sky material
-	_sky_mat.sky_top_color        = _lerp_kf("sky_top", a, b, t)
-	_sky_mat.sky_horizon_color    = _lerp_kf("sky_horizon", a, b, t)
-	_sky_mat.ground_bottom_color  = _lerp_kf("gnd_bottom", a, b, t)
-	_sky_mat.ground_horizon_color = _lerp_kf("gnd_horizon", a, b, t)
-	_sky_mat.sun_angle_max        = _lerp_kf("sun_angle_max", a, b, t)
-	_sky_mat.sun_curve            = _lerp_kf("sun_curve", a, b, t)
+	# Sky shader material
+	var sky_top: Color = _lerp_kf("sky_top", a, b, t)
+	var sky_hor: Color = _lerp_kf("sky_horizon", a, b, t)
+	var gnd_bot: Color = _lerp_kf("gnd_bottom", a, b, t)
+	var gnd_hor: Color = _lerp_kf("gnd_horizon", a, b, t)
+	_sky_mat.set_shader_parameter("sky_top_color", Vector3(sky_top.r, sky_top.g, sky_top.b))
+	_sky_mat.set_shader_parameter("sky_horizon_color", Vector3(sky_hor.r, sky_hor.g, sky_hor.b))
+	_sky_mat.set_shader_parameter("ground_bottom_color", Vector3(gnd_bot.r, gnd_bot.g, gnd_bot.b))
+	_sky_mat.set_shader_parameter("ground_horizon_color", Vector3(gnd_hor.r, gnd_hor.g, gnd_hor.b))
+	# Cloud properties
+	_sky_mat.set_shader_parameter("cloud_coverage", _lerp_kf("cloud_coverage", a, b, t))
+	_sky_mat.set_shader_parameter("cloud_density", _lerp_kf("cloud_density", a, b, t))
+	var cc_top: Color = _lerp_kf("cloud_color_top", a, b, t)
+	var cc_bot: Color = _lerp_kf("cloud_color_bottom", a, b, t)
+	_sky_mat.set_shader_parameter("cloud_color_top", Vector3(cc_top.r, cc_top.g, cc_top.b))
+	_sky_mat.set_shader_parameter("cloud_color_bottom", Vector3(cc_bot.r, cc_bot.g, cc_bot.b))
+	_sky_mat.set_shader_parameter("cloud_speed", _lerp_kf("cloud_speed", a, b, t))
 
 	# Ambient
 	_env.ambient_light_color  = _lerp_kf("ambient_color", a, b, t)

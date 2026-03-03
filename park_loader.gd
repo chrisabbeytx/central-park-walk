@@ -3124,6 +3124,9 @@ func _build_buildings(buildings: Array) -> void:
 	var roof_verts   := PackedVector3Array()
 	var roof_normals := PackedVector3Array()
 	var roof_colors  := PackedColorArray()
+	# Water tower geometry (batched)
+	var wt_verts   := PackedVector3Array()
+	var wt_normals := PackedVector3Array()
 
 	var rng := RandomNumberGenerator.new()
 
@@ -3154,11 +3157,11 @@ func _build_buildings(buildings: Array) -> void:
 		cx /= float(n); cz /= float(n)
 		var style := _building_style(cx, cz, h)
 
-		# Per-building tint variation via vertex color
+		# Per-building tint variation via vertex color (±15%)
 		rng.seed = int(abs(cx * 73.7 + cz * 131.1)) + 12345
-		var rv := rng.randf_range(-0.06, 0.06)
-		var gv := rng.randf_range(-0.04, 0.04)
-		var bv := rng.randf_range(-0.03, 0.03)
+		var rv := rng.randf_range(-0.15, 0.15)
+		var gv := rng.randf_range(-0.12, 0.12)
+		var bv := rng.randf_range(-0.08, 0.08)
 		var bld_tint := Color(1.0 + rv, 1.0 + gv, 1.0 + bv)
 
 		# Mark building footprint cells
@@ -3170,6 +3173,13 @@ func _build_buildings(buildings: Array) -> void:
 										int(floor(bz / BUILDING_GRID_CELL)) + dj)
 					_building_grid[key] = true
 
+		# --- Setback for tall towers (>40m): upper 35% recedes 1.5m ---
+		var setback_h := 0.0  # height where setback begins (0 = no setback)
+		var setback_inset := 1.5
+		var has_setback := h > 40.0
+		if has_setback:
+			setback_h = h * 0.65
+
 		# Walls – UV.x = metres along wall, UV.y = metres above base
 		for i in n:
 			var p1 := Vector2(float(pts[i][0]),           float(pts[i][1]))
@@ -3179,22 +3189,88 @@ func _build_buildings(buildings: Array) -> void:
 				continue
 			var seg_len := seg.length()
 			var norm := Vector3(-seg.y, 0.0, seg.x).normalized()
-			var a := Vector3(p1.x, base, p1.y)
-			var b := Vector3(p2.x, base, p2.y)
-			var c := Vector3(p2.x, top,  p2.y)
-			var d := Vector3(p1.x, top,  p1.y)
-			sv[style].append_array(PackedVector3Array([a, b, c, a, c, d]))
-			for _j in range(6):
-				sn[style].append(norm)
-				sc[style].append(bld_tint)
-			su[style].append_array(PackedVector2Array([
-				Vector2(0.0,     0.0),
-				Vector2(seg_len, 0.0),
-				Vector2(seg_len, h),
-				Vector2(0.0,     0.0),
-				Vector2(seg_len, h),
-				Vector2(0.0,     h),
-			]))
+
+			if has_setback:
+				# Lower portion: base → setback
+				var sb_y := base + setback_h
+				var a := Vector3(p1.x, base, p1.y)
+				var b := Vector3(p2.x, base, p2.y)
+				var c := Vector3(p2.x, sb_y, p2.y)
+				var d := Vector3(p1.x, sb_y, p1.y)
+				sv[style].append_array(PackedVector3Array([a, b, c, a, c, d]))
+				for _j in range(6):
+					sn[style].append(norm)
+					sc[style].append(bld_tint)
+				su[style].append_array(PackedVector2Array([
+					Vector2(0.0, 0.0), Vector2(seg_len, 0.0),
+					Vector2(seg_len, setback_h), Vector2(0.0, 0.0),
+					Vector2(seg_len, setback_h), Vector2(0.0, setback_h),
+				]))
+				# Upper portion: setback inward along normal
+				var inset_off := Vector2(norm.x, norm.z) * setback_inset
+				var ip1 := p1 + inset_off
+				var ip2 := p2 + inset_off
+				var upper_h := h - setback_h
+				var ua := Vector3(ip1.x, sb_y, ip1.y)
+				var ub := Vector3(ip2.x, sb_y, ip2.y)
+				var uc := Vector3(ip2.x, top, ip2.y)
+				var ud := Vector3(ip1.x, top, ip1.y)
+				sv[style].append_array(PackedVector3Array([ua, ub, uc, ua, uc, ud]))
+				for _j in range(6):
+					sn[style].append(norm)
+					sc[style].append(bld_tint * Color(0.95, 0.95, 0.95))
+				su[style].append_array(PackedVector2Array([
+					Vector2(0.0, setback_h), Vector2(seg_len, setback_h),
+					Vector2(seg_len, h), Vector2(0.0, setback_h),
+					Vector2(seg_len, h), Vector2(0.0, h),
+				]))
+			else:
+				var a := Vector3(p1.x, base, p1.y)
+				var b := Vector3(p2.x, base, p2.y)
+				var c := Vector3(p2.x, top,  p2.y)
+				var d := Vector3(p1.x, top,  p1.y)
+				sv[style].append_array(PackedVector3Array([a, b, c, a, c, d]))
+				for _j in range(6):
+					sn[style].append(norm)
+					sc[style].append(bld_tint)
+				su[style].append_array(PackedVector2Array([
+					Vector2(0.0,     0.0),
+					Vector2(seg_len, 0.0),
+					Vector2(seg_len, h),
+					Vector2(0.0,     0.0),
+					Vector2(seg_len, h),
+					Vector2(0.0,     h),
+				]))
+
+		# --- Rooftop parapet for buildings >10m ---
+		var parapet_h := 0.8
+		if h > 10.0:
+			for i in n:
+				var p1 := Vector2(float(pts[i][0]),           float(pts[i][1]))
+				var p2 := Vector2(float(pts[(i + 1) % n][0]), float(pts[(i + 1) % n][1]))
+				var seg := p2 - p1
+				if seg.length_squared() < 0.01:
+					continue
+				var seg_len := seg.length()
+				var norm := Vector3(-seg.y, 0.0, seg.x).normalized()
+				# If setback, parapet sits on upper (inset) polygon
+				var pp1 := p1; var pp2 := p2
+				if has_setback:
+					var inset_off := Vector2(norm.x, norm.z) * setback_inset
+					pp1 = p1 + inset_off; pp2 = p2 + inset_off
+				var pa := Vector3(pp1.x, top, pp1.y)
+				var pb := Vector3(pp2.x, top, pp2.y)
+				var pc := Vector3(pp2.x, top + parapet_h, pp2.y)
+				var pd := Vector3(pp1.x, top + parapet_h, pp1.y)
+				sv[style].append_array(PackedVector3Array([pa, pb, pc, pa, pc, pd]))
+				for _j in range(6):
+					sn[style].append(norm)
+					sc[style].append(bld_tint * Color(0.90, 0.90, 0.90))
+				su[style].append_array(PackedVector2Array([
+					Vector2(0.0, h), Vector2(seg_len, h),
+					Vector2(seg_len, h + parapet_h), Vector2(0.0, h),
+					Vector2(seg_len, h + parapet_h), Vector2(0.0, h + parapet_h),
+				]))
 
 		# Flat roof with randomized color
 		var polygon := PackedVector2Array()
@@ -3217,6 +3293,60 @@ func _build_buildings(buildings: Array) -> void:
 			for _j in range(3):
 				roof_normals.append(Vector3.UP)
 				roof_colors.append(roof_col)
+
+		# --- Water tower: ~15% of buildings >15m ---
+		var wt_hash := fmod(abs(cx * 23.7 + cz * 41.3), 1.0)
+		if h > 15.0 and wt_hash < 0.15:
+			var wt_r := 1.2
+			var wt_h := 2.5
+			var leg_h := 1.5
+			var wt_base_y := top + leg_h
+			var wt_top_y := wt_base_y + wt_h
+			var wt_segs := 8
+			# Tank cylinder
+			for si in wt_segs:
+				var a0 := TAU * float(si) / float(wt_segs)
+				var a1 := TAU * float(si + 1) / float(wt_segs)
+				var c0 := cos(a0); var s0 := sin(a0)
+				var c1 := cos(a1); var s1 := sin(a1)
+				var va := Vector3(cx + c0 * wt_r, wt_base_y, cz + s0 * wt_r)
+				var vb := Vector3(cx + c1 * wt_r, wt_base_y, cz + s1 * wt_r)
+				var vc := Vector3(cx + c1 * wt_r, wt_top_y,  cz + s1 * wt_r)
+				var vd := Vector3(cx + c0 * wt_r, wt_top_y,  cz + s0 * wt_r)
+				var vn0 := Vector3(c0, 0.0, s0)
+				var vn1 := Vector3(c1, 0.0, s1)
+				wt_verts.append_array(PackedVector3Array([va, vb, vc, va, vc, vd]))
+				wt_normals.append_array(PackedVector3Array([vn0, vn1, vn1, vn0, vn1, vn0]))
+			# Tank top cap
+			for si in range(1, wt_segs - 1):
+				var a0 := 0.0
+				var a1 := TAU * float(si) / float(wt_segs)
+				var a2 := TAU * float(si + 1) / float(wt_segs)
+				wt_verts.append(Vector3(cx + cos(a0) * wt_r, wt_top_y, cz + sin(a0) * wt_r))
+				wt_verts.append(Vector3(cx + cos(a1) * wt_r, wt_top_y, cz + sin(a1) * wt_r))
+				wt_verts.append(Vector3(cx + cos(a2) * wt_r, wt_top_y, cz + sin(a2) * wt_r))
+				for _j in 3:
+					wt_normals.append(Vector3.UP)
+			# 4 legs
+			var leg_r := 0.08
+			for li in 4:
+				var la := TAU * float(li) / 4.0 + 0.4
+				var lx := cx + cos(la) * (wt_r - 0.2)
+				var lz := cz + sin(la) * (wt_r - 0.2)
+				# Simple box leg
+				for face_i in 4:
+					var fa := TAU * float(face_i) / 4.0
+					var fb := TAU * float(face_i + 1) / 4.0
+					var fc0 := cos(fa) * leg_r; var fs0 := sin(fa) * leg_r
+					var fc1 := cos(fb) * leg_r; var fs1 := sin(fb) * leg_r
+					var la_ := Vector3(lx + fc0, top, lz + fs0)
+					var lb_ := Vector3(lx + fc1, top, lz + fs1)
+					var lc_ := Vector3(lx + fc1, wt_base_y, lz + fs1)
+					var ld_ := Vector3(lx + fc0, wt_base_y, lz + fs0)
+					var ln_ := Vector3(cos(fa), 0.0, sin(fa))
+					wt_verts.append_array(PackedVector3Array([la_, lb_, lc_, la_, lc_, ld_]))
+					for _j in 6:
+						wt_normals.append(ln_)
 
 	# Build wall meshes per style
 	var style_names := ["Limestone", "Glass", "RedBrick", "BuffBrick", "DarkStone"]
@@ -3259,6 +3389,10 @@ func _build_buildings(buildings: Array) -> void:
 		r_mi.mesh = r_mesh
 		r_mi.name = "BuildingRoofs"
 		add_child(r_mi)
+
+	# Water towers mesh
+	if not wt_verts.is_empty():
+		_add_batch_mesh(wt_verts, wt_normals, Color(0.42, 0.32, 0.22), 0.85, "WaterTowers")
 
 
 func _add_batch_mesh(verts: PackedVector3Array, normals: PackedVector3Array,
@@ -3325,31 +3459,60 @@ void vertex() {
 }
 
 void fragment() {
-	// Per-building hash for window size jitter
+	// Per-building hash for window size jitter + UV offset
 	vec2 bld = floor(world_pos.xz * 0.03);
 	float bld_hash = hash2(bld * 0.7);
 	float actual_win_w = win_w * (0.8 + bld_hash * 0.4);
 	float actual_gap_x = gap_x * (0.8 + fract(bld_hash * 7.3) * 0.4);
 	float actual_win_h = win_h * (0.85 + fract(bld_hash * 3.1) * 0.3);
 
+	// Per-building UV.x offset so adjacent buildings don't align
+	float uv_offset = fract(bld_hash * 5.7) * (actual_win_w + actual_gap_x);
+
 	float cell_w = actual_win_w + actual_gap_x;
 	float cell_h = actual_win_h + gap_y;
-	float lx = fract(UV.x / cell_w);
+	float shifted_u = UV.x + uv_offset;
+	float lx = fract(shifted_u / cell_w);
 	float ly = fract((UV.y - ground_h) / cell_h);
+
+	// Window reveal border (fraction of cell for 0.08m dark inset on each side)
+	float reveal_frac = 0.08 / cell_w;
+	float reveal_frac_y = 0.08 / cell_h;
+	float win_frac_x = actual_win_w / cell_w;
+	float win_frac_y = actual_win_h / cell_h;
 
 	// Ground floor: wider, darker storefront openings
 	bool is_ground = UV.y < ground_h && UV.y > 0.5;
-	float gnd_lx = fract(UV.x / (cell_w * 1.5));
+	float gnd_lx = fract((shifted_u) / (cell_w * 1.5));
 	bool gnd_win = is_ground && (gnd_lx < 0.65) && (UV.y > 1.2);
 
-	bool in_win = ((lx < actual_win_w / cell_w) && (ly < actual_win_h / cell_h) && (UV.y > ground_h)) || gnd_win;
+	bool in_win = ((lx < win_frac_x) && (ly < win_frac_y) && (UV.y > ground_h)) || gnd_win;
+
+	// Window reveal depth — dark shadow border on window edges
+	bool in_reveal = false;
+	if (in_win && !gnd_win) {
+		bool near_edge_x = (lx < reveal_frac) || (lx > win_frac_x - reveal_frac);
+		bool near_edge_y = (ly < reveal_frac_y) || (ly > win_frac_y - reveal_frac_y);
+		in_reveal = near_edge_x || near_edge_y;
+	}
+
+	// Per-floor ledge lines — thin horizontal band at each floor level
+	float floor_pos = (UV.y - ground_h) / cell_h;
+	float floor_frac = fract(floor_pos);
+	bool is_ledge = (UV.y > ground_h) && (floor_frac < 0.03 || floor_frac > 0.97);
 
 	// Cornice bands every 4 floors
-	float floor_num = (UV.y - ground_h) / cell_h;
+	float floor_num = floor_pos;
 	bool is_cornice = (UV.y > ground_h) && (fract(floor_num / 4.0) < 0.08);
 
-	vec2 cell = vec2(floor(UV.x / cell_w), floor((UV.y - ground_h) / cell_h));
-	float wrand = hash2(bld * 0.5 + cell * 0.13);
+	// Ground floor awning shadow — 40% of buildings (hash-based)
+	bool has_awning = fract(bld_hash * 3.3) < 0.40;
+	float awning_y_top = ground_h;
+	float awning_y_bot = ground_h - 0.3;
+	bool is_awning = has_awning && UV.y > awning_y_bot && UV.y < awning_y_top;
+
+	vec2 cell_idx = vec2(floor(shifted_u / cell_w), floor((UV.y - ground_h) / cell_h));
+	float wrand = hash2(bld * 0.5 + cell_idx * 0.13);
 
 	// Facade texture UV — world-space tiling
 	vec2 fac_uv = UV / facade_tile;
@@ -3357,6 +3520,8 @@ void fragment() {
 	vec3 col;
 	float rough;
 	float metal;
+	vec3 norm = vec3(0.5, 0.5, 1.0);
+	float norm_depth = 0.8;
 
 	if (in_win) {
 		if (gnd_win) {
@@ -3366,7 +3531,14 @@ void fragment() {
 		}
 		rough = glass_rough;
 		metal = glass_metal;
-		NORMAL_MAP = vec3(0.5, 0.5, 1.0);
+		// Darken window reveal edges for depth
+		if (in_reveal) {
+			col *= 0.35;
+			rough = 0.6;
+			metal = 0.0;
+		}
+		norm = vec3(0.5, 0.5, 1.0);
+		norm_depth = 0.0;
 	} else {
 		// Sample Facade011 textures for wall surface detail
 		vec3 fac_col = texture(facade_color, fac_uv).rgb;
@@ -3374,21 +3546,34 @@ void fragment() {
 		float fac_rgh = texture(facade_rough, fac_uv).r;
 
 		float var_ = hash2(world_pos.xz * 0.15) * 0.08;
-		// Blend texture detail into wall color (35%) — avoids crushing brightness
+		// Blend texture detail into wall color (35%)
 		vec3 base_wall = wall_tint * COLOR.rgb * (0.92 + var_);
 		col = mix(base_wall, fac_col * base_wall * 2.0, 0.35);
 		if (is_cornice) {
 			col *= 0.78;
 		}
+		if (is_ledge) {
+			col *= 1.12;  // slightly lighter ledge
+		}
+		if (is_awning) {
+			col *= 0.55;  // dark awning shadow band
+		}
 		rough = mix(wall_rough, fac_rgh, 0.4);
 		metal = wall_metal;
-		NORMAL_MAP = fac_nrm;
-		NORMAL_MAP_DEPTH = 0.8;
+		norm = fac_nrm;
+		norm_depth = 0.8;
+		// Ledge normal perturbation — slight upward-facing bump
+		if (is_ledge) {
+			norm.g = 0.7;  // push normal upward for shadow catch
+			norm_depth = 1.2;
+		}
 	}
 
 	ALBEDO    = clamp(col, 0.0, 1.0);
 	ROUGHNESS = rough;
 	METALLIC  = metal;
+	NORMAL_MAP = norm;
+	NORMAL_MAP_DEPTH = norm_depth;
 }
 """
 
@@ -3425,31 +3610,58 @@ void vertex() {
 }
 
 void fragment() {
-	// Per-building hash for window size jitter
+	// Per-building hash for window size jitter + UV offset
 	vec2 bld = floor(world_pos.xz * 0.03);
 	float bld_hash = hash2(bld * 0.7);
 	float actual_win_w = win_w * (0.8 + bld_hash * 0.4);
 	float actual_gap_x = gap_x * (0.8 + fract(bld_hash * 7.3) * 0.4);
 	float actual_win_h = win_h * (0.85 + fract(bld_hash * 3.1) * 0.3);
 
+	// Per-building UV.x offset
+	float uv_offset = fract(bld_hash * 5.7) * (actual_win_w + actual_gap_x);
+
 	float cell_w = actual_win_w + actual_gap_x;
 	float cell_h = actual_win_h + gap_y;
-	float lx = fract(UV.x / cell_w);
+	float shifted_u = UV.x + uv_offset;
+	float lx = fract(shifted_u / cell_w);
 	float ly = fract((UV.y - ground_h) / cell_h);
+
+	// Window reveal border fractions
+	float reveal_frac = 0.08 / cell_w;
+	float reveal_frac_y = 0.08 / cell_h;
+	float win_frac_x = actual_win_w / cell_w;
+	float win_frac_y = actual_win_h / cell_h;
 
 	// Ground floor storefront
 	bool is_ground = UV.y < ground_h && UV.y > 0.5;
-	float gnd_lx = fract(UV.x / (cell_w * 1.5));
+	float gnd_lx = fract(shifted_u / (cell_w * 1.5));
 	bool gnd_win = is_ground && (gnd_lx < 0.65) && (UV.y > 1.2);
 
-	bool in_win = ((lx < actual_win_w / cell_w) && (ly < actual_win_h / cell_h) && (UV.y > ground_h)) || gnd_win;
+	bool in_win = ((lx < win_frac_x) && (ly < win_frac_y) && (UV.y > ground_h)) || gnd_win;
+
+	// Window reveal depth
+	bool in_reveal = false;
+	if (in_win && !gnd_win) {
+		bool near_edge_x = (lx < reveal_frac) || (lx > win_frac_x - reveal_frac);
+		bool near_edge_y = (ly < reveal_frac_y) || (ly > win_frac_y - reveal_frac_y);
+		in_reveal = near_edge_x || near_edge_y;
+	}
+
+	// Per-floor ledge lines
+	float floor_pos = (UV.y - ground_h) / cell_h;
+	float floor_frac = fract(floor_pos);
+	bool is_ledge = (UV.y > ground_h) && (floor_frac < 0.03 || floor_frac > 0.97);
 
 	// Cornice bands every 4 floors
-	float floor_num = (UV.y - ground_h) / cell_h;
+	float floor_num = floor_pos;
 	bool is_cornice = (UV.y > ground_h) && (fract(floor_num / 4.0) < 0.08);
 
-	vec2 cell = vec2(floor(UV.x / cell_w), floor((UV.y - ground_h) / cell_h));
-	float wrand = hash2(bld * 0.5 + cell * 0.13);
+	// Ground floor awning shadow — 40% of buildings
+	bool has_awning = fract(bld_hash * 3.3) < 0.40;
+	bool is_awning = has_awning && UV.y > (ground_h - 0.3) && UV.y < ground_h;
+
+	vec2 cell_idx = vec2(floor(shifted_u / cell_w), floor((UV.y - ground_h) / cell_h));
+	float wrand = hash2(bld * 0.5 + cell_idx * 0.13);
 
 	vec2 tex_uv = UV * tex_scale;
 
@@ -3461,15 +3673,32 @@ void fragment() {
 		}
 		ROUGHNESS = glass_rough;
 		METALLIC  = glass_metal;
+		if (in_reveal) {
+			ALBEDO *= 0.35;
+			ROUGHNESS = 0.6;
+			METALLIC = 0.0;
+		}
+		NORMAL_MAP = vec3(0.5, 0.5, 1.0);
 	} else {
 		vec3 brick_col = texture(brick_alb, tex_uv).rgb * COLOR.rgb;
 		if (is_cornice) {
 			brick_col *= 0.78;
 		}
+		if (is_ledge) {
+			brick_col *= 1.12;
+		}
+		if (is_awning) {
+			brick_col *= 0.55;
+		}
 		ALBEDO    = clamp(brick_col, 0.0, 1.0);
 		ROUGHNESS = texture(brick_rgh, tex_uv).r;
 		METALLIC  = 0.0;
-		NORMAL_MAP = texture(brick_nrm, tex_uv).rgb;
+		vec3 brk_nrm = texture(brick_nrm, tex_uv).rgb;
+		if (is_ledge) {
+			brk_nrm.g = 0.7;
+		}
+		NORMAL_MAP = brk_nrm;
+		NORMAL_MAP_DEPTH = is_ledge ? 1.2 : 1.0;
 	}
 }
 """
@@ -5292,10 +5521,16 @@ func _build_boundary_facades() -> void:
 			if bh > 0.85:
 				bld_h = 35.0 + bh * 20.0; style = 1
 
-		# Per-building tint variation
-		var rv := fmod(abs(float(block_idx) * 17.3), 0.10) - 0.05
-		var gv := fmod(abs(float(block_idx) * 11.1), 0.06) - 0.03
-		tint.r += rv; tint.g += gv
+		# Height sawtooth jitter ±4m (seeded from position)
+		var h_jitter := fmod(abs(float(block_idx) * 29.7 + mx * 0.13), 8.0) - 4.0
+		if not matched_lm:
+			bld_h += h_jitter
+
+		# Per-building tint variation (±15%)
+		var rv := fmod(abs(float(block_idx) * 17.3), 0.30) - 0.15
+		var gv := fmod(abs(float(block_idx) * 11.1), 0.24) - 0.12
+		var bv2 := fmod(abs(float(block_idx) * 7.7), 0.16) - 0.08
+		tint.r += rv; tint.g += gv; tint.b += bv2
 
 		var base_y := _terrain_y(mx, mz) - 1.0
 		var top_y := base_y + bld_h
@@ -5373,6 +5608,22 @@ func _build_boundary_facades() -> void:
 		for _j in range(6):
 			roof_n.append(Vector3.UP)
 			roof_c.append(roof_col)
+
+		# Front parapet — 0.8m wall on park-facing edge
+		var parapet_h := 0.8
+		var pa := Vector3(fp1.x, top_y, fp1.y)
+		var pb := Vector3(fp2.x, top_y, fp2.y)
+		var pc := Vector3(fp2.x, top_y + parapet_h, fp2.y)
+		var pd := Vector3(fp1.x, top_y + parapet_h, fp1.y)
+		sv[style].append_array(PackedVector3Array([pa, pb, pc, pa, pc, pd]))
+		for _j in range(6):
+			sn[style].append(norm3)
+			sc[style].append(tint * Color(0.88, 0.88, 0.88))
+		su[style].append_array(PackedVector2Array([
+			Vector2(0.0, bld_h), Vector2(seg_len, bld_h),
+			Vector2(seg_len, bld_h + parapet_h), Vector2(0.0, bld_h),
+			Vector2(seg_len, bld_h + parapet_h), Vector2(0.0, bld_h + parapet_h),
+		]))
 
 		cum_dist += seg_len
 
