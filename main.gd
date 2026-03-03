@@ -26,7 +26,7 @@ var _latlon_label:  Label
 # ---------------------------------------------------------------------------
 # Day/night cycle
 # ---------------------------------------------------------------------------
-var _time_of_day: float = 6.0        # hours [0..24), start at dawn
+var _time_of_day: float = 6.0        # start at 6 AM
 var _time_speed: float  = 0.001      # game-hours per real-second (~400 min full cycle)
 var _time_speed_idx: int = 0
 const TIME_SPEEDS: Array = [0.001, 0.01, 0.1, 0.0]
@@ -214,7 +214,7 @@ func _setup_environment() -> void:
 	_env.fog_enabled           = true
 
 	# Volumetric fog — light shafts, depth haze, ground fog
-	_env.volumetric_fog_enabled = true
+	_env.volumetric_fog_enabled = false
 	_env.volumetric_fog_density = 0.0008
 	_env.volumetric_fog_albedo = Color(1.0, 1.0, 1.0)
 	_env.volumetric_fog_emission = Color(0, 0, 0)
@@ -227,7 +227,7 @@ func _setup_environment() -> void:
 	_env.volumetric_fog_temporal_reprojection_enabled = false
 
 	# SDFGI — global illumination (green bounce under canopies, warm path reflections)
-	_env.sdfgi_enabled = true
+	_env.sdfgi_enabled = false
 	_env.sdfgi_use_occlusion = true
 	_env.sdfgi_read_sky_light = true
 	_env.sdfgi_bounce_feedback = 0.0
@@ -968,6 +968,25 @@ void fragment() {
 	grass_alb.r *= 1.02;
 	grass_alb.g *= 1.06;
 	grass_alb.b *= 0.88;
+
+	// Flower carpet — per-pixel flower dots for bluebell carpet illusion
+	// Large-scale patch mask matches CPU wildflower placement noise
+	float flower_n = fbm(world_pos.xz * 0.007, 3);
+	float carpet_mask = smoothstep(0.25, 0.50, flower_n);
+	carpet_mask *= (1.0 - wear * 0.8);
+	float canopy_shade = 1.0 - smoothstep(0.35, 0.65, fbm(world_pos.xz * 0.15, 3));
+	carpet_mask *= mix(0.15, 1.0, canopy_shade);
+	// High-frequency flower dots — multi-scale for organic pattern
+	float dot_n1 = vnoise(world_pos.xz * 10.0);
+	float dot_n2 = vnoise(world_pos.xz * 22.0 + vec2(33.7, 17.1));
+	float dot_combined = dot_n1 * 0.65 + dot_n2 * 0.35;
+	float dot_mask = smoothstep(0.38, 0.56, dot_combined);
+	// Color variation between individual dots
+	float hue_var = vnoise(world_pos.xz * 4.0);
+	vec3 flower_col = mix(vec3(0.14, 0.12, 0.45), vec3(0.22, 0.16, 0.52), hue_var);
+	// Darken grass between flower dots for depth
+	vec3 carpet_ground = mix(grass_alb * 0.70, flower_col, dot_mask);
+	grass_alb = mix(grass_alb, carpet_ground, carpet_mask * 0.55);
 
 	// Dappled sunlight — simulates light filtering through tree canopy
 	float dapple = fbm(world_pos.xz * 0.15, 3) * 0.5
