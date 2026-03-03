@@ -1143,7 +1143,7 @@ func _build_bridge(path: Dictionary) -> void:
 		add_child(body)
 
 	# ----------------------------------------------------------------
-	# Soffit (underside of deck) — only on bridges tall enough to walk under
+	# Soffit (underside of deck) — arched for STONE/BRICK >= 12m, flat otherwise
 	# ----------------------------------------------------------------
 	var sof_verts   := PackedVector3Array()
 	var sof_normals := PackedVector3Array()
@@ -1154,11 +1154,14 @@ func _build_bridge(path: Dictionary) -> void:
 	var u_s := 0.0
 	var sof_ramp_start := ramp_len * 0.15
 	var sof_ramp_end   := total_len - ramp_len * 0.15
+	var use_arch: bool = (total_len >= 12.0 and
+		(style == BridgeStyle.STONE or style == BridgeStyle.BRICK or style == BridgeStyle.DRIVE))
+	var arch_segs := 8  # semicircular segments for arch cross-section
+	var arch_rise: float = eff_clearance * 0.6  # partial arch, not full semicircle
 
 	for i in range(n_pts - 1):
 		if _skip_soffit:
 			break
-		# Only build soffit/edges where bridge is elevated
 		if cum_len[i + 1] < sof_ramp_start or cum_len[i] > sof_ramp_end:
 			continue
 		var p1 := Vector3(float(pts[i][0]),     pt_y[i],     float(pts[i][2]))
@@ -1171,19 +1174,54 @@ func _build_bridge(path: Dictionary) -> void:
 		var nv := Vector2(-dv.y, dv.x)
 		var bot1 := p1.y - BRIDGE_DECK_T
 		var bot2 := p2.y - BRIDGE_DECK_T
-		# Soffit quad (downward-facing, reversed winding)
-		var sa := Vector3(p1.x + nv.x * hw2, bot1, p1.z + nv.y * hw2)
-		var sb := Vector3(p1.x - nv.x * hw2, bot1, p1.z - nv.y * hw2)
-		var sc := Vector3(p2.x + nv.x * hw2, bot2, p2.z + nv.y * hw2)
-		var sd := Vector3(p2.x - nv.x * hw2, bot2, p2.z - nv.y * hw2)
 		var u2_s := u_s + seg_len / width
-		sof_verts.append_array(PackedVector3Array([sa, sb, sc, sb, sd, sc]))
-		for _j in range(6):
-			sof_normals.append(Vector3.DOWN)
-		sof_uvs.append_array(PackedVector2Array([
-			Vector2(u_s, 0.0), Vector2(u_s, 1.0), Vector2(u2_s, 0.0),
-			Vector2(u_s, 1.0), Vector2(u2_s, 1.0), Vector2(u2_s, 0.0),
-		]))
+
+		if use_arch:
+			# Arched soffit: semicircular cross-section from -hw2 to +hw2
+			# Arch bottom center is at bot - arch_rise, springing from bot at edges
+			for ai in range(arch_segs):
+				var t0 := float(ai) / float(arch_segs)
+				var t1 := float(ai + 1) / float(arch_segs)
+				# Angle from 0 (left edge) to PI (right edge)
+				var a0 := PI * t0
+				var a1 := PI * t1
+				# Cross-section position: lateral offset and height
+				var lat0 := hw2 * cos(a0)  # -hw2 to +hw2
+				var rise0 := arch_rise * sin(a0)  # 0 at edges, max at center
+				var lat1 := hw2 * cos(a1)
+				var rise1 := arch_rise * sin(a1)
+				# 4 corners of this arch strip segment (2 cross-section points × 2 path points)
+				var v0 := Vector3(p1.x + nv.x * lat0, bot1 - rise0, p1.z + nv.y * lat0)
+				var v1 := Vector3(p1.x + nv.x * lat1, bot1 - rise1, p1.z + nv.y * lat1)
+				var v2 := Vector3(p2.x + nv.x * lat1, bot2 - rise1, p2.z + nv.y * lat1)
+				var v3 := Vector3(p2.x + nv.x * lat0, bot2 - rise0, p2.z + nv.y * lat0)
+				# Normal points inward (down into arch)
+				var mid_a := (a0 + a1) * 0.5
+				var arch_n := Vector3(
+					-nv.x * cos(mid_a),
+					-sin(mid_a),
+					-nv.y * cos(mid_a)).normalized()
+				sof_verts.append_array(PackedVector3Array([v0, v1, v2, v0, v2, v3]))
+				for _j in 6:
+					sof_normals.append(arch_n)
+				sof_uvs.append_array(PackedVector2Array([
+					Vector2(u_s, t0), Vector2(u_s, t1), Vector2(u2_s, t1),
+					Vector2(u_s, t0), Vector2(u2_s, t1), Vector2(u2_s, t0),
+				]))
+		else:
+			# Flat soffit (CAST_IRON, RUSTIC_WOOD, short bridges)
+			var sa := Vector3(p1.x + nv.x * hw2, bot1, p1.z + nv.y * hw2)
+			var sb := Vector3(p1.x - nv.x * hw2, bot1, p1.z - nv.y * hw2)
+			var sc := Vector3(p2.x + nv.x * hw2, bot2, p2.z + nv.y * hw2)
+			var sd := Vector3(p2.x - nv.x * hw2, bot2, p2.z - nv.y * hw2)
+			sof_verts.append_array(PackedVector3Array([sa, sb, sc, sb, sd, sc]))
+			for _j in 6:
+				sof_normals.append(Vector3.DOWN)
+			sof_uvs.append_array(PackedVector2Array([
+				Vector2(u_s, 0.0), Vector2(u_s, 1.0), Vector2(u2_s, 0.0),
+				Vector2(u_s, 1.0), Vector2(u2_s, 1.0), Vector2(u2_s, 0.0),
+			]))
+
 		# Side edge beams (deck top to soffit bottom, both sides)
 		for side in [-1.0, 1.0]:
 			var s: float = float(side)
@@ -1195,14 +1233,13 @@ func _build_bridge(path: Dictionary) -> void:
 			var ed := Vector3(p1.x + ox, bot1,  p1.z + oz)
 			edge_verts.append_array(PackedVector3Array([ea, eb, ec, ea, ec, ed]))
 			var en := Vector3(nv.x * s, 0.0, nv.y * s)
-			for _j in range(6):
+			for _j in 6:
 				edge_norms.append(en)
 		u_s = u2_s
 
 	if not sof_verts.is_empty():
 		sof_verts.append_array(edge_verts)
 		sof_normals.append_array(edge_norms)
-		# UVs for edges not critical — extend soffit UVs array to match
 		for _j in range(edge_verts.size()):
 			sof_uvs.append(Vector2.ZERO)
 		var sof_arrays: Array = []; sof_arrays.resize(Mesh.ARRAY_MAX)
@@ -2415,39 +2452,87 @@ func _build_bethesda_fountain(cx: float, cz: float, base_y: float, pool_r: float
 	# Upper pedestal column
 	_make_cylinder_mesh(cx, ub_base, cz, 0.8, ub_h + 1.0, stone, "Bethesda_UpperPedestal")
 
-	# Angel column + figure (bronze cylinder with wider top = simplified angel)
+	# Angel column
 	var angel_base := ub_base + ub_h + 1.0
 	_make_cylinder_mesh(cx, angel_base, cz, 0.35, 3.0, bronze, "Bethesda_AngelColumn")
-	# Angel figure (wider cylinder at top represents the spread-wing angel)
-	_make_cylinder_mesh(cx, angel_base + 3.0, cz, 0.9, 2.4, bronze, "Bethesda_Angel")
-	# Wings (two thin slabs extending outward)
+
+	# Composite angel figure
+	var fig_base := angel_base + 3.0
+	# Torso — tapered (wider at shoulders, narrow at waist)
+	_make_cylinder_mesh(cx, fig_base, cz, 0.35, 1.8, bronze, "Bethesda_AngelTorso", 12)
+	# Head
+	_make_cylinder_mesh(cx, fig_base + 1.8, cz, 0.15, 0.25, bronze, "Bethesda_AngelHead", 8)
+	# Arms — angled 45 deg outward+down (holding lily)
+	for arm_side_i in range(2):
+		var arm_s: float = -1.0 if arm_side_i == 0 else 1.0
+		var arm_verts := PackedVector3Array()
+		var arm_norms := PackedVector3Array()
+		var arm_cx := cx + arm_s * 0.35
+		var arm_y := fig_base + 1.4
+		var arm_ex := arm_cx + arm_s * 0.65
+		var arm_ey := arm_y - 0.45
+		var arm_r := 0.08
+		# Simple 4-sided cylinder approximation for arm
+		var arm_dir := Vector3(arm_ex - arm_cx, arm_ey - arm_y, 0.0).normalized()
+		var arm_up := Vector3.UP
+		var arm_right := arm_dir.cross(arm_up).normalized()
+		var arm_fwd := arm_right.cross(arm_dir).normalized()
+		for ai in range(4):
+			var aa := TAU * float(ai) / 4.0
+			var p0 := Vector3(arm_cx, arm_y, cz) + (arm_right * cos(aa) + arm_fwd * sin(aa)) * arm_r
+			var p1 := Vector3(arm_ex, arm_ey, cz) + (arm_right * cos(aa) + arm_fwd * sin(aa)) * arm_r * 0.6
+			var aa2 := TAU * float(ai + 1) / 4.0
+			var p2 := Vector3(arm_cx, arm_y, cz) + (arm_right * cos(aa2) + arm_fwd * sin(aa2)) * arm_r
+			var p3 := Vector3(arm_ex, arm_ey, cz) + (arm_right * cos(aa2) + arm_fwd * sin(aa2)) * arm_r * 0.6
+			var fn := (arm_right * cos(aa) + arm_fwd * sin(aa)).normalized()
+			arm_verts.append_array(PackedVector3Array([p0, p2, p3, p0, p3, p1]))
+			for _j in 6: arm_norms.append(fn)
+		_add_batch_mesh(arm_verts, arm_norms, Color(0.35, 0.45, 0.30), 0.55, "Bethesda_Arm_%d" % arm_side_i)
+
+	# Lily/cup in front of figure
+	_make_cylinder_mesh(cx, fig_base + 0.8, cz + 0.4, 0.15, 0.3, bronze, "Bethesda_Lily", 8)
+
+	# Wings — 4 curved quad strips each for dimensional sweep
 	var wing_mat := bronze
-	var wing_y := angel_base + 4.2
-	for side_i in range(2):
-		var side: float = -1.0 if side_i == 0 else 1.0
-		var wverts   := PackedVector3Array()
+	for wing_side_i in range(2):
+		var ws: float = -1.0 if wing_side_i == 0 else 1.0
+		var wverts := PackedVector3Array()
 		var wnormals := PackedVector3Array()
-		var wx: float = cx + side * 0.6
-		var ww: float = side * 1.8   # wing span
-		var wt: float = 0.08         # wing thickness
-		var wh: float = 1.6          # wing height
-		# Simple thin box for wing
-		var p0 := Vector3(wx, wing_y, cz - wt)
-		var p1 := Vector3(wx + ww, wing_y + 0.4, cz - wt)
-		var p2 := Vector3(wx + ww, wing_y + wh, cz - wt)
-		var p3 := Vector3(wx, wing_y + wh - 0.3, cz - wt)
-		var p4 := Vector3(wx, wing_y, cz + wt)
-		var p5 := Vector3(wx + ww, wing_y + 0.4, cz + wt)
-		var p6 := Vector3(wx + ww, wing_y + wh, cz + wt)
-		var p7 := Vector3(wx, wing_y + wh - 0.3, cz + wt)
-		# Front face
-		var fn := Vector3(0.0, 0.0, -1.0)
-		wverts.append_array(PackedVector3Array([p0, p1, p2, p0, p2, p3]))
-		for _j in range(6): wnormals.append(fn)
-		# Back face
-		var bn := Vector3(0.0, 0.0, 1.0)
-		wverts.append_array(PackedVector3Array([p5, p4, p7, p5, p7, p6]))
-		for _j in range(6): wnormals.append(bn)
+		var wing_base_x := cx + ws * 0.30
+		var wing_base_y := fig_base + 1.2
+		# 4 strips from shoulder outward+up with backward arc
+		var n_strips := 4
+		for si in range(n_strips):
+			var t0 := float(si) / float(n_strips)
+			var t1 := float(si + 1) / float(n_strips)
+			var span := 2.0
+			var height := 1.8
+			# Each strip curves outward and backward (arc in Z)
+			var x0 := wing_base_x + ws * span * t0
+			var x1 := wing_base_x + ws * span * t1
+			var z_arc0 := cz - 0.15 * sin(t0 * PI)  # backward arc
+			var z_arc1 := cz - 0.15 * sin(t1 * PI)
+			var y_bot0 := wing_base_y + height * 0.1 * t0
+			var y_bot1 := wing_base_y + height * 0.1 * t1
+			var y_top0 := wing_base_y + height * (1.0 - 0.3 * t0 * t0)
+			var y_top1 := wing_base_y + height * (1.0 - 0.3 * t1 * t1)
+			var wt := 0.04  # wing thickness
+			# Front face quad
+			var p0 := Vector3(x0, y_bot0, z_arc0 - wt)
+			var p1 := Vector3(x1, y_bot1, z_arc1 - wt)
+			var p2 := Vector3(x1, y_top1, z_arc1 - wt)
+			var p3 := Vector3(x0, y_top0, z_arc0 - wt)
+			var fn := Vector3(0.0, 0.0, -1.0)
+			wverts.append_array(PackedVector3Array([p0, p1, p2, p0, p2, p3]))
+			for _j in 6: wnormals.append(fn)
+			# Back face quad
+			var p4 := Vector3(x0, y_bot0, z_arc0 + wt)
+			var p5 := Vector3(x1, y_bot1, z_arc1 + wt)
+			var p6 := Vector3(x1, y_top1, z_arc1 + wt)
+			var p7 := Vector3(x0, y_top0, z_arc0 + wt)
+			var bn := Vector3(0.0, 0.0, 1.0)
+			wverts.append_array(PackedVector3Array([p5, p4, p7, p5, p7, p6]))
+			for _j in 6: wnormals.append(bn)
 		var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
 		arrays[Mesh.ARRAY_VERTEX] = wverts
 		arrays[Mesh.ARRAY_NORMAL] = wnormals
@@ -2455,8 +2540,19 @@ func _build_bethesda_fountain(cx: float, cz: float, base_y: float, pool_r: float
 		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 		mesh.surface_set_material(0, wing_mat)
 		var mi := MeshInstance3D.new(); mi.mesh = mesh
-		mi.name = "Bethesda_Wing"
+		mi.name = "Bethesda_Wing_%d" % wing_side_i
 		add_child(mi)
+
+	# 4 cherub figures on lower basin rim, spaced 90 degrees apart
+	for ci in range(4):
+		var c_ang := TAU * float(ci) / 4.0 + PI / 4.0
+		var c_x := cx + (lb_r - 0.5) * cos(c_ang)
+		var c_z := cz + (lb_r - 0.5) * sin(c_ang)
+		var c_y := base_y + rim_h + lb_h
+		# Cherub body
+		_make_cylinder_mesh(c_x, c_y, c_z, 0.12, 0.35, bronze, "Bethesda_Cherub_%d" % ci, 8)
+		# Cherub head
+		_make_cylinder_mesh(c_x, c_y + 0.35, c_z, 0.08, 0.12, bronze, "Bethesda_CherubHead_%d" % ci, 8)
 
 	# Water spray: gentle pour from angel's feet, cascading through basins
 	var angel_top := ub_base + ub_h + 1.0 + 3.0  # top of angel column
@@ -2493,17 +2589,41 @@ func _build_cherry_hill_fountain(cx: float, cz: float, base_y: float, pool_r: fl
 	_make_cylinder_mesh(cx, base_y + 0.8, cz, 0.4, 2.0, tile_mat, "Cherry_TileShaft")
 	_make_cylinder_mesh(cx, base_y + 2.8, cz, 0.5, 0.5, stone, "Cherry_Capital")
 
-	# 8 globe lamps around the top
+	# 8 vertical groove lines on tile shaft (thin inset quads) for fluted column
+	var groove_y := base_y + 0.8
+	var groove_h := 2.0
+	var groove_r := 0.41  # just outside tile shaft
+	for gi in range(8):
+		var gang := TAU * float(gi) / 8.0
+		var gx := cx + groove_r * cos(gang)
+		var gz := cz + groove_r * sin(gang)
+		_make_cylinder_mesh(gx, groove_y, gz, 0.015, groove_h, stone, "Cherry_Groove_%d" % gi, 4)
+
+	# 8 globe lamps around the top — dome-topped 12-sided with arm brackets
 	var lamp_y := base_y + 3.3
 	var lamp_r := 0.8  # distance from center
 	for i in range(8):
 		var ang := TAU * float(i) / 8.0
 		var lx := cx + lamp_r * cos(ang)
 		var lz := cz + lamp_r * sin(ang)
-		_make_cylinder_mesh(lx, lamp_y, lz, 0.12, 0.25, lamp_mat, "Cherry_Lamp_%d" % i, 12)
+		# Globe lamp body (12-sided cylinder)
+		_make_cylinder_mesh(lx, lamp_y, lz, 0.15, 0.20, lamp_mat, "Cherry_Lamp_%d" % i, 12)
+		# Dome top cap (smaller cylinder on top for rounded look)
+		_make_cylinder_mesh(lx, lamp_y + 0.20, lz, 0.12, 0.08, lamp_mat, "Cherry_LampDome_%d" % i, 12)
+		# Arm bracket from shaft to globe (thin cylinder angled 30 deg up)
+		var arm_dx := (lx - cx) * 0.5
+		var arm_dz := (lz - cz) * 0.5
+		var arm_cx := cx + arm_dx
+		var arm_cz := cz + arm_dz
+		_make_cylinder_mesh(arm_cx, lamp_y - 0.05, arm_cz, 0.025, 0.35, gold, "Cherry_Arm_%d" % i, 6)
 
-	# Gold spire
-	_make_cylinder_mesh(cx, lamp_y, cz, 0.08, 1.2, gold, "Cherry_Spire")
+	# Conical roof cap above globes (pagoda-style top)
+	_make_cylinder_mesh(cx, lamp_y + 0.28, cz, 0.60, 0.30, gold, "Cherry_Roof", 12)
+	# Roof finial
+	_make_cylinder_mesh(cx, lamp_y + 0.58, cz, 0.15, 0.10, gold, "Cherry_RoofFinial", 8)
+
+	# Gold spire above roof
+	_make_cylinder_mesh(cx, lamp_y + 0.68, cz, 0.08, 0.8, gold, "Cherry_Spire")
 
 	# Water: gentle spray from column capital, falling into basin
 	_add_fountain_spray(cx, base_y + 3.3, cz, 1.0, 25.0, 120, 0.2)
@@ -3494,8 +3614,11 @@ func _build_trees(trees: Array) -> void:
 	var elm_mat   := _make_leaf_mat(true, "LeafSet009")   # smaller, denser
 	var conif_mat := _make_leaf_mat(false)                 # LeafSet019
 
-	# Trunk+branches mesh + material
-	var trunk_mesh := _make_trunk_with_branches_mesh()
+	# 8 trunk mesh variants with randomized branches for visual variety
+	const N_TRUNK_VARIANTS := 8
+	var trunk_meshes: Array = []
+	for vi in N_TRUNK_VARIANTS:
+		trunk_meshes.append(_make_trunk_with_branches_mesh(vi))
 
 	var trunk_mat   := ShaderMaterial.new()
 	trunk_mat.shader = _get_shader("trunk", _trunk_shader_code())
@@ -3510,7 +3633,11 @@ func _build_trees(trees: Array) -> void:
 	var maple_xf: Array = []
 	var elm_xf:   Array = []
 	var conif_xf: Array = []
-	var trunk_xf: Array = []
+	# Per-variant trunk transform arrays
+	var trunk_xf_by_variant: Array = []
+	for _vi in N_TRUNK_VARIANTS:
+		trunk_xf_by_variant.append([])
+	var all_trunk_xf: Array = []  # for collision
 
 	for i in trees.size():
 		var pt: Array = trees[i]
@@ -3556,14 +3683,20 @@ func _build_trees(trees: Array) -> void:
 			Vector3(0.0,     trunk_h, 0.0),
 			Vector3(0.0,     0.0,     trunk_r))
 		tbasis = rot_basis * tbasis
-		trunk_xf.append(Transform3D(tbasis, Vector3(tx, ty + trunk_h * 0.5, tz)))
+		var tf := Transform3D(tbasis, Vector3(tx, ty + trunk_h * 0.5, tz))
+		# Assign to variant based on tree index
+		var variant_idx := i % N_TRUNK_VARIANTS
+		trunk_xf_by_variant[variant_idx].append(tf)
+		all_trunk_xf.append(tf)
 
 	_spawn_multimesh(broad_leaf_mesh, oak_mat,   oak_xf,   "TreeCanopies_Oak")
 	_spawn_multimesh(broad_leaf_mesh, maple_mat, maple_xf, "TreeCanopies_Maple")
 	_spawn_multimesh(broad_leaf_mesh, elm_mat,   elm_xf,   "TreeCanopies_Elm")
 	_spawn_multimesh(conif_leaf_mesh, conif_mat, conif_xf, "TreeCanopies_Conifer")
-	_spawn_multimesh(trunk_mesh,      trunk_mat, trunk_xf, "TreeTrunks")
-	_build_tree_collision(trunk_xf)
+	for vi in N_TRUNK_VARIANTS:
+		_spawn_multimesh(trunk_meshes[vi], trunk_mat, trunk_xf_by_variant[vi],
+			"TreeTrunks_%d" % vi)
+	_build_tree_collision(all_trunk_xf)
 
 
 func _build_tree_collision(trunk_xf: Array) -> void:
@@ -3586,26 +3719,32 @@ func _build_tree_collision(trunk_xf: Array) -> void:
 	add_child(body)
 
 
-func _make_trunk_with_branches_mesh() -> ArrayMesh:
-	# Procedural trunk cylinder + 5 angled branches. Unit scale:
+func _make_trunk_with_branches_mesh(variant_seed: int = 0) -> ArrayMesh:
+	# Procedural trunk cylinder + randomized branches. Unit scale:
 	# trunk height=1.0, bottom_r=1.0, top_r=0.5. Bark UVs wrap.
+	# variant_seed produces distinct branch layouts per mesh variant.
 	var verts   := PackedVector3Array()
 	var normals := PackedVector3Array()
 	var uvs     := PackedVector2Array()
 	var indices := PackedInt32Array()
 	var segs := 8  # radial segments
+	var rng := RandomNumberGenerator.new()
+	rng.seed = variant_seed * 7919 + 104729
+
+	# Per-variant trunk radius variation ±15%
+	var trunk_r_scale := 0.85 + rng.randf() * 0.30  # 0.85–1.15
 
 	# --- Trunk cylinder (centered: Y from -0.5 to +0.5, matching CylinderMesh) ---
+	var bot_r := 1.0 * trunk_r_scale
+	var top_r := 0.5 * trunk_r_scale
 	for i in range(segs + 1):
 		var a := TAU * float(i) / float(segs)
 		var ca := cos(a); var sa := sin(a)
 		var u := float(i) / float(segs) * 2.0
-		# Bottom ring
-		verts.append(Vector3(ca * 1.0, -0.5, sa * 1.0))
+		verts.append(Vector3(ca * bot_r, -0.5, sa * bot_r))
 		normals.append(Vector3(ca, 0.0, sa))
 		uvs.append(Vector2(u, 1.0))
-		# Top ring
-		verts.append(Vector3(ca * 0.5, 0.5, sa * 0.5))
+		verts.append(Vector3(ca * top_r, 0.5, sa * top_r))
 		normals.append(Vector3(ca, 0.0, sa))
 		uvs.append(Vector2(u, 0.0))
 	for i in range(segs):
@@ -3614,38 +3753,56 @@ func _make_trunk_with_branches_mesh() -> ArrayMesh:
 			b, b + 2, b + 3, b, b + 3, b + 1,
 		]))
 
-	# --- 5 branches ---
+	# --- Randomized branches (4-7 per tree variant) ---
 	var branch_segs := 6
-	var branch_configs := [
-		[0.60, 0.40, 50.0,   0.0],  # height, length, angle_from_vertical, azimuth_deg
-		[0.70, 0.35, 45.0,  72.0],
-		[0.80, 0.45, 55.0, 144.0],
-		[0.75, 0.30, 40.0, 216.0],
-		[0.90, 0.50, 48.0, 288.0],
-	]
+	var n_branches := rng.randi_range(4, 7)
+	# Generate azimuths with minimum 40-degree separation
+	var azimuths: Array = []
+	for _bi in n_branches:
+		var tries := 0
+		var az := rng.randf() * 360.0
+		while tries < 20:
+			var ok := true
+			for existing_az: float in azimuths:
+				var diff := absf(az - existing_az)
+				if diff > 180.0:
+					diff = 360.0 - diff
+				if diff < 40.0:
+					ok = false
+					break
+			if ok:
+				break
+			az = rng.randf() * 360.0
+			tries += 1
+		azimuths.append(az)
+
+	var branch_configs: Array = []
+	for bi in n_branches:
+		var bh := rng.randf_range(0.45, 0.95)
+		var blen := rng.randf_range(0.25, 0.60)
+		var bangle := rng.randf_range(35.0, 65.0)
+		var bazimuth: float = azimuths[bi]
+		var br_r := rng.randf_range(0.12, 0.24)
+		branch_configs.append([bh, blen, bangle, bazimuth, br_r])
+
 	for bc in branch_configs:
-		var bh: float     = bc[0]  # height on trunk where branch starts
-		var blen: float   = bc[1]  # branch length (unit scale)
-		var bangle: float = deg_to_rad(bc[2])  # from vertical
+		var bh: float     = bc[0]
+		var blen: float   = bc[1]
+		var bangle: float = deg_to_rad(bc[2])
 		var bazimuth: float = deg_to_rad(bc[3])
-		# Trunk radius at branch height
-		var trunk_r_at_h: float = lerp(1.0, 0.5, bh)
-		# Branch direction
+		var br_base_r: float = bc[4]
+		var br_tip_r: float = br_base_r * 0.33
+		var trunk_r_at_h: float = lerpf(bot_r, top_r, bh)
 		var dir := Vector3(sin(bangle) * cos(bazimuth), cos(bangle), sin(bangle) * sin(bazimuth))
-		# Start point on trunk surface (shifted -0.5 to match centered trunk)
 		var start := Vector3(cos(bazimuth) * trunk_r_at_h, bh - 0.5, sin(bazimuth) * trunk_r_at_h)
 		var end_pt := start + dir * blen
-		# Build branch as tapered cylinder along dir
-		var br_base_r := 0.18
-		var br_tip_r  := 0.06
-		# Local coordinate frame for branch cross-section
 		var up := Vector3.UP
 		if abs(dir.dot(up)) > 0.95:
 			up = Vector3.RIGHT
 		var right := dir.cross(up).normalized()
 		var fwd   := right.cross(dir).normalized()
 		var base_idx := verts.size()
-		for ring in 2:  # 0 = base, 1 = tip
+		for ring in 2:
 			var r := br_base_r if ring == 0 else br_tip_r
 			var center := start if ring == 0 else end_pt
 			var v_uv := float(ring)
@@ -3663,6 +3820,47 @@ func _make_trunk_with_branches_mesh() -> ArrayMesh:
 			indices.append_array(PackedInt32Array([
 				b0, b0 + 1, b1 + 1, b0, b1 + 1, b1,
 			]))
+
+		# Sub-branches on longest branches (length > 0.40)
+		if blen > 0.40:
+			var n_sub := rng.randi_range(1, 2)
+			for _si in n_sub:
+				var fork_t := rng.randf_range(0.50, 0.70)
+				var sub_start := start + dir * blen * fork_t
+				var sub_angle := deg_to_rad(rng.randf_range(30.0, 50.0))
+				var sub_az := deg_to_rad(rng.randf_range(0.0, 360.0))
+				var sub_dir := Vector3(
+					sin(sub_angle) * cos(sub_az),
+					cos(sub_angle),
+					sin(sub_angle) * sin(sub_az))
+				# Bias sub-branch outward from trunk
+				sub_dir = (sub_dir + dir * 0.5).normalized()
+				var sub_len := rng.randf_range(0.15, 0.25)
+				var sub_end := sub_start + sub_dir * sub_len
+				var sub_br := br_base_r * 0.45
+				var sub_tip := sub_br * 0.3
+				var sup := Vector3.UP
+				if abs(sub_dir.dot(sup)) > 0.95:
+					sup = Vector3.RIGHT
+				var sright := sub_dir.cross(sup).normalized()
+				var sfwd := sright.cross(sub_dir).normalized()
+				var sb_idx := verts.size()
+				for sring in 2:
+					var sr := sub_br if sring == 0 else sub_tip
+					var scenter := sub_start if sring == 0 else sub_end
+					var sv_uv := float(sring)
+					for ssi in range(branch_segs + 1):
+						var sa := TAU * float(ssi) / float(branch_segs)
+						var sca := cos(sa); var ssa := sin(sa)
+						verts.append(scenter + (sright * sca + sfwd * ssa) * sr)
+						normals.append((sright * sca + sfwd * ssa).normalized())
+						uvs.append(Vector2(float(ssi) / float(branch_segs), sv_uv))
+				for ssi in range(branch_segs):
+					var sb0 := sb_idx + ssi
+					var sb1 := sb_idx + branch_segs + 1 + ssi
+					indices.append_array(PackedInt32Array([
+						sb0, sb0 + 1, sb1 + 1, sb0, sb1 + 1, sb1,
+					]))
 
 	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
 	arrays[Mesh.ARRAY_VERTEX] = verts
@@ -3728,12 +3926,12 @@ func _make_leaf_card_mesh(is_conifer: bool) -> ArrayMesh:
 			var pos := Vector3(cos(a) * r, 0.76, sin(a) * r)
 			var tilt_ax := Vector3(cos(a + 1.0), 0.0, sin(a + 1.0))
 			card_defs.append([pos, hs, tilt_ax, 44.0 + float(i) * 5.5])
-		# Inner fill: 40 quads crossing through center for solid core
-		for i in 40:
-			var a := TAU * float(i) / 40.0 + 0.35
-			var iy := -0.10 + float(i) * 0.024
+		# Inner fill: 55 quads crossing through center for solid core + depth
+		for i in 55:
+			var a := TAU * float(i) / 55.0 + 0.35
+			var iy := -0.10 + float(i) * 0.018
 			var ir := 0.10 + fmod(float(i) * 0.447, 1.0) * 0.35
-			var hs := 0.22 + fmod(float(i) * 0.831, 1.0) * 0.08
+			var hs := 0.15 + fmod(float(i) * 0.831, 1.0) * 0.20
 			var pos := Vector3(cos(a) * ir, iy, sin(a) * ir)
 			var tilt_ax := Vector3(cos(a + 0.5), 0.0, sin(a + 0.5))
 			card_defs.append([pos, hs, tilt_ax, 20.0 + float(i) * 3.0])
@@ -3750,6 +3948,16 @@ func _make_leaf_card_mesh(is_conifer: bool) -> ArrayMesh:
 			var pos := Vector3(cos(a2) * 0.58, -0.20 + float(i % 3) * 0.04, sin(a2) * 0.58)
 			var tilt_ax := Vector3(-sin(a2), 0.0, cos(a2))
 			card_defs.append([pos, hs, tilt_ax, 14.0 + float(i) * 5.0])
+		# Hanging fringe: 16 drooping cards below equator for eye-level depth
+		for i in 16:
+			var a2 := TAU * float(i) / 16.0 + 0.8
+			var hs := 0.15 + fmod(float(i) * 0.529, 1.0) * 0.12
+			var r2 := 0.50 + fmod(float(i) * 0.317, 1.0) * 0.20
+			var y2 := -0.65 - fmod(float(i) * 0.618, 1.0) * 0.15
+			var pos := Vector3(cos(a2) * r2, y2, sin(a2) * r2)
+			var tilt_ax := Vector3(-sin(a2), 0.0, cos(a2))
+			# Steep angle (20-40 deg from vertical) — hanging downward
+			card_defs.append([pos, hs, tilt_ax, 20.0 + fmod(float(i) * 0.764, 1.0) * 20.0])
 	else:
 		# --- Conifer: conical tiers, heavily overlapping varied-size cards ---
 		# ~80 cards. half_size 0.12-0.22, jittered.
@@ -4045,18 +4253,28 @@ void vertex() {
 }
 
 void fragment() {
-	vec2 uv   = vec2(UV.x * 3.0, UV.y * 6.0);
+	// Per-tree UV scale variation (0.8–1.3) to break visible tiling repeat
+	float tree_hash = hash21(floor(world_pos.xz * 0.04));
+	float uv_scale = 0.8 + tree_hash * 0.5;
+	vec2 uv = vec2(UV.x * 3.0 * uv_scale, UV.y * 6.0);
 	vec3 alb  = texture(bark_albedo, uv).rgb;
 	float rgh = texture(bark_rough,  uv).r;
 	float ao  = texture(bark_ao,     uv).r;
 
-	// Per-tree hue variation (dark brown ↔ grey-brown)
-	float h = hash21(floor(world_pos.xz * 0.04));
-	// Base brightness 0.24–0.40 — dark sienna/umber
-	vec3 col = alb * ao * (0.24 + h * 0.16);
-	// Strong warm sienna push: boost red, pull blue down
-	col.r *= 1.15;
-	col.b *= 0.72;
+	// Per-tree brightness variation ±10% + warm/cool shift
+	float h = hash21(floor(world_pos.xz * 0.04) + vec2(17.3, 31.7));
+	float brightness = 0.24 + h * 0.16;
+	vec3 col = alb * ao * brightness;
+	// Warm sienna push with per-tree variation
+	float warm = 1.10 + (h - 0.5) * 0.10;  // 1.05–1.15
+	float cool = 0.70 + (h - 0.5) * 0.08;  // 0.66–0.74
+	col.r *= warm;
+	col.b *= cool;
+
+	// Moss/lichen tint on north-facing side (normal.x < -0.3)
+	float north_face = smoothstep(-0.2, -0.5, NORMAL.x);
+	vec3 moss_col = col * vec3(0.85, 1.10, 0.90);  // darken + green shift
+	col = mix(col, moss_col, north_face * 0.15);
 
 	ALBEDO     = clamp(col, 0.0, 1.0);
 	NORMAL_MAP = texture(bark_normal, uv).rgb;
@@ -4802,18 +5020,57 @@ func _build_statues(statues: Array) -> void:
 		_make_cylinder_mesh(sx, sy, sz, ped_r, ped_h, stone_mat,
 							"Pedestal_%s" % sname if sname else "Pedestal")
 
-		# Figure on top
+		# Figure on top — composite humanoid silhouette
 		var fig_y := sy + ped_h
+		var safe_name: String = sname if sname else stype.capitalize()
 		if stype == "obelisk":
 			# Tall tapered column
 			_make_cylinder_mesh(sx, fig_y, sz, 0.8, fig_h, stone_mat,
-								"Obelisk_%s" % sname if sname else "Obelisk", 4)
+								"Obelisk_%s" % safe_name, 4)
 		elif stype == "bust":
-			_make_cylinder_mesh(sx, fig_y, sz, 0.25, 0.5, bronze_mat,
-								"Bust_%s" % sname if sname else "Bust")
+			# Head + torso only
+			_make_cylinder_mesh(sx, fig_y, sz, 0.14, 0.30, bronze_mat,
+								"BustTorso_%s" % safe_name, 10)
+			_make_cylinder_mesh(sx, fig_y + 0.30, sz, 0.10, 0.20, bronze_mat,
+								"BustHead_%s" % safe_name, 8)
+		elif stype == "monument":
+			# Larger composite humanoid (1.5x scale)
+			var leg_h := 0.90; var torso_h := 1.05; var head_h := 0.30
+			# Legs
+			_make_cylinder_mesh(sx - 0.12, fig_y, sz, 0.105, leg_h, bronze_mat,
+								"MonLegL_%s" % safe_name, 8)
+			_make_cylinder_mesh(sx + 0.12, fig_y, sz, 0.105, leg_h, bronze_mat,
+								"MonLegR_%s" % safe_name, 8)
+			# Torso (tapered)
+			_make_cylinder_mesh(sx, fig_y + leg_h, sz, 0.27, torso_h, bronze_mat,
+								"MonTorso_%s" % safe_name, 10)
+			# Arms
+			_make_cylinder_mesh(sx - 0.30, fig_y + leg_h + 0.15, sz, 0.075, 0.75, bronze_mat,
+								"MonArmL_%s" % safe_name, 6)
+			_make_cylinder_mesh(sx + 0.30, fig_y + leg_h + 0.15, sz, 0.075, 0.75, bronze_mat,
+								"MonArmR_%s" % safe_name, 6)
+			# Head
+			_make_cylinder_mesh(sx, fig_y + leg_h + torso_h, sz, 0.15, head_h, bronze_mat,
+								"MonHead_%s" % safe_name, 8)
 		else:
-			_make_cylinder_mesh(sx, fig_y, sz, 0.25, fig_h, bronze_mat,
-								"Figure_%s" % sname if sname else "Figure")
+			# Default statue — composite humanoid (~1.5m total)
+			var leg_h := 0.60; var torso_h := 0.70; var head_h := 0.20
+			# Legs
+			_make_cylinder_mesh(sx - 0.08, fig_y, sz, 0.07, leg_h, bronze_mat,
+								"FigLegL_%s" % safe_name, 8)
+			_make_cylinder_mesh(sx + 0.08, fig_y, sz, 0.07, leg_h, bronze_mat,
+								"FigLegR_%s" % safe_name, 8)
+			# Torso (tapered)
+			_make_cylinder_mesh(sx, fig_y + leg_h, sz, 0.18, torso_h, bronze_mat,
+								"FigTorso_%s" % safe_name, 10)
+			# Arms (slight outward angle)
+			_make_cylinder_mesh(sx - 0.22, fig_y + leg_h + 0.10, sz, 0.05, 0.50, bronze_mat,
+								"FigArmL_%s" % safe_name, 6)
+			_make_cylinder_mesh(sx + 0.22, fig_y + leg_h + 0.10, sz, 0.05, 0.50, bronze_mat,
+								"FigArmR_%s" % safe_name, 6)
+			# Head
+			_make_cylinder_mesh(sx, fig_y + leg_h + torso_h, sz, 0.10, head_h, bronze_mat,
+								"FigHead_%s" % safe_name, 8)
 
 		# Label
 		var lbl := Label3D.new()
@@ -5727,8 +5984,8 @@ void fragment() {
 	float alpha = smoothstep(0.12, 0.55, opac);
 	if (alpha < 0.05) discard;
 
-	// Green stems near base (UV.y=1.0 is ground level)
-	float stem = smoothstep(0.50, 1.0, UV.y);
+	// Green stems near base (UV.y=1.0 is ground level) — more stem visible
+	float stem = smoothstep(0.35, 0.85, UV.y);
 	vec3 stem_col = vec3(0.10, 0.18, 0.05);
 	// Natural color variation per instance
 	float v1 = sin(origin.x * 3.7 + origin.z * 5.3) * 0.18;
@@ -5853,8 +6110,8 @@ func _build_wildflowers(trees: Array, water: Array) -> void:
 		Color(0.65, 0.58, 0.18),  # buttercup — muted yellow
 	]
 	var species_weights := [0.25, 0.20, 0.15, 0.12, 0.10, 0.08, 0.06, 0.04]
-	var species_h_min := [0.15, 0.18, 0.12, 0.10, 0.12, 0.14, 0.12, 0.10]
-	var species_h_max := [0.35, 0.40, 0.30, 0.25, 0.28, 0.32, 0.28, 0.25]
+	var species_h_min := [0.22, 0.25, 0.18, 0.20, 0.18, 0.20, 0.18, 0.20]
+	var species_h_max := [0.50, 0.55, 0.42, 0.38, 0.40, 0.45, 0.40, 0.38]
 	var n_species := species_tints.size()
 
 	var opac_tex := _load_tex("res://textures/LeafSet005_2K-JPG_Opacity.jpg")
@@ -5891,14 +6148,14 @@ func _build_wildflowers(trees: Array, water: Array) -> void:
 
 	# Grid scan — dense carpet concentrated near trees
 	var half := _hm_world_size * 0.5
-	var scan_step := 6.0
+	var scan_step := 10.0
 	var x := -half + 50.0
 	while x < half - 50.0:
 		var z := -half + 50.0
 		while z < half - 50.0:
 			# FBM noise gate — creates natural patches
 			var noise_val := _fbm(Vector2(x, z) * 0.007, 3)
-			if noise_val < 0.28:
+			if noise_val < 0.35:
 				z += scan_step
 				continue
 
@@ -5959,7 +6216,7 @@ func _build_wildflowers(trees: Array, water: Array) -> void:
 					sp = rng.randi_range(0, n_species - 1)
 
 				var h := rng.randf_range(float(species_h_min[sp]), float(species_h_max[sp]))
-				var w := h * rng.randf_range(1.8, 3.0)  # wide low clumps
+				var w := h * rng.randf_range(0.6, 1.0)  # tall narrow stalks
 				var rot := rng.randf() * TAU
 				var basis := Basis(
 					Vector3(cos(rot) * w, 0.0, sin(rot) * w),
