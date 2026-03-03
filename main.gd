@@ -194,7 +194,8 @@ func _setup_environment() -> void:
 	_env = Environment.new()
 	_env.background_mode       = Environment.BG_SKY
 	_env.sky                   = sky
-	_env.ambient_light_source  = Environment.AMBIENT_SOURCE_COLOR
+	_env.ambient_light_source  = Environment.AMBIENT_SOURCE_SKY
+	_env.ambient_light_sky_contribution = 0.5
 	_env.tonemap_mode          = Environment.TONE_MAPPER_FILMIC
 	_env.glow_enabled          = true
 	_env.glow_blend_mode       = Environment.GLOW_BLEND_MODE_SOFTLIGHT
@@ -203,6 +204,11 @@ func _setup_environment() -> void:
 	_env.ssil_enabled          = true
 	_env.ssil_radius           = 5.0
 	_env.ssil_sharpness        = 0.98
+	_env.ssr_enabled           = true
+	_env.ssr_max_steps         = 64
+	_env.ssr_fade_in           = 0.15
+	_env.ssr_fade_out          = 2.0
+	_env.ssr_depth_tolerance   = 0.2
 	_env.adjustment_enabled    = true
 	_env.adjustment_brightness = 1.02
 	_env.fog_enabled           = true
@@ -213,7 +219,9 @@ func _setup_environment() -> void:
 
 	_sun = DirectionalLight3D.new()
 	_sun.shadow_enabled = true
+	_sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_4_SPLITS
 	_sun.directional_shadow_split_1      = 0.08
+	_sun.directional_shadow_max_distance = 200.0
 	_sun.directional_shadow_pancake_size = 20.0
 	add_child(_sun)
 
@@ -315,16 +323,16 @@ func _build_keyframes() -> void:
 		"ambient_energy": 0.35,
 		"exposure":       0.75,
 		"white":          3.5,
-		"glow_intensity": 0.5,
-		"glow_bloom":     0.12,
-		"glow_strength":  1.0,
+		"glow_intensity": 0.6,
+		"glow_bloom":     0.15,
+		"glow_strength":  1.2,
 		"glow_threshold": 0.8,
 		"glow_cap":       8.0,
-		"ssao_radius":    1.5,
+		"ssao_radius":    2.0,
 		"ssao_intensity": 2.0,
 		"ssao_power":     1.8,
 		"ssil_intensity": 0.8,
-		"saturation":     1.12,
+		"saturation":     1.18,
 		"contrast":       1.05,
 		"brightness":     1.0,
 		"fog_color":      Color(0.48, 0.45, 0.38),
@@ -354,19 +362,19 @@ func _build_keyframes() -> void:
 		"ambient_energy": 0.32,
 		"exposure":       0.90,
 		"white":          4.0,
-		"glow_intensity": 0.7,
-		"glow_bloom":     0.18,
-		"glow_strength":  1.3,
+		"glow_intensity": 0.85,
+		"glow_bloom":     0.22,
+		"glow_strength":  1.5,
 		"glow_threshold": 0.7,
 		"glow_cap":       5.0,
-		"ssao_radius":    1.8,
+		"ssao_radius":    2.0,
 		"ssao_intensity": 2.2,
 		"ssao_power":     1.9,
 		"ssil_intensity": 0.6,
-		"saturation":     1.20,
+		"saturation":     1.25,
 		"contrast":       1.08,
 		"brightness":     0.98,
-		"fog_color":      Color(0.50, 0.35, 0.20),
+		"fog_color":      Color(0.85, 0.82, 0.75),
 		"fog_energy":     0.8,
 		"fog_scatter":    0.40,
 		"fog_density":    0.0016,
@@ -886,7 +894,7 @@ void fragment() {
 	vec3 grass_n1 = texture(grass_normal, uv).rgb;
 	vec3 grass_n2 = texture(grass_normal, uv2).rgb;
 	vec3 grass_nrm = normalize(grass_n1 * 0.65 + grass_n2 * 0.35);
-	float grass_rgh = clamp(texture(grass_rough, uv).r * 0.15 + 0.85, 0.0, 1.0);
+	float grass_rgh = clamp(texture(grass_rough, uv).r * 0.15 + 0.72, 0.0, 1.0);
 	float f = clamp(fbm(world_pos.xz * 0.004, 4) * 0.45
 	              + fbm(world_pos.xz * 0.025, 3) * 0.35 + 0.30, 0.48, 1.1);
 	vec3 dirt = vec3(0.28, 0.20, 0.10);
@@ -897,7 +905,7 @@ void fragment() {
 	vec2 muv = world_pos.xz / meadow_tile_m;
 	vec3 m_alb = texture(meadow_albedo, muv).rgb;
 	vec3 m_nrm = texture(meadow_normal, muv).rgb;
-	float m_rgh = clamp(texture(meadow_rough, muv).r * 0.15 + 0.85, 0.0, 1.0);
+	float m_rgh = clamp(texture(meadow_rough, muv).r * 0.15 + 0.72, 0.0, 1.0);
 	float meadow_noise = fbm(world_pos.xz * 0.003, 3) * 0.6
 	                    + fbm(world_pos.xz * 0.018, 2) * 0.4;
 	float meadow_blend = smoothstep(0.42, 0.58, meadow_noise);
@@ -905,9 +913,10 @@ void fragment() {
 	grass_nrm = mix(grass_nrm, m_nrm, meadow_blend);
 	grass_rgh = mix(grass_rgh, m_rgh, meadow_blend);
 
-	// Warm green push — shift grass toward yellow-green
-	grass_alb.r *= 1.08;
-	grass_alb.b *= 0.85;
+	// Warm green push — richer green with less red
+	grass_alb.r *= 1.05;
+	grass_alb.g *= 1.05;
+	grass_alb.b *= 0.80;
 
 	// Dappled sunlight — simulates light filtering through tree canopy
 	float dapple = fbm(world_pos.xz * 0.15, 3) * 0.5
@@ -915,7 +924,7 @@ void fragment() {
 	             + fbm(world_pos.xz * 1.2, 2) * 0.2;
 	float sun_patch = smoothstep(0.38, 0.62, dapple);
 	vec3 sun_tint = vec3(1.12, 1.06, 0.85); // warm golden highlight
-	grass_alb *= mix(vec3(1.0), sun_tint, sun_patch * 0.35);
+	grass_alb *= mix(vec3(1.0), sun_tint, sun_patch * 0.45);
 
 	if (mat_idx > 0 && path_weight > 0.001) {
 		// --- Path shading ---
@@ -931,14 +940,14 @@ void fragment() {
 		NORMAL_MAP      = mix(grass_nrm, p_nrm, path_weight);
 		NORMAL_MAP_DEPTH = mix(1.6, 1.0, path_weight);
 		ROUGHNESS       = mix(grass_rgh, p_rgh, path_weight);
-		SPECULAR        = 0.0;
+		SPECULAR        = mix(0.15, 0.0, path_weight);
 		METALLIC        = 0.0;
 	} else {
 		ALBEDO          = grass_alb;
 		NORMAL_MAP      = grass_nrm;
 		NORMAL_MAP_DEPTH = 1.6;
 		ROUGHNESS       = grass_rgh;
-		SPECULAR        = 0.0;
+		SPECULAR        = 0.15;
 		METALLIC        = 0.0;
 	}
 

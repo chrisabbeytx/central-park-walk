@@ -2897,13 +2897,23 @@ void fragment() {
 	vec3 deep    = vec3(0.025, 0.055, 0.042);
 	vec3 shallow = vec3(0.065, 0.12, 0.08);
 	// Subtle blend — mostly deep, shallow only at wave peaks
-	vec3 col     = mix(deep, shallow, smoothstep(-0.3, 0.6, wave_h));
+	vec3 base_col = mix(deep, shallow, smoothstep(-0.3, 0.6, wave_h));
 
 	NORMAL    = normalize((VIEW_MATRIX * vec4(wave_nrm, 0.0)).xyz);
+
+	// Fresnel — glancing angles reflect sky
+	float fresnel = pow(1.0 - max(dot(NORMAL, VIEW), 0.0), 4.0);
+	vec3 sky_col = vec3(0.45, 0.58, 0.72);
+	vec3 col = mix(base_col, sky_col, fresnel * 0.6);
+
+	// Foam — white caps at wave peaks
+	float foam = smoothstep(0.6, 0.85, wave_h);
+	col = mix(col, vec3(0.85, 0.90, 0.92), foam * 0.7);
+
 	ALBEDO    = col;
-	ROUGHNESS = 0.20;
+	ROUGHNESS = mix(0.20, 0.05, fresnel);
 	METALLIC  = 0.0;
-	SPECULAR  = 0.5;
+	SPECULAR  = 0.6;
 }
 """
 
@@ -3134,6 +3144,11 @@ uniform float gap_x = 0.6;
 uniform float gap_y = 0.8;
 uniform float ground_h = 3.5;
 
+uniform sampler2D facade_color : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D facade_normal : hint_normal, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D facade_rough : hint_default_white, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform float facade_tile = 2.0;
+
 varying vec3 world_pos;
 
 float hash2(vec2 p) {
@@ -3173,6 +3188,9 @@ void fragment() {
 	vec2 cell = vec2(floor(UV.x / cell_w), floor((UV.y - ground_h) / cell_h));
 	float wrand = hash2(bld * 0.5 + cell * 0.13);
 
+	// Facade texture UV — world-space tiling
+	vec2 fac_uv = UV / facade_tile;
+
 	vec3 col;
 	float rough;
 	float metal;
@@ -3185,14 +3203,22 @@ void fragment() {
 		}
 		rough = glass_rough;
 		metal = glass_metal;
+		NORMAL_MAP = vec3(0.5, 0.5, 1.0);
 	} else {
+		// Sample Facade011 textures for wall surface detail
+		vec3 fac_col = texture(facade_color, fac_uv).rgb;
+		vec3 fac_nrm = texture(facade_normal, fac_uv).rgb;
+		float fac_rgh = texture(facade_rough, fac_uv).r;
+
 		float var_ = hash2(world_pos.xz * 0.15) * 0.08;
-		col = wall_tint * COLOR.rgb * (0.92 + var_);
+		col = fac_col * wall_tint * COLOR.rgb * (0.92 + var_);
 		if (is_cornice) {
 			col *= 0.78;
 		}
-		rough = wall_rough;
+		rough = fac_rgh * wall_rough;
 		metal = wall_metal;
+		NORMAL_MAP = fac_nrm;
+		NORMAL_MAP_DEPTH = 0.8;
 	}
 
 	ALBEDO    = clamp(col, 0.0, 1.0);
@@ -3284,6 +3310,16 @@ void fragment() {
 """
 
 
+func _set_facade_textures(mat: ShaderMaterial) -> void:
+	var fc := _load_tex("res://textures/Facade011_2K-JPG_Color.jpg")
+	var fn := _load_tex("res://textures/Facade011_2K-JPG_NormalGL.jpg")
+	var fr := _load_tex("res://textures/Facade011_2K-JPG_Roughness.jpg")
+	if fc: mat.set_shader_parameter("facade_color", fc)
+	if fn: mat.set_shader_parameter("facade_normal", fn)
+	if fr: mat.set_shader_parameter("facade_rough", fr)
+	mat.set_shader_parameter("facade_tile", 2.0)
+
+
 func _make_facade_limestone() -> ShaderMaterial:
 	var mat := ShaderMaterial.new()
 	mat.shader = _get_shader("facade_proc", _facade_shader_procedural())
@@ -3299,6 +3335,7 @@ func _make_facade_limestone() -> ShaderMaterial:
 	mat.set_shader_parameter("gap_x", 0.6)
 	mat.set_shader_parameter("gap_y", 0.8)
 	mat.set_shader_parameter("ground_h", 3.5)
+	_set_facade_textures(mat)
 	return mat
 
 
@@ -3317,6 +3354,7 @@ func _make_facade_glass() -> ShaderMaterial:
 	mat.set_shader_parameter("gap_x", 0.3)
 	mat.set_shader_parameter("gap_y", 0.5)
 	mat.set_shader_parameter("ground_h", 4.5)
+	_set_facade_textures(mat)
 	return mat
 
 
@@ -3373,6 +3411,7 @@ func _make_facade_dark_stone() -> ShaderMaterial:
 	mat.set_shader_parameter("gap_x", 1.0)
 	mat.set_shader_parameter("gap_y", 1.2)
 	mat.set_shader_parameter("ground_h", 2.5)
+	_set_facade_textures(mat)
 	return mat
 
 
@@ -3932,9 +3971,10 @@ void fragment() {
 
 	ALBEDO     = clamp(col, 0.0, 1.0);
 	NORMAL_MAP = texture(leaf_normal, UV).rgb;
-	ROUGHNESS  = clamp(rgh * 0.15 + 0.82, 0.0, 1.0);
-	SPECULAR   = 0.0;
+	ROUGHNESS  = clamp(rgh * 0.15 + 0.65, 0.0, 1.0);
+	SPECULAR   = 0.3;
 	METALLIC   = 0.0;
+	BACKLIGHT  = vec3(0.25, 0.35, 0.08);
 }
 """
 
@@ -5980,9 +6020,10 @@ void fragment() {
 
 	ALPHA = alpha;
 	ALBEDO = clamp(col, 0.0, 1.0);
-	ROUGHNESS = 0.75;
-	SPECULAR = 0.1;
+	ROUGHNESS = 0.60;
+	SPECULAR = 0.25;
 	METALLIC = 0.0;
+	BACKLIGHT = vec3(0.35, 0.20, 0.22);
 }
 """
 
