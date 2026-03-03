@@ -4875,6 +4875,10 @@ func _build_boundary_facades() -> void:
 		var top_y := base_y + bld_h
 
 		# Wall quad
+		# Building depth (outward from park, behind the front face)
+		var depth := 25.0
+		var ro := -inward * depth
+		# Front face (faces park)
 		var a := Vector3(fp1.x, base_y, fp1.y)
 		var b := Vector3(fp2.x, base_y, fp2.y)
 		var c := Vector3(fp2.x, top_y,  fp2.y)
@@ -4891,12 +4895,47 @@ func _build_boundary_facades() -> void:
 			Vector2(seg_len, bld_h),
 			Vector2(0.0,     bld_h),
 		]))
+		# Back face (faces away from park)
+		var ba := Vector3(fp1.x + ro.x, base_y, fp1.y + ro.y)
+		var bb := Vector3(fp2.x + ro.x, base_y, fp2.y + ro.y)
+		var bc := Vector3(fp2.x + ro.x, top_y,  fp2.y + ro.y)
+		var bd := Vector3(fp1.x + ro.x, top_y,  fp1.y + ro.y)
+		var back_n := -norm3
+		sv[style].append_array(PackedVector3Array([bb, ba, bd, bb, bd, bc]))
+		for _j in range(6):
+			sn[style].append(back_n)
+			sc[style].append(tint * Color(0.85, 0.85, 0.85))  # slightly darker back
+		su[style].append_array(PackedVector2Array([
+			Vector2(seg_len, 0.0),
+			Vector2(0.0,     0.0),
+			Vector2(0.0,     bld_h),
+			Vector2(seg_len, 0.0),
+			Vector2(0.0,     bld_h),
+			Vector2(seg_len, bld_h),
+		]))
+		# Left side wall
+		var side_n_l := Vector3(-dir.x, 0.0, -dir.y)  # perpendicular to segment
+		sv[style].append_array(PackedVector3Array([a, ba, bd, a, bd, d]))
+		for _j in range(6):
+			sn[style].append(side_n_l)
+			sc[style].append(tint * Color(0.90, 0.90, 0.90))
+		su[style].append_array(PackedVector2Array([
+			Vector2(0.0, 0.0), Vector2(depth, 0.0), Vector2(depth, bld_h),
+			Vector2(0.0, 0.0), Vector2(depth, bld_h), Vector2(0.0, bld_h),
+		]))
+		# Right side wall
+		var side_n_r := Vector3(dir.x, 0.0, dir.y)
+		sv[style].append_array(PackedVector3Array([bb, b, c, bb, c, bc]))
+		for _j in range(6):
+			sn[style].append(side_n_r)
+			sc[style].append(tint * Color(0.90, 0.90, 0.90))
+		su[style].append_array(PackedVector2Array([
+			Vector2(0.0, 0.0), Vector2(depth, 0.0), Vector2(depth, bld_h),
+			Vector2(0.0, 0.0), Vector2(depth, bld_h), Vector2(0.0, bld_h),
+		]))
 
-		# Roof quad (8m deep)
-		var ro := -inward * 8.0
-		var rd := Vector3(fp1.x + ro.x, top_y, fp1.y + ro.y)
-		var re := Vector3(fp2.x + ro.x, top_y, fp2.y + ro.y)
-		roof_v.append_array(PackedVector3Array([d, c, re, d, re, rd]))
+		# Roof quad (full depth)
+		roof_v.append_array(PackedVector3Array([d, c, bc, d, bc, bd]))
 		var roof_rv := fmod(abs(float(block_idx) * 11.3 + mz * 0.17), 10.0)
 		var roof_col := Color(0.18, 0.17, 0.16)
 		if roof_rv >= 3.0 and roof_rv < 6.0:
