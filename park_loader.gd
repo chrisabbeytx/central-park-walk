@@ -5691,15 +5691,108 @@ void vertex() {
 
 void fragment() {
 	float opac = texture(petal_opacity, UV).r;
-	float alpha = smoothstep(0.02, 0.15, opac);
-	if (alpha < 0.01) discard;
+	float alpha = smoothstep(0.25, 0.65, opac);
+	if (alpha < 0.05) discard;
 	ALPHA = alpha;
-	ALBEDO = flower_tint;
-	ROUGHNESS = 0.85;
-	SPECULAR = 0.0;
+	// Slight color variation from world position
+	float var_ = sin(origin.x * 3.7 + origin.z * 5.3) * 0.08;
+	ALBEDO = flower_tint * (0.92 + var_);
+	ROUGHNESS = 0.80;
+	SPECULAR = 0.05;
 	METALLIC = 0.0;
+	BACKLIGHT = flower_tint * 0.15;
 }
 """
+
+
+func _flower_carpet_shader_code() -> String:
+	return """shader_type spatial;
+render_mode cull_disabled, depth_prepass_alpha;
+
+uniform sampler2D petal_opacity : hint_default_white, filter_linear_mipmap_anisotropic;
+uniform vec3 flower_tint : source_color = vec3(0.25, 0.35, 0.75);
+
+varying vec3 origin;
+
+void vertex() {
+	origin = (MODEL_MATRIX * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+	float sway = max(VERTEX.y, 0.0);
+	VERTEX.x += sin(TIME * 1.2 + origin.x * 0.08 + origin.z * 0.1) * 0.03 * sway;
+	VERTEX.z += sin(TIME * 1.6 + origin.z * 0.09) * 0.02 * sway;
+}
+
+void fragment() {
+	float opac = texture(petal_opacity, UV).r;
+	// Soft cutoff — keeps more foliage visible, gentle edges
+	float alpha = smoothstep(0.12, 0.55, opac);
+	if (alpha < 0.05) discard;
+
+	// Green stems near base (UV.y=1.0 is ground level)
+	float stem = smoothstep(0.50, 1.0, UV.y);
+	vec3 stem_col = vec3(0.10, 0.18, 0.05);
+	// Natural color variation per instance
+	float v1 = sin(origin.x * 3.7 + origin.z * 5.3) * 0.18;
+	float v2 = sin(origin.x * 1.1 - origin.z * 2.3) * 0.10;
+	vec3 col = flower_tint * (0.82 + v1 + v2);
+	ALBEDO = mix(col, stem_col, stem * 0.45);
+	ALPHA = alpha;
+
+	ROUGHNESS = 0.82;
+	SPECULAR = 0.03;
+	METALLIC = 0.0;
+	BACKLIGHT = flower_tint * 0.08;
+}
+"""
+
+
+func _make_flower_carpet_mesh() -> ArrayMesh:
+	## 2 vertical crossed quads + 1 ground quad for carpet coverage
+	var verts   := PackedVector3Array()
+	var normals := PackedVector3Array()
+	var uvs     := PackedVector2Array()
+	var indices := PackedInt32Array()
+
+	# 2 vertical quads at 90 degrees
+	for i in 2:
+		var angle := float(i) * PI / 2.0
+		var ca := cos(angle)
+		var sa := sin(angle)
+		var right := Vector3(ca * 0.5, 0.0, sa * 0.5)
+		var n     := Vector3(-sa, 0.0, ca)
+		var base  := verts.size()
+		verts.append_array(PackedVector3Array([
+			-right,          right,
+			right + Vector3(0.0, 1.0, 0.0), -right + Vector3(0.0, 1.0, 0.0)]))
+		uvs.append_array(PackedVector2Array([
+			Vector2(0.0, 1.0), Vector2(1.0, 1.0),
+			Vector2(1.0, 0.0), Vector2(0.0, 0.0)]))
+		for _j in 4:
+			normals.append(n)
+		indices.append_array(PackedInt32Array([
+			base, base + 1, base + 2, base, base + 2, base + 3]))
+
+	# 1 ground-facing quad just above terrain for carpet fill
+	var gbase := verts.size()
+	verts.append_array(PackedVector3Array([
+		Vector3(-0.5, 0.06, -0.5), Vector3(0.5, 0.06, -0.5),
+		Vector3(0.5, 0.06, 0.5), Vector3(-0.5, 0.06, 0.5)]))
+	uvs.append_array(PackedVector2Array([
+		Vector2(0.0, 1.0), Vector2(1.0, 1.0),
+		Vector2(1.0, 0.0), Vector2(0.0, 0.0)]))
+	for _j in 4:
+		normals.append(Vector3(0.0, 1.0, 0.0))
+	indices.append_array(PackedInt32Array([
+		gbase, gbase + 1, gbase + 2, gbase, gbase + 2, gbase + 3]))
+
+	var arrays: Array = []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts
+	arrays[Mesh.ARRAY_NORMAL] = normals
+	arrays[Mesh.ARRAY_TEX_UV] = uvs
+	arrays[Mesh.ARRAY_INDEX]  = indices
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	return mesh
 
 
 func _make_flower_billboard_mesh() -> ArrayMesh:
@@ -5746,30 +5839,31 @@ func _build_wildflowers(trees: Array, water: Array) -> void:
 	var rng := RandomNumberGenerator.new()
 	rng.seed = 112233
 
-	var opac_tex := _load_tex("res://textures/LeafSet005_2K-JPG_Opacity.jpg")
 	var flower_mesh := _make_flower_billboard_mesh()
 
-	# 8 species: daisy, buttercup, clover, poppy, cornflower + 3 tall foreground
+	# 8 species — 90% blue/purple for EGTTR bluebell carpet effect (muted/earthy)
 	var species_tints: Array = [
-		Color(0.95, 0.92, 0.75),  # daisy — cream-white
-		Color(0.95, 0.85, 0.15),  # buttercup — bright yellow
-		Color(0.72, 0.35, 0.65),  # clover — purple-pink
-		Color(0.92, 0.18, 0.12),  # poppy — vivid red
-		Color(0.25, 0.40, 0.85),  # cornflower — blue
-		Color(0.35, 0.20, 0.65),  # lupin — purple/blue
-		Color(0.70, 0.30, 0.55),  # foxglove — pink/purple
-		Color(0.25, 0.35, 0.75),  # delphinium — blue
+		Color(0.18, 0.22, 0.58),  # bluebell — dark blue
+		Color(0.24, 0.20, 0.55),  # hyacinth — dark blue-purple
+		Color(0.35, 0.25, 0.52),  # lavender — muted purple
+		Color(0.15, 0.25, 0.50),  # forget-me-not — mid blue
+		Color(0.22, 0.18, 0.45),  # periwinkle — deep blue-violet
+		Color(0.28, 0.25, 0.52),  # grape hyacinth — purple-blue
+		Color(0.70, 0.68, 0.60),  # daisy — muted cream
+		Color(0.65, 0.58, 0.18),  # buttercup — muted yellow
 	]
-	var species_weights := [0.22, 0.18, 0.14, 0.07, 0.09, 0.12, 0.08, 0.10]
-	var species_h_min := [0.8, 0.7, 0.6, 1.0, 1.0, 1.8, 2.4, 2.1]
-	var species_h_max := [1.8, 1.5, 1.2, 2.2, 2.2, 3.0, 3.6, 3.3]
+	var species_weights := [0.25, 0.20, 0.15, 0.12, 0.10, 0.08, 0.06, 0.04]
+	var species_h_min := [0.15, 0.18, 0.12, 0.10, 0.12, 0.14, 0.12, 0.10]
+	var species_h_max := [0.35, 0.40, 0.30, 0.25, 0.28, 0.32, 0.28, 0.25]
 	var n_species := species_tints.size()
+
+	var opac_tex := _load_tex("res://textures/LeafSet005_2K-JPG_Opacity.jpg")
 
 	# Build materials per species
 	var species_mats: Array = []
 	for si in n_species:
 		var mat := ShaderMaterial.new()
-		mat.shader = _get_shader("flower", _flower_shader_code())
+		mat.shader = _get_shader("flower_carpet", _flower_carpet_shader_code())
 		if opac_tex:
 			mat.set_shader_parameter("petal_opacity", opac_tex)
 		var c: Color = species_tints[si]
@@ -5795,16 +5889,16 @@ func _build_wildflowers(trees: Array, water: Array) -> void:
 			tree_hash[tk] = []
 		tree_hash[tk].append(tp)
 
-	# Grid scan — only within actual park footprint (near trees)
+	# Grid scan — dense carpet concentrated near trees
 	var half := _hm_world_size * 0.5
-	var scan_step := 14.0
+	var scan_step := 6.0
 	var x := -half + 50.0
 	while x < half - 50.0:
 		var z := -half + 50.0
 		while z < half - 50.0:
 			# FBM noise gate — creates natural patches
 			var noise_val := _fbm(Vector2(x, z) * 0.007, 3)
-			if noise_val < 0.38:
+			if noise_val < 0.28:
 				z += scan_step
 				continue
 
@@ -5812,7 +5906,7 @@ func _build_wildflowers(trees: Array, water: Array) -> void:
 				z += scan_step
 				continue
 
-			# Check tree proximity via spatial hash — REQUIRE a tree within 40m
+			# Check tree proximity via spatial hash — within 30m of a tree
 			var min_dist := 999.0
 			var ck := Vector2i(int(floor(x / TREE_HASH_CELL)), int(floor(z / TREE_HASH_CELL)))
 			for di in range(-2, 3):
@@ -5823,15 +5917,22 @@ func _build_wildflowers(trees: Array, water: Array) -> void:
 							var d := Vector2(x, z).distance_to(tp)
 							if d < min_dist:
 								min_dist = d
-			# Must be within 40m of a tree (park footprint) but not under canopy
-			if min_dist > 40.0 or min_dist < 5.0:
+			if min_dist > 30.0:
 				z += scan_step
 				continue
 
-			# Denser clusters near trees
-			var cluster_size := rng.randi_range(4, 8)
-			if min_dist < 15.0:
-				cluster_size = rng.randi_range(6, 12)
+			# Dense carpet: many instances per cluster, tight radius
+			var cluster_size: int
+			var cluster_r: float
+			if min_dist < 8.0:
+				cluster_size = rng.randi_range(35, 60)
+				cluster_r = rng.randf_range(2.0, 3.5)
+			elif min_dist < 18.0:
+				cluster_size = rng.randi_range(18, 35)
+				cluster_r = rng.randf_range(2.0, 4.0)
+			else:
+				cluster_size = rng.randi_range(8, 16)
+				cluster_r = rng.randf_range(1.5, 3.0)
 
 			# Choose dominant species for this cluster
 			var dom_roll := rng.randf()
@@ -5843,7 +5944,6 @@ func _build_wildflowers(trees: Array, water: Array) -> void:
 					dom_species = si
 					break
 
-			var cluster_r := rng.randf_range(2.0, 6.0)
 			for _ci in cluster_size:
 				var fx := x + rng.randf_range(-cluster_r, cluster_r)
 				var fz := z + rng.randf_range(-cluster_r, cluster_r)
@@ -5851,15 +5951,15 @@ func _build_wildflowers(trees: Array, water: Array) -> void:
 				if _is_excluded(fx, fz):
 					continue
 
-				var fy := _terrain_y(fx, fz) + 0.02
+				var fy := _terrain_y(fx, fz) + 0.01
 
-				# 70% dominant, 30% random
+				# 75% dominant for uniform-color patches, 25% random
 				var sp := dom_species
-				if rng.randf() > 0.70:
+				if rng.randf() > 0.75:
 					sp = rng.randi_range(0, n_species - 1)
 
 				var h := rng.randf_range(float(species_h_min[sp]), float(species_h_max[sp]))
-				var w := h * rng.randf_range(0.5, 0.8)
+				var w := h * rng.randf_range(1.8, 3.0)  # wide low clumps
 				var rot := rng.randf() * TAU
 				var basis := Basis(
 					Vector3(cos(rot) * w, 0.0, sin(rot) * w),
@@ -5871,7 +5971,7 @@ func _build_wildflowers(trees: Array, water: Array) -> void:
 		x += scan_step
 
 	var total := 0
-	var names := ["Daisy", "Buttercup", "Clover", "Poppy", "Cornflower", "Lupin", "Foxglove", "Delphinium"]
+	var names := ["Bluebell", "Hyacinth", "Lavender", "ForgetMeNot", "Periwinkle", "GrapeHyacinth", "Daisy", "Buttercup"]
 	for si in n_species:
 		total += species_xf[si].size()
 		if not species_xf[si].is_empty():
@@ -5988,8 +6088,8 @@ func _build_meadow_grass(trees: Array) -> void:
 				z += scan_step
 				continue
 
-			var cluster_size := rng.randi_range(2, 5)
-			var cluster_r := rng.randf_range(2.0, 5.0)
+			var cluster_size := rng.randi_range(5, 12)
+			var cluster_r := rng.randf_range(1.5, 4.0)
 
 			for _ci in cluster_size:
 				var gx := x + rng.randf_range(-cluster_r, cluster_r)
@@ -5999,8 +6099,8 @@ func _build_meadow_grass(trees: Array) -> void:
 					continue
 
 				var gy := _terrain_y(gx, gz) + 0.01
-				var h := rng.randf_range(1.0, 2.0)
-				var w := rng.randf_range(0.6, 1.2)
+				var h := rng.randf_range(0.15, 0.45)
+				var w := rng.randf_range(0.12, 0.35)
 				var rot := rng.randf() * TAU
 
 				# 60% green, 40% golden
