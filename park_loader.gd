@@ -648,7 +648,9 @@ func _generate_splat_map(paths: Array, bridge_centroids: Array) -> ImageTexture:
 		var surf: String = seg["surface"]
 		var mat_idx := _splat_mat_idx(hw, surf)
 		var hw2 := _hw_width(hw) * 0.5
-		var pts: Array = _subdivide_pts(seg["points"], 1.0)
+		var raw: Array = seg["points"]
+		var smoothed: Array = _smooth_path_catmull_rom(raw) if raw.size() >= 3 and hw != "steps" else raw
+		var pts: Array = _subdivide_pts(smoothed, 1.0)
 		for i in range(pts.size() - 1):
 			_raster_thick_line(data, float(pts[i][0]), float(pts[i][2]),
 				float(pts[i+1][0]), float(pts[i+1][2]), hw2, mat_idx)
@@ -680,8 +682,10 @@ func _build_paths(paths: Array) -> void:
 	for path in paths:
 		if bool(path.get("bridge", false)) or bool(path.get("tunnel", false)):
 			continue
-		var ppts: Array = path["points"]
-		var phw := _hw_width(str(path.get("highway", "path")))
+		var ppts_raw: Array = path["points"]
+		var phw_str := str(path.get("highway", "path"))
+		var ppts: Array = _smooth_path_catmull_rom(ppts_raw) if ppts_raw.size() >= 3 and phw_str != "steps" else ppts_raw
+		var phw := _hw_width(phw_str)
 		var margin := phw * 0.5 + 1.5
 		var cells := int(ceil(margin / PATH_GRID_CELL)) + 1
 		for pt in ppts:
@@ -974,6 +978,33 @@ func _subdivide_pts(pts: Array, max_seg: float) -> Array:
 	return out
 
 
+func _smooth_path_catmull_rom(pts: Array, subdiv: int = 4) -> Array:
+	## Catmull-Rom spline through original nodes for smooth curves.
+	## 'subdiv' interpolated segments between each pair of original points.
+	if pts.size() < 3:
+		return pts.duplicate()
+	var out: Array = []
+	for i in range(pts.size() - 1):
+		var p0: Array = pts[max(i - 1, 0)]
+		var p1: Array = pts[i]
+		var p2: Array = pts[i + 1]
+		var p3: Array = pts[min(i + 2, pts.size() - 1)]
+		var x0 := float(p0[0]); var y0 := float(p0[1]); var z0 := float(p0[2])
+		var x1 := float(p1[0]); var y1 := float(p1[1]); var z1 := float(p1[2])
+		var x2 := float(p2[0]); var y2 := float(p2[1]); var z2 := float(p2[2])
+		var x3 := float(p3[0]); var y3 := float(p3[1]); var z3 := float(p3[2])
+		for j in subdiv:
+			var t := float(j) / float(subdiv)
+			var t2 := t * t
+			var t3 := t2 * t
+			var vx := 0.5 * ((2.0*x1) + (-x0+x2)*t + (2.0*x0-5.0*x1+4.0*x2-x3)*t2 + (-x0+3.0*x1-3.0*x2+x3)*t3)
+			var vy := 0.5 * ((2.0*y1) + (-y0+y2)*t + (2.0*y0-5.0*y1+4.0*y2-y3)*t2 + (-y0+3.0*y1-3.0*y2+y3)*t3)
+			var vz := 0.5 * ((2.0*z1) + (-z0+z2)*t + (2.0*z0-5.0*z1+4.0*z2-z3)*t2 + (-z0+3.0*z1-3.0*z2+z3)*t3)
+			out.append([vx, vy, vz])
+	out.append(pts[-1])
+	return out
+
+
 func _build_bridge(path: Dictionary) -> void:
 	var hw:   String = str(path.get("highway", "path"))
 	var surf: String = str(path.get("surface", ""))
@@ -982,8 +1013,9 @@ func _build_bridge(path: Dictionary) -> void:
 	if raw_pts.size() < 2:
 		return
 
-	# Subdivide so we have at least 1 point per ~2 metres for smooth ramps.
-	var pts: Array = _subdivide_pts(raw_pts, 2.0)
+	# Smooth curves then subdivide so we have at least 1 point per ~2 metres for smooth ramps.
+	var smoothed: Array = _smooth_path_catmull_rom(raw_pts) if raw_pts.size() >= 3 else raw_pts
+	var pts: Array = _subdivide_pts(smoothed, 2.0)
 	# Snap Y to actual terrain so bridge clearance is computed from the rendered surface
 	for i in range(pts.size()):
 		pts[i] = [pts[i][0], _terrain_y(float(pts[i][0]), float(pts[i][2])), pts[i][2]]
@@ -4389,7 +4421,8 @@ func _spawn_multimesh(mesh: Mesh, mat: Material,
 	var mmi              := MultiMeshInstance3D.new()
 	mmi.multimesh         = mm
 	mmi.name              = node_name
-	mmi.material_override = mat
+	if mat != null:
+		mmi.material_override = mat
 	add_child(mmi)
 
 
@@ -4434,29 +4467,40 @@ void fragment() {
 	if (alpha < 0.01) discard;
 	ALPHA = alpha;
 
-	// Per-instance colour variation from world position hash
-	float h = hash21(floor(tree_origin.xz * 0.025));
-	// Tree: bright 0.60–1.20; understorey: darker 0.45–0.75
-	float bright = mix(0.60 + h * 0.60, 0.45 + h * 0.30, understorey);
-	float warm   = (h - 0.5) * 0.35;
-	vec3 col = alb * bright;
-	col.r += warm;
-	col.b -= warm * 0.4;
-	// Understorey green saturation boost
-	col.r *= mix(1.0, 0.70, understorey);
-	col.g *= mix(1.0, 1.10, understorey);
-	col.b *= mix(1.0, 0.55, understorey);
+	// Desaturate leaf texture — removes green dominance, preserves structural detail
+	float grey = dot(alb, vec3(0.299, 0.587, 0.114));
+	alb = mix(vec3(grey), alb, 0.35);
 
-	// Fake subsurface scattering: rim glows yellow-green (backlit leaves)
+	// Per-tree autumn tone from hash
+	float h = hash21(floor(tree_origin.xz * 0.025));
+	float bright = mix(0.65 + h * 0.55, 0.45 + h * 0.30, understorey);
+	vec3 col = alb * bright;
+
+	// Autumn palette: gold/amber 30%, russet/burnt orange 25%, burgundy 20%, olive/green 15%, brown 10%
+	vec3 autumn_tint;
+	if (h < 0.30) {
+		autumn_tint = vec3(0.72, 0.55, 0.12);       // gold/amber
+	} else if (h < 0.55) {
+		autumn_tint = vec3(0.65, 0.30, 0.08);       // russet/burnt orange
+	} else if (h < 0.75) {
+		autumn_tint = vec3(0.48, 0.12, 0.10);       // burgundy
+	} else if (h < 0.90) {
+		autumn_tint = vec3(0.35, 0.38, 0.12);       // olive/still-green
+	} else {
+		autumn_tint = vec3(0.40, 0.25, 0.10);       // brown
+	}
+	col *= autumn_tint * 2.8;
+
+	// Fake subsurface scattering: warm amber backlit leaves
 	float sss = pow(1.0 - max(dot(NORMAL, VIEW), 0.0), 2.5) * 0.35;
-	col += vec3(0.14, 0.18, 0.02) * sss;
+	col += vec3(0.18, 0.10, 0.02) * sss;
 
 	ALBEDO     = clamp(col, 0.0, 1.0);
 	NORMAL_MAP = texture(leaf_normal, UV).rgb;
 	ROUGHNESS  = clamp(rgh * 0.15 + 0.65, 0.0, 1.0);
 	SPECULAR   = 0.3;
 	METALLIC   = 0.0;
-	BACKLIGHT  = vec3(0.25, 0.35, 0.08);
+	BACKLIGHT  = vec3(0.30, 0.18, 0.05);
 }
 """
 
@@ -5681,9 +5725,10 @@ func _build_boundary_facades() -> void:
 # ---------------------------------------------------------------------------
 func _make_lamppost_mesh_a() -> ArrayMesh:
 	## Variant A: Standard Bishop's crook — post + arm + lantern (~40 tris)
-	var verts   := PackedVector3Array()
-	var normals := PackedVector3Array()
-	var indices := PackedInt32Array()
+	## Surface 0 = post+arm (no emission), Surface 1 = lantern (emission)
+	var p_verts   := PackedVector3Array()
+	var p_normals := PackedVector3Array()
+	var p_indices := PackedInt32Array()
 
 	var segments := 6
 	# --- Post: cylinder r=0.06, h=3.5 ---
@@ -5694,15 +5739,15 @@ func _make_lamppost_mesh_a() -> ArrayMesh:
 		var a1 := TAU * float(i + 1) / float(segments)
 		var c0 := cos(a0); var s0 := sin(a0)
 		var c1 := cos(a1); var s1 := sin(a1)
-		var base := verts.size()
-		verts.append(Vector3(c0 * post_r, 0.0, s0 * post_r))
-		verts.append(Vector3(c1 * post_r, 0.0, s1 * post_r))
-		verts.append(Vector3(c1 * post_r, post_h, s1 * post_r))
-		verts.append(Vector3(c0 * post_r, post_h, s0 * post_r))
+		var base := p_verts.size()
+		p_verts.append(Vector3(c0 * post_r, 0.0, s0 * post_r))
+		p_verts.append(Vector3(c1 * post_r, 0.0, s1 * post_r))
+		p_verts.append(Vector3(c1 * post_r, post_h, s1 * post_r))
+		p_verts.append(Vector3(c0 * post_r, post_h, s0 * post_r))
 		var n0 := Vector3(c0, 0.0, s0)
 		var n1 := Vector3(c1, 0.0, s1)
-		normals.append(n0); normals.append(n1); normals.append(n1); normals.append(n0)
-		indices.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
+		p_normals.append(n0); p_normals.append(n1); p_normals.append(n1); p_normals.append(n0)
+		p_indices.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
 
 	# --- Arm: horizontal cylinder r=0.03, length=0.25 at y=3.4 ---
 	var arm_y := 3.4
@@ -5711,17 +5756,20 @@ func _make_lamppost_mesh_a() -> ArrayMesh:
 	for i in segments:
 		var a0 := TAU * float(i) / float(segments)
 		var a1 := TAU * float(i + 1) / float(segments)
-		var base := verts.size()
-		verts.append(Vector3(0.0, arm_y + cos(a0) * arm_r, sin(a0) * arm_r))
-		verts.append(Vector3(arm_len, arm_y + cos(a0) * arm_r, sin(a0) * arm_r))
-		verts.append(Vector3(arm_len, arm_y + cos(a1) * arm_r, sin(a1) * arm_r))
-		verts.append(Vector3(0.0, arm_y + cos(a1) * arm_r, sin(a1) * arm_r))
+		var base := p_verts.size()
+		p_verts.append(Vector3(0.0, arm_y + cos(a0) * arm_r, sin(a0) * arm_r))
+		p_verts.append(Vector3(arm_len, arm_y + cos(a0) * arm_r, sin(a0) * arm_r))
+		p_verts.append(Vector3(arm_len, arm_y + cos(a1) * arm_r, sin(a1) * arm_r))
+		p_verts.append(Vector3(0.0, arm_y + cos(a1) * arm_r, sin(a1) * arm_r))
 		var n := Vector3(0.0, cos(a0), sin(a0)).normalized()
 		for _j in 4:
-			normals.append(n)
-		indices.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
+			p_normals.append(n)
+		p_indices.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
 
 	# --- Lantern head: box 0.18 wide x 0.28 tall at end of arm ---
+	var l_verts   := PackedVector3Array()
+	var l_normals := PackedVector3Array()
+	var l_indices := PackedInt32Array()
 	var lx := arm_len
 	var ly := arm_y - 0.14
 	var lw := 0.09  # half-width
@@ -5736,26 +5784,33 @@ func _make_lamppost_mesh_a() -> ArrayMesh:
 		[Vector3(lx-lw, ly, -ld), Vector3(lx+lw, ly, -ld), Vector3(lx+lw, ly, ld), Vector3(lx-lw, ly, ld), Vector3(0,-1,0)],
 	]
 	for face in box_faces:
-		var base := verts.size()
-		verts.append(face[0]); verts.append(face[1]); verts.append(face[2]); verts.append(face[3])
+		var base := l_verts.size()
+		l_verts.append(face[0]); l_verts.append(face[1]); l_verts.append(face[2]); l_verts.append(face[3])
 		for _j in 4:
-			normals.append(face[4])
-		indices.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
+			l_normals.append(face[4])
+		l_indices.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
 
-	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
-	arrays[Mesh.ARRAY_VERTEX] = verts
-	arrays[Mesh.ARRAY_NORMAL] = normals
-	arrays[Mesh.ARRAY_INDEX]  = indices
 	var mesh := ArrayMesh.new()
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	# Surface 0: post + arm
+	var pa: Array = []; pa.resize(Mesh.ARRAY_MAX)
+	pa[Mesh.ARRAY_VERTEX] = p_verts; pa[Mesh.ARRAY_NORMAL] = p_normals; pa[Mesh.ARRAY_INDEX] = p_indices
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, pa)
+	# Surface 1: lantern
+	var la: Array = []; la.resize(Mesh.ARRAY_MAX)
+	la[Mesh.ARRAY_VERTEX] = l_verts; la[Mesh.ARRAY_NORMAL] = l_normals; la[Mesh.ARRAY_INDEX] = l_indices
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, la)
 	return mesh
 
 
 func _make_lamppost_mesh_b() -> ArrayMesh:
 	## Variant B: Double lantern — taller post, two arms, two lanterns
-	var verts   := PackedVector3Array()
-	var normals := PackedVector3Array()
-	var indices := PackedInt32Array()
+	## Surface 0 = post+arms, Surface 1 = lanterns
+	var p_verts   := PackedVector3Array()
+	var p_normals := PackedVector3Array()
+	var p_indices := PackedInt32Array()
+	var l_verts   := PackedVector3Array()
+	var l_normals := PackedVector3Array()
+	var l_indices := PackedInt32Array()
 	var segments := 6
 	# Post: r=0.065, h=4.0
 	var post_r := 0.065; var post_h := 4.0
@@ -5764,28 +5819,28 @@ func _make_lamppost_mesh_b() -> ArrayMesh:
 		var a1 := TAU * float(i + 1) / float(segments)
 		var c0 := cos(a0); var s0 := sin(a0)
 		var c1 := cos(a1); var s1 := sin(a1)
-		var base := verts.size()
-		verts.append(Vector3(c0 * post_r, 0.0, s0 * post_r))
-		verts.append(Vector3(c1 * post_r, 0.0, s1 * post_r))
-		verts.append(Vector3(c1 * post_r, post_h, s1 * post_r))
-		verts.append(Vector3(c0 * post_r, post_h, s0 * post_r))
+		var base := p_verts.size()
+		p_verts.append(Vector3(c0 * post_r, 0.0, s0 * post_r))
+		p_verts.append(Vector3(c1 * post_r, 0.0, s1 * post_r))
+		p_verts.append(Vector3(c1 * post_r, post_h, s1 * post_r))
+		p_verts.append(Vector3(c0 * post_r, post_h, s0 * post_r))
 		var n0 := Vector3(c0, 0.0, s0); var n1 := Vector3(c1, 0.0, s1)
-		normals.append(n0); normals.append(n1); normals.append(n1); normals.append(n0)
-		indices.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
+		p_normals.append(n0); p_normals.append(n1); p_normals.append(n1); p_normals.append(n0)
+		p_indices.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
 	# Two arms at y=3.8, opposite X directions
 	var arm_y := 3.8; var arm_r := 0.03; var arm_len := 0.25
 	for arm_dir in [-1.0, 1.0]:
 		for i in segments:
 			var a0 := TAU * float(i) / float(segments)
 			var a1 := TAU * float(i + 1) / float(segments)
-			var base := verts.size()
-			verts.append(Vector3(0.0, arm_y + cos(a0) * arm_r, sin(a0) * arm_r))
-			verts.append(Vector3(arm_len * arm_dir, arm_y + cos(a0) * arm_r, sin(a0) * arm_r))
-			verts.append(Vector3(arm_len * arm_dir, arm_y + cos(a1) * arm_r, sin(a1) * arm_r))
-			verts.append(Vector3(0.0, arm_y + cos(a1) * arm_r, sin(a1) * arm_r))
+			var base := p_verts.size()
+			p_verts.append(Vector3(0.0, arm_y + cos(a0) * arm_r, sin(a0) * arm_r))
+			p_verts.append(Vector3(arm_len * arm_dir, arm_y + cos(a0) * arm_r, sin(a0) * arm_r))
+			p_verts.append(Vector3(arm_len * arm_dir, arm_y + cos(a1) * arm_r, sin(a1) * arm_r))
+			p_verts.append(Vector3(0.0, arm_y + cos(a1) * arm_r, sin(a1) * arm_r))
 			var n := Vector3(0.0, cos(a0), sin(a0)).normalized()
-			for _j in 4: normals.append(n)
-			indices.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
+			for _j in 4: p_normals.append(n)
+			p_indices.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
 		# Lantern at arm end
 		var lx: float = arm_len * arm_dir
 		var ly := arm_y - 0.14; var lw := 0.08; var lh := 0.26; var ld := 0.08
@@ -5798,23 +5853,26 @@ func _make_lamppost_mesh_b() -> ArrayMesh:
 			[Vector3(lx-lw,ly,-ld), Vector3(lx+lw,ly,-ld), Vector3(lx+lw,ly,ld), Vector3(lx-lw,ly,ld), Vector3(0,-1,0)],
 		]
 		for face in box_faces:
-			var base := verts.size()
-			verts.append(face[0]); verts.append(face[1]); verts.append(face[2]); verts.append(face[3])
-			for _j in 4: normals.append(face[4])
-			indices.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
-	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
-	arrays[Mesh.ARRAY_VERTEX] = verts; arrays[Mesh.ARRAY_NORMAL] = normals
-	arrays[Mesh.ARRAY_INDEX] = indices
+			var base := l_verts.size()
+			l_verts.append(face[0]); l_verts.append(face[1]); l_verts.append(face[2]); l_verts.append(face[3])
+			for _j in 4: l_normals.append(face[4])
+			l_indices.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
 	var mesh := ArrayMesh.new()
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	var pa: Array = []; pa.resize(Mesh.ARRAY_MAX)
+	pa[Mesh.ARRAY_VERTEX] = p_verts; pa[Mesh.ARRAY_NORMAL] = p_normals; pa[Mesh.ARRAY_INDEX] = p_indices
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, pa)
+	var la: Array = []; la.resize(Mesh.ARRAY_MAX)
+	la[Mesh.ARRAY_VERTEX] = l_verts; la[Mesh.ARRAY_NORMAL] = l_normals; la[Mesh.ARRAY_INDEX] = l_indices
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, la)
 	return mesh
 
 
 func _make_lamppost_mesh_c() -> ArrayMesh:
 	## Variant C: Globe top — shorter post, no arm, wider globe lantern on top
-	var verts   := PackedVector3Array()
-	var normals := PackedVector3Array()
-	var indices := PackedInt32Array()
+	## Surface 0 = post, Surface 1 = globe lantern
+	var p_verts   := PackedVector3Array()
+	var p_normals := PackedVector3Array()
+	var p_indices := PackedInt32Array()
 	var segments := 6
 	# Post: r=0.055, h=3.0
 	var post_r := 0.055; var post_h := 3.0
@@ -5823,15 +5881,18 @@ func _make_lamppost_mesh_c() -> ArrayMesh:
 		var a1 := TAU * float(i + 1) / float(segments)
 		var c0 := cos(a0); var s0 := sin(a0)
 		var c1 := cos(a1); var s1 := sin(a1)
-		var base := verts.size()
-		verts.append(Vector3(c0 * post_r, 0.0, s0 * post_r))
-		verts.append(Vector3(c1 * post_r, 0.0, s1 * post_r))
-		verts.append(Vector3(c1 * post_r, post_h, s1 * post_r))
-		verts.append(Vector3(c0 * post_r, post_h, s0 * post_r))
+		var base := p_verts.size()
+		p_verts.append(Vector3(c0 * post_r, 0.0, s0 * post_r))
+		p_verts.append(Vector3(c1 * post_r, 0.0, s1 * post_r))
+		p_verts.append(Vector3(c1 * post_r, post_h, s1 * post_r))
+		p_verts.append(Vector3(c0 * post_r, post_h, s0 * post_r))
 		var n0 := Vector3(c0, 0.0, s0); var n1 := Vector3(c1, 0.0, s1)
-		normals.append(n0); normals.append(n1); normals.append(n1); normals.append(n0)
-		indices.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
+		p_normals.append(n0); p_normals.append(n1); p_normals.append(n1); p_normals.append(n0)
+		p_indices.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
 	# Globe lantern directly on top: wider box (0.12 × 0.22 × 0.12)
+	var l_verts   := PackedVector3Array()
+	var l_normals := PackedVector3Array()
+	var l_indices := PackedInt32Array()
 	var lx := 0.0; var ly := post_h - 0.05; var lw := 0.12; var lh := 0.22; var ld := 0.12
 	var box_faces := [
 		[Vector3(lx-lw,ly,ld), Vector3(lx+lw,ly,ld), Vector3(lx+lw,ly+lh,ld), Vector3(lx-lw,ly+lh,ld), Vector3(0,0,1)],
@@ -5842,15 +5903,17 @@ func _make_lamppost_mesh_c() -> ArrayMesh:
 		[Vector3(lx-lw,ly,-ld), Vector3(lx+lw,ly,-ld), Vector3(lx+lw,ly,ld), Vector3(lx-lw,ly,ld), Vector3(0,-1,0)],
 	]
 	for face in box_faces:
-		var base := verts.size()
-		verts.append(face[0]); verts.append(face[1]); verts.append(face[2]); verts.append(face[3])
-		for _j in 4: normals.append(face[4])
-		indices.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
-	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
-	arrays[Mesh.ARRAY_VERTEX] = verts; arrays[Mesh.ARRAY_NORMAL] = normals
-	arrays[Mesh.ARRAY_INDEX] = indices
+		var base := l_verts.size()
+		l_verts.append(face[0]); l_verts.append(face[1]); l_verts.append(face[2]); l_verts.append(face[3])
+		for _j in 4: l_normals.append(face[4])
+		l_indices.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
 	var mesh := ArrayMesh.new()
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	var pa: Array = []; pa.resize(Mesh.ARRAY_MAX)
+	pa[Mesh.ARRAY_VERTEX] = p_verts; pa[Mesh.ARRAY_NORMAL] = p_normals; pa[Mesh.ARRAY_INDEX] = p_indices
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, pa)
+	var la: Array = []; la.resize(Mesh.ARRAY_MAX)
+	la[Mesh.ARRAY_VERTEX] = l_verts; la[Mesh.ARRAY_NORMAL] = l_normals; la[Mesh.ARRAY_INDEX] = l_indices
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, la)
 	return mesh
 
 
@@ -5987,14 +6050,25 @@ func _build_furniture(paths: Array) -> void:
 	var lamp_meshes: Array = [_make_lamppost_mesh_a(), _make_lamppost_mesh_b(), _make_lamppost_mesh_c()]
 	var bench_meshes: Array = [_make_bench_mesh_a(), _make_bench_mesh_b(), _make_bench_mesh_c()]
 
-	var lamp_mat := StandardMaterial3D.new()
-	lamp_mat.albedo_color = Color(0.12, 0.16, 0.10)
-	lamp_mat.roughness    = 0.55
-	lamp_mat.metallic     = 0.3
-	lamp_mat.emission_enabled = true
-	lamp_mat.emission         = Color(1.0, 0.85, 0.45)  # warm yellow glow
-	lamp_mat.emission_energy_multiplier = 2.0
-	lamppost_material = lamp_mat
+	# Post material — dark green iron, no emission
+	var lamp_post_mat := StandardMaterial3D.new()
+	lamp_post_mat.albedo_color = Color(0.12, 0.16, 0.10)
+	lamp_post_mat.roughness    = 0.55
+	lamp_post_mat.metallic     = 0.3
+
+	# Lantern material — same base but with emission (controlled by day/night cycle)
+	var lamp_lantern_mat := StandardMaterial3D.new()
+	lamp_lantern_mat.albedo_color = Color(0.95, 0.92, 0.82)  # frosted glass
+	lamp_lantern_mat.roughness    = 0.25
+	lamp_lantern_mat.emission_enabled = true
+	lamp_lantern_mat.emission         = Color(1.0, 0.85, 0.45)
+	lamp_lantern_mat.emission_energy_multiplier = 2.0
+	lamppost_material = lamp_lantern_mat
+
+	# Set per-surface materials on each lamp mesh
+	for lm in lamp_meshes:
+		lm.surface_set_material(0, lamp_post_mat)
+		lm.surface_set_material(1, lamp_lantern_mat)
 
 	var bench_mat := StandardMaterial3D.new()
 	bench_mat.albedo_color = Color(0.35, 0.22, 0.12)
@@ -6009,7 +6083,8 @@ func _build_furniture(paths: Array) -> void:
 			continue
 		if bool(path.get("bridge", false)) or bool(path.get("tunnel", false)):
 			continue
-		var pts: Array = path["points"]
+		var raw_fpts: Array = path["points"]
+		var pts: Array = _smooth_path_catmull_rom(raw_fpts) if raw_fpts.size() >= 3 and hw != "steps" else raw_fpts
 		if pts.size() < 2:
 			continue
 
@@ -6051,7 +6126,7 @@ func _build_furniture(paths: Array) -> void:
 						if not _in_boundary(lx, lz):
 							continue
 						var ly := _terrain_y(lx, lz)
-						var lv := rng.randi_range(0, 2)
+						var lv := int(abs(lx * 7.3 + lz * 13.1)) % 3
 						lamp_xf[lv].append(Transform3D(Basis.IDENTITY, Vector3(lx, ly, lz)))
 
 			if bench_cum >= next_bench:
@@ -6071,7 +6146,7 @@ func _build_furniture(paths: Array) -> void:
 						# Face bench toward the path (opposite of offset direction)
 						var angle := atan2(-nx * bench_side, -nz * bench_side)
 						var basis := Basis(Vector3.UP, angle)
-						var bv := rng.randi_range(0, 2)
+						var bv := int(abs(bx * 11.7 + bz * 5.3)) % 3
 						bench_xf[bv].append(Transform3D(basis, Vector3(bx, by, bz)))
 
 	# Build spatial hash of bench front zones (bench pos + area toward path)
@@ -6091,7 +6166,7 @@ func _build_furniture(paths: Array) -> void:
 	print("ParkLoader: lampposts = ", total_lamps, "  benches = ", total_bench)
 	for vi in 3:
 		if not lamp_xf[vi].is_empty():
-			_spawn_multimesh(lamp_meshes[vi], lamp_mat, lamp_xf[vi], "Lampposts_%d" % vi)
+			_spawn_multimesh(lamp_meshes[vi], null, lamp_xf[vi], "Lampposts_%d" % vi)
 		if not bench_xf[vi].is_empty():
 			_spawn_multimesh(bench_meshes[vi], bench_mat, bench_xf[vi], "Benches_%d" % vi)
 
@@ -6349,16 +6424,16 @@ func _build_wildflowers(trees: Array, water: Array) -> void:
 
 	var flower_mesh := _make_flower_billboard_mesh()
 
-	# 8 species — 90% blue/purple for EGTTR bluebell carpet effect (muted/earthy)
+	# 8 species — autumn wildflowers: warm golds/ambers/browns
 	var species_tints: Array = [
-		Color(0.18, 0.22, 0.58),  # bluebell — dark blue
-		Color(0.24, 0.20, 0.55),  # hyacinth — dark blue-purple
-		Color(0.35, 0.25, 0.52),  # lavender — muted purple
-		Color(0.15, 0.25, 0.50),  # forget-me-not — mid blue
-		Color(0.22, 0.18, 0.45),  # periwinkle — deep blue-violet
-		Color(0.28, 0.25, 0.52),  # grape hyacinth — purple-blue
-		Color(0.70, 0.68, 0.60),  # daisy — muted cream
-		Color(0.65, 0.58, 0.18),  # buttercup — muted yellow
+		Color(0.65, 0.52, 0.12),  # goldenrod — warm gold
+		Color(0.72, 0.42, 0.08),  # marigold — deep orange
+		Color(0.52, 0.40, 0.28),  # dried aster — muted brown
+		Color(0.62, 0.38, 0.10),  # brown-eyed susan — amber
+		Color(0.45, 0.32, 0.15),  # dried seed head — dark brown
+		Color(0.58, 0.48, 0.14),  # late goldenrod — golden
+		Color(0.68, 0.60, 0.42),  # dried daisy — tan cream
+		Color(0.50, 0.35, 0.12),  # dried buttercup — brown-gold
 	]
 	var species_weights := [0.25, 0.20, 0.15, 0.12, 0.10, 0.08, 0.06, 0.04]
 	var species_h_min := [0.22, 0.25, 0.18, 0.20, 0.18, 0.20, 0.18, 0.20]
@@ -6538,10 +6613,10 @@ func _build_meadow_grass(trees: Array) -> void:
 	var opac_tex := _load_tex("res://textures/LeafSet019_2K-JPG_Opacity.jpg")
 	var grass_mesh := _make_meadow_grass_mesh()
 
-	# Two tint variants: green and golden
+	# Two tint variants: dried golden and straw
 	var tints := [
-		Vector3(0.32, 0.50, 0.14),  # meadow green
-		Vector3(0.52, 0.50, 0.18),  # sun-bleached golden
+		Vector3(0.48, 0.40, 0.15),  # dried golden
+		Vector3(0.55, 0.42, 0.12),  # straw
 	]
 	var grass_mats: Array = []
 	for ti in 2:
@@ -6682,7 +6757,7 @@ void fragment() {
 	ROUGHNESS = 0.60;
 	SPECULAR = 0.25;
 	METALLIC = 0.0;
-	BACKLIGHT = vec3(0.35, 0.20, 0.22);
+	BACKLIGHT = vec3(0.30, 0.15, 0.05);
 }
 """
 
@@ -6700,10 +6775,10 @@ func _build_blossoms(trees: Array) -> void:
 
 	# Blossom species: cherry, magnolia, dogwood, crabapple
 	var blossom_tints: Array = [
-		Vector3(0.95, 0.72, 0.80),  # cherry — soft pink
-		Vector3(0.95, 0.90, 0.80),  # magnolia — cream
-		Vector3(0.98, 0.96, 0.92),  # dogwood — white
-		Vector3(0.92, 0.55, 0.62),  # crabapple — deep pink
+		Vector3(0.85, 0.35, 0.08),  # cherry — bright orange
+		Vector3(0.72, 0.58, 0.10),  # magnolia — bright gold
+		Vector3(0.78, 0.22, 0.12),  # dogwood — crimson
+		Vector3(0.55, 0.15, 0.10),  # crabapple — dark red
 	]
 	# Percentage of broadleaf trees: 12%, 6%, 6%, 6% = 30% total
 	var blossom_thresholds := [0.12, 0.18, 0.24, 0.30]
@@ -6850,7 +6925,7 @@ func _build_ground_cover(trees: Array, water: Array, buildings: Array) -> void:
 	fern_mat.shader = _get_shader("flower", _flower_shader_code())
 	if opac_tex:
 		fern_mat.set_shader_parameter("petal_opacity", opac_tex)
-	fern_mat.set_shader_parameter("flower_tint", Vector3(0.18, 0.42, 0.12))
+	fern_mat.set_shader_parameter("flower_tint", Vector3(0.38, 0.32, 0.10))
 
 	var fern_mesh := _make_fern_mesh()
 	var fern_xf: Array = []
