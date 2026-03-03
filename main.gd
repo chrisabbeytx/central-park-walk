@@ -213,6 +213,31 @@ func _setup_environment() -> void:
 	_env.adjustment_brightness = 1.02
 	_env.fog_enabled           = true
 
+	# Volumetric fog — light shafts, depth haze, ground fog
+	_env.volumetric_fog_enabled = true
+	_env.volumetric_fog_density = 0.0008
+	_env.volumetric_fog_albedo = Color(1.0, 1.0, 1.0)
+	_env.volumetric_fog_emission = Color(0, 0, 0)
+	_env.volumetric_fog_anisotropy = 0.3
+	_env.volumetric_fog_length = 200.0
+	_env.volumetric_fog_detail_spread = 2.0
+	_env.volumetric_fog_ambient_inject = 0.5
+	_env.volumetric_fog_gi_inject = 0.0
+	_env.volumetric_fog_sky_affect = 0.15
+	_env.volumetric_fog_temporal_reprojection_enabled = false
+
+	# SDFGI — global illumination (green bounce under canopies, warm path reflections)
+	_env.sdfgi_enabled = true
+	_env.sdfgi_use_occlusion = true
+	_env.sdfgi_read_sky_light = true
+	_env.sdfgi_bounce_feedback = 0.0
+	_env.sdfgi_cascades = 4
+	_env.sdfgi_min_cell_size = 0.2
+	_env.sdfgi_y_scale = Environment.SDFGI_Y_SCALE_75_PERCENT
+	_env.sdfgi_energy = 0.6
+	_env.sdfgi_normal_bias = 1.1
+	_env.sdfgi_probe_bias = 1.1
+
 	var world_env := WorldEnvironment.new()
 	world_env.environment = _env
 	add_child(world_env)
@@ -269,6 +294,8 @@ func _build_keyframes() -> void:
 		"sun_yaw":        -100.0,
 		"shadow_dist":    180.0,
 		"lamp_emission":  2.0,
+		"vol_fog_density":    0.0015,
+		"vol_fog_anisotropy": 0.1,
 	})
 
 	# ---- 6.5  Sunrise / Golden hour ----
@@ -308,6 +335,8 @@ func _build_keyframes() -> void:
 		"sun_yaw":        -95.0,
 		"shadow_dist":    250.0,
 		"lamp_emission":  0.0,
+		"vol_fog_density":    0.0010,
+		"vol_fog_anisotropy": 0.5,
 	})
 
 	# ---- 12.0  Noon ----
@@ -347,6 +376,8 @@ func _build_keyframes() -> void:
 		"sun_yaw":        -20.0,
 		"shadow_dist":    300.0,
 		"lamp_emission":  0.0,
+		"vol_fog_density":    0.0005,
+		"vol_fog_anisotropy": 0.3,
 	})
 
 	# ---- 19.0  Sunset / Golden hour ----
@@ -386,6 +417,8 @@ func _build_keyframes() -> void:
 		"sun_yaw":        95.0,
 		"shadow_dist":    220.0,
 		"lamp_emission":  0.5,
+		"vol_fog_density":    0.0012,
+		"vol_fog_anisotropy": 0.6,
 	})
 
 	# ---- 21.0  Night ----
@@ -425,6 +458,8 @@ func _build_keyframes() -> void:
 		"sun_yaw":        40.0,
 		"shadow_dist":    200.0,
 		"lamp_emission":  2.0,
+		"vol_fog_density":    0.0015,
+		"vol_fog_anisotropy": 0.1,
 	})
 
 
@@ -515,6 +550,10 @@ func _apply_time_of_day() -> void:
 	_env.fog_density           = _lerp_kf("fog_density", a, b, t)
 	_env.fog_aerial_perspective = _lerp_kf("fog_aerial", a, b, t)
 	_env.fog_sky_affect        = _lerp_kf("fog_sky_affect", a, b, t)
+
+	# Volumetric fog
+	_env.volumetric_fog_density    = _lerp_kf("vol_fog_density", a, b, t)
+	_env.volumetric_fog_anisotropy = _lerp_kf("vol_fog_anisotropy", a, b, t)
 
 	# Sun / moon directional light
 	_sun.light_energy    = _lerp_kf("sun_energy", a, b, t)
@@ -913,10 +952,22 @@ void fragment() {
 	grass_nrm = mix(grass_nrm, m_nrm, meadow_blend);
 	grass_rgh = mix(grass_rgh, m_rgh, meadow_blend);
 
-	// Warm green push — richer green with less red
-	grass_alb.r *= 1.05;
-	grass_alb.g *= 1.05;
-	grass_alb.b *= 0.80;
+	// Mud puddles where wear patches exist
+	float mud = smoothstep(0.25, 0.45, wear);
+	grass_alb = mix(grass_alb, vec3(0.15, 0.10, 0.06), mud * 0.5);
+	grass_rgh = mix(grass_rgh, 0.30, mud * 0.6);
+
+	// Micro-normal bumps — uneven ground feel
+	float bump_a = vnoise(world_pos.xz * 0.8) * 0.5 + vnoise(world_pos.xz * 2.5) * 0.3;
+	float bump_dx = (vnoise(vec2(world_pos.x + 0.1, world_pos.z) * 0.8) - vnoise(vec2(world_pos.x - 0.1, world_pos.z) * 0.8)) * 2.5;
+	float bump_dz = (vnoise(vec2(world_pos.x, world_pos.z + 0.1) * 0.8) - vnoise(vec2(world_pos.x, world_pos.z - 0.1) * 0.8)) * 2.5;
+	grass_nrm.rg += vec2(bump_dx, bump_dz) * 0.15;
+	grass_nrm = normalize(grass_nrm);
+
+	// Warm green push — richer green, subtle
+	grass_alb.r *= 1.02;
+	grass_alb.g *= 1.06;
+	grass_alb.b *= 0.88;
 
 	// Dappled sunlight — simulates light filtering through tree canopy
 	float dapple = fbm(world_pos.xz * 0.15, 3) * 0.5

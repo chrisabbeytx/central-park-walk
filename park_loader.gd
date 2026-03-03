@@ -499,6 +499,10 @@ func _ready() -> void:
 	_build_statues(data.get("statues", []))
 	_build_tree_dirt(data.get("trees", []))
 	_build_blossoms(data.get("trees", []))
+	_build_wildflowers(data.get("trees", []), data.get("water", []))
+	_build_meadow_grass(data.get("trees", []))
+	_build_ground_cover(data.get("trees", []), data.get("water", []), data.get("buildings", []))
+	_build_leaf_litter(data.get("trees", []))
 	_build_boundary(data.get("boundary", []))
 	_build_boundary_facades()
 	print("ParkLoader: done")
@@ -2721,6 +2725,7 @@ func _build_water(water: Array) -> void:
 
 	var verts   := PackedVector3Array()
 	var normals := PackedVector3Array()
+	const WATER_CELL := 4.0  # grid cell size in metres for dense interior mesh
 
 	for body in water:
 		var pts: Array = body["points"]
@@ -2732,6 +2737,17 @@ func _build_water(water: Array) -> void:
 			_wcx += float(_wpt[0]); _wcz += float(_wpt[1])
 		_wcx /= float(pts.size()); _wcz /= float(pts.size())
 		if not _in_boundary(_wcx, _wcz):
+			continue
+
+		# Skip oversized water bodies (rivers, ocean) — max valid is Reservoir ~800m
+		var _bmin_x := INF; var _bmax_x := -INF
+		var _bmin_z := INF; var _bmax_z := -INF
+		for _wpt in pts:
+			_bmin_x = minf(_bmin_x, float(_wpt[0]))
+			_bmax_x = maxf(_bmax_x, float(_wpt[0]))
+			_bmin_z = minf(_bmin_z, float(_wpt[1]))
+			_bmax_z = maxf(_bmax_z, float(_wpt[1]))
+		if (_bmax_x - _bmin_x) > 1000.0 or (_bmax_z - _bmin_z) > 1000.0:
 			continue
 
 		# Check if this water body is a fountain — build 3D structure instead
@@ -2756,19 +2772,46 @@ func _build_water(water: Array) -> void:
 		if not expanded.is_empty():
 			polygon = expanded[0]
 
-		var indices := Geometry2D.triangulate_polygon(polygon)
-		if indices.is_empty():
-			continue
+		# Grid-based mesh: dense interior vertices so terrain clamping works
+		# Without this, large triangles span the lake and terrain pokes through.
+		var bb_min_x := INF; var bb_max_x := -INF
+		var bb_min_z := INF; var bb_max_z := -INF
+		for pt2 in polygon:
+			bb_min_x = minf(bb_min_x, pt2.x); bb_max_x = maxf(bb_max_x, pt2.x)
+			bb_min_z = minf(bb_min_z, pt2.y); bb_max_z = maxf(bb_max_z, pt2.y)
 
-		# Each vertex Y = max(water_level, terrain_y + WATER_Y) so the water
-		# surface stays flat over the lake but never pokes below terrain at edges.
-		for i in range(0, indices.size(), 3):
-			for vi in range(3):
-				var px: float = polygon[indices[i + vi]].x
-				var pz: float = polygon[indices[i + vi]].y
-				var ty: float = _terrain_y(px, pz) + WATER_Y
-				verts.append(Vector3(px, maxf(wy, ty), pz))
-				normals.append(Vector3.UP)
+		var nx := int(ceil((bb_max_x - bb_min_x) / WATER_CELL)) + 1
+		var nz := int(ceil((bb_max_z - bb_min_z) / WATER_CELL)) + 1
+
+		# Build grid of inside flags
+		var inside: Array = []
+		inside.resize((nx + 1) * (nz + 1))
+		for zi in range(nz + 1):
+			for xi in range(nx + 1):
+				var gx := bb_min_x + xi * WATER_CELL
+				var gz := bb_min_z + zi * WATER_CELL
+				var idx := zi * (nx + 1) + xi
+				inside[idx] = Geometry2D.is_point_in_polygon(Vector2(gx, gz), polygon)
+
+		# Emit two triangles per grid cell where all 4 corners are inside
+		for zi in range(nz):
+			for xi in range(nx):
+				var i00 := zi * (nx + 1) + xi
+				var i10 := i00 + 1
+				var i01 := (zi + 1) * (nx + 1) + xi
+				var i11 := i01 + 1
+				if not (inside[i00] and inside[i10] and inside[i01] and inside[i11]):
+					continue
+				var x0 := bb_min_x + xi * WATER_CELL
+				var x1 := x0 + WATER_CELL
+				var z0 := bb_min_z + zi * WATER_CELL
+				var z1 := z0 + WATER_CELL
+				# Triangle 1: (x0,z0) (x1,z0) (x1,z1)
+				for tri_pt in [Vector2(x0,z0), Vector2(x1,z0), Vector2(x1,z1),
+							   Vector2(x0,z0), Vector2(x1,z1), Vector2(x0,z1)]:
+					var ty: float = _terrain_y(tri_pt.x, tri_pt.y) + WATER_Y
+					verts.append(Vector3(tri_pt.x, maxf(wy, ty), tri_pt.y))
+					normals.append(Vector3.UP)
 
 	if verts.is_empty():
 		return
@@ -3211,11 +3254,13 @@ void fragment() {
 		float fac_rgh = texture(facade_rough, fac_uv).r;
 
 		float var_ = hash2(world_pos.xz * 0.15) * 0.08;
-		col = fac_col * wall_tint * COLOR.rgb * (0.92 + var_);
+		// Blend texture detail into wall color (35%) — avoids crushing brightness
+		vec3 base_wall = wall_tint * COLOR.rgb * (0.92 + var_);
+		col = mix(base_wall, fac_col * base_wall * 2.0, 0.35);
 		if (is_cornice) {
 			col *= 0.78;
 		}
-		rough = fac_rgh * wall_rough;
+		rough = mix(wall_rough, fac_rgh, 0.4);
 		metal = wall_metal;
 		NORMAL_MAP = fac_nrm;
 		NORMAL_MAP_DEPTH = 0.8;
@@ -4036,10 +4081,10 @@ func _build_undergrowth(trees: Array, paths: Array) -> void:
 	var bush_mesh := _make_bush_leaf_mesh()
 	var xforms: Array = []
 
-	# Scatter 1–4 bushes within 3–12m of ~60% of trees
+	# Scatter 1–4 bushes within 3–12m of ~80% of trees
 	for i in trees.size():
 		rng.seed = i * 314159 + 271828
-		if rng.randf() > 0.6:
+		if rng.randf() > 0.8:
 			continue
 		var pt: Array = trees[i]
 		var tx := float(pt[0]); var tz := float(pt[2])
@@ -4079,14 +4124,14 @@ func _build_undergrowth(trees: Array, paths: Array) -> void:
 			continue
 		var half_w := _hw_width(hw) * 0.5
 		var cum := 0.0
-		var next_at := rng.randf_range(4.0, 8.0)
+		var next_at := rng.randf_range(3.0, 6.0)
 		for pi in range(1, pts.size()):
 			var dx := float(pts[pi][0]) - float(pts[pi-1][0])
 			var dz := float(pts[pi][2]) - float(pts[pi-1][2])
 			cum += sqrt(dx * dx + dz * dz)
 			if cum >= next_at:
 				cum = 0.0
-				next_at = rng.randf_range(4.0, 8.0)
+				next_at = rng.randf_range(3.0, 6.0)
 				var px := float(pts[pi][0]); var pz := float(pts[pi][2])
 				var side := 1.0 if rng.randf() > 0.5 else -1.0
 				var off := half_w + rng.randf_range(0.5, 3.0)
@@ -4147,7 +4192,7 @@ func _build_rocks(trees: Array, water: Array) -> void:
 		var pts: Array = body["points"]
 		if pts.size() < 3:
 			continue
-		var step := maxi(1, pts.size() / 30)
+		var step := maxi(1, pts.size() / 60)
 		for pi in range(0, pts.size(), step):
 			rng.seed = pi * 567890 + pts.size()
 			if rng.randf() > 0.7:
@@ -4176,8 +4221,8 @@ func _build_rocks(trees: Array, water: Array) -> void:
 				Vector3(-sin(rot) * scale, 0.0, cos(rot) * scale))
 			xforms.append(Transform3D(basis, Vector3(rx, ry - sy * 0.3, rz)))
 
-	# Rocks near ~every 8th tree
-	for i in range(0, trees.size(), 8):
+	# Rocks near ~every 5th tree
+	for i in range(0, trees.size(), 5):
 		rng.seed = i * 135791 + 246810
 		var pt: Array = trees[i]
 		var tx := float(pt[0]); var tz := float(pt[2])
@@ -5704,21 +5749,25 @@ func _build_wildflowers(trees: Array, water: Array) -> void:
 	var opac_tex := _load_tex("res://textures/LeafSet005_2K-JPG_Opacity.jpg")
 	var flower_mesh := _make_flower_billboard_mesh()
 
-	# 5 species: daisy, buttercup, clover, poppy, cornflower
+	# 8 species: daisy, buttercup, clover, poppy, cornflower + 3 tall foreground
 	var species_tints: Array = [
 		Color(0.95, 0.92, 0.75),  # daisy — cream-white
 		Color(0.95, 0.85, 0.15),  # buttercup — bright yellow
 		Color(0.72, 0.35, 0.65),  # clover — purple-pink
 		Color(0.92, 0.18, 0.12),  # poppy — vivid red
 		Color(0.25, 0.40, 0.85),  # cornflower — blue
+		Color(0.35, 0.20, 0.65),  # lupin — purple/blue
+		Color(0.70, 0.30, 0.55),  # foxglove — pink/purple
+		Color(0.25, 0.35, 0.75),  # delphinium — blue
 	]
-	var species_weights := [0.30, 0.25, 0.20, 0.10, 0.15]  # abundance
-	var species_h_min := [0.8, 0.7, 0.6, 1.0, 1.0]
-	var species_h_max := [1.8, 1.5, 1.2, 2.2, 2.2]
+	var species_weights := [0.22, 0.18, 0.14, 0.07, 0.09, 0.12, 0.08, 0.10]
+	var species_h_min := [0.8, 0.7, 0.6, 1.0, 1.0, 1.8, 2.4, 2.1]
+	var species_h_max := [1.8, 1.5, 1.2, 2.2, 2.2, 3.0, 3.6, 3.3]
+	var n_species := species_tints.size()
 
 	# Build materials per species
 	var species_mats: Array = []
-	for si in 5:
+	for si in n_species:
 		var mat := ShaderMaterial.new()
 		mat.shader = _get_shader("flower", _flower_shader_code())
 		if opac_tex:
@@ -5728,7 +5777,9 @@ func _build_wildflowers(trees: Array, water: Array) -> void:
 		species_mats.append(mat)
 
 	# Collect transforms per species
-	var species_xf: Array = [[], [], [], [], []]
+	var species_xf: Array = []
+	for _si in n_species:
+		species_xf.append([])
 
 	# Build a quick tree-position lookup for proximity bias
 	var tree_positions: PackedVector2Array = PackedVector2Array()
@@ -5746,14 +5797,14 @@ func _build_wildflowers(trees: Array, water: Array) -> void:
 
 	# Grid scan — only within actual park footprint (near trees)
 	var half := _hm_world_size * 0.5
-	var scan_step := 20.0
+	var scan_step := 14.0
 	var x := -half + 50.0
 	while x < half - 50.0:
 		var z := -half + 50.0
 		while z < half - 50.0:
 			# FBM noise gate — creates natural patches
 			var noise_val := _fbm(Vector2(x, z) * 0.007, 3)
-			if noise_val < 0.48:
+			if noise_val < 0.38:
 				z += scan_step
 				continue
 
@@ -5786,7 +5837,7 @@ func _build_wildflowers(trees: Array, water: Array) -> void:
 			var dom_roll := rng.randf()
 			var dom_species := 0
 			var cum_w := 0.0
-			for si in 5:
+			for si in n_species:
 				cum_w += float(species_weights[si])
 				if dom_roll < cum_w:
 					dom_species = si
@@ -5805,7 +5856,7 @@ func _build_wildflowers(trees: Array, water: Array) -> void:
 				# 70% dominant, 30% random
 				var sp := dom_species
 				if rng.randf() > 0.70:
-					sp = rng.randi_range(0, 4)
+					sp = rng.randi_range(0, n_species - 1)
 
 				var h := rng.randf_range(float(species_h_min[sp]), float(species_h_max[sp]))
 				var w := h * rng.randf_range(0.5, 0.8)
@@ -5820,10 +5871,10 @@ func _build_wildflowers(trees: Array, water: Array) -> void:
 		x += scan_step
 
 	var total := 0
-	for si in 5:
+	var names := ["Daisy", "Buttercup", "Clover", "Poppy", "Cornflower", "Lupin", "Foxglove", "Delphinium"]
+	for si in n_species:
 		total += species_xf[si].size()
 		if not species_xf[si].is_empty():
-			var names := ["Daisy", "Buttercup", "Clover", "Poppy", "Cornflower"]
 			_spawn_multimesh(flower_mesh, species_mats[si], species_xf[si],
 				"Wildflowers_%s" % names[si])
 	print("ParkLoader: wildflowers = ", total)
@@ -5906,7 +5957,7 @@ func _build_meadow_grass(trees: Array) -> void:
 		mg_tree_hash[tk].append(tp)
 
 	var half := _hm_world_size * 0.5
-	var scan_step := 18.0
+	var scan_step := 16.0
 	var x := -half + 50.0
 	while x < half - 50.0:
 		var z := -half + 50.0
@@ -5914,7 +5965,7 @@ func _build_meadow_grass(trees: Array) -> void:
 			# Replicate terrain shader meadow noise exactly
 			var meadow_noise := _fbm(Vector2(x, z) * 0.003, 3) * 0.6 \
 							  + _fbm(Vector2(x, z) * 0.018, 2) * 0.4
-			if meadow_noise < 0.50:
+			if meadow_noise < 0.45:
 				z += scan_step
 				continue
 
@@ -6204,7 +6255,7 @@ func _build_ground_cover(trees: Array, water: Array, buildings: Array) -> void:
 		var pts: Array = body["points"]
 		if pts.size() < 3:
 			continue
-		var step := maxi(1, pts.size() / 80)
+		var step := maxi(1, pts.size() / 120)
 		for pi in range(0, pts.size(), step):
 			var sx := float(pts[pi][0])
 			var sz := float(pts[pi][1])
@@ -6218,7 +6269,7 @@ func _build_ground_cover(trees: Array, water: Array, buildings: Array) -> void:
 				continue
 			var nx := -dz / tlen
 			var nz := dx / tlen
-			var n_ferns := rng.randi_range(1, 3)
+			var n_ferns := rng.randi_range(2, 5)
 			for _fi in n_ferns:
 				var off := rng.randf_range(5.0, 15.0)
 				var fx := sx + nx * off + rng.randf_range(-2.0, 2.0)
@@ -6237,10 +6288,10 @@ func _build_ground_cover(trees: Array, water: Array, buildings: Array) -> void:
 
 	# --- Ferns near trees (shade) ---
 	for i in trees.size():
-		if i % 5 != 0:
+		if i % 3 != 0:
 			continue
 		rng.seed = i * 667788 + 112233
-		if rng.randf() > 0.40:
+		if rng.randf() > 0.65:
 			continue
 		var pt: Array = trees[i]
 		var tx := float(pt[0]); var tz := float(pt[2])
@@ -6311,3 +6362,71 @@ func _build_ground_cover(trees: Array, water: Array, buildings: Array) -> void:
 		_spawn_multimesh(ivy_mesh, ivy_mat, ivy_xf, "IvyPatches")
 
 	print("ParkLoader: ferns = ", fern_xf.size(), "  ivy = ", ivy_xf.size())
+
+
+# ---------------------------------------------------------------------------
+# Leaf litter — small flat cards scattered under trees
+# ---------------------------------------------------------------------------
+func _build_leaf_litter(trees: Array) -> void:
+	if trees.is_empty():
+		return
+
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 334455
+
+	var opac_tex_a := _load_tex("res://textures/LeafSet003_2K-JPG_Opacity.jpg")
+	var opac_tex_b := _load_tex("res://textures/LeafSet005_2K-JPG_Opacity.jpg")
+	var leaf_mesh := _make_flower_billboard_mesh()  # 3-crossed quads work well for litter
+
+	# Two leaf tint variants: brown/amber autumn leaves
+	var litter_tints := [
+		Vector3(0.35, 0.22, 0.08),  # brown dried oak
+		Vector3(0.50, 0.35, 0.10),  # amber maple
+	]
+	var litter_mats: Array = []
+	for ti in 2:
+		var mat := ShaderMaterial.new()
+		mat.shader = _get_shader("flower", _flower_shader_code())
+		var opac := opac_tex_a if ti == 0 else opac_tex_b
+		if opac:
+			mat.set_shader_parameter("petal_opacity", opac)
+		mat.set_shader_parameter("flower_tint", litter_tints[ti])
+		litter_mats.append(mat)
+
+	var xf: Array = [[], []]
+
+	for i in trees.size():
+		rng.seed = i * 445566 + 778899
+		var pt: Array = trees[i]
+		var tx := float(pt[0]); var tz := float(pt[2])
+		if not _in_boundary(tx, tz):
+			continue
+		# 70% of trees get leaf litter
+		if rng.randf() > 0.70:
+			continue
+		var n_leaves := rng.randi_range(3, 8)
+		for _li in n_leaves:
+			var angle := rng.randf() * TAU
+			var dist := rng.randf_range(1.0, 8.0)
+			var lx := tx + cos(angle) * dist
+			var lz := tz + sin(angle) * dist
+			if _is_excluded(lx, lz):
+				continue
+			var ly := _terrain_y(lx, lz) + 0.02
+			var s := rng.randf_range(0.1, 0.3)
+			var rot := rng.randf() * TAU
+			var ti := 0 if rng.randf() < 0.55 else 1
+			var basis := Basis(
+				Vector3(cos(rot) * s, 0.0, sin(rot) * s),
+				Vector3(0.0, s * 0.6, 0.0),
+				Vector3(-sin(rot) * s, 0.0, cos(rot) * s))
+			xf[ti].append(Transform3D(basis, Vector3(lx, ly, lz)))
+
+	var total := 0
+	var names := ["BrownOak", "AmberMaple"]
+	for ti in 2:
+		total += xf[ti].size()
+		if not xf[ti].is_empty():
+			_spawn_multimesh(leaf_mesh, litter_mats[ti], xf[ti],
+				"LeafLitter_%s" % names[ti])
+	print("ParkLoader: leaf litter = ", total)
