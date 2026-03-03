@@ -54,6 +54,8 @@ func _ready() -> void:
 	_setup_ground()
 	if _park_loader and _park_loader.splat_texture:
 		_apply_splat_map(_park_loader.splat_texture)
+	if _park_loader and _park_loader.boundary_polygon.size() > 2:
+		_apply_boundary_mask(_park_loader.boundary_polygon)
 	_player = _setup_player()
 	_setup_hud()
 	_apply_time_of_day()
@@ -769,6 +771,9 @@ uniform sampler2DArray path_rgh_arr : hint_default_white, filter_linear_mipmap_a
 uniform float world_size = 5000.0;
 uniform float path_tile_m = 2.5;
 
+// Park boundary mask: white = inside park, black = outside
+uniform sampler2D park_mask : filter_linear, repeat_disable;
+
 varying vec3 world_pos;
 
 float hash2(vec2 p) {
@@ -828,6 +833,19 @@ void vertex() {
 }
 
 void fragment() {
+	// --- Park boundary mask: outside = dark pavement ---
+	vec2 mask_uv = (world_pos.xz + world_size * 0.5) / world_size;
+	float park_inside = texture(park_mask, mask_uv).r;
+	if (park_inside < 0.1) {
+		// Outside park — city sidewalk / street
+		float street_noise = hash2(floor(world_pos.xz * 0.3)) * 0.06;
+		ALBEDO    = vec3(0.25 + street_noise, 0.23 + street_noise, 0.21 + street_noise);
+		ROUGHNESS = 0.92;
+		SPECULAR  = 0.0;
+		METALLIC  = 0.0;
+		NORMAL_MAP = vec3(0.5, 0.5, 1.0);
+	} else {
+
 	// --- Splat map sampling (RG8: R=material index, G=coverage alpha) ---
 	vec2 splat_uv = (world_pos.xz + world_size * 0.5) / world_size;
 
@@ -923,6 +941,8 @@ void fragment() {
 		SPECULAR        = 0.0;
 		METALLIC        = 0.0;
 	}
+
+	} // end park_inside else
 }
 """
 
@@ -1055,6 +1075,41 @@ func _apply_splat_map(splat_tex: ImageTexture) -> void:
 	_terrain_mat.set_shader_parameter("world_size",   _hm_world_size)
 	_terrain_mat.set_shader_parameter("path_tile_m",  2.5)
 	print("Terrain: splat map + path texture arrays applied")
+
+
+func _apply_boundary_mask(poly: PackedVector2Array) -> void:
+	## Rasterize a park-interior mask so terrain outside renders as dark pavement.
+	var sz := 1024
+	var img := Image.create(sz, sz, false, Image.FORMAT_R8)
+	img.fill(Color(0, 0, 0))  # black = outside park
+	var half := _hm_world_size * 0.5
+	var n := poly.size()
+
+	# Scanline fill: for each image row, find polygon edge crossings
+	for y in range(sz):
+		var wz := (float(y) / float(sz) - 0.5) * _hm_world_size
+		var crossings := PackedFloat32Array()
+		for i in range(n):
+			var j := (i + 1) % n
+			var zi := poly[i].y
+			var zj := poly[j].y
+			if (zi > wz) != (zj > wz):
+				var t := (wz - zi) / (zj - zi)
+				crossings.append(poly[i].x + t * (poly[j].x - poly[i].x))
+		# Sort crossings
+		var arr: Array = Array(crossings)
+		arr.sort()
+		# Fill between pairs (inside polygon)
+		for k in range(0, arr.size() - 1, 2):
+			var px0 := int(clampf((float(arr[k]) + half) / _hm_world_size * float(sz), 0.0, float(sz - 1)))
+			var px1 := int(clampf((float(arr[k + 1]) + half) / _hm_world_size * float(sz), 0.0, float(sz - 1)))
+			for px in range(px0, px1 + 1):
+				img.set_pixel(px, y, Color(1, 1, 1))
+
+	img.generate_mipmaps()
+	var tex := ImageTexture.create_from_image(img)
+	_terrain_mat.set_shader_parameter("park_mask", tex)
+	print("Terrain: boundary mask applied (%dx%d)" % [sz, sz])
 
 
 # ---------------------------------------------------------------------------
