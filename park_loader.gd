@@ -1190,6 +1190,39 @@ func _build_bridge(path: Dictionary) -> void:
 		return
 	var ramp_len := total_len * BRIDGE_RAMP_FRAC
 
+	# Precompute miter offset direction at each path point — shared by walls/curbs/parapets
+	var bridge_miter: Array[Vector2] = []
+	bridge_miter.resize(n_pts)
+	for mi in range(n_pts):
+		var nvp := Vector2.ZERO
+		var nvn := Vector2.ZERO
+		if mi > 0:
+			var sp := Vector2(float(pts[mi][0]) - float(pts[mi-1][0]),
+							  float(pts[mi][2]) - float(pts[mi-1][2]))
+			if sp.length_squared() > 0.0001:
+				var dp := sp.normalized()
+				nvp = Vector2(-dp.y, dp.x)
+		if mi < n_pts - 1:
+			var sn := Vector2(float(pts[mi+1][0]) - float(pts[mi][0]),
+							  float(pts[mi+1][2]) - float(pts[mi][2]))
+			if sn.length_squared() > 0.0001:
+				var dn := sn.normalized()
+				nvn = Vector2(-dn.y, dn.x)
+		if nvp.length_squared() < 0.0001:
+			bridge_miter[mi] = nvn
+		elif nvn.length_squared() < 0.0001:
+			bridge_miter[mi] = nvp
+		else:
+			var bisect := nvp + nvn
+			if bisect.length_squared() < 0.0001:
+				bridge_miter[mi] = nvn
+			else:
+				bisect = bisect.normalized()
+				var cos_half := bisect.dot(nvn)
+				if cos_half < 0.5:
+					cos_half = 0.5
+				bridge_miter[mi] = bisect / cos_half
+
 	# Determine bridge style (needs total_len for unnamed heuristics)
 	var style: int = _bridge_style(bridge_name, surf, total_len)
 	var _style_names := {BridgeStyle.STONE: "STONE", BridgeStyle.CAST_IRON: "CAST_IRON",
@@ -1444,14 +1477,14 @@ func _build_bridge(path: Dictionary) -> void:
 		match style:
 			BridgeStyle.CAST_IRON:
 				_build_iron_railings(pts, pt_y, cum_len, n_pts, hw2,
-					par_ramp_start, par_ramp_end)
+					par_ramp_start, par_ramp_end, bridge_miter)
 			BridgeStyle.RUSTIC_WOOD:
 				_build_wood_railings(pts, pt_y, cum_len, n_pts, hw2,
-					par_ramp_start, par_ramp_end)
+					par_ramp_start, par_ramp_end, bridge_miter)
 			_:
 				_build_solid_parapets(pts, pt_y, cum_len, n_pts, hw2,
 					par_ramp_start, par_ramp_end, rw_alb, rw_nrm, rw_rgh,
-					parapet_tint)
+					parapet_tint, bridge_miter)
 
 	# ----------------------------------------------------------------
 	# Abutment wing walls — only on bridges with real underpasses (>= 15m)
@@ -1550,15 +1583,16 @@ func _build_bridge(path: Dictionary) -> void:
 			if seg2.length_squared() < 0.0001:
 				continue
 			var nv := Vector2(-seg2.normalized().y, seg2.normalized().x)
+			var am1 := bridge_miter[i]; var am2 := bridge_miter[i + 1]
 			var ohw := hw2 + PARAPET_T + 0.1
 			for side in [-1.0, 1.0]:
 				var s: float = float(side)
-				var ox := nv.x * ohw * s
-				var oz := nv.y * ohw * s
-				var wa := Vector3(p1.x + ox, ty1, p1.z + oz)
-				var wb := Vector3(p2.x + ox, ty2, p2.z + oz)
-				var wc := Vector3(p2.x + ox, p2.y, p2.z + oz)
-				var wd := Vector3(p1.x + ox, p1.y, p1.z + oz)
+				var ox1 := am1.x * ohw * s; var oz1 := am1.y * ohw * s
+				var ox2 := am2.x * ohw * s; var oz2 := am2.y * ohw * s
+				var wa := Vector3(p1.x + ox1, ty1, p1.z + oz1)
+				var wb := Vector3(p2.x + ox2, ty2, p2.z + oz2)
+				var wc := Vector3(p2.x + ox2, p2.y, p2.z + oz2)
+				var wd := Vector3(p1.x + ox1, p1.y, p1.z + oz1)
 				appr_verts.append_array(PackedVector3Array([wa, wb, wc, wa, wc, wd]))
 				var wall_n := Vector3(nv.x * s, 0.0, nv.y * s)
 				for _j in range(6):
@@ -1595,14 +1629,15 @@ func _build_bridge(path: Dictionary) -> void:
 			continue
 		var dv := seg2.normalized()
 		var nv := Vector2(-dv.y, dv.x)
+		var cm1 := bridge_miter[i]; var cm2 := bridge_miter[i + 1]
 		for side in [-1.0, 1.0]:
 			var s: float = float(side)
 			var o_inner := hw2 - curb_w
 			var o_outer := hw2
-			var a := Vector3(p1.x + nv.x * o_inner * s, p1.y, p1.z + nv.y * o_inner * s)
-			var b := Vector3(p1.x + nv.x * o_outer * s, p1.y, p1.z + nv.y * o_outer * s)
-			var c := Vector3(p2.x + nv.x * o_outer * s, p2.y, p2.z + nv.y * o_outer * s)
-			var d := Vector3(p2.x + nv.x * o_inner * s, p2.y, p2.z + nv.y * o_inner * s)
+			var a := Vector3(p1.x + cm1.x * o_inner * s, p1.y, p1.z + cm1.y * o_inner * s)
+			var b := Vector3(p1.x + cm1.x * o_outer * s, p1.y, p1.z + cm1.y * o_outer * s)
+			var c := Vector3(p2.x + cm2.x * o_outer * s, p2.y, p2.z + cm2.y * o_outer * s)
+			var d := Vector3(p2.x + cm2.x * o_inner * s, p2.y, p2.z + cm2.y * o_inner * s)
 			# Top face
 			var at := a + Vector3.UP * curb_h
 			var bt := b + Vector3.UP * curb_h
@@ -1650,7 +1685,7 @@ func _build_solid_parapets(pts: Array, pt_y: PackedFloat32Array,
 		cum_len: PackedFloat32Array, n_pts: int, hw2: float,
 		ramp_start: float, ramp_end: float,
 		rw_alb: ImageTexture, rw_nrm: ImageTexture, rw_rgh: ImageTexture,
-		tint: Color) -> void:
+		tint: Color, miter_nv: Array[Vector2] = []) -> void:
 	## Solid stone balustrade walls with thickness, coping stone overhang, and pilaster columns.
 	var par_verts   := PackedVector3Array()
 	var par_normals := PackedVector3Array()
@@ -1661,6 +1696,40 @@ func _build_solid_parapets(pts: Array, pt_y: PackedFloat32Array,
 	var pilaster_w := 0.30  # pilaster width
 	var pilaster_spacing := 3.5  # metres between pilasters
 
+	# Use caller-provided miter or fall back to per-segment normals
+	var _mnv := miter_nv
+	if _mnv.is_empty():
+		_mnv.resize(n_pts)
+		for mi in range(n_pts):
+			var nvp := Vector2.ZERO
+			var nvn := Vector2.ZERO
+			if mi > 0:
+				var sp := Vector2(float(pts[mi][0]) - float(pts[mi-1][0]),
+								  float(pts[mi][2]) - float(pts[mi-1][2]))
+				if sp.length_squared() > 0.0001:
+					var dp := sp.normalized()
+					nvp = Vector2(-dp.y, dp.x)
+			if mi < n_pts - 1:
+				var sn := Vector2(float(pts[mi+1][0]) - float(pts[mi][0]),
+								  float(pts[mi+1][2]) - float(pts[mi][2]))
+				if sn.length_squared() > 0.0001:
+					var dn := sn.normalized()
+					nvn = Vector2(-dn.y, dn.x)
+			if nvp.length_squared() < 0.0001:
+				_mnv[mi] = nvn
+			elif nvn.length_squared() < 0.0001:
+				_mnv[mi] = nvp
+			else:
+				var bisect := nvp + nvn
+				if bisect.length_squared() < 0.0001:
+					_mnv[mi] = nvn
+				else:
+					bisect = bisect.normalized()
+					var cos_half := bisect.dot(nvn)
+					if cos_half < 0.5:
+						cos_half = 0.5
+					_mnv[mi] = bisect / cos_half
+
 	for i in range(n_pts - 1):
 		if cum_len[i + 1] < ramp_start or cum_len[i] > ramp_end:
 			continue
@@ -1670,31 +1739,36 @@ func _build_solid_parapets(pts: Array, pt_y: PackedFloat32Array,
 		if seg2.length_squared() < 0.0001:
 			continue
 		var dv  := seg2.normalized()
-		var nv  := Vector2(-dv.y, dv.x)
+		var nv  := Vector2(-dv.y, dv.x)  # per-segment normal (for face normals only)
+		var m1 := _mnv[i]
+		var m2 := _mnv[i + 1]
 
 		for side in [-1.0, 1.0]:
 			var s: float = float(side)
 			var inner_off := hw2  # inner face at deck edge
 			var outer_off := hw2 + wall_t
-			var ix1 := nv.x * inner_off * s; var iz1 := nv.y * inner_off * s
-			var ox1 := nv.x * outer_off * s; var oz1 := nv.y * outer_off * s
+			# Per-point miter offsets (seal gaps between segments)
+			var ix1 := m1.x * inner_off * s; var iz1 := m1.y * inner_off * s
+			var ix2 := m2.x * inner_off * s; var iz2 := m2.y * inner_off * s
+			var ox1 := m1.x * outer_off * s; var oz1 := m1.y * outer_off * s
+			var ox2 := m2.x * outer_off * s; var oz2 := m2.y * outer_off * s
 			var wall_top1 := p1.y + PARAPET_H - coping_h
 			var wall_top2 := p2.y + PARAPET_H - coping_h
 
-			# Inner face (facing path)
-			var ia := Vector3(p1.x + ix1, p1.y, p1.z + iz1)
-			var ib := Vector3(p2.x + ix1, p2.y, p2.z + iz1)
-			var ic := Vector3(p2.x + ix1, wall_top2, p2.z + iz1)
+			# Inner face (facing path) — extend 0.02m below deck to seal gap
+			var ia := Vector3(p1.x + ix1, p1.y - 0.02, p1.z + iz1)
+			var ib := Vector3(p2.x + ix2, p2.y - 0.02, p2.z + iz2)
+			var ic := Vector3(p2.x + ix2, wall_top2, p2.z + iz2)
 			var id := Vector3(p1.x + ix1, wall_top1, p1.z + iz1)
 			par_verts.append_array(PackedVector3Array([ia, ib, ic, ia, ic, id]))
 			var inner_n := Vector3(-nv.x * s, 0.0, -nv.y * s)
 			for _j in range(6):
 				par_normals.append(inner_n)
 
-			# Outer face (facing outward)
-			var oa := Vector3(p1.x + ox1, p1.y, p1.z + oz1)
-			var ob := Vector3(p2.x + ox1, p2.y, p2.z + oz1)
-			var oc := Vector3(p2.x + ox1, wall_top2, p2.z + oz1)
+			# Outer face (facing outward) — extend 0.02m below deck to seal gap
+			var oa := Vector3(p1.x + ox1, p1.y - 0.02, p1.z + oz1)
+			var ob := Vector3(p2.x + ox2, p2.y - 0.02, p2.z + oz2)
+			var oc := Vector3(p2.x + ox2, wall_top2, p2.z + oz2)
 			var od := Vector3(p1.x + ox1, wall_top1, p1.z + oz1)
 			par_verts.append_array(PackedVector3Array([ob, oa, od, ob, od, oc]))
 			var outer_n := Vector3(nv.x * s, 0.0, nv.y * s)
@@ -1707,29 +1781,31 @@ func _build_solid_parapets(pts: Array, pt_y: PackedFloat32Array,
 				par_normals.append(Vector3.UP)
 
 			# Coping stone — overhangs wall by coping_overhang on each side
-			var cop_inner := inner_off - coping_overhang
+			var cop_inner := inner_off  # flush with deck edge (no inset gap)
 			var cop_outer := outer_off + coping_overhang
-			var cix := nv.x * cop_inner * s; var ciz := nv.y * cop_inner * s
-			var cox := nv.x * cop_outer * s; var coz := nv.y * cop_outer * s
+			var cix1 := m1.x * cop_inner * s; var ciz1 := m1.y * cop_inner * s
+			var cix2 := m2.x * cop_inner * s; var ciz2 := m2.y * cop_inner * s
+			var cox1 := m1.x * cop_outer * s; var coz1 := m1.y * cop_outer * s
+			var cox2 := m2.x * cop_outer * s; var coz2 := m2.y * cop_outer * s
 			var cop_top1 := p1.y + PARAPET_H
 			var cop_top2 := p2.y + PARAPET_H
 			# Top of coping
-			var ct_a := Vector3(p1.x + cix, cop_top1, p1.z + ciz)
-			var ct_b := Vector3(p2.x + cix, cop_top2, p2.z + ciz)
-			var ct_c := Vector3(p2.x + cox, cop_top2, p2.z + coz)
-			var ct_d := Vector3(p1.x + cox, cop_top1, p1.z + coz)
+			var ct_a := Vector3(p1.x + cix1, cop_top1, p1.z + ciz1)
+			var ct_b := Vector3(p2.x + cix2, cop_top2, p2.z + ciz2)
+			var ct_c := Vector3(p2.x + cox2, cop_top2, p2.z + coz2)
+			var ct_d := Vector3(p1.x + cox1, cop_top1, p1.z + coz1)
 			par_verts.append_array(PackedVector3Array([ct_a, ct_b, ct_c, ct_a, ct_c, ct_d]))
 			for _j in range(6):
 				par_normals.append(Vector3.UP)
 			# Coping inner drip edge (vertical face)
-			var cd_a := Vector3(p1.x + cix, wall_top1, p1.z + ciz)
-			var cd_b := Vector3(p2.x + cix, wall_top2, p2.z + ciz)
+			var cd_a := Vector3(p1.x + cix1, wall_top1, p1.z + ciz1)
+			var cd_b := Vector3(p2.x + cix2, wall_top2, p2.z + ciz2)
 			par_verts.append_array(PackedVector3Array([cd_a, cd_b, ct_b, cd_a, ct_b, ct_a]))
 			for _j in range(6):
 				par_normals.append(inner_n)
 			# Coping outer drip edge
-			var co_a := Vector3(p1.x + cox, wall_top1, p1.z + coz)
-			var co_b := Vector3(p2.x + cox, wall_top2, p2.z + coz)
+			var co_a := Vector3(p1.x + cox1, wall_top1, p1.z + coz1)
+			var co_b := Vector3(p2.x + cox2, wall_top2, p2.z + coz2)
 			par_verts.append_array(PackedVector3Array([co_b, co_a, ct_d, co_b, ct_d, ct_c]))
 			for _j in range(6):
 				par_normals.append(outer_n)
@@ -1817,7 +1893,8 @@ func _build_solid_parapets(pts: Array, pt_y: PackedFloat32Array,
 
 func _build_iron_railings(pts: Array, pt_y: PackedFloat32Array,
 		cum_len: PackedFloat32Array, n_pts: int, hw2: float,
-		ramp_start: float, ramp_end: float) -> void:
+		ramp_start: float, ramp_end: float,
+		bmiter: Array[Vector2] = []) -> void:
 	## Cast-iron railings: posts every ~2m + 3 inner rails + continuous cap rail at top.
 	var rail_verts   := PackedVector3Array()
 	var rail_normals := PackedVector3Array()
@@ -1827,7 +1904,7 @@ func _build_iron_railings(pts: Array, pt_y: PackedFloat32Array,
 	var cap_hw := 0.05       # cap rail half-width (total 0.10m)
 	var post_w := 0.08       # post width (square cross-section)
 	var post_spacing := 2.0  # metres between posts
-	var ohw := hw2 + 0.02    # slight offset from deck edge
+	var ohw := hw2            # flush with deck edge
 
 	# Horizontal inner rails + cap rail: continuous quads per segment
 	for i in range(n_pts - 1):
@@ -1840,16 +1917,18 @@ func _build_iron_railings(pts: Array, pt_y: PackedFloat32Array,
 			continue
 		var dv := seg2.normalized()
 		var nv := Vector2(-dv.y, dv.x)
+		var im1 := bmiter[i] if not bmiter.is_empty() else nv
+		var im2 := bmiter[i + 1] if not bmiter.is_empty() else nv
 		# Inner rails (outward-facing quads)
 		for rh in rail_h:
 			for side in [-1.0, 1.0]:
 				var s: float = float(side)
-				var ox := nv.x * ohw * s
-				var oz := nv.y * ohw * s
-				var ra := Vector3(p1.x + ox, p1.y + rh, p1.z + oz)
-				var rb := Vector3(p2.x + ox, p2.y + rh, p2.z + oz)
-				var rc := Vector3(p2.x + ox, p2.y + rh + rail_thick, p2.z + oz)
-				var rd := Vector3(p1.x + ox, p1.y + rh + rail_thick, p1.z + oz)
+				var ox1 := im1.x * ohw * s; var oz1 := im1.y * ohw * s
+				var ox2 := im2.x * ohw * s; var oz2 := im2.y * ohw * s
+				var ra := Vector3(p1.x + ox1, p1.y + rh, p1.z + oz1)
+				var rb := Vector3(p2.x + ox2, p2.y + rh, p2.z + oz2)
+				var rc := Vector3(p2.x + ox2, p2.y + rh + rail_thick, p2.z + oz2)
+				var rd := Vector3(p1.x + ox1, p1.y + rh + rail_thick, p1.z + oz1)
 				rail_verts.append_array(PackedVector3Array([ra, rb, rc, ra, rc, rd]))
 				var wall_n := Vector3(nv.x * s, 0.0, nv.y * s)
 				for _j in range(6):
@@ -1857,26 +1936,27 @@ func _build_iron_railings(pts: Array, pt_y: PackedFloat32Array,
 		# Cap rail — outward face + top face per side
 		for side in [-1.0, 1.0]:
 			var s: float = float(side)
-			var ox := nv.x * ohw * s
-			var oz := nv.y * ohw * s
+			var ox1 := im1.x * ohw * s; var oz1 := im1.y * ohw * s
+			var ox2 := im2.x * ohw * s; var oz2 := im2.y * ohw * s
 			var cap_base := PARAPET_H
 			var cap_top  := PARAPET_H + cap_h
 			# Outward face
-			var ca := Vector3(p1.x + ox, p1.y + cap_base, p1.z + oz)
-			var cb := Vector3(p2.x + ox, p2.y + cap_base, p2.z + oz)
-			var cc := Vector3(p2.x + ox, p2.y + cap_top,  p2.z + oz)
-			var cd := Vector3(p1.x + ox, p1.y + cap_top,  p1.z + oz)
+			var ca := Vector3(p1.x + ox1, p1.y + cap_base, p1.z + oz1)
+			var cb := Vector3(p2.x + ox2, p2.y + cap_base, p2.z + oz2)
+			var cc := Vector3(p2.x + ox2, p2.y + cap_top,  p2.z + oz2)
+			var cd := Vector3(p1.x + ox1, p1.y + cap_top,  p1.z + oz1)
 			rail_verts.append_array(PackedVector3Array([ca, cb, cc, ca, cc, cd]))
 			var wall_n := Vector3(nv.x * s, 0.0, nv.y * s)
 			for _j in range(6):
 				rail_normals.append(wall_n)
 			# Top face (flat cap visible from above)
-			var inx := nv.x * (ohw - cap_hw * 2.0) * s
-			var inz := nv.y * (ohw - cap_hw * 2.0) * s
-			var ta := Vector3(p1.x + ox,  p1.y + cap_top, p1.z + oz)
-			var tb := Vector3(p2.x + ox,  p2.y + cap_top, p2.z + oz)
-			var tc := Vector3(p2.x + inx, p2.y + cap_top, p2.z + inz)
-			var td := Vector3(p1.x + inx, p1.y + cap_top, p1.z + inz)
+			var in_off := ohw - cap_hw * 2.0
+			var inx1 := im1.x * in_off * s; var inz1 := im1.y * in_off * s
+			var inx2 := im2.x * in_off * s; var inz2 := im2.y * in_off * s
+			var ta := Vector3(p1.x + ox1,  p1.y + cap_top, p1.z + oz1)
+			var tb := Vector3(p2.x + ox2,  p2.y + cap_top, p2.z + oz2)
+			var tc := Vector3(p2.x + inx2, p2.y + cap_top, p2.z + inz2)
+			var td := Vector3(p1.x + inx1, p1.y + cap_top, p1.z + inz1)
 			rail_verts.append_array(PackedVector3Array([ta, tb, tc, ta, tc, td]))
 			for _j in range(6):
 				rail_normals.append(Vector3.UP)
@@ -1964,7 +2044,8 @@ func _build_iron_railings(pts: Array, pt_y: PackedFloat32Array,
 
 func _build_wood_railings(pts: Array, pt_y: PackedFloat32Array,
 		cum_len: PackedFloat32Array, n_pts: int, hw2: float,
-		ramp_start: float, ramp_end: float) -> void:
+		ramp_start: float, ramp_end: float,
+		bmiter: Array[Vector2] = []) -> void:
 	## Rustic wood railings: chunky posts every ~2.5m + 2 thick beam rails with depth.
 	var rail_verts   := PackedVector3Array()
 	var rail_normals := PackedVector3Array()
@@ -1973,7 +2054,7 @@ func _build_wood_railings(pts: Array, pt_y: PackedFloat32Array,
 	var rail_depth := 0.06   # rail depth (visible from above)
 	var post_w := 0.12       # chunky square posts
 	var post_spacing := 2.5
-	var ohw := hw2 + 0.02
+	var ohw := hw2            # flush with deck edge
 
 	# Horizontal rails — outward face + top face per rail
 	for i in range(n_pts - 1):
@@ -1986,29 +2067,32 @@ func _build_wood_railings(pts: Array, pt_y: PackedFloat32Array,
 			continue
 		var dv := seg2.normalized()
 		var nv := Vector2(-dv.y, dv.x)
+		var wm1 := bmiter[i] if not bmiter.is_empty() else nv
+		var wm2 := bmiter[i + 1] if not bmiter.is_empty() else nv
 		for rh in rail_h:
 			for side in [-1.0, 1.0]:
 				var s: float = float(side)
-				var ox := nv.x * ohw * s
-				var oz := nv.y * ohw * s
+				var ox1 := wm1.x * ohw * s; var oz1 := wm1.y * ohw * s
+				var ox2 := wm2.x * ohw * s; var oz2 := wm2.y * ohw * s
 				# Outward face
-				var ra := Vector3(p1.x + ox, p1.y + rh, p1.z + oz)
-				var rb := Vector3(p2.x + ox, p2.y + rh, p2.z + oz)
-				var rc := Vector3(p2.x + ox, p2.y + rh + rail_thick, p2.z + oz)
-				var rd := Vector3(p1.x + ox, p1.y + rh + rail_thick, p1.z + oz)
+				var ra := Vector3(p1.x + ox1, p1.y + rh, p1.z + oz1)
+				var rb := Vector3(p2.x + ox2, p2.y + rh, p2.z + oz2)
+				var rc := Vector3(p2.x + ox2, p2.y + rh + rail_thick, p2.z + oz2)
+				var rd := Vector3(p1.x + ox1, p1.y + rh + rail_thick, p1.z + oz1)
 				rail_verts.append_array(PackedVector3Array([ra, rb, rc, ra, rc, rd]))
 				var wall_n := Vector3(nv.x * s, 0.0, nv.y * s)
 				for _j in range(6):
 					rail_normals.append(wall_n)
 				# Top face (makes rail look like a solid beam)
-				var inx := nv.x * (ohw - rail_depth) * s
-				var inz := nv.y * (ohw - rail_depth) * s
+				var in_off := ohw - rail_depth
+				var inx1 := wm1.x * in_off * s; var inz1 := wm1.y * in_off * s
+				var inx2 := wm2.x * in_off * s; var inz2 := wm2.y * in_off * s
 				var top_y1: float = p1.y + rh + rail_thick
 				var top_y2: float = p2.y + rh + rail_thick
-				var ta := Vector3(p1.x + ox,  top_y1, p1.z + oz)
-				var tb := Vector3(p2.x + ox,  top_y2, p2.z + oz)
-				var tc := Vector3(p2.x + inx, top_y2, p2.z + inz)
-				var td := Vector3(p1.x + inx, top_y1, p1.z + inz)
+				var ta := Vector3(p1.x + ox1,  top_y1, p1.z + oz1)
+				var tb := Vector3(p2.x + ox2,  top_y2, p2.z + oz2)
+				var tc := Vector3(p2.x + inx2, top_y2, p2.z + inz2)
+				var td := Vector3(p1.x + inx1, top_y1, p1.z + inz1)
 				rail_verts.append_array(PackedVector3Array([ta, tb, tc, ta, tc, td]))
 				for _j in range(6):
 					rail_normals.append(Vector3.UP)
@@ -6566,7 +6650,7 @@ func _build_furniture(paths: Array) -> void:
 	lamp_lantern_mat.albedo_color = Color(0.95, 0.92, 0.82)  # frosted glass
 	lamp_lantern_mat.roughness    = 0.25
 	lamp_lantern_mat.emission_enabled = true
-	lamp_lantern_mat.emission         = Color(1.0, 0.85, 0.45)
+	lamp_lantern_mat.emission         = Color(1.0, 0.57, 0.16)
 	lamp_lantern_mat.emission_energy_multiplier = 2.0
 	lamppost_material = lamp_lantern_mat
 

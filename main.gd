@@ -26,7 +26,7 @@ var _latlon_label:  Label
 # ---------------------------------------------------------------------------
 # Day/night cycle
 # ---------------------------------------------------------------------------
-var _time_of_day: float = 12.0        # start at noon
+var _time_of_day: float = 16.0        # start at 4 PM
 var _time_speed: float  = 0.001      # game-hours per real-second (~400 min full cycle)
 var _time_speed_idx: int = 0
 const TIME_SPEEDS: Array = [0.001, 0.01, 0.1, 0.0]
@@ -39,12 +39,12 @@ var _lamp_mat: StandardMaterial3D
 var _terrain_mat: ShaderMaterial
 var _time_label: Label
 
-# Dynamic lamppost lighting — pool of OmniLight3D nodes that follow player
-var _lamp_lights: Array = []  # Array of OmniLight3D
+# Dynamic lamppost lighting — pool of SpotLight3D nodes that follow player
+var _lamp_lights: Array = []  # Array of SpotLight3D
 var _lamp_positions: PackedVector3Array = PackedVector3Array()
 var _lamp_light_timer: float = 0.0
-const LAMP_LIGHT_COUNT := 24
-const LAMP_LIGHT_RANGE := 12.0
+const LAMP_LIGHT_COUNT := 32
+const LAMP_LIGHT_RANGE := 18.0
 const LAMP_LIGHT_UPDATE_INTERVAL := 0.5  # seconds between position updates
 
 # 5 keyframes defining the full day/night cycle
@@ -393,6 +393,23 @@ void sky() {
 	float sun_glow = pow(max(sun_dot, 0.0), 64.0) * 0.3;
 	sky_col += sun_col * (sun_disc + sun_glow);
 
+	// --- Stars ---
+	if (elev > 0.0) {
+		float star_fade = smoothstep(0.15, 0.0, LIGHT0_ENERGY);
+		if (star_fade > 0.0) {
+			vec2 star_uv = dir.xz / (elev + 0.001) * 80.0;
+			vec2 star_cell = floor(star_uv);
+			float star_rand = sky_hash(star_cell);
+			float star_mask = step(0.97, star_rand);
+			float star_bright = sky_hash(star_cell + vec2(13.7, 29.3));
+			star_bright = star_bright * star_bright * 1.5;
+			float twinkle = 0.8 + 0.2 * sin(TIME * 2.0 + star_rand * 100.0);
+			vec2 star_frac = fract(star_uv) - 0.5;
+			float star_point = smoothstep(0.12, 0.02, length(star_frac));
+			sky_col += vec3(star_bright * star_mask * star_point * star_fade * twinkle);
+		}
+	}
+
 	// --- FBM cloud layer ---
 	if (elev > -0.05) {
 		// Project onto cloud dome — higher elevation = closer to zenith
@@ -438,7 +455,7 @@ func _setup_environment() -> void:
 	_env.background_mode       = Environment.BG_SKY
 	_env.sky                   = sky
 	_env.ambient_light_source  = Environment.AMBIENT_SOURCE_SKY
-	_env.ambient_light_sky_contribution = 0.5
+	_env.ambient_light_sky_contribution = 0.3
 	_env.tonemap_mode          = Environment.TONE_MAPPER_FILMIC
 	_env.tonemap_white         = 6.0
 	_env.glow_enabled          = true
@@ -505,20 +522,20 @@ func _build_keyframes() -> void:
 	# ---- 5.0  Pre-dawn (autumn overcast) ----
 	_keyframes.append({
 		"hour": 5.0,
-		"sky_top":        Color(0.04, 0.04, 0.10),
-		"sky_horizon":    Color(0.12, 0.10, 0.16),
+		"sky_top":        Color(0.03, 0.04, 0.12),
+		"sky_horizon":    Color(0.10, 0.10, 0.18),
 		"gnd_bottom":     Color(0.01, 0.01, 0.02),
 		"gnd_horizon":    Color(0.08, 0.06, 0.10),
 		"sun_angle_max":  3.0,
 		"sun_curve":      0.01,
 		"ambient_color":  Color(0.08, 0.08, 0.14),
-		"ambient_energy": 0.35,
-		"exposure":       1.3,
+		"ambient_energy": 0.08,
+		"exposure":       0.55,
 		"white":          5.0,
 		"glow_intensity": 0.7,
 		"glow_bloom":     0.20,
-		"glow_strength":  1.4,
-		"glow_threshold": 0.25,
+		"glow_strength":  2.5,
+		"glow_threshold": 0.10,
 		"glow_cap":       3.0,
 		"ssao_radius":    2.0,
 		"ssao_intensity": 2.8,
@@ -526,14 +543,14 @@ func _build_keyframes() -> void:
 		"ssil_intensity": 0.5,
 		"saturation":     0.50,
 		"contrast":       1.10,
-		"brightness":     0.92,
+		"brightness":     0.70,
 		"fog_color":      Color(0.12, 0.10, 0.14),
-		"fog_energy":     0.5,
+		"fog_energy":     0.15,
 		"fog_scatter":    0.05,
 		"fog_density":    0.0025,
 		"fog_aerial":     0.55,
 		"fog_sky_affect": 0.6,
-		"sun_energy":     0.4,
+		"sun_energy":     0.05,
 		"sun_color":      Color(0.65, 0.72, 0.95),
 		"sun_pitch":      -10.0,
 		"sun_yaw":        -100.0,
@@ -541,8 +558,8 @@ func _build_keyframes() -> void:
 		"lamp_emission":  2.0,
 		"vol_fog_density":    0.0015,
 		"vol_fog_anisotropy": 0.15,
-		"cloud_coverage":     0.93,
-		"cloud_density":      0.78,
+		"cloud_coverage":     0.30,
+		"cloud_density":      0.55,
 		"cloud_color_top":    Color(0.42, 0.40, 0.44),
 		"cloud_color_bottom": Color(0.16, 0.14, 0.18),
 		"cloud_speed":        0.003,
@@ -551,8 +568,8 @@ func _build_keyframes() -> void:
 	# ---- 6.5  Sunrise / Golden hour (luminous overcast) ----
 	_keyframes.append({
 		"hour": 6.5,
-		"sky_top":        Color(0.32, 0.30, 0.40),
-		"sky_horizon":    Color(0.72, 0.48, 0.32),
+		"sky_top":        Color(0.25, 0.38, 0.62),
+		"sky_horizon":    Color(0.68, 0.50, 0.38),
 		"gnd_bottom":     Color(0.10, 0.08, 0.06),
 		"gnd_horizon":    Color(0.42, 0.32, 0.22),
 		"sun_angle_max":  5.0,
@@ -587,9 +604,9 @@ func _build_keyframes() -> void:
 		"lamp_emission":  0.0,
 		"vol_fog_density":    0.0012,
 		"vol_fog_anisotropy": 0.75,
-		"cloud_coverage":     0.90,
-		"cloud_density":      0.72,
-		"cloud_color_top":    Color(0.82, 0.74, 0.60),
+		"cloud_coverage":     0.45,
+		"cloud_density":      0.60,
+		"cloud_color_top":    Color(0.92, 0.88, 0.78),
 		"cloud_color_bottom": Color(0.48, 0.40, 0.32),
 		"cloud_speed":        0.004,
 	})
@@ -597,8 +614,8 @@ func _build_keyframes() -> void:
 	# ---- 12.0  Noon (luminous overcast — bright diffuse, not dark) ----
 	_keyframes.append({
 		"hour": 12.0,
-		"sky_top":        Color(0.35, 0.35, 0.42),
-		"sky_horizon":    Color(0.52, 0.50, 0.48),
+		"sky_top":        Color(0.22, 0.42, 0.75),
+		"sky_horizon":    Color(0.55, 0.60, 0.68),
 		"gnd_bottom":     Color(0.12, 0.12, 0.10),
 		"gnd_horizon":    Color(0.38, 0.36, 0.32),
 		"sun_angle_max":  1.5,
@@ -633,10 +650,10 @@ func _build_keyframes() -> void:
 		"lamp_emission":  0.0,
 		"vol_fog_density":    0.0008,
 		"vol_fog_anisotropy": 0.18,
-		"cloud_coverage":     0.92,
-		"cloud_density":      0.78,
-		"cloud_color_top":    Color(0.68, 0.66, 0.64),
-		"cloud_color_bottom": Color(0.44, 0.42, 0.40),
+		"cloud_coverage":     0.40,
+		"cloud_density":      0.55,
+		"cloud_color_top":    Color(0.92, 0.92, 0.90),
+		"cloud_color_bottom": Color(0.65, 0.65, 0.63),
 		"cloud_speed":        0.005,
 	})
 
@@ -679,8 +696,8 @@ func _build_keyframes() -> void:
 		"lamp_emission":  0.5,
 		"vol_fog_density":    0.0015,
 		"vol_fog_anisotropy": 0.78,
-		"cloud_coverage":     0.91,
-		"cloud_density":      0.75,
+		"cloud_coverage":     0.50,
+		"cloud_density":      0.60,
 		"cloud_color_top":    Color(0.78, 0.55, 0.42),
 		"cloud_color_bottom": Color(0.50, 0.28, 0.18),
 		"cloud_speed":        0.004,
@@ -689,20 +706,20 @@ func _build_keyframes() -> void:
 	# ---- 21.0  Night (autumn overcast) ----
 	_keyframes.append({
 		"hour": 21.0,
-		"sky_top":        Color(0.02, 0.02, 0.05),
-		"sky_horizon":    Color(0.04, 0.04, 0.08),
+		"sky_top":        Color(0.02, 0.03, 0.08),
+		"sky_horizon":    Color(0.04, 0.05, 0.12),
 		"gnd_bottom":     Color(0.005, 0.008, 0.012),
 		"gnd_horizon":    Color(0.02, 0.03, 0.06),
 		"sun_angle_max":  3.0,
 		"sun_curve":      0.01,
 		"ambient_color":  Color(0.06, 0.06, 0.12),
-		"ambient_energy": 0.35,
-		"exposure":       1.4,
+		"ambient_energy": 0.08,
+		"exposure":       0.55,
 		"white":          5.0,
 		"glow_intensity": 0.7,
 		"glow_bloom":     0.25,
-		"glow_strength":  1.5,
-		"glow_threshold": 0.25,
+		"glow_strength":  2.5,
+		"glow_threshold": 0.10,
 		"glow_cap":       3.0,
 		"ssao_radius":    2.0,
 		"ssao_intensity": 3.0,
@@ -710,14 +727,14 @@ func _build_keyframes() -> void:
 		"ssil_intensity": 0.6,
 		"saturation":     0.50,
 		"contrast":       1.12,
-		"brightness":     0.92,
+		"brightness":     0.70,
 		"fog_color":      Color(0.08, 0.08, 0.12),
-		"fog_energy":     0.5,
+		"fog_energy":     0.15,
 		"fog_scatter":    0.05,
 		"fog_density":    0.0025,
 		"fog_aerial":     0.55,
 		"fog_sky_affect": 0.6,
-		"sun_energy":     0.5,
+		"sun_energy":     0.05,
 		"sun_color":      Color(0.70, 0.78, 1.00),
 		"sun_pitch":      -65.0,
 		"sun_yaw":        40.0,
@@ -725,8 +742,8 @@ func _build_keyframes() -> void:
 		"lamp_emission":  2.0,
 		"vol_fog_density":    0.0015,
 		"vol_fog_anisotropy": 0.10,
-		"cloud_coverage":     0.95,
-		"cloud_density":      0.80,
+		"cloud_coverage":     0.25,
+		"cloud_density":      0.50,
 		"cloud_color_top":    Color(0.12, 0.12, 0.18),
 		"cloud_color_bottom": Color(0.05, 0.05, 0.08),
 		"cloud_speed":        0.003,
@@ -851,7 +868,7 @@ func _apply_time_of_day() -> void:
 		if em < 0.01:
 			_lamp_mat.emission = Color(0.0, 0.0, 0.0)
 		else:
-			_lamp_mat.emission = Color(1.0, 0.85, 0.45) * em
+			_lamp_mat.emission = Color(1.0, 0.57, 0.16) * em
 
 
 # ---------------------------------------------------------------------------
@@ -1121,13 +1138,13 @@ render_mode cull_disabled;
 uniform sampler2D grass_albedo : source_color,      filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D grass_normal : hint_normal,        filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D grass_rough  : hint_default_white, filter_linear_mipmap_anisotropic, repeat_enable;
-uniform float tile_m = 5.0;
+uniform float tile_m = 3.0;
 
 // Meadow/wild grass blend
 uniform sampler2D meadow_albedo : source_color,      filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D meadow_normal : hint_normal,        filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D meadow_rough  : hint_default_white, filter_linear_mipmap_anisotropic, repeat_enable;
-uniform float meadow_tile_m = 4.0;
+uniform float meadow_tile_m = 2.5;
 
 // Anti-tiling noise texture (256x256 white noise)
 uniform sampler2D tile_noise : filter_linear_mipmap, repeat_enable;
@@ -1167,39 +1184,39 @@ float fbm(vec2 p, int oct) {
 
 // Inigo Quilez textureNoTile — kills tiling at all distances with 2 extra samples
 vec3 textureNoTile_c(sampler2D tex, vec2 uv) {
-	float k = texture(tile_noise, uv * 0.005).x;
+	float k = texture(tile_noise, uv * 0.0085).x;
 	vec2 duvdx = dFdx(uv); vec2 duvdy = dFdy(uv);
-	float l = k * 8.0;
+	float l = k * 12.0;
 	float f = fract(l);
 	vec2 offa = sin(vec2(3.0, 7.0) * floor(l));
 	vec2 offb = sin(vec2(3.0, 7.0) * ceil(l));
 	vec3 cola = textureGrad(tex, uv + offa, duvdx, duvdy).rgb;
 	vec3 colb = textureGrad(tex, uv + offb, duvdx, duvdy).rgb;
-	return mix(cola, colb, smoothstep(0.2, 0.8, f - 0.1 * dot(cola - colb, vec3(1.0))));
+	return mix(cola, colb, smoothstep(0.15, 0.85, f - 0.1 * dot(cola - colb, vec3(1.0))));
 }
 
 vec3 textureNoTile_n(sampler2D tex, vec2 uv) {
-	float k = texture(tile_noise, uv * 0.005).x;
+	float k = texture(tile_noise, uv * 0.0085).x;
 	vec2 duvdx = dFdx(uv); vec2 duvdy = dFdy(uv);
-	float l = k * 8.0;
+	float l = k * 12.0;
 	float f = fract(l);
 	vec2 offa = sin(vec2(3.0, 7.0) * floor(l));
 	vec2 offb = sin(vec2(3.0, 7.0) * ceil(l));
 	vec3 na = textureGrad(tex, uv + offa, duvdx, duvdy).rgb;
 	vec3 nb = textureGrad(tex, uv + offb, duvdx, duvdy).rgb;
-	return mix(na, nb, smoothstep(0.2, 0.8, f));
+	return mix(na, nb, smoothstep(0.15, 0.85, f));
 }
 
 float textureNoTile_r(sampler2D tex, vec2 uv) {
-	float k = texture(tile_noise, uv * 0.005).x;
+	float k = texture(tile_noise, uv * 0.0085).x;
 	vec2 duvdx = dFdx(uv); vec2 duvdy = dFdy(uv);
-	float l = k * 8.0;
+	float l = k * 12.0;
 	float f = fract(l);
 	vec2 offa = sin(vec2(3.0, 7.0) * floor(l));
 	vec2 offb = sin(vec2(3.0, 7.0) * ceil(l));
 	float ra = textureGrad(tex, uv + offa, duvdx, duvdy).r;
 	float rb = textureGrad(tex, uv + offb, duvdx, duvdy).r;
-	return mix(ra, rb, smoothstep(0.2, 0.8, f));
+	return mix(ra, rb, smoothstep(0.15, 0.85, f));
 }
 
 // Returns vec4(tex_set_index, tint_r, tint_g, tint_b) for material indices 1-30
@@ -1285,7 +1302,7 @@ void fragment() {
 
 	// 3×3 Gaussian blur at 2-texel spacing for smooth path edges
 	float path_weight = 0.0;
-	float pw_wide = splat_step * 2.0;
+	float pw_wide = splat_step * 1.0;
 	path_weight += texture(splat_map, splat_uv + vec2(-pw_wide, -pw_wide)).g;
 	path_weight += texture(splat_map, splat_uv + vec2(    0.0, -pw_wide)).g * 2.0;
 	path_weight += texture(splat_map, splat_uv + vec2( pw_wide, -pw_wide)).g;
@@ -1431,7 +1448,7 @@ void fragment() {
 		float p_rgh = clamp(texture(path_rgh_arr, vec3(path_uv, tex_set)).r + 0.10, 0.0, 1.0);
 
 		// Smooth path-grass transition — tight to minimize grass bleed
-		float soft_weight = smoothstep(0.0, 0.45, path_weight);
+		float soft_weight = smoothstep(0.0, 0.30, path_weight);
 
 		ALBEDO          = mix(grass_alb, p_alb, soft_weight);
 		vec3 _cn = mix(grass_nrm, p_nrm, soft_weight) * 2.0 - 1.0;
@@ -1654,15 +1671,17 @@ func _setup_lamp_lights() -> void:
 	print("Lamp lights: %d lamppost positions extracted, pool of %d lights" % [
 		_lamp_positions.size(), LAMP_LIGHT_COUNT])
 
-	# Create light pool
+	# Create light pool — SpotLight3D pointing downward (lamppost shade)
 	for i in LAMP_LIGHT_COUNT:
-		var light := OmniLight3D.new()
-		light.light_color = Color(1.0, 0.85, 0.45)  # warm amber
+		var light := SpotLight3D.new()
+		light.light_color = Color(1.0, 0.57, 0.16)  # sodium vapor
 		light.light_energy = 0.0  # off until positioned
-		light.omni_range = LAMP_LIGHT_RANGE
-		light.omni_attenuation = 1.5
+		light.spot_range = 18.0
+		light.spot_angle = 70.0  # ~140° cone — wide pool below
+		light.spot_attenuation = 0.8
 		light.shadow_enabled = false  # too expensive for 24 lights
 		light.light_bake_mode = Light3D.BAKE_DISABLED
+		light.rotation_degrees = Vector3(-90, 0, 0)  # point straight down
 		light.name = "LampLight_%d" % i
 		add_child(light)
 		_lamp_lights.append(light)
@@ -1689,7 +1708,7 @@ func _update_lamp_lights() -> void:
 		if li < dists.size() and night_energy > 0.1:
 			var idx: int = dists[li][1]
 			_lamp_lights[li].global_position = _lamp_positions[idx]
-			_lamp_lights[li].light_energy = night_energy * 0.6
+			_lamp_lights[li].light_energy = night_energy * 5.0
 		else:
 			_lamp_lights[li].light_energy = 0.0
 
