@@ -48,11 +48,28 @@ var lamppost_material: StandardMaterial3D
 
 # Splat map: 4096×4096 RG8 — R=material index, G=coverage alpha (smooth edges)
 const SPLAT_RES := 4096
-const SPLAT_FEATHER := 1.5  # metres — soft edge transition width
+const SPLAT_FEATHER := 3.0  # metres — soft edge transition width
 var splat_texture: ImageTexture
+var _splat_data: PackedByteArray  # raw RG8 bytes for path coverage queries
 var tunnel_depressions: Array = []  # stairwell depressions for terrain carving
 var boundary_polygon: PackedVector2Array  # XZ boundary for player clamping
 
+
+# ---------------------------------------------------------------------------
+# Splat map query — check if a world position is on a painted path
+# ---------------------------------------------------------------------------
+func _is_on_path(wx: float, wz: float) -> bool:
+	## Returns true if the splat map has path coverage > 128 at world (wx, wz).
+	if _splat_data.is_empty():
+		return false
+	var half := _hm_world_size * 0.5
+	var scale := float(SPLAT_RES) / _hm_world_size
+	var px := int((wx + half) * scale)
+	var pz := int((wz + half) * scale)
+	if px < 0 or px >= SPLAT_RES or pz < 0 or pz >= SPLAT_RES:
+		return false
+	var byte_idx := pz * SPLAT_RES * 2 + px * 2
+	return _splat_data[byte_idx + 1] > 128  # G channel = coverage alpha
 
 # ---------------------------------------------------------------------------
 # Typed helpers – avoids Dictionary.get() returning Variant (parse error in 4.6)
@@ -649,12 +666,40 @@ func _generate_splat_map(paths: Array, bridge_centroids: Array) -> ImageTexture:
 		var mat_idx := _splat_mat_idx(hw, surf)
 		var hw2 := _hw_width(hw) * 0.5
 		var raw: Array = seg["points"]
+		var is_poly := _is_closed_polygon(raw)
+		if is_poly:
+			# Closed polygon — compute area
+			var poly_area := 0.0
+			for pi in range(raw.size() - 1):
+				poly_area += float(raw[pi][0]) * float(raw[pi+1][2]) - float(raw[pi+1][0]) * float(raw[pi][2])
+			poly_area = absf(poly_area) * 0.5
+			if poly_area < 20000.0:
+				# Expand polygon outward by hw2 from centroid, then scanline fill
+				# This covers the area thick-line strokes used to cover, without jagged edges
+				var cx := 0.0; var cz := 0.0
+				var nv := raw.size() - 1  # skip duplicate last point
+				for pi in nv:
+					cx += float(raw[pi][0]); cz += float(raw[pi][2])
+				cx /= float(nv); cz /= float(nv)
+				var expanded: Array = []
+				for pi in nv:
+					var px := float(raw[pi][0]); var pz := float(raw[pi][2])
+					var dx := px - cx; var dz := pz - cz
+					var dl := sqrt(dx * dx + dz * dz)
+					if dl > 0.1:
+						px += dx / dl * hw2
+						pz += dz / dl * hw2
+					expanded.append([px, 0.0, pz])
+				expanded.append(expanded[0])  # close polygon
+				_raster_scanline_fill(data, expanded, mat_idx)
+				continue
 		var smoothed: Array = _smooth_path_catmull_rom(raw) if raw.size() >= 3 and hw != "steps" else raw
 		var pts: Array = _subdivide_pts(smoothed, 1.0)
 		for i in range(pts.size() - 1):
 			_raster_thick_line(data, float(pts[i][0]), float(pts[i][2]),
 				float(pts[i+1][0]), float(pts[i+1][2]), hw2, mat_idx)
 
+	_splat_data = data  # store for path coverage queries (dirt circles, leaf litter)
 	var img := Image.create_from_data(SPLAT_RES, SPLAT_RES, false, Image.FORMAT_RG8, data)
 	var tex := ImageTexture.create_from_image(img)
 	print("ParkLoader: splat map generated (%d×%d), %d ground paths" % [SPLAT_RES, SPLAT_RES, ground_segs.size()])
@@ -976,6 +1021,107 @@ func _subdivide_pts(pts: Array, max_seg: float) -> Array:
 			var t := float(j) / float(n_sub)
 			out.append([ax + dx * t, ay + (by - ay) * t, az + dz * t])
 	return out
+
+
+func _is_closed_polygon(pts: Array) -> bool:
+	## Check if path forms a closed polygon (first ~= last point).
+	if pts.size() < 4:
+		return false
+	var dx := float(pts[0][0]) - float(pts[-1][0])
+	var dz := float(pts[0][2]) - float(pts[-1][2])
+	return (dx * dx + dz * dz) < 4.0  # within 2m
+
+
+func _raster_scanline_fill(data: PackedByteArray, pts: Array, mat_idx: int) -> void:
+	## Fast scanline polygon fill with feathered edges.
+	var half := _hm_world_size * 0.5
+	var scale := float(SPLAT_RES) / _hm_world_size
+	var feather_px := SPLAT_FEATHER * scale
+
+	# Convert to pixel coords
+	var n := pts.size() - 1  # skip duplicate last point
+	var px_x: PackedFloat64Array = PackedFloat64Array()
+	var px_z: PackedFloat64Array = PackedFloat64Array()
+	px_x.resize(n); px_z.resize(n)
+	var z_min := 1e18; var z_max := -1e18
+	for i in n:
+		px_x[i] = (float(pts[i][0]) + half) * scale
+		px_z[i] = (float(pts[i][2]) + half) * scale
+		z_min = minf(z_min, px_z[i]); z_max = maxf(z_max, px_z[i])
+
+	var row0 := clampi(int(floor(z_min - feather_px)), 0, SPLAT_RES - 1)
+	var row1 := clampi(int(ceil(z_max + feather_px)), 0, SPLAT_RES - 1)
+	var stride := SPLAT_RES * 2
+
+	for py in range(row0, row1 + 1):
+		var fy := float(py) + 0.5
+		# Find all edge intersections with this scanline
+		var x_hits: PackedFloat64Array = PackedFloat64Array()
+		for i in n:
+			var j := (i + 1) % n
+			var z0 := px_z[i]; var z1 := px_z[j]
+			if (z0 <= fy and z1 > fy) or (z1 <= fy and z0 > fy):
+				var t := (fy - z0) / (z1 - z0)
+				x_hits.append(px_x[i] + t * (px_x[j] - px_x[i]))
+		x_hits.sort()
+
+		# Fill between pairs (even-odd rule)
+		var h := x_hits.size()
+		var hi := 0
+		while hi + 1 < h:
+			var x_left  := x_hits[hi]
+			var x_right := x_hits[hi + 1]
+			# Interior fill
+			var xl := clampi(int(ceil(x_left)), 0, SPLAT_RES - 1)
+			var xr := clampi(int(floor(x_right)), 0, SPLAT_RES - 1)
+			for px in range(xl, xr + 1):
+				var byte_idx := py * stride + px * 2
+				if 255 > data[byte_idx + 1]:
+					data[byte_idx] = mat_idx
+					data[byte_idx + 1] = 255
+			# Feathered left edge
+			var fl := clampi(int(floor(x_left - feather_px)), 0, SPLAT_RES - 1)
+			for px in range(fl, xl):
+				var dist := x_left - (float(px) + 0.5)
+				if dist <= 0.0 or dist > feather_px:
+					continue
+				var s := dist / feather_px
+				var cov := int((1.0 - s * s * (3.0 - 2.0 * s)) * 255.0)
+				var byte_idx := py * stride + px * 2
+				if cov > data[byte_idx + 1]:
+					data[byte_idx] = mat_idx
+					data[byte_idx + 1] = cov
+			# Feathered right edge
+			var fr := clampi(int(ceil(x_right + feather_px)), 0, SPLAT_RES - 1)
+			for px in range(xr + 1, fr + 1):
+				var dist := (float(px) + 0.5) - x_right
+				if dist <= 0.0 or dist > feather_px:
+					continue
+				var s := dist / feather_px
+				var cov := int((1.0 - s * s * (3.0 - 2.0 * s)) * 255.0)
+				var byte_idx := py * stride + px * 2
+				if cov > data[byte_idx + 1]:
+					data[byte_idx] = mat_idx
+					data[byte_idx + 1] = cov
+			hi += 2
+
+
+func _smooth_path_lateral(pts: Array, passes: int = 3) -> Array:
+	## Moving-average filter that straightens zigzags while preserving overall curves.
+	## Endpoints are pinned. Each pass averages each interior point with its neighbors.
+	if pts.size() < 3:
+		return pts.duplicate()
+	var cur: Array = pts.duplicate()
+	for _p in passes:
+		var nxt: Array = [cur[0]]
+		for i in range(1, cur.size() - 1):
+			var ax := (float(cur[i-1][0]) + float(cur[i][0]) * 2.0 + float(cur[i+1][0])) / 4.0
+			var ay := float(cur[i][1])
+			var az := (float(cur[i-1][2]) + float(cur[i][2]) * 2.0 + float(cur[i+1][2])) / 4.0
+			nxt.append([ax, ay, az])
+		nxt.append(cur[-1])
+		cur = nxt
+	return cur
 
 
 func _smooth_path_catmull_rom(pts: Array, subdiv: int = 4) -> Array:
@@ -1380,6 +1526,48 @@ func _build_bridge(path: Dictionary) -> void:
 		add_child(abut_mi)
 
 	# ----------------------------------------------------------------
+	# Approach retaining walls — along ramp where deck rises above terrain
+	# ----------------------------------------------------------------
+	if total_len >= 8.0:
+		var appr_verts   := PackedVector3Array()
+		var appr_normals := PackedVector3Array()
+		for i in range(n_pts - 1):
+			# Only in ramp sections
+			var d1 := cum_len[i]
+			var d2 := cum_len[i + 1]
+			if d1 > ramp_len and d2 < total_len - ramp_len:
+				continue
+			var p1 := Vector3(float(pts[i][0]), pt_y[i], float(pts[i][2]))
+			var p2 := Vector3(float(pts[i+1][0]), pt_y[i+1], float(pts[i+1][2]))
+			var ty1 := float(pts[i][1])
+			var ty2 := float(pts[i+1][1])
+			# Only add wall where deck is meaningfully above terrain
+			var gap1 := p1.y - ty1
+			var gap2 := p2.y - ty2
+			if gap1 < 0.3 and gap2 < 0.3:
+				continue
+			var seg2 := Vector2(p2.x - p1.x, p2.z - p1.z)
+			if seg2.length_squared() < 0.0001:
+				continue
+			var nv := Vector2(-seg2.normalized().y, seg2.normalized().x)
+			var ohw := hw2 + PARAPET_T + 0.1
+			for side in [-1.0, 1.0]:
+				var s: float = float(side)
+				var ox := nv.x * ohw * s
+				var oz := nv.y * ohw * s
+				var wa := Vector3(p1.x + ox, ty1, p1.z + oz)
+				var wb := Vector3(p2.x + ox, ty2, p2.z + oz)
+				var wc := Vector3(p2.x + ox, p2.y, p2.z + oz)
+				var wd := Vector3(p1.x + ox, p1.y, p1.z + oz)
+				appr_verts.append_array(PackedVector3Array([wa, wb, wc, wa, wc, wd]))
+				var wall_n := Vector3(nv.x * s, 0.0, nv.y * s)
+				for _j in range(6):
+					appr_normals.append(wall_n)
+		if not appr_verts.is_empty():
+			_add_stone_mesh(appr_verts, appr_normals, rw_alb, rw_nrm, rw_rgh,
+					abut_tint, "Bridge_ApproachWalls")
+
+	# ----------------------------------------------------------------
 	# Deck edge curbs — raised strip along both sides, colored per style
 	# ----------------------------------------------------------------
 	var curb_w := 0.10   # curb width
@@ -1463,8 +1651,16 @@ func _build_solid_parapets(pts: Array, pt_y: PackedFloat32Array,
 		ramp_start: float, ramp_end: float,
 		rw_alb: ImageTexture, rw_nrm: ImageTexture, rw_rgh: ImageTexture,
 		tint: Color) -> void:
+	## Solid stone balustrade walls with thickness, coping stone overhang, and pilaster columns.
 	var par_verts   := PackedVector3Array()
 	var par_normals := PackedVector3Array()
+	var wall_t := 0.25  # wall thickness
+	var coping_overhang := 0.05  # coping extends past wall on each side
+	var coping_h := 0.08  # coping stone height
+	var pilaster_relief := 0.05  # how far pilasters protrude
+	var pilaster_w := 0.30  # pilaster width
+	var pilaster_spacing := 3.5  # metres between pilasters
+
 	for i in range(n_pts - 1):
 		if cum_len[i + 1] < ramp_start or cum_len[i] > ramp_end:
 			continue
@@ -1475,19 +1671,135 @@ func _build_solid_parapets(pts: Array, pt_y: PackedFloat32Array,
 			continue
 		var dv  := seg2.normalized()
 		var nv  := Vector2(-dv.y, dv.x)
-		var ohw := hw2 + PARAPET_T
+
 		for side in [-1.0, 1.0]:
 			var s: float = float(side)
-			var ox := nv.x * ohw * s
-			var oz := nv.y * ohw * s
-			var fa := Vector3(p1.x + ox, p1.y,              p1.z + oz)
-			var fb := Vector3(p2.x + ox, p2.y,              p2.z + oz)
-			var fc := Vector3(p2.x + ox, p2.y + PARAPET_H,  p2.z + oz)
-			var fd := Vector3(p1.x + ox, p1.y + PARAPET_H,  p1.z + oz)
-			par_verts.append_array(PackedVector3Array([fa, fb, fc, fa, fc, fd]))
-			var wall_n := Vector3(nv.x * s, 0.0, nv.y * s)
+			var inner_off := hw2  # inner face at deck edge
+			var outer_off := hw2 + wall_t
+			var ix1 := nv.x * inner_off * s; var iz1 := nv.y * inner_off * s
+			var ox1 := nv.x * outer_off * s; var oz1 := nv.y * outer_off * s
+			var wall_top1 := p1.y + PARAPET_H - coping_h
+			var wall_top2 := p2.y + PARAPET_H - coping_h
+
+			# Inner face (facing path)
+			var ia := Vector3(p1.x + ix1, p1.y, p1.z + iz1)
+			var ib := Vector3(p2.x + ix1, p2.y, p2.z + iz1)
+			var ic := Vector3(p2.x + ix1, wall_top2, p2.z + iz1)
+			var id := Vector3(p1.x + ix1, wall_top1, p1.z + iz1)
+			par_verts.append_array(PackedVector3Array([ia, ib, ic, ia, ic, id]))
+			var inner_n := Vector3(-nv.x * s, 0.0, -nv.y * s)
 			for _j in range(6):
-				par_normals.append(wall_n)
+				par_normals.append(inner_n)
+
+			# Outer face (facing outward)
+			var oa := Vector3(p1.x + ox1, p1.y, p1.z + oz1)
+			var ob := Vector3(p2.x + ox1, p2.y, p2.z + oz1)
+			var oc := Vector3(p2.x + ox1, wall_top2, p2.z + oz1)
+			var od := Vector3(p1.x + ox1, wall_top1, p1.z + oz1)
+			par_verts.append_array(PackedVector3Array([ob, oa, od, ob, od, oc]))
+			var outer_n := Vector3(nv.x * s, 0.0, nv.y * s)
+			for _j in range(6):
+				par_normals.append(outer_n)
+
+			# Top face of wall (below coping)
+			par_verts.append_array(PackedVector3Array([id, ic, oc, id, oc, od]))
+			for _j in range(6):
+				par_normals.append(Vector3.UP)
+
+			# Coping stone — overhangs wall by coping_overhang on each side
+			var cop_inner := inner_off - coping_overhang
+			var cop_outer := outer_off + coping_overhang
+			var cix := nv.x * cop_inner * s; var ciz := nv.y * cop_inner * s
+			var cox := nv.x * cop_outer * s; var coz := nv.y * cop_outer * s
+			var cop_top1 := p1.y + PARAPET_H
+			var cop_top2 := p2.y + PARAPET_H
+			# Top of coping
+			var ct_a := Vector3(p1.x + cix, cop_top1, p1.z + ciz)
+			var ct_b := Vector3(p2.x + cix, cop_top2, p2.z + ciz)
+			var ct_c := Vector3(p2.x + cox, cop_top2, p2.z + coz)
+			var ct_d := Vector3(p1.x + cox, cop_top1, p1.z + coz)
+			par_verts.append_array(PackedVector3Array([ct_a, ct_b, ct_c, ct_a, ct_c, ct_d]))
+			for _j in range(6):
+				par_normals.append(Vector3.UP)
+			# Coping inner drip edge (vertical face)
+			var cd_a := Vector3(p1.x + cix, wall_top1, p1.z + ciz)
+			var cd_b := Vector3(p2.x + cix, wall_top2, p2.z + ciz)
+			par_verts.append_array(PackedVector3Array([cd_a, cd_b, ct_b, cd_a, ct_b, ct_a]))
+			for _j in range(6):
+				par_normals.append(inner_n)
+			# Coping outer drip edge
+			var co_a := Vector3(p1.x + cox, wall_top1, p1.z + coz)
+			var co_b := Vector3(p2.x + cox, wall_top2, p2.z + coz)
+			par_verts.append_array(PackedVector3Array([co_b, co_a, ct_d, co_b, ct_d, ct_c]))
+			for _j in range(6):
+				par_normals.append(outer_n)
+
+	# Pilaster columns on outer face — protruding stone columns every ~3.5m
+	var pil_d := ramp_start
+	while pil_d <= ramp_end:
+		# Find point along path at this distance
+		var idx := 0
+		for k in range(n_pts - 1):
+			if cum_len[k + 1] >= pil_d:
+				idx = k
+				break
+		var seg_d := cum_len[idx + 1] - cum_len[idx]
+		var t_val := 0.0
+		if seg_d > 0.001:
+			t_val = (pil_d - cum_len[idx]) / seg_d
+		var px := lerpf(float(pts[idx][0]), float(pts[idx + 1][0]), t_val)
+		var pz := lerpf(float(pts[idx][2]), float(pts[idx + 1][2]), t_val)
+		var py := lerpf(pt_y[idx], pt_y[idx + 1], t_val)
+		var seg2 := Vector2(float(pts[idx+1][0]) - float(pts[idx][0]),
+							float(pts[idx+1][2]) - float(pts[idx][2]))
+		if seg2.length_squared() < 0.001:
+			pil_d += pilaster_spacing
+			continue
+		var dv := seg2.normalized()
+		var nv := Vector2(-dv.y, dv.x)
+		# Along-path direction for pilaster width
+		var along := Vector2(dv.x, dv.y)
+
+		for side in [-1.0, 1.0]:
+			var s: float = float(side)
+			var base_off := hw2 + wall_t
+			var pil_off := base_off + pilaster_relief
+			var phw := pilaster_w * 0.5  # half width along path direction
+			var pil_top := py + PARAPET_H - 0.08  # just below coping
+			# 4 visible faces of pilaster (front, left, right, top)
+			var bl := Vector3(px - along.x * phw + nv.x * base_off * s,
+							  py, pz - along.y * phw + nv.y * base_off * s)
+			var br := Vector3(px + along.x * phw + nv.x * base_off * s,
+							  py, pz + along.y * phw + nv.y * base_off * s)
+			var fl := Vector3(px - along.x * phw + nv.x * pil_off * s,
+							  py, pz - along.y * phw + nv.y * pil_off * s)
+			var fr := Vector3(px + along.x * phw + nv.x * pil_off * s,
+							  py, pz + along.y * phw + nv.y * pil_off * s)
+			var fl_t := Vector3(fl.x, pil_top, fl.z)
+			var fr_t := Vector3(fr.x, pil_top, fr.z)
+			var bl_t := Vector3(bl.x, pil_top, bl.z)
+			var br_t := Vector3(br.x, pil_top, br.z)
+			# Front face
+			var pil_n := Vector3(nv.x * s, 0.0, nv.y * s)
+			par_verts.append_array(PackedVector3Array([fl, fr, fr_t, fl, fr_t, fl_t]))
+			for _j in range(6):
+				par_normals.append(pil_n)
+			# Left side
+			var side_n_l := Vector3(-along.x, 0.0, -along.y)
+			par_verts.append_array(PackedVector3Array([bl, fl, fl_t, bl, fl_t, bl_t]))
+			for _j in range(6):
+				par_normals.append(side_n_l)
+			# Right side
+			var side_n_r := Vector3(along.x, 0.0, along.y)
+			par_verts.append_array(PackedVector3Array([fr, br, br_t, fr, br_t, fr_t]))
+			for _j in range(6):
+				par_normals.append(side_n_r)
+			# Top
+			par_verts.append_array(PackedVector3Array([fl_t, fr_t, br_t, fl_t, br_t, bl_t]))
+			for _j in range(6):
+				par_normals.append(Vector3.UP)
+		pil_d += pilaster_spacing
+
 	if par_verts.is_empty():
 		return
 	var par_arrays: Array = []
@@ -1849,23 +2161,63 @@ func _build_tunnel(path: Dictionary) -> void:
 		col_faces.append_array(PackedVector3Array([fa, fb, fc, fb, fd, fc]))
 		u_f = u2_f
 
-		# Ceiling (faces down) — wider than walls to cover terrain depression
+		# Barrel vault ceiling — semicircular arch cross-section
+		# Vault springs from wall tops, rises to center
+		var vault_rise := TUNNEL_H * 0.35  # arch rise proportion
+		var spring_y1 := ceil_y1  # spring line = top of walls = terrain level
+		var spring_y2 := ceil_y2
+		var vault_segs := 8  # arch segments across width
 		var u2_c := u_c + seg_len / width
-		var ca := Vector3(x1 + nv.x * hw2_ext, ceil_y1, z1 + nv.y * hw2_ext)
-		var cb := Vector3(x1 - nv.x * hw2_ext, ceil_y1, z1 - nv.y * hw2_ext)
-		var cc := Vector3(x2 + nv.x * hw2_ext, ceil_y2, z2 + nv.y * hw2_ext)
-		var cd := Vector3(x2 - nv.x * hw2_ext, ceil_y2, z2 - nv.y * hw2_ext)
-		all_verts.append_array(PackedVector3Array([ca, cc, cb, cb, cc, cd]))
-		for _ci in range(6):
-			all_normals.append(Vector3.DOWN)
-		all_uvs.append_array(PackedVector2Array([
-			Vector2(u_c, 0.0), Vector2(u2_c, 0.0), Vector2(u_c, 1.0),
-			Vector2(u_c, 1.0), Vector2(u2_c, 0.0), Vector2(u2_c, 1.0),
-		]))
-		col_faces.append_array(PackedVector3Array([ca, cc, cb, cb, cc, cd]))
+
+		for ai in range(vault_segs):
+			var t0 := float(ai) / float(vault_segs)
+			var t1 := float(ai + 1) / float(vault_segs)
+			var a0 := PI * t0  # 0 at +side, PI at -side
+			var a1 := PI * t1
+			var lat0 := hw2 * cos(a0)  # lateral offset
+			var lat1 := hw2 * cos(a1)
+			var rise0 := vault_rise * sin(a0)  # height above spring line
+			var rise1 := vault_rise * sin(a1)
+			# 4 corners: 2 cross-section points × 2 path points
+			var v0 := Vector3(x1 + nv.x * lat0, spring_y1 + rise0, z1 + nv.y * lat0)
+			var v1 := Vector3(x1 + nv.x * lat1, spring_y1 + rise1, z1 + nv.y * lat1)
+			var v2 := Vector3(x2 + nv.x * lat1, spring_y2 + rise1, z2 + nv.y * lat1)
+			var v3 := Vector3(x2 + nv.x * lat0, spring_y2 + rise0, z2 + nv.y * lat0)
+			# Normal points inward (down toward walker)
+			var mid_a := (a0 + a1) * 0.5
+			var vault_n := Vector3(
+				-nv.x * cos(mid_a),
+				-sin(mid_a),
+				-nv.y * cos(mid_a)).normalized()
+			all_verts.append_array(PackedVector3Array([v0, v1, v2, v0, v2, v3]))
+			for _ci in range(6):
+				all_normals.append(vault_n)
+			all_uvs.append_array(PackedVector2Array([
+				Vector2(u_c, t0), Vector2(u_c, t1), Vector2(u2_c, t1),
+				Vector2(u_c, t0), Vector2(u2_c, t1), Vector2(u2_c, t0),
+			]))
+			col_faces.append_array(PackedVector3Array([v0, v1, v2, v0, v2, v3]))
+
+		# Flat ceiling extensions beyond walls (cover terrain depression)
+		for side_ext in [-1.0, 1.0]:
+			var se: float = float(side_ext)
+			var inner := hw2 * se
+			var outer := hw2_ext * se
+			var ea := Vector3(x1 + nv.x * inner, spring_y1, z1 + nv.y * inner)
+			var eb := Vector3(x1 + nv.x * outer, spring_y1, z1 + nv.y * outer)
+			var ec := Vector3(x2 + nv.x * outer, spring_y2, z2 + nv.y * outer)
+			var ed := Vector3(x2 + nv.x * inner, spring_y2, z2 + nv.y * inner)
+			all_verts.append_array(PackedVector3Array([ea, ec, eb, ea, ed, ec]))
+			for _ci in range(6):
+				all_normals.append(Vector3.DOWN)
+			all_uvs.append_array(PackedVector2Array([
+				Vector2(u_c, 0.0), Vector2(u2_c, 0.0), Vector2(u_c, 1.0),
+				Vector2(u_c, 1.0), Vector2(u2_c, 0.0), Vector2(u2_c, 1.0),
+			]))
+			col_faces.append_array(PackedVector3Array([ea, ec, eb, ea, ed, ec]))
 		u_c = u2_c
 
-		# Side walls (faces inward)
+		# Side walls (floor to spring line) — faces inward
 		var u2_w := u_w + seg_len / TUNNEL_H
 		for side in [-1.0, 1.0]:
 			var s: float = float(side)
@@ -1873,8 +2225,8 @@ func _build_tunnel(path: Dictionary) -> void:
 			var oz := nv.y * hw2 * s
 			var wa := Vector3(x1 + ox, floor_y1, z1 + oz)
 			var wb := Vector3(x2 + ox, floor_y2, z2 + oz)
-			var wc := Vector3(x2 + ox, ceil_y2,  z2 + oz)
-			var wd := Vector3(x1 + ox, ceil_y1,  z1 + oz)
+			var wc := Vector3(x2 + ox, spring_y2, z2 + oz)
+			var wd := Vector3(x1 + ox, spring_y1, z1 + oz)
 			var wall_n := Vector3(-nv.x * s, 0.0, -nv.y * s)
 			all_verts.append_array(PackedVector3Array([wa, wb, wc, wa, wc, wd]))
 			for _wj in range(6):
@@ -1884,6 +2236,43 @@ func _build_tunnel(path: Dictionary) -> void:
 				Vector2(u_w, 0.0), Vector2(u2_w, 1.0), Vector2(u_w, 1.0),
 			]))
 			col_faces.append_array(PackedVector3Array([wa, wb, wc, wa, wc, wd]))
+
+		# Crown molding — horizontal ledge at spring line (wall-vault transition)
+		var molding_h := 0.10  # molding height
+		var molding_d := 0.08  # how far it protrudes inward
+		for side in [-1.0, 1.0]:
+			var s: float = float(side)
+			var wall_ox := nv.x * hw2 * s
+			var wall_oz := nv.y * hw2 * s
+			var inner_ox := nv.x * (hw2 - molding_d) * s
+			var inner_oz := nv.y * (hw2 - molding_d) * s
+			var m_bot1 := spring_y1 - molding_h
+			var m_bot2 := spring_y2 - molding_h
+			# Bottom face of molding
+			var ma := Vector3(x1 + wall_ox, m_bot1, z1 + wall_oz)
+			var mb := Vector3(x2 + wall_ox, m_bot2, z2 + wall_oz)
+			var mc := Vector3(x2 + inner_ox, m_bot2, z2 + inner_oz)
+			var md := Vector3(x1 + inner_ox, m_bot1, z1 + inner_oz)
+			all_verts.append_array(PackedVector3Array([ma, mb, mc, ma, mc, md]))
+			for _mj in range(6):
+				all_normals.append(Vector3.DOWN)
+			all_uvs.append_array(PackedVector2Array([
+				Vector2(u_w, 0.0), Vector2(u2_w, 0.0), Vector2(u2_w, 0.1),
+				Vector2(u_w, 0.0), Vector2(u2_w, 0.1), Vector2(u_w, 0.1),
+			]))
+			# Inner vertical face of molding
+			var mia := Vector3(x1 + inner_ox, m_bot1, z1 + inner_oz)
+			var mib := Vector3(x2 + inner_ox, m_bot2, z2 + inner_oz)
+			var mic := Vector3(x2 + inner_ox, spring_y2, z2 + inner_oz)
+			var mid := Vector3(x1 + inner_ox, spring_y1, z1 + inner_oz)
+			var mold_n := Vector3(-nv.x * s, 0.0, -nv.y * s)
+			all_verts.append_array(PackedVector3Array([mia, mib, mic, mia, mic, mid]))
+			for _mj in range(6):
+				all_normals.append(mold_n)
+			all_uvs.append_array(PackedVector2Array([
+				Vector2(u_w, 0.0), Vector2(u2_w, 0.0), Vector2(u2_w, 0.1),
+				Vector2(u_w, 0.0), Vector2(u2_w, 0.1), Vector2(u_w, 0.1),
+			]))
 		u_w = u2_w
 
 	# --- Staircases at each end ---
@@ -2045,9 +2434,10 @@ func _build_tunnel(path: Dictionary) -> void:
 
 
 func _build_tunnel_portals(pts: Array, width: float, height: float, mat: Material) -> void:
-	# Stone arch face at each end of the tunnel (entrance / exit)
+	# Stone arch face at each end of the tunnel — matches barrel vault profile
 	var hw2    := width * 0.5
 	var n_steps := 8   # arch segments
+	var vault_rise := height * 0.35  # must match barrel vault rise in _build_tunnel
 
 	for end_i in [0, pts.size() - 1]:
 		var other_i := 1 if end_i == 0 else pts.size() - 2
@@ -2058,16 +2448,14 @@ func _build_tunnel_portals(pts: Array, width: float, height: float, mat: Materia
 		var face_n := -Vector3(seg2.x, 0.0, seg2.y)
 		var right  := Vector2(-seg2.y, seg2.x)
 
-		# Portal frame: floor below grade, arch up to terrain level
+		# Portal frame: floor below grade, arch springs from terrain level
 		var floor_y := pe.y + PATH_Y - height
+		var spring_y := pe.y + PATH_Y  # vault springs from terrain level (wall top)
 
 		var arch_verts   := PackedVector3Array()
 		var arch_normals := PackedVector3Array()
 
-		# Left and right vertical jambs (from floor to spring line = half height)
-		var spring_y := floor_y + height * 0.5
-		var arch_r   := hw2   # arch radius = half width
-
+		# Left and right vertical jambs (from floor to spring line)
 		for side in [-1.0, 1.0]:
 			var s: float = float(side)
 			var ox := right.x * hw2 * s
@@ -2082,29 +2470,46 @@ func _build_tunnel_portals(pts: Array, width: float, height: float, mat: Materia
 			for _j in range(6):
 				arch_normals.append(face_n)
 
-		# Semicircular arch from left spring to right spring
+		# Arch from left spring to right spring — matches barrel vault profile
 		for ai in range(n_steps):
 			var a1 := PI * float(ai)     / float(n_steps)   # 0 → π (left→right)
 			var a2 := PI * float(ai + 1) / float(n_steps)
-			# Inner arch edge
-			var ix1 := pe.x + right.x * (-cos(a1) * arch_r)
-			var iz1 := pe.z + right.y * (-cos(a1) * arch_r)
-			var iy1 := spring_y + sin(a1) * arch_r * 0.7   # slightly flattened
-			var ix2 := pe.x + right.x * (-cos(a2) * arch_r)
-			var iz2 := pe.z + right.y * (-cos(a2) * arch_r)
-			var iy2 := spring_y + sin(a2) * arch_r * 0.7
-			# Outer arch edge (0.6 m thick voussoir ring)
-			var ox1 := pe.x + right.x * (-cos(a1) * (arch_r + 0.6))
-			var oz1 := pe.z + right.y * (-cos(a1) * (arch_r + 0.6))
-			var oy1 := spring_y + sin(a1) * (arch_r + 0.6) * 0.7
-			var ox2 := pe.x + right.x * (-cos(a2) * (arch_r + 0.6))
-			var oz2 := pe.z + right.y * (-cos(a2) * (arch_r + 0.6))
-			var oy2 := spring_y + sin(a2) * (arch_r + 0.6) * 0.7
+			# Inner arch edge — uses vault_rise (not full semicircle)
+			var ix1 := pe.x + right.x * (-cos(a1) * hw2)
+			var iz1 := pe.z + right.y * (-cos(a1) * hw2)
+			var iy1 := spring_y + sin(a1) * vault_rise
+			var ix2 := pe.x + right.x * (-cos(a2) * hw2)
+			var iz2 := pe.z + right.y * (-cos(a2) * hw2)
+			var iy2 := spring_y + sin(a2) * vault_rise
+			# Outer arch edge (0.6m thick voussoir ring)
+			var ring_r := hw2 + 0.6
+			var ox1 := pe.x + right.x * (-cos(a1) * ring_r)
+			var oz1 := pe.z + right.y * (-cos(a1) * ring_r)
+			var oy1 := spring_y + sin(a1) * (vault_rise + 0.3)
+			var ox2 := pe.x + right.x * (-cos(a2) * ring_r)
+			var oz2 := pe.z + right.y * (-cos(a2) * ring_r)
+			var oy2 := spring_y + sin(a2) * (vault_rise + 0.3)
 			var vi := Vector3(ix1, iy1, iz1); var vi2 := Vector3(ix2, iy2, iz2)
 			var vo := Vector3(ox1, oy1, oz1); var vo2 := Vector3(ox2, oy2, oz2)
 			arch_verts.append_array(PackedVector3Array([vi, vi2, vo2, vi, vo2, vo]))
 			for _j in range(6):
 				arch_normals.append(face_n)
+
+		# Keystone at arch crown — protruding block at the top center
+		var ks_hw := 0.20  # keystone half-width
+		var ks_relief := 0.08  # how far it protrudes
+		var ks_base_y := spring_y + vault_rise - 0.15
+		var ks_top_y := spring_y + vault_rise + 0.3 + ks_relief
+		var ks_cx := pe.x
+		var ks_cz := pe.z
+		# Front face of keystone
+		var ka := Vector3(ks_cx + right.x * ks_hw, ks_base_y, ks_cz + right.y * ks_hw)
+		var kb := Vector3(ks_cx - right.x * ks_hw, ks_base_y, ks_cz - right.y * ks_hw)
+		var kc := Vector3(ks_cx - right.x * ks_hw * 0.7, ks_top_y, ks_cz - right.y * ks_hw * 0.7)
+		var kd := Vector3(ks_cx + right.x * ks_hw * 0.7, ks_top_y, ks_cz + right.y * ks_hw * 0.7)
+		arch_verts.append_array(PackedVector3Array([ka, kb, kc, ka, kc, kd]))
+		for _j in range(6):
+			arch_normals.append(face_n)
 
 		if not arch_verts.is_empty():
 			var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
@@ -3089,8 +3494,8 @@ void fragment() {
 	float n_fine  = gnoise(uv * 3.5 + vec2(t * 0.15, -t * 0.12));
 	float wave_h  = n_large * 0.4 + n_med * 0.35 + n_fine * 0.25;
 
-	vec3 deep    = vec3(0.025, 0.055, 0.042);
-	vec3 shallow = vec3(0.065, 0.12, 0.08);
+	vec3 deep    = vec3(0.018, 0.035, 0.030);
+	vec3 shallow = vec3(0.045, 0.08, 0.055);
 	// Subtle blend — mostly deep, shallow only at wave peaks
 	vec3 base_col = mix(deep, shallow, smoothstep(-0.3, 0.6, wave_h));
 
@@ -3098,7 +3503,7 @@ void fragment() {
 
 	// Fresnel — glancing angles reflect sky
 	float fresnel = pow(1.0 - max(dot(NORMAL, VIEW), 0.0), 4.0);
-	vec3 sky_col = vec3(0.45, 0.58, 0.72);
+	vec3 sky_col = vec3(0.32, 0.38, 0.45);
 	vec3 col = mix(base_col, sky_col, fresnel * 0.6);
 
 	// Foam — white caps at wave peaks
@@ -3257,22 +3662,106 @@ func _build_buildings(buildings: Array) -> void:
 					Vector2(seg_len, h), Vector2(0.0, h),
 				]))
 			else:
-				var a := Vector3(p1.x, base, p1.y)
-				var b := Vector3(p2.x, base, p2.y)
-				var c := Vector3(p2.x, top,  p2.y)
-				var d := Vector3(p1.x, top,  p1.y)
-				sv[style].append_array(PackedVector3Array([a, b, c, a, c, d]))
-				for _j in range(6):
-					sn[style].append(norm)
-					sc[style].append(bld_tint)
-				su[style].append_array(PackedVector2Array([
-					Vector2(0.0,     0.0),
-					Vector2(seg_len, 0.0),
-					Vector2(seg_len, h),
-					Vector2(0.0,     0.0),
-					Vector2(seg_len, h),
-					Vector2(0.0,     h),
-				]))
+				# Ground floor setback for buildings >8m — 0.3m recess below 4m
+				var gf_h := 4.0  # ground floor height
+				var gf_inset := 0.3  # how much the upper wall protrudes past ground floor
+				if h > 8.0:
+					# Ground floor face (recessed by gf_inset along normal)
+					var gf_off := Vector2(norm.x, norm.z) * gf_inset
+					var gp1 := p1 + gf_off
+					var gp2 := p2 + gf_off
+					var gf_top := base + gf_h
+					var ga := Vector3(gp1.x, base, gp1.y)
+					var gb := Vector3(gp2.x, base, gp2.y)
+					var gc := Vector3(gp2.x, gf_top, gp2.y)
+					var gd := Vector3(gp1.x, gf_top, gp1.y)
+					sv[style].append_array(PackedVector3Array([ga, gb, gc, ga, gc, gd]))
+					for _j in range(6):
+						sn[style].append(norm)
+						sc[style].append(bld_tint * Color(0.92, 0.92, 0.92))
+					su[style].append_array(PackedVector2Array([
+						Vector2(0.0, 0.0), Vector2(seg_len, 0.0),
+						Vector2(seg_len, gf_h), Vector2(0.0, 0.0),
+						Vector2(seg_len, gf_h), Vector2(0.0, gf_h),
+					]))
+					# Ledge top at ground floor line (horizontal face)
+					var la := Vector3(gp1.x, gf_top, gp1.y)
+					var lb := Vector3(gp2.x, gf_top, gp2.y)
+					var lc := Vector3(p2.x, gf_top, p2.y)
+					var ld := Vector3(p1.x, gf_top, p1.y)
+					sv[style].append_array(PackedVector3Array([la, lb, lc, la, lc, ld]))
+					for _j in range(6):
+						sn[style].append(Vector3.UP)
+						sc[style].append(bld_tint * Color(0.85, 0.85, 0.85))
+					su[style].append_array(PackedVector2Array([
+						Vector2(0.0, gf_h), Vector2(seg_len, gf_h),
+						Vector2(seg_len, gf_h + 0.3), Vector2(0.0, gf_h),
+						Vector2(seg_len, gf_h + 0.3), Vector2(0.0, gf_h + 0.3),
+					]))
+					# Upper wall above ground floor
+					var ua := Vector3(p1.x, gf_top, p1.y)
+					var ub := Vector3(p2.x, gf_top, p2.y)
+					var uc := Vector3(p2.x, top, p2.y)
+					var ud := Vector3(p1.x, top, p1.y)
+					sv[style].append_array(PackedVector3Array([ua, ub, uc, ua, uc, ud]))
+					for _j in range(6):
+						sn[style].append(norm)
+						sc[style].append(bld_tint)
+					su[style].append_array(PackedVector2Array([
+						Vector2(0.0, gf_h), Vector2(seg_len, gf_h),
+						Vector2(seg_len, h), Vector2(0.0, gf_h),
+						Vector2(seg_len, h), Vector2(0.0, h),
+					]))
+				else:
+					# Short buildings — single wall, no setback
+					var a := Vector3(p1.x, base, p1.y)
+					var b := Vector3(p2.x, base, p2.y)
+					var c := Vector3(p2.x, top, p2.y)
+					var d := Vector3(p1.x, top, p1.y)
+					sv[style].append_array(PackedVector3Array([a, b, c, a, c, d]))
+					for _j in range(6):
+						sn[style].append(norm)
+						sc[style].append(bld_tint)
+					su[style].append_array(PackedVector2Array([
+						Vector2(0.0, 0.0), Vector2(seg_len, 0.0),
+						Vector2(seg_len, h), Vector2(0.0, 0.0),
+						Vector2(seg_len, h), Vector2(0.0, h),
+					]))
+
+				# Cornice ledge at roofline — 0.15m protruding, 0.2m tall
+				if h > 6.0:
+					var corn_d := 0.15  # cornice protrusion
+					var corn_h := 0.20  # cornice height
+					var corn_off := Vector2(-norm.x, -norm.z) * corn_d
+					var cp1 := p1 - corn_off  # shifted outward
+					var cp2 := p2 - corn_off
+					var corn_base := top - corn_h
+					# Front face of cornice
+					var cfa := Vector3(cp1.x, corn_base, cp1.y)
+					var cfb := Vector3(cp2.x, corn_base, cp2.y)
+					var cfc := Vector3(cp2.x, top, cp2.y)
+					var cfd := Vector3(cp1.x, top, cp1.y)
+					sv[style].append_array(PackedVector3Array([cfa, cfb, cfc, cfa, cfc, cfd]))
+					for _j in range(6):
+						sn[style].append(norm)
+						sc[style].append(bld_tint * Color(0.88, 0.88, 0.88))
+					su[style].append_array(PackedVector2Array([
+						Vector2(0.0, h - corn_h), Vector2(seg_len, h - corn_h),
+						Vector2(seg_len, h), Vector2(0.0, h - corn_h),
+						Vector2(seg_len, h), Vector2(0.0, h),
+					]))
+					# Bottom face of cornice (catches SSAO shadow)
+					var cba := Vector3(p1.x, corn_base, p1.y)
+					var cbb := Vector3(p2.x, corn_base, p2.y)
+					sv[style].append_array(PackedVector3Array([cba, cbb, cfb, cba, cfb, cfa]))
+					for _j in range(6):
+						sn[style].append(Vector3.DOWN)
+						sc[style].append(bld_tint * Color(0.80, 0.80, 0.80))
+					su[style].append_array(PackedVector2Array([
+						Vector2(0.0, 0.0), Vector2(seg_len, 0.0),
+						Vector2(seg_len, 0.15), Vector2(0.0, 0.0),
+						Vector2(seg_len, 0.15), Vector2(0.0, 0.15),
+					]))
 
 		# --- Rooftop parapet for buildings >10m ---
 		var parapet_h := 0.8
@@ -3606,6 +4095,12 @@ void fragment() {
 	METALLIC  = metal;
 	NORMAL_MAP = norm;
 	NORMAL_MAP_DEPTH = norm_depth;
+
+	// Atmospheric distance fade — buildings dissolve into haze
+	float bldg_dist = length(world_pos.xyz - INV_VIEW_MATRIX[3].xyz);
+	float atm_fade = smoothstep(80.0, 250.0, bldg_dist);
+	ALBEDO = mix(ALBEDO, vec3(0.42, 0.40, 0.38), atm_fade * 0.5);
+	ROUGHNESS = mix(ROUGHNESS, 0.95, atm_fade * 0.3);
 }
 """
 
@@ -3732,6 +4227,12 @@ void fragment() {
 		NORMAL_MAP = brk_nrm;
 		NORMAL_MAP_DEPTH = is_ledge ? 1.2 : 1.0;
 	}
+
+	// Atmospheric distance fade — buildings dissolve into haze
+	float bldg_dist = length(world_pos.xyz - INV_VIEW_MATRIX[3].xyz);
+	float atm_fade = smoothstep(80.0, 250.0, bldg_dist);
+	ALBEDO = mix(ALBEDO, vec3(0.42, 0.40, 0.38), atm_fade * 0.5);
+	ROUGHNESS = mix(ROUGHNESS, 0.95, atm_fade * 0.3);
 }
 """
 
@@ -4039,7 +4540,7 @@ func _make_trunk_with_branches_mesh(variant_seed: int = 0) -> ArrayMesh:
 
 	var branch_configs: Array = []
 	for bi in n_branches:
-		var bh := rng.randf_range(0.45, 0.95)
+		var bh := rng.randf_range(0.25, 0.90)
 		var blen := rng.randf_range(0.25, 0.60)
 		var bangle := rng.randf_range(35.0, 65.0)
 		var bazimuth: float = azimuths[bi]
@@ -4202,19 +4703,19 @@ func _make_leaf_card_mesh(is_conifer: bool) -> ArrayMesh:
 			var hs := 0.18 + fmod(float(i) * 0.618, 1.0) * 0.06
 			var pos := Vector3(cos(a2) * 0.12, 0.82 + float(i) * 0.012, sin(a2) * 0.12)
 			card_defs.append([pos, hs, Vector3(1.0, 0.0, 0.0), 6.0 + float(i) * 2.5])
-		# Bottom skirt: 10 quads hanging under canopy edge
+		# Bottom skirt: 10 quads hanging under canopy edge (enlarged)
 		for i in 10:
 			var a2 := TAU * float(i) / 10.0 + 1.5
-			var hs := 0.20 + fmod(float(i) * 0.382, 1.0) * 0.06
+			var hs := 0.26 + fmod(float(i) * 0.382, 1.0) * 0.08
 			var pos := Vector3(cos(a2) * 0.58, -0.20 + float(i % 3) * 0.04, sin(a2) * 0.58)
 			var tilt_ax := Vector3(-sin(a2), 0.0, cos(a2))
 			card_defs.append([pos, hs, tilt_ax, 14.0 + float(i) * 5.0])
-		# Hanging fringe: 16 drooping cards below equator for eye-level depth
+		# Hanging fringe: 16 drooping cards below equator for eye-level depth (enlarged + lower)
 		for i in 16:
 			var a2 := TAU * float(i) / 16.0 + 0.8
-			var hs := 0.15 + fmod(float(i) * 0.529, 1.0) * 0.12
+			var hs := 0.22 + fmod(float(i) * 0.529, 1.0) * 0.14
 			var r2 := 0.50 + fmod(float(i) * 0.317, 1.0) * 0.20
-			var y2 := -0.65 - fmod(float(i) * 0.618, 1.0) * 0.15
+			var y2 := -0.80 - fmod(float(i) * 0.618, 1.0) * 0.20
 			var pos := Vector3(cos(a2) * r2, y2, sin(a2) * r2)
 			var tilt_ax := Vector3(-sin(a2), 0.0, cos(a2))
 			# Steep angle (20-40 deg from vertical) — hanging downward
@@ -4462,10 +4963,14 @@ void fragment() {
 	float opac = texture(leaf_opacity, UV).r;
 	float rgh  = texture(leaf_rough, UV).r;
 
-	// Alpha cutout from opacity map — wide smoothstep for more solid coverage
-	float alpha = smoothstep(0.05, 0.30, opac);
+	// Alpha cutout from opacity map — wider smoothstep for softer card edges
+	float alpha = smoothstep(0.02, 0.45, opac);
 	if (alpha < 0.01) discard;
-	ALPHA = alpha;
+
+	// Distance alpha fill — canopies become solid masses beyond 40m
+	float cam_dist = length(tree_origin - INV_VIEW_MATRIX[3].xyz);
+	float dist_fill = smoothstep(10.0, 40.0, cam_dist) * 0.25;
+	ALPHA = min(alpha + dist_fill, 1.0);
 
 	// Desaturate leaf texture — removes green dominance, preserves structural detail
 	float grey = dot(alb, vec3(0.299, 0.587, 0.114));
@@ -4489,7 +4994,7 @@ void fragment() {
 	} else {
 		autumn_tint = vec3(0.40, 0.25, 0.10);       // brown
 	}
-	col *= autumn_tint * 2.8;
+	col *= autumn_tint * 1.8;
 
 	// Fake subsurface scattering: warm amber backlit leaves
 	float sss = pow(1.0 - max(dot(NORMAL, VIEW), 0.0), 2.5) * 0.35;
@@ -4498,9 +5003,9 @@ void fragment() {
 	ALBEDO     = clamp(col, 0.0, 1.0);
 	NORMAL_MAP = texture(leaf_normal, UV).rgb;
 	ROUGHNESS  = clamp(rgh * 0.15 + 0.65, 0.0, 1.0);
-	SPECULAR   = 0.3;
+	SPECULAR   = 0.08;
 	METALLIC   = 0.0;
-	BACKLIGHT  = vec3(0.30, 0.18, 0.05);
+	BACKLIGHT  = vec3(0.15, 0.08, 0.02);
 }
 """
 
@@ -6208,7 +6713,7 @@ func _build_tree_dirt(trees: Array) -> void:
 
 	var dirt_mesh := _make_dirt_circle_mesh()
 	var dirt_mat  := StandardMaterial3D.new()
-	dirt_mat.albedo_color    = Color(0.25, 0.20, 0.12, 0.6)
+	dirt_mat.albedo_color    = Color(0.15, 0.12, 0.07, 0.5)
 	dirt_mat.roughness       = 0.92
 	dirt_mat.transparency    = BaseMaterial3D.TRANSPARENCY_ALPHA
 	dirt_mat.render_priority = -1
@@ -6222,6 +6727,18 @@ func _build_tree_dirt(trees: Array) -> void:
 		var ty := _terrain_y(tx, tz) + 0.02
 		rng.seed = i * 271828 + 31415
 		var r := rng.randf_range(2.0, 4.0)
+		# Skip dirt circles that would overlap any path — check at actual circle radius + buffer
+		var near_path := _is_on_path(tx, tz)
+		if not near_path:
+			var check_r := r + 2.0  # circle radius + 2m buffer for feathering
+			var d := check_r * 0.707
+			for offset in [Vector2(check_r, 0), Vector2(-check_r, 0), Vector2(0, check_r), Vector2(0, -check_r),
+						   Vector2(d, d), Vector2(d, -d), Vector2(-d, d), Vector2(-d, -d)]:
+				if _is_on_path(tx + offset.x, tz + offset.y):
+					near_path = true
+					break
+		if near_path:
+			continue
 		var rot := rng.randf() * TAU
 		var basis := Basis(
 			Vector3(cos(rot) * r, 0.0, sin(rot) * r),
@@ -6485,7 +7002,7 @@ func _build_wildflowers(trees: Array, water: Array) -> void:
 				z += scan_step
 				continue
 
-			if _is_excluded(x, z):
+			if _is_excluded(x, z) or _is_on_path(x, z):
 				z += scan_step
 				continue
 
@@ -6531,7 +7048,7 @@ func _build_wildflowers(trees: Array, water: Array) -> void:
 				var fx := x + rng.randf_range(-cluster_r, cluster_r)
 				var fz := z + rng.randf_range(-cluster_r, cluster_r)
 
-				if _is_excluded(fx, fz):
+				if _is_excluded(fx, fz) or _is_on_path(fx, fz):
 					continue
 
 				var fy := _terrain_y(fx, fz) + 0.01
@@ -6652,7 +7169,7 @@ func _build_meadow_grass(trees: Array) -> void:
 				z += scan_step
 				continue
 
-			if _is_excluded(x, z):
+			if _is_excluded(x, z) or _is_on_path(x, z):
 				z += scan_step
 				continue
 
@@ -6678,7 +7195,7 @@ func _build_meadow_grass(trees: Array) -> void:
 				var gx := x + rng.randf_range(-cluster_r, cluster_r)
 				var gz := z + rng.randf_range(-cluster_r, cluster_r)
 
-				if _is_excluded(gx, gz):
+				if _is_excluded(gx, gz) or _is_on_path(gx, gz):
 					continue
 
 				var gy := _terrain_y(gx, gz) + 0.01
@@ -6957,7 +7474,7 @@ func _build_ground_cover(trees: Array, water: Array, buildings: Array) -> void:
 				var off := rng.randf_range(5.0, 15.0)
 				var fx := sx + nx * off + rng.randf_range(-2.0, 2.0)
 				var fz := sz + nz * off + rng.randf_range(-2.0, 2.0)
-				if _is_excluded(fx, fz):
+				if _is_excluded(fx, fz) or _is_on_path(fx, fz):
 					continue
 				var fy := _terrain_y(fx, fz) + 0.02
 				var r := rng.randf_range(0.5, 1.0)
@@ -6984,7 +7501,7 @@ func _build_ground_cover(trees: Array, water: Array, buildings: Array) -> void:
 			var dist := rng.randf_range(2.0, 8.0)
 			var fx := tx + cos(angle) * dist
 			var fz := tz + sin(angle) * dist
-			if _is_excluded(fx, fz):
+			if _is_excluded(fx, fz) or _is_on_path(fx, fz):
 				continue
 			var fy := _terrain_y(fx, fz) + 0.02
 			var r := rng.randf_range(0.3, 0.7)
@@ -7084,6 +7601,17 @@ func _build_leaf_litter(trees: Array) -> void:
 		var tx := float(pt[0]); var tz := float(pt[2])
 		if not _in_boundary(tx, tz):
 			continue
+		# Skip leaf litter for trees near paths — check at litter scatter radius + buffer
+		var tree_near_path := _is_on_path(tx, tz)
+		if not tree_near_path:
+			var cr := 10.0; var cd := cr * 0.707  # 8m max scatter + 2m buffer
+			for off in [Vector2(cr, 0), Vector2(-cr, 0), Vector2(0, cr), Vector2(0, -cr),
+						Vector2(cd, cd), Vector2(cd, -cd), Vector2(-cd, cd), Vector2(-cd, -cd)]:
+				if _is_on_path(tx + off.x, tz + off.y):
+					tree_near_path = true
+					break
+		if tree_near_path:
+			continue
 		# 70% of trees get leaf litter
 		if rng.randf() > 0.70:
 			continue
@@ -7093,7 +7621,7 @@ func _build_leaf_litter(trees: Array) -> void:
 			var dist := rng.randf_range(1.0, 8.0)
 			var lx := tx + cos(angle) * dist
 			var lz := tz + sin(angle) * dist
-			if _is_excluded(lx, lz):
+			if _is_excluded(lx, lz) or _is_on_path(lx, lz):
 				continue
 			var ly := _terrain_y(lx, lz) + 0.02
 			var s := rng.randf_range(0.1, 0.3)
