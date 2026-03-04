@@ -47,10 +47,19 @@ const BENCH_MAX_SLOPE := 0.27  # tan(~15°) — skip benches on steeper terrain
 var lamppost_material: StandardMaterial3D
 
 # Splat map: 4096×4096 RG8 — R=material index, G=coverage alpha (smooth edges)
-const SPLAT_RES := 4096
-const SPLAT_FEATHER := 3.0  # metres — soft edge transition width
+const SPLAT_RES := 2048
+const SPLAT_FEATHER := 1.2  # metres — soft edge transition width
 var splat_texture: ImageTexture
 var _splat_data: PackedByteArray  # raw RG8 bytes for path coverage queries
+
+# Analytical GPU path textures (sharp edges at any zoom)
+var path_segs_texture: ImageTexture   # RGBA32F — segment endpoints + properties
+var path_grid_texture: ImageTexture   # RG32F  — spatial grid (start, count)
+var path_list_texture: ImageTexture   # R32F   — flat list of segment indices
+var gpu_path_grid_cell: float = 16.0
+var gpu_path_grid_w: int = 313
+var gpu_path_seg_tex_w: int = 256
+var gpu_path_list_tex_w: int = 512
 var tunnel_depressions: Array = []  # stairwell depressions for terrain carving
 var boundary_polygon: PackedVector2Array  # XZ boundary for player clamping
 
@@ -701,16 +710,173 @@ func _generate_splat_map(paths: Array, bridge_centroids: Array) -> ImageTexture:
 				_raster_scanline_fill(data, expanded, mat_idx)
 				continue
 		var smoothed: Array = _smooth_path_catmull_rom(raw) if raw.size() >= 3 and hw != "steps" else raw
-		var pts: Array = _subdivide_pts(smoothed, 1.0)
+		var pts: Array = _subdivide_pts(smoothed, 2.5)
 		for i in range(pts.size() - 1):
 			_raster_thick_line(data, float(pts[i][0]), float(pts[i][2]),
 				float(pts[i+1][0]), float(pts[i+1][2]), hw2, mat_idx)
 
 	_splat_data = data  # store for path coverage queries (dirt circles, leaf litter)
 	var img := Image.create_from_data(SPLAT_RES, SPLAT_RES, false, Image.FORMAT_RG8, data)
+	img.generate_mipmaps()
 	var tex := ImageTexture.create_from_image(img)
 	print("ParkLoader: splat map generated (%d×%d), %d ground paths" % [SPLAT_RES, SPLAT_RES, ground_segs.size()])
 	return tex
+
+
+# ---------------------------------------------------------------------------
+# Analytical GPU path textures — sharp edges at any zoom level
+# ---------------------------------------------------------------------------
+func _build_path_gpu_textures(paths: Array, bridge_centroids: Array) -> void:
+	## Build 3 GPU textures encoding open polyline path segments for per-fragment
+	## analytical distance computation. Closed polygons are handled by the raster.
+	var CELL := gpu_path_grid_cell
+	var GRID_W := gpu_path_grid_w
+	var HALF_WS := _hm_world_size * 0.5
+	var FEATHER := SPLAT_FEATHER
+
+	# --- Step 1: Collect open polyline segments ---
+	# segments[i] = [x0, z0, x1, z1, half_width, mat_idx]
+	var segments: Array = []
+	for path in paths:
+		var hw: String = str(path.get("highway", "path"))
+		var surf: String = str(path.get("surface", ""))
+		var layer_val: int = int(path.get("layer", 0))
+		var is_bridge: bool = bool(path.get("bridge", false)) or layer_val >= 1
+		var is_tunnel: bool = bool(path.get("tunnel", false)) or layer_val <= -1
+		if is_bridge:
+			continue
+		if hw == "steps":
+			continue
+		if is_tunnel:
+			var tpts: Array = path["points"]
+			var tcx := 0.0; var tcz := 0.0
+			for pt in tpts:
+				tcx += float(pt[0]); tcz += float(pt[2])
+			tcx /= tpts.size(); tcz /= tpts.size()
+			var near_bridge := false
+			for bc in bridge_centroids:
+				if Vector2(tcx, tcz).distance_to(bc) < 60.0:
+					near_bridge = true
+					break
+			if not near_bridge:
+				continue
+		var raw: Array = path["points"]
+		# Skip closed polygons — handled by raster
+		if _is_closed_polygon(raw):
+			continue
+		var hw2 := _hw_width(hw) * 0.5
+		var mat_idx := _splat_mat_idx(hw, surf)
+		var smoothed: Array = _smooth_path_catmull_rom(raw) if raw.size() >= 3 else raw
+		for si in range(smoothed.size() - 1):
+			var sx0 := float(smoothed[si][0])
+			var sz0 := float(smoothed[si][2])
+			var sx1 := float(smoothed[si + 1][0])
+			var sz1 := float(smoothed[si + 1][2])
+			# Skip segments fully outside park bbox
+			if sx0 < -HALF_WS and sx1 < -HALF_WS:
+				continue
+			if sx0 > HALF_WS and sx1 > HALF_WS:
+				continue
+			if sz0 < -HALF_WS and sz1 < -HALF_WS:
+				continue
+			if sz0 > HALF_WS and sz1 > HALF_WS:
+				continue
+			segments.append([sx0, sz0, sx1, sz1, hw2, mat_idx])
+
+	var seg_count := segments.size()
+	print("ParkLoader: GPU path segments = %d" % seg_count)
+
+	# --- Step 2: Build segment texture (RGBA32F, each segment = 2 rows) ---
+	var SEG_TEX_W := gpu_path_seg_tex_w
+	var seg_rows := (seg_count + SEG_TEX_W - 1) / SEG_TEX_W  # segments per row
+	var seg_tex_h := seg_rows * 2  # 2 rows per segment
+	if seg_tex_h < 1:
+		seg_tex_h = 2
+	var seg_data := PackedFloat32Array()
+	seg_data.resize(SEG_TEX_W * seg_tex_h * 4)
+	seg_data.fill(0.0)
+	for si in seg_count:
+		var seg: Array = segments[si]
+		var col := si % SEG_TEX_W
+		var row_base := (si / SEG_TEX_W) * 2
+		# Row 0: endpoints (x0, z0, x1, z1)
+		var idx0 := (row_base * SEG_TEX_W + col) * 4
+		seg_data[idx0]     = seg[0]
+		seg_data[idx0 + 1] = seg[1]
+		seg_data[idx0 + 2] = seg[2]
+		seg_data[idx0 + 3] = seg[3]
+		# Row 1: properties (half_width, mat_idx, 0, 0)
+		var idx1 := ((row_base + 1) * SEG_TEX_W + col) * 4
+		seg_data[idx1]     = seg[4]
+		seg_data[idx1 + 1] = float(seg[5])
+
+	var seg_img := Image.create_from_data(SEG_TEX_W, seg_tex_h, false, Image.FORMAT_RGBAF, seg_data.to_byte_array())
+	path_segs_texture = ImageTexture.create_from_image(seg_img)
+
+	# --- Step 3: Build spatial grid ---
+	# grid_lists[cell_key] = [seg_idx, seg_idx, ...]
+	var grid_lists: Dictionary = {}
+	for si in seg_count:
+		var seg: Array = segments[si]
+		var sx0: float = seg[0]; var sz0: float = seg[1]
+		var sx1: float = seg[2]; var sz1: float = seg[3]
+		var shw: float = seg[4]
+		var expand := shw + FEATHER
+		var min_x := minf(sx0, sx1) - expand
+		var max_x := maxf(sx0, sx1) + expand
+		var min_z := minf(sz0, sz1) - expand
+		var max_z := maxf(sz0, sz1) + expand
+		var c0x := clampi(int(floor((min_x + HALF_WS) / CELL)), 0, GRID_W - 1)
+		var c1x := clampi(int(floor((max_x + HALF_WS) / CELL)), 0, GRID_W - 1)
+		var c0z := clampi(int(floor((min_z + HALF_WS) / CELL)), 0, GRID_W - 1)
+		var c1z := clampi(int(floor((max_z + HALF_WS) / CELL)), 0, GRID_W - 1)
+		for cz in range(c0z, c1z + 1):
+			for cx in range(c0x, c1x + 1):
+				var key := cz * GRID_W + cx
+				if not grid_lists.has(key):
+					grid_lists[key] = []
+				grid_lists[key].append(si)
+
+	# Sort each cell's list by half_width descending (wider paths first)
+	for key in grid_lists:
+		var cell_segs: Array = grid_lists[key]
+		cell_segs.sort_custom(func(a, b): return segments[a][4] > segments[b][4])
+
+	# --- Step 4: Flatten into list texture and grid texture ---
+	var flat_list: PackedInt32Array = PackedInt32Array()
+	var grid_data := PackedFloat32Array()
+	grid_data.resize(GRID_W * GRID_W * 2)
+	grid_data.fill(0.0)
+
+	for cz in GRID_W:
+		for cx in GRID_W:
+			var key := cz * GRID_W + cx
+			var gidx := (cz * GRID_W + cx) * 2
+			if grid_lists.has(key):
+				var cell_list: Array = grid_lists[key]
+				grid_data[gidx]     = float(flat_list.size())  # start
+				grid_data[gidx + 1] = float(cell_list.size())  # count
+				for entry in cell_list:
+					flat_list.append(entry)
+			# else: stays 0, 0
+
+	var LIST_TEX_W := gpu_path_list_tex_w
+	var list_count := flat_list.size()
+	var list_tex_h := maxf(1, ceil(float(list_count) / float(LIST_TEX_W)))
+	var list_data := PackedFloat32Array()
+	list_data.resize(LIST_TEX_W * int(list_tex_h))
+	list_data.fill(0.0)
+	for li in list_count:
+		list_data[li] = float(flat_list[li])
+
+	var grid_img := Image.create_from_data(GRID_W, GRID_W, false, Image.FORMAT_RGF, grid_data.to_byte_array())
+	path_grid_texture = ImageTexture.create_from_image(grid_img)
+
+	var list_img := Image.create_from_data(LIST_TEX_W, int(list_tex_h), false, Image.FORMAT_RF, list_data.to_byte_array())
+	path_list_texture = ImageTexture.create_from_image(list_img)
+
+	print("ParkLoader: GPU path textures built — segs %d×%d, grid %d×%d, list %d×%d (%d entries)" % [
+		SEG_TEX_W, seg_tex_h, GRID_W, GRID_W, LIST_TEX_W, int(list_tex_h), list_count])
 
 
 # ---------------------------------------------------------------------------
@@ -760,6 +926,9 @@ func _build_paths(paths: Array) -> void:
 
 	# Generate splat map (ground paths + tunnel underpasses painted onto terrain)
 	splat_texture = _generate_splat_map(paths, bridge_centroids)
+
+	# Build analytical GPU path textures (open polylines for sharp edges at any zoom)
+	_build_path_gpu_textures(paths, bridge_centroids)
 
 	# Populate bridge spatial grid — mark all cells along bridge paths + 8m around endpoints
 	for bp in bridge_paths:
