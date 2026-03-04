@@ -184,6 +184,30 @@ def build_height_grid() -> tuple[list, float, float]:
                 h01 * (1.0 - fx) * fy + h11 * fx * fy
             grid[base + xi] = max(h, 0.0)
 
+    # 3×3 Gaussian smooth — aggressive smoothing eliminates cell-to-cell noise
+    # that creates visible mesh facets at grazing angles. Our 3D world uses
+    # separate meshes for bridges/tunnels, so the heightmap only needs to
+    # capture the park's overall terrain shape (hills, slopes), not fine features.
+    W, H = GRID_W, GRID_H
+    for _pass in range(10):
+        smoothed = list(grid)
+        for zi in range(1, H - 1):
+            for xi in range(1, W - 1):
+                b = zi * W
+                smoothed[b + xi] = (
+                    grid[b + xi]         * 0.25 +
+                    grid[b + xi - 1]     * 0.125 +
+                    grid[b + xi + 1]     * 0.125 +
+                    grid[(zi-1)*W + xi]  * 0.125 +
+                    grid[(zi+1)*W + xi]  * 0.125 +
+                    grid[(zi-1)*W+xi-1]  * 0.0625 +
+                    grid[(zi-1)*W+xi+1]  * 0.0625 +
+                    grid[(zi+1)*W+xi-1]  * 0.0625 +
+                    grid[(zi+1)*W+xi+1]  * 0.0625
+                )
+        grid = smoothed
+    print(f"  Applied 10-pass Gaussian smooth to heightmap")
+
     min_elev = min(grid)
 
     # Height at world origin (player spawn)
@@ -303,7 +327,8 @@ def main() -> None:
     terrain = make_sampler(hm_grid, min_elev)
 
     if have_terrain:
-        flat_grid = [round(v - min_elev, 2) for v in hm_grid]
+        # Full precision — rounding to 0.01m caused visible "plowed row" banding
+        flat_grid = [round(v - min_elev, 6) for v in hm_grid]
         hm_out = {
             "width":         GRID_W,
             "depth":         GRID_H,
