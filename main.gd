@@ -72,6 +72,8 @@ func _ready() -> void:
 	_setup_color_grade()
 	_setup_lamp_lights()
 	_setup_falling_leaves()
+	_setup_pigeons()
+	_setup_audio()
 	_apply_time_of_day()
 	# Check for --tour CLI arg
 	for arg in OS.get_cmdline_user_args():
@@ -248,6 +250,9 @@ func _process(delta: float) -> void:
 	# Move falling leaves to follow player
 	if _falling_leaves and _player:
 		_falling_leaves.global_position = _player.global_position + Vector3(0, 10, 0)
+
+	# Update audio
+	_update_audio(delta)
 
 	# Advance clock
 	_time_of_day += _time_speed * delta
@@ -877,6 +882,24 @@ func _apply_time_of_day() -> void:
 			_lamp_mat.emission = Color(0.0, 0.0, 0.0)
 		else:
 			_lamp_mat.emission = Color(1.0, 0.45, 0.08) * em
+
+	# Day/night audio modulation
+	if _audio_birds and _audio_birds.stream:
+		# Birds: loud dawn/day, quiet night
+		var bird_energy := 1.0
+		if _time_of_day < 5.0 or _time_of_day > 21.0:
+			bird_energy = 0.1  # night — near silence
+		elif _time_of_day < 7.0:
+			bird_energy = lerpf(0.1, 1.2, (_time_of_day - 5.0) / 2.0)  # dawn chorus
+		elif _time_of_day > 19.0:
+			bird_energy = lerpf(1.0, 0.1, (_time_of_day - 19.0) / 2.0)
+		_audio_birds.volume_db = lerpf(-25.0, -6.0, bird_energy)
+	if _audio_wind and _audio_wind.stream:
+		# Wind: slightly stronger at dawn/dusk
+		var wind_vol := -14.0
+		if _time_of_day > 18.0 or _time_of_day < 6.0:
+			wind_vol = -10.0
+		_audio_wind.volume_db = wind_vol
 
 
 # ---------------------------------------------------------------------------
@@ -1879,3 +1902,153 @@ func _setup_falling_leaves() -> void:
 	particles.name = "FallingLeaves"
 	add_child(particles)
 	_falling_leaves = particles
+
+
+func _setup_pigeons() -> void:
+	## 3 pigeon flocks at key gathering spots as GPUParticles3D.
+	var locations := [
+		{"name": "Bethesda", "x": -458.0, "z": 949.0},
+		{"name": "LiteraryWalk", "x": -600.0, "z": 1420.0},
+		{"name": "ConservatoryWater", "x": -152.0, "z": 958.0},
+	]
+	for loc in locations:
+		var px: float = loc["x"]
+		var pz: float = loc["z"]
+		var py := _terrain_height(px, pz) + 0.1
+		var particles := GPUParticles3D.new()
+		particles.amount = 40
+		particles.lifetime = 8.0
+		particles.preprocess = 4.0
+		particles.visibility_aabb = AABB(Vector3(-10, -1, -10), Vector3(20, 3, 20))
+		particles.position = Vector3(px, py, pz)
+
+		var mat := ParticleProcessMaterial.new()
+		mat.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
+		mat.emission_box_extents = Vector3(8, 0.2, 8)
+		mat.gravity = Vector3(0, 0, 0)
+		mat.initial_velocity_min = 0.0
+		mat.initial_velocity_max = 0.5
+		mat.direction = Vector3(0.1, 0, 0.1)
+		mat.spread = 180.0
+		mat.damping_min = 2.0
+		mat.damping_max = 4.0
+		mat.scale_min = 0.8
+		mat.scale_max = 1.2
+		mat.color = Color(0.45, 0.42, 0.48)
+		particles.process_material = mat
+
+		var quad := QuadMesh.new()
+		quad.size = Vector2(0.15, 0.12)
+		var pigeon_mat := StandardMaterial3D.new()
+		pigeon_mat.albedo_color = Color(0.10, 0.09, 0.11)
+		pigeon_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+		pigeon_mat.billboard_mode = BaseMaterial3D.BILLBOARD_PARTICLES
+		pigeon_mat.roughness = 0.90
+		pigeon_mat.specular = 0.0
+		quad.material = pigeon_mat
+		particles.draw_pass_1 = quad
+
+		particles.name = "Pigeons_%s" % loc["name"]
+		add_child(particles)
+	print("Pigeons: 3 flocks placed")
+
+
+# ---------------------------------------------------------------------------
+# Ambient Soundscape
+# ---------------------------------------------------------------------------
+var _audio_birds: AudioStreamPlayer
+var _audio_wind: AudioStreamPlayer
+var _audio_city: AudioStreamPlayer
+var _audio_water: AudioStreamPlayer3D
+var _audio_footstep_grass: AudioStreamPlayer
+var _audio_footstep_stone: AudioStreamPlayer
+var _footstep_timer: float = 0.0
+var _footstep_interval: float = 0.65  # seconds per step at walk speed
+
+func _setup_audio() -> void:
+	## Initialize layered ambient soundscape.
+	# Background layers (non-spatial)
+	_audio_birds = _make_audio_player("res://sounds/birds_daytime.ogg", -8.0)
+	_audio_wind = _make_audio_player("res://sounds/wind_trees.ogg", -14.0)
+	_audio_city = _make_audio_player("res://sounds/city_distant.ogg", -18.0)
+	# Spatial water
+	_audio_water = AudioStreamPlayer3D.new()
+	_audio_water.name = "AudioWater"
+	if ResourceLoader.exists("res://sounds/water_lake.ogg"):
+		var wstream = ResourceLoader.load("res://sounds/water_lake.ogg")
+		if wstream is AudioStream:
+			_audio_water.stream = wstream
+			_audio_water.volume_db = -10.0
+			_audio_water.max_distance = 60.0
+			_audio_water.autoplay = true
+			add_child(_audio_water)
+	# Footsteps
+	_audio_footstep_grass = _make_audio_player("res://sounds/footstep_grass.ogg", -6.0, false)
+	_audio_footstep_stone = _make_audio_player("res://sounds/footstep_stone.ogg", -6.0, false)
+
+func _make_audio_player(path: String, vol_db: float, autoplay: bool = true) -> AudioStreamPlayer:
+	var player := AudioStreamPlayer.new()
+	player.name = path.get_file().get_basename()
+	if ResourceLoader.exists(path):
+		var stream = ResourceLoader.load(path)
+		if stream is AudioStream:
+			player.stream = stream
+			player.volume_db = vol_db
+			player.autoplay = autoplay
+			add_child(player)
+	return player
+
+func _update_audio(delta: float) -> void:
+	if not _player:
+		return
+	var ppos := _player.global_position
+
+	# City hum louder near boundary
+	if _audio_city and _audio_city.stream:
+		var min_dist := 999999.0
+		if _park_loader and _park_loader.boundary_polygon.size() > 2:
+			for pt in _park_loader.boundary_polygon:
+				var d := Vector2(ppos.x - pt.x, ppos.z - pt.y).length()
+				if d < min_dist:
+					min_dist = d
+		var city_vol := lerpf(-12.0, -22.0, clampf(min_dist / 200.0, 0.0, 1.0))
+		_audio_city.volume_db = city_vol
+
+	# Birds louder in dense tree areas (use tree density heuristic)
+	if _audio_birds and _audio_birds.stream:
+		var bird_vol := -10.0  # base volume
+		# Louder in The Ramble area (dense trees)
+		if ppos.x > -550 and ppos.x < -250 and ppos.z > 400 and ppos.z < 800:
+			bird_vol = -5.0
+		_audio_birds.volume_db = bird_vol
+
+	# Water proximity
+	if _audio_water and _audio_water.stream and _park_loader:
+		# Move water audio to nearest water zone
+		var wgk := Vector2i(int(floor(ppos.x / 4.0)), int(floor(ppos.z / 4.0)))
+		if _park_loader._water_grid.has(wgk):
+			_audio_water.position = ppos + Vector3(0, -1, 0)
+		else:
+			# Find nearest water (crude: just place far away to mute)
+			_audio_water.position = ppos + Vector3(0, -1, 80)
+
+	# Footsteps
+	if _player.velocity.length() > 0.5:
+		_footstep_timer += delta
+		if _footstep_timer >= _footstep_interval:
+			_footstep_timer = 0.0
+			# Check if on path
+			var on_path := false
+			if _park_loader:
+				on_path = _park_loader._is_on_path(ppos.x, ppos.z)
+			var player_to_use: AudioStreamPlayer
+			if on_path and _audio_footstep_stone and _audio_footstep_stone.stream:
+				player_to_use = _audio_footstep_stone
+			elif _audio_footstep_grass and _audio_footstep_grass.stream:
+				player_to_use = _audio_footstep_grass
+			if player_to_use:
+				# Pitch variation
+				player_to_use.pitch_scale = randf_range(0.9, 1.1)
+				player_to_use.play()
+	else:
+		_footstep_timer = 0.0
