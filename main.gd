@@ -65,6 +65,8 @@ func _ready() -> void:
 	_setup_ground()
 	if _park_loader and _park_loader.splat_texture:
 		_apply_splat_map(_park_loader.splat_texture)
+	if _park_loader and _park_loader.path_segs_texture:
+		_apply_gpu_path_textures()
 	if _park_loader and _park_loader.boundary_polygon.size() > 2:
 		_apply_boundary_mask(_park_loader.boundary_polygon)
 	_player = _setup_player()
@@ -235,6 +237,18 @@ func _process(delta: float) -> void:
 	# Auto-screenshot for dev review (non-tour mode)
 	if not _screenshot_done:
 		_screenshot_timer += delta
+		# Hold player frozen at aerial position every frame until screenshot
+		var sx := -200.0; var sz := 100.0
+		_player.set_physics_process(false)
+		_player.velocity = Vector3.ZERO
+		_player.global_position = Vector3(sx, _terrain_height(sx, sz) + 30.0, sz)
+		_player.rotation_degrees.y = 90.0
+		var head_node: Node3D = _player.get_node("Head")
+		if head_node:
+			head_node.rotation_degrees.x = -55.0
+		_time_of_day = 12.0
+		_time_speed = 0.0
+		_apply_time_of_day()
 		if _screenshot_timer >= 4.0:
 			_screenshot_done = true
 			var img := get_viewport().get_texture().get_image()
@@ -1184,12 +1198,21 @@ uniform sampler2D tile_noise : filter_linear_mipmap, repeat_enable;
 uniform sampler2D heightmap_tex : filter_linear, repeat_disable;
 
 // Splat map + path texture arrays
-uniform sampler2D splat_map : filter_nearest, repeat_disable;
+uniform sampler2D splat_map : filter_linear_mipmap, repeat_disable;
 uniform sampler2DArray path_alb_arr : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2DArray path_nrm_arr : hint_normal, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2DArray path_rgh_arr : hint_default_white, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform float world_size = 5000.0;
 uniform float path_tile_m = 2.5;
+
+// Analytical GPU path textures
+uniform sampler2D path_segs : filter_nearest, repeat_disable;
+uniform sampler2D path_grid : filter_nearest, repeat_disable;
+uniform sampler2D path_list : filter_nearest, repeat_disable;
+uniform float grid_cell_size = 16.0;
+uniform int grid_w = 313;
+uniform int seg_tex_w = 256;
+uniform int list_tex_w = 512;
 
 // Park boundary mask: white = inside park, black = outside
 uniform sampler2D park_mask : filter_linear, repeat_disable;
@@ -1248,6 +1271,12 @@ float textureNoTile_r(sampler2D tex, vec2 uv) {
 	float ra = textureGrad(tex, uv + offa, duvdx, duvdy).r;
 	float rb = textureGrad(tex, uv + offb, duvdx, duvdy).r;
 	return mix(ra, rb, smoothstep(0.15, 0.85, f));
+}
+
+float point_segment_dist(vec2 p, vec2 a, vec2 b) {
+	vec2 ab = b - a;
+	float t = clamp(dot(p - a, ab) / max(dot(ab, ab), 0.0001), 0.0, 1.0);
+	return length(p - (a + t * ab));
 }
 
 // Returns vec4(tex_set_index, tint_r, tint_g, tint_b) for material indices 1-30
@@ -1329,45 +1358,49 @@ void fragment() {
 		NORMAL = normalize((VIEW_MATRIX * vec4(terrain_n, 0.0)).xyz);
 	} else {
 
-	// --- Splat map sampling (RG8: R=material index, G=coverage alpha) ---
+	// --- Analytical GPU path distance + raster fallback ---
 	vec2 splat_uv = (world_pos.xz + world_size * 0.5) / world_size;
+	float feather = 1.2;  // matches SPLAT_FEATHER
 
-	// Sample 4 nearest texels for bilinear coverage interpolation
-	float splat_res = float(textureSize(splat_map, 0).x);
-	vec2 splat_texel = splat_uv * splat_res - 0.5;
-	vec2 splat_frac = fract(splat_texel);
-	vec2 splat_base = (floor(splat_texel) + 0.5) / splat_res;
-	float splat_step = 1.0 / splat_res;
+	// Analytical distance-to-segment for open polyline paths
+	float half_ws = world_size * 0.5;
+	ivec2 cell = ivec2((world_pos.xz + half_ws) / grid_cell_size);
+	cell = clamp(cell, ivec2(0), ivec2(grid_w - 1));
 
-	vec2 s00 = texture(splat_map, splat_base).rg;
-	vec2 s10 = texture(splat_map, splat_base + vec2(splat_step, 0.0)).rg;
-	vec2 s01 = texture(splat_map, splat_base + vec2(0.0, splat_step)).rg;
-	vec2 s11 = texture(splat_map, splat_base + vec2(splat_step, splat_step)).rg;
+	vec2 gd = texelFetch(path_grid, cell, 0).rg;
+	int gstart = int(gd.r);
+	int gcount = min(int(gd.g), 48);
 
-	// 3×3 Gaussian blur at 2-texel spacing for smooth path edges
-	float path_weight = 0.0;
-	float pw_wide = splat_step * 1.0;
-	path_weight += texture(splat_map, splat_uv + vec2(-pw_wide, -pw_wide)).g;
-	path_weight += texture(splat_map, splat_uv + vec2(    0.0, -pw_wide)).g * 2.0;
-	path_weight += texture(splat_map, splat_uv + vec2( pw_wide, -pw_wide)).g;
-	path_weight += texture(splat_map, splat_uv + vec2(-pw_wide,     0.0)).g * 2.0;
-	path_weight += texture(splat_map, splat_uv).g * 4.0;
-	path_weight += texture(splat_map, splat_uv + vec2( pw_wide,     0.0)).g * 2.0;
-	path_weight += texture(splat_map, splat_uv + vec2(-pw_wide,  pw_wide)).g;
-	path_weight += texture(splat_map, splat_uv + vec2(    0.0,  pw_wide)).g * 2.0;
-	path_weight += texture(splat_map, splat_uv + vec2( pw_wide,  pw_wide)).g;
-	path_weight /= 16.0;
+	float best_cov = 0.0;
+	int best_mat = 0;
 
-	// Material index from nearest texel
-	int mat_idx = int(texture(splat_map, splat_uv).r * 255.0 + 0.5);
-	// If center is grass but there's path coverage nearby, use nearest path material
-	if (mat_idx == 0 && path_weight > 0.01) {
-		float best = s00.g;
-		mat_idx = int(s00.r * 255.0 + 0.5);
-		if (s10.g > best) { best = s10.g; mat_idx = int(s10.r * 255.0 + 0.5); }
-		if (s01.g > best) { best = s01.g; mat_idx = int(s01.r * 255.0 + 0.5); }
-		if (s11.g > best) { best = s11.g; mat_idx = int(s11.r * 255.0 + 0.5); }
+	for (int gi = 0; gi < gcount; gi++) {
+		int li = gstart + gi;
+		float si = texelFetch(path_list, ivec2(li % list_tex_w, li / list_tex_w), 0).r;
+		int seg = int(si);
+
+		int seg_col = seg % seg_tex_w;
+		int seg_row = (seg / seg_tex_w) * 2;
+		vec4 ep = texelFetch(path_segs, ivec2(seg_col, seg_row), 0);
+		vec4 pr = texelFetch(path_segs, ivec2(seg_col, seg_row + 1), 0);
+
+		float d = point_segment_dist(world_pos.xz, ep.xy, ep.zw);
+		float hw = pr.x;
+		float cov = 1.0 - smoothstep(hw - feather * 0.3, hw + feather, d);
+
+		if (cov > best_cov) {
+			best_cov = cov;
+			best_mat = int(pr.y);
+		}
 	}
+
+	// Raster fallback for closed polygons + dense areas exceeding loop cap
+	float raster_cov = texture(splat_map, splat_uv).g;
+	int raster_mat = int(texture(splat_map, splat_uv).r * 255.0 + 0.5);
+
+	// Combine: analytical wins where it has coverage, raster fills polygons
+	float path_weight = max(best_cov, raster_cov);
+	int mat_idx = best_cov > raster_cov ? best_mat : raster_mat;
 
 	// --- Grass shading (textureNoTile — Inigo Quilez anti-tiling) ---
 	vec2 uv  = world_pos.xz / tile_m;
@@ -1491,8 +1524,8 @@ void fragment() {
 		vec3 p_nrm = texture(path_nrm_arr, vec3(path_uv, tex_set)).rgb;
 		float p_rgh = clamp(texture(path_rgh_arr, vec3(path_uv, tex_set)).r + 0.10, 0.0, 1.0);
 
-		// Smooth path-grass transition — tight to minimize grass bleed
-		float soft_weight = smoothstep(0.0, 0.30, path_weight);
+		// Smooth path-grass transition — tight crisp edge
+		float soft_weight = smoothstep(0.05, 0.65, path_weight);
 
 		ALBEDO          = mix(grass_alb, p_alb, soft_weight);
 		vec3 _cn = mix(grass_nrm, p_nrm, soft_weight) * 2.0 - 1.0;
@@ -1646,6 +1679,18 @@ func _apply_splat_map(splat_tex: ImageTexture) -> void:
 	_terrain_mat.set_shader_parameter("world_size",   _hm_world_size)
 	_terrain_mat.set_shader_parameter("path_tile_m",  2.5)
 	print("Terrain: splat map + path texture arrays applied")
+
+
+func _apply_gpu_path_textures() -> void:
+	## Wire analytical GPU path textures into the terrain shader.
+	_terrain_mat.set_shader_parameter("path_segs", _park_loader.path_segs_texture)
+	_terrain_mat.set_shader_parameter("path_grid", _park_loader.path_grid_texture)
+	_terrain_mat.set_shader_parameter("path_list", _park_loader.path_list_texture)
+	_terrain_mat.set_shader_parameter("grid_cell_size", _park_loader.gpu_path_grid_cell)
+	_terrain_mat.set_shader_parameter("grid_w", _park_loader.gpu_path_grid_w)
+	_terrain_mat.set_shader_parameter("seg_tex_w", _park_loader.gpu_path_seg_tex_w)
+	_terrain_mat.set_shader_parameter("list_tex_w", _park_loader.gpu_path_list_tex_w)
+	print("Terrain: analytical GPU path textures applied")
 
 
 func _apply_boundary_mask(poly: PackedVector2Array) -> void:
