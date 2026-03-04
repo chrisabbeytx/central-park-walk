@@ -520,6 +520,7 @@ func _ready() -> void:
 	_build_meadow_grass(data.get("trees", []))
 	_build_ground_cover(data.get("trees", []), data.get("water", []), data.get("buildings", []))
 	_build_leaf_litter(data.get("trees", []))
+	_build_grass_blades(data.get("trees", []))
 	_build_boundary(data.get("boundary", []))
 	_build_boundary_facades()
 	print("ParkLoader: done")
@@ -4601,7 +4602,7 @@ func _make_trunk_with_branches_mesh(variant_seed: int = 0) -> ArrayMesh:
 
 	# --- Randomized branches (4-7 per tree variant) ---
 	var branch_segs := 6
-	var n_branches := rng.randi_range(4, 7)
+	var n_branches := rng.randi_range(7, 12)
 	# Generate azimuths with minimum 40-degree separation
 	var azimuths: Array = []
 	for _bi in n_branches:
@@ -4613,7 +4614,7 @@ func _make_trunk_with_branches_mesh(variant_seed: int = 0) -> ArrayMesh:
 				var diff := absf(az - existing_az)
 				if diff > 180.0:
 					diff = 360.0 - diff
-				if diff < 40.0:
+				if diff < 25.0:
 					ok = false
 					break
 			if ok:
@@ -4624,8 +4625,8 @@ func _make_trunk_with_branches_mesh(variant_seed: int = 0) -> ArrayMesh:
 
 	var branch_configs: Array = []
 	for bi in n_branches:
-		var bh := rng.randf_range(0.25, 0.90)
-		var blen := rng.randf_range(0.25, 0.60)
+		var bh := rng.randf_range(0.10, 0.90)
+		var blen := rng.randf_range(0.20, 0.65)
 		var bangle := rng.randf_range(35.0, 65.0)
 		var bazimuth: float = azimuths[bi]
 		var br_r := rng.randf_range(0.12, 0.24)
@@ -4668,8 +4669,8 @@ func _make_trunk_with_branches_mesh(variant_seed: int = 0) -> ArrayMesh:
 			]))
 
 		# Sub-branches on longest branches (length > 0.40)
-		if blen > 0.40:
-			var n_sub := rng.randi_range(1, 2)
+		if blen > 0.30:
+			var n_sub := rng.randi_range(1, 3)
 			for _si in n_sub:
 				var fork_t := rng.randf_range(0.50, 0.70)
 				var sub_start := start + dir * blen * fork_t
@@ -4916,30 +4917,43 @@ func _make_bush_leaf_mesh() -> ArrayMesh:
 		var r := 0.62
 		var pos := Vector3(cos(a) * r, -0.05 + float(i % 3) * 0.06, sin(a) * r)
 		var tilt_ax := Vector3(-sin(a), 0.0, cos(a))
-		card_defs.append([pos, 0.28, tilt_ax, 20.0 + float(i) * 5.0])
+		card_defs.append([pos, 0.32, tilt_ax, 20.0 + float(i) * 5.0])
 	# Mid ring: 6 quads
 	for i in 6:
 		var a := TAU * float(i) / 6.0 + 0.6
 		var r := 0.44
 		var pos := Vector3(cos(a) * r, 0.20 + float(i % 2) * 0.06, sin(a) * r)
 		var tilt_ax := Vector3(-sin(a), 0.0, cos(a))
-		card_defs.append([pos, 0.25, tilt_ax, 30.0 + float(i) * 6.0])
+		card_defs.append([pos, 0.29, tilt_ax, 30.0 + float(i) * 6.0])
 	# Upper ring: 4 quads
 	for i in 4:
 		var a := TAU * float(i) / 4.0 + 0.9
 		var r := 0.28
 		var pos := Vector3(cos(a) * r, 0.38, sin(a) * r)
 		var tilt_ax := Vector3(-sin(a), 0.0, cos(a))
-		card_defs.append([pos, 0.22, tilt_ax, 36.0 + float(i) * 7.0])
+		card_defs.append([pos, 0.25, tilt_ax, 36.0 + float(i) * 7.0])
 	# Inner fill: 4 quads
 	for i in 4:
 		var a := TAU * float(i) / 4.0 + 0.15
 		var pos := Vector3(cos(a) * 0.18, 0.05 + float(i) * 0.08, sin(a) * 0.18)
 		var tilt_ax := Vector3(cos(a + 0.5), 0.0, sin(a + 0.5))
-		card_defs.append([pos, 0.26, tilt_ax, 25.0 + float(i) * 8.0])
+		card_defs.append([pos, 0.30, tilt_ax, 25.0 + float(i) * 8.0])
 	# Top caps: 2 nearly horizontal quads
-	card_defs.append([Vector3(0.08, 0.46, 0.04), 0.22, Vector3(1.0, 0.0, 0.0), 10.0])
-	card_defs.append([Vector3(-0.05, 0.43, -0.06), 0.20, Vector3(0.0, 0.0, 1.0), 14.0])
+	card_defs.append([Vector3(0.08, 0.46, 0.04), 0.25, Vector3(1.0, 0.0, 0.0), 10.0])
+	card_defs.append([Vector3(-0.05, 0.43, -0.06), 0.23, Vector3(0.0, 0.0, 1.0), 14.0])
+	# Outer low ring: 8 quads at larger radius for fuller base
+	for i in 8:
+		var a := TAU * float(i) / 8.0 + 0.55
+		var r := 0.78
+		var pos := Vector3(cos(a) * r, -0.08 + float(i % 2) * 0.05, sin(a) * r)
+		var tilt_ax := Vector3(-sin(a), 0.0, cos(a))
+		card_defs.append([pos, 0.26, tilt_ax, 15.0 + float(i) * 4.0])
+	# Extra inner fill: 4 quads
+	for i in 4:
+		var a := TAU * float(i) / 4.0 + 1.2
+		var pos := Vector3(cos(a) * 0.35, 0.12 + float(i) * 0.06, sin(a) * 0.35)
+		var tilt_ax := Vector3(cos(a + 0.8), 0.0, sin(a + 0.8))
+		card_defs.append([pos, 0.24, tilt_ax, 22.0 + float(i) * 6.0])
 
 	for cd in card_defs:
 		var pos: Vector3 = cd[0] as Vector3
@@ -5183,8 +5197,8 @@ func _build_undergrowth(trees: Array, paths: Array) -> void:
 			if not _in_boundary(bx, bz):
 				continue
 			var by := _terrain_y(bx, bz)
-			var r  := rng.randf_range(0.8, 2.2)
-			var h  := rng.randf_range(0.6, 1.6)
+			var r  := rng.randf_range(1.2, 3.0)
+			var h  := rng.randf_range(0.8, 2.2)
 			var rot := rng.randf() * TAU
 			var basis := Basis(
 				Vector3(cos(rot) * r, 0.0, sin(rot) * r),
@@ -5231,8 +5245,8 @@ func _build_undergrowth(trees: Array, paths: Array) -> void:
 				if not _in_boundary(bx, bz):
 					continue
 				var by := _terrain_y(bx, bz)
-				var r  := rng.randf_range(0.6, 1.5)
-				var h  := rng.randf_range(0.4, 1.2)
+				var r  := rng.randf_range(1.0, 2.5)
+				var h  := rng.randf_range(0.6, 1.8)
 				var rot := rng.randf() * TAU
 				var basis := Basis(
 					Vector3(cos(rot) * r, 0.0, sin(rot) * r),
@@ -7477,14 +7491,14 @@ func _make_fern_mesh() -> ArrayMesh:
 	var uvs     := PackedVector2Array()
 	var indices := PackedInt32Array()
 
-	for i in 6:
-		var angle := TAU * float(i) / 6.0 + 0.25
+	for i in 10:
+		var angle := TAU * float(i) / 10.0 + 0.25
 		var ca := cos(angle)
 		var sa := sin(angle)
 		# Each frond: elongated quad pointing outward and tilted up
 		var inner_r := 0.05
-		var outer_r := 0.55
-		var tip_h   := 0.35  # tip lifts upward
+		var outer_r := 0.85
+		var tip_h   := 0.55  # tip lifts upward
 		var hw      := 0.12  # half-width
 		# Perpendicular direction for width
 		var px := -sa
@@ -7561,8 +7575,8 @@ func _build_ground_cover(trees: Array, water: Array, buildings: Array) -> void:
 				if _is_excluded(fx, fz) or _is_on_path(fx, fz):
 					continue
 				var fy := _terrain_y(fx, fz) + 0.02
-				var r := rng.randf_range(0.5, 1.0)
-				var h := rng.randf_range(0.4, 0.8)
+				var r := rng.randf_range(0.8, 1.8)
+				var h := rng.randf_range(0.6, 1.2)
 				var rot := rng.randf() * TAU
 				var basis := Basis(
 					Vector3(cos(rot) * r, 0.0, sin(rot) * r),
@@ -7588,8 +7602,8 @@ func _build_ground_cover(trees: Array, water: Array, buildings: Array) -> void:
 			if _is_excluded(fx, fz) or _is_on_path(fx, fz):
 				continue
 			var fy := _terrain_y(fx, fz) + 0.02
-			var r := rng.randf_range(0.3, 0.7)
-			var h := rng.randf_range(0.25, 0.55)
+			var r := rng.randf_range(0.6, 1.4)
+			var h := rng.randf_range(0.5, 0.9)
 			var rot := rng.randf() * TAU
 			var basis := Basis(
 				Vector3(cos(rot) * r, 0.0, sin(rot) * r),
@@ -7600,52 +7614,7 @@ func _build_ground_cover(trees: Array, water: Array, buildings: Array) -> void:
 	if not fern_xf.is_empty():
 		_spawn_multimesh(fern_mesh, fern_mat, fern_xf, "Ferns")
 
-	# --- Ivy patches near buildings ---
-	var ivy_mesh := _make_dirt_circle_mesh()  # reuse flat disc
-	var ivy_mat := StandardMaterial3D.new()
-	ivy_mat.albedo_color    = Color(0.15, 0.38, 0.10, 0.70)
-	ivy_mat.roughness       = 0.90
-	ivy_mat.transparency    = BaseMaterial3D.TRANSPARENCY_ALPHA
-	ivy_mat.cull_mode       = BaseMaterial3D.CULL_DISABLED
-	ivy_mat.render_priority = -1
-
-	var ivy_xf: Array = []
-	rng.seed = 556677
-	for bld in buildings:
-		var pts: Array = bld["points"]
-		if pts.size() < 3:
-			continue
-		# Place ivy along ~20% of building edges
-		if rng.randf() > 0.35:
-			continue
-		var n_ivy := rng.randi_range(1, 3)
-		for _ii in n_ivy:
-			var pi := rng.randi_range(0, pts.size() - 1)
-			var bx := float(pts[pi][0]) + rng.randf_range(-3.0, 3.0)
-			var bz := float(pts[pi][1]) + rng.randf_range(-3.0, 3.0)
-			# Push slightly away from building
-			var cx := 0.0; var cz := 0.0
-			for p in pts:
-				cx += float(p[0]); cz += float(p[1])
-			cx /= pts.size(); cz /= pts.size()
-			var dx := bx - cx; var dz := bz - cz
-			var dl := sqrt(dx * dx + dz * dz)
-			if dl > 0.1:
-				bx += dx / dl * 2.0
-				bz += dz / dl * 2.0
-			var by := _terrain_y(bx, bz) + 0.03
-			var r := rng.randf_range(0.8, 2.0)
-			var rot := rng.randf() * TAU
-			var basis := Basis(
-				Vector3(cos(rot) * r, 0.0, sin(rot) * r),
-				Vector3(0.0, 1.0, 0.0),
-				Vector3(-sin(rot) * r, 0.0, cos(rot) * r))
-			ivy_xf.append(Transform3D(basis, Vector3(bx, by, bz)))
-
-	if not ivy_xf.is_empty():
-		_spawn_multimesh(ivy_mesh, ivy_mat, ivy_xf, "IvyPatches")
-
-	print("ParkLoader: ferns = ", fern_xf.size(), "  ivy = ", ivy_xf.size())
+	print("ParkLoader: ferns = ", fern_xf.size())
 
 
 # ---------------------------------------------------------------------------
@@ -7725,3 +7694,139 @@ func _build_leaf_litter(trees: Array) -> void:
 			_spawn_multimesh(leaf_mesh, litter_mats[ti], xf[ti],
 				"LeafLitter_%s" % names[ti])
 	print("ParkLoader: leaf litter = ", total)
+
+
+# ---------------------------------------------------------------------------
+# Grass blade billboards — 3D grass blades scattered on terrain
+# ---------------------------------------------------------------------------
+func _make_grass_blade_mesh() -> ArrayMesh:
+	## 2 crossed quads (8 triangles) forming a tapered grass blade.
+	## Base half-width 0.08, tip half-width 0.02, height 1.0 (scaled at spawn).
+	var verts   := PackedVector3Array()
+	var normals := PackedVector3Array()
+	var uvs     := PackedVector2Array()
+	var indices := PackedInt32Array()
+
+	var base_hw := 0.08
+	var tip_hw  := 0.02
+	var h       := 1.0
+
+	for qi in 2:
+		var angle := float(qi) * PI * 0.5  # 0° and 90°
+		var ca := cos(angle)
+		var sa := sin(angle)
+		var right := Vector3(ca, 0.0, sa)
+		var n := Vector3(-sa, 0.0, ca)  # face normal
+		var base_idx := verts.size()
+		# Bottom-left, bottom-right, top-right, top-left
+		verts.append(-right * base_hw)
+		verts.append( right * base_hw)
+		verts.append( right * tip_hw + Vector3(0.0, h, 0.0))
+		verts.append(-right * tip_hw + Vector3(0.0, h, 0.0))
+		uvs.append_array(PackedVector2Array([
+			Vector2(0.0, 1.0), Vector2(1.0, 1.0),
+			Vector2(1.0, 0.0), Vector2(0.0, 0.0)]))
+		for _j in 4:
+			normals.append(n)
+		indices.append_array(PackedInt32Array([
+			base_idx, base_idx + 1, base_idx + 2,
+			base_idx, base_idx + 2, base_idx + 3]))
+
+	var arrays: Array = []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts
+	arrays[Mesh.ARRAY_NORMAL] = normals
+	arrays[Mesh.ARRAY_TEX_UV] = uvs
+	arrays[Mesh.ARRAY_INDEX]  = indices
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	return mesh
+
+
+func _grass_blade_shader_code() -> String:
+	return """shader_type spatial;
+render_mode cull_disabled;
+
+varying vec3 origin;
+
+void vertex() {
+	origin = (MODEL_MATRIX * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+	float sway = max(VERTEX.y, 0.0);
+	float hash = fract(sin(origin.x * 12.9898 + origin.z * 78.233) * 43758.5453);
+	VERTEX.x += sin(TIME * 1.5 + hash * 6.28 + origin.x * 0.1) * 0.06 * sway;
+	VERTEX.z += sin(TIME * 1.8 + hash * 3.14 + origin.z * 0.12) * 0.04 * sway;
+}
+
+void fragment() {
+	float hash = fract(sin(origin.x * 12.9898 + origin.z * 78.233) * 43758.5453);
+	// Base green to tip yellow-green gradient
+	vec3 base_col = vec3(0.15, 0.28, 0.06);
+	vec3 tip_col  = vec3(0.35, 0.42, 0.12);
+	// Autumn variation per blade
+	vec3 autumn_shift = vec3(0.08, -0.04, -0.03) * hash;
+	vec3 col = mix(base_col, tip_col, 1.0 - UV.y) + autumn_shift;
+	ALBEDO = col;
+	ROUGHNESS = 0.85;
+	SPECULAR = 0.05;
+	METALLIC = 0.0;
+	BACKLIGHT = col * 0.2;
+}
+"""
+
+
+func _build_grass_blades(trees: Array) -> void:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 998877
+
+	var blade_mesh := _make_grass_blade_mesh()
+	var blade_mat := ShaderMaterial.new()
+	blade_mat.shader = _get_shader("grass_blade", _grass_blade_shader_code())
+
+	var xforms: Array = []
+
+	# Grid scan across park
+	var half_w := _hm_world_size * 0.5
+	var step := 8.0
+	var x := -half_w
+	while x < half_w:
+		var z := -half_w
+		while z < half_w:
+			if not _in_boundary(x, z):
+				z += step
+				continue
+			if _is_excluded(x, z) or _is_on_path(x, z):
+				z += step
+				continue
+			# Skip water zones
+			var wgk := Vector2i(int(floor(x / WATER_GRID_CELL)), int(floor(z / WATER_GRID_CELL)))
+			if _water_grid.has(wgk):
+				z += step
+				continue
+			# Skip bridge zones
+			var bgk := Vector2i(int(floor(x / BRIDGE_GRID_CELL)), int(floor(z / BRIDGE_GRID_CELL)))
+			if _bridge_grid.has(bgk):
+				z += step
+				continue
+
+			rng.seed = int(x * 1000.0 + z * 7.0 + 556677.0) & 0x7FFFFFFF
+			var n_blades := rng.randi_range(8, 16)
+			for _bi in n_blades:
+				var bx := x + rng.randf_range(-step * 0.45, step * 0.45)
+				var bz := z + rng.randf_range(-step * 0.45, step * 0.45)
+				if _is_on_path(bx, bz):
+					continue
+				var by := _terrain_y(bx, bz)
+				var h := rng.randf_range(0.15, 0.40)
+				var rot := rng.randf() * TAU
+				var s := h * 0.4  # width scales with height
+				var basis := Basis(
+					Vector3(cos(rot) * s, 0.0, sin(rot) * s),
+					Vector3(0.0, h, 0.0),
+					Vector3(-sin(rot) * s, 0.0, cos(rot) * s))
+				xforms.append(Transform3D(basis, Vector3(bx, by, bz)))
+			z += step
+		x += step
+
+	if not xforms.is_empty():
+		_spawn_multimesh(blade_mesh, blade_mat, xforms, "GrassBlades")
+	print("ParkLoader: grass blades = ", xforms.size())

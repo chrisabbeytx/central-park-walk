@@ -47,6 +47,9 @@ const LAMP_LIGHT_COUNT := 32
 const LAMP_LIGHT_RANGE := 18.0
 const LAMP_LIGHT_UPDATE_INTERVAL := 0.5  # seconds between position updates
 
+# Falling leaf particles
+var _falling_leaves: GPUParticles3D
+
 # 5 keyframes defining the full day/night cycle
 # Night (21→5) wraps seamlessly; 8 hours of steady darkness.
 var _keyframes: Array = []
@@ -68,6 +71,7 @@ func _ready() -> void:
 	_setup_hud()
 	_setup_color_grade()
 	_setup_lamp_lights()
+	_setup_falling_leaves()
 	_apply_time_of_day()
 	# Check for --tour CLI arg
 	for arg in OS.get_cmdline_user_args():
@@ -240,6 +244,10 @@ func _process(delta: float) -> void:
 	if _lamp_light_timer >= LAMP_LIGHT_UPDATE_INTERVAL:
 		_lamp_light_timer = 0.0
 		_update_lamp_lights()
+
+	# Move falling leaves to follow player
+	if _falling_leaves and _player:
+		_falling_leaves.global_position = _player.global_position + Vector3(0, 10, 0)
 
 	# Advance clock
 	_time_of_day += _time_speed * delta
@@ -1256,6 +1264,19 @@ vec4 mat_lookup(int idx) {
 
 void vertex() {
 	world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+	float half_ws = world_size * 0.5;
+	float cell = world_size / float(textureSize(heightmap_tex, 0).x - 1);
+	vec2 grid_pos = (world_pos.xz + half_ws) / cell;
+	vec2 frac_pos = fract(grid_pos);
+	float envelope = sin(frac_pos.x * 3.14159) * sin(frac_pos.y * 3.14159);
+	float n = vnoise(world_pos.xz * 0.8 + vec2(17.3, 41.7)) * 0.65
+	        + vnoise(world_pos.xz * 2.3 + vec2(93.1, 27.5)) * 0.35;
+	vec2 splat_uv_v = (world_pos.xz + half_ws) / world_size;
+	float path_mask = texture(splat_map, splat_uv_v).g;
+	float suppress = 1.0 - smoothstep(0.0, 0.15, path_mask);
+	float disp = (n - 0.3) * envelope * 0.18 * suppress;
+	VERTEX.y += max(disp, 0.0);
+	world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 }
 
 void fragment() {
@@ -1405,8 +1426,8 @@ void fragment() {
 	float dot_combined = dot_n1 * 0.65 + dot_n2 * 0.35;
 	// Dot size varies with secondary noise — some tight, some diffuse
 	float size_var = vnoise(warped * 5.1 + vec2(7.1, 19.3));
-	float dot_lo = 0.34 + size_var * 0.08;  // 0.34–0.42
-	float dot_hi = dot_lo + 0.16;
+	float dot_lo = 0.40 + size_var * 0.06;  // 0.40–0.46
+	float dot_hi = dot_lo + 0.10;
 	float dot_mask = smoothstep(dot_lo, dot_hi, dot_combined);
 	// 3 autumn color bands: russet/brown (70%), goldenrod (20%), cream aster (10%)
 	float hue_var = vnoise(warped * 4.0);
@@ -1426,7 +1447,7 @@ void fragment() {
 	float density_boost = canopy_shade * 0.3;
 	// Darken grass between flower dots for depth
 	vec3 carpet_ground = mix(grass_alb * 0.70, flower_col, dot_mask + density_boost * dot_mask);
-	grass_alb = mix(grass_alb, carpet_ground, carpet_mask * 0.35);
+	grass_alb = mix(grass_alb, carpet_ground, carpet_mask * 0.15);
 
 	// Dappled sunlight — simulates light filtering through tree canopy
 	// Suppress near paths to avoid spotted bleed-through at edges
@@ -1817,3 +1838,44 @@ func _setup_hud() -> void:
 	hint.add_theme_font_size_override("font_size", 15)
 	hint.add_theme_color_override("font_color", Color(0.55, 0.55, 0.55))
 	vbox.add_child(hint)
+
+
+func _setup_falling_leaves() -> void:
+	var particles := GPUParticles3D.new()
+	particles.amount = 200
+	particles.lifetime = 8.0
+	particles.preprocess = 4.0  # pre-fill so leaves are already falling at start
+	particles.visibility_aabb = AABB(Vector3(-30, -15, -30), Vector3(60, 30, 60))
+
+	# Particle material
+	var mat := ParticleProcessMaterial.new()
+	mat.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
+	mat.emission_box_extents = Vector3(30, 0.5, 30)
+	mat.gravity = Vector3(0, -0.4, 0)
+	mat.initial_velocity_min = 0.1
+	mat.initial_velocity_max = 0.3
+	mat.direction = Vector3(0.3, -1, 0.2)
+	mat.spread = 30.0
+	mat.angular_velocity_min = -90.0
+	mat.angular_velocity_max = 90.0
+	mat.damping_min = 0.3
+	mat.damping_max = 0.6
+	mat.scale_min = 0.6
+	mat.scale_max = 1.4
+	particles.process_material = mat
+
+	# Draw pass — small leaf quad
+	var quad := QuadMesh.new()
+	quad.size = Vector2(0.08, 0.08)
+	var leaf_mat := StandardMaterial3D.new()
+	leaf_mat.albedo_color = Color(0.55, 0.35, 0.12, 0.8)
+	leaf_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	leaf_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	leaf_mat.billboard_mode = BaseMaterial3D.BILLBOARD_PARTICLES
+	leaf_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	quad.material = leaf_mat
+	particles.draw_pass_1 = quad
+
+	particles.name = "FallingLeaves"
+	add_child(particles)
+	_falling_leaves = particles
