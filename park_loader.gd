@@ -509,6 +509,7 @@ func _ready() -> void:
 	_build_labels(data.get("water", []))
 	_build_trees(data.get("trees", []))
 	_build_furniture(data.get("paths", []))
+	_build_trash_cans(data.get("paths", []))
 	_build_undergrowth(data.get("trees", []), data.get("paths", []))
 	_build_rocks(data.get("trees", []), data.get("water", []))
 	_build_barriers(data.get("barriers", []))
@@ -521,7 +522,12 @@ func _ready() -> void:
 	_build_ground_cover(data.get("trees", []), data.get("water", []), data.get("buildings", []))
 	_build_leaf_litter(data.get("trees", []))
 	_build_grass_blades(data.get("trees", []))
+	_build_boats(data.get("water", []))
+	_build_waterfowl(data.get("water", []))
+	_build_pedestrians(data.get("paths", []))
+	_build_squirrels(data.get("trees", []))
 	_build_boundary(data.get("boundary", []))
+	_build_perimeter_wall(data.get("boundary", []))
 	_build_boundary_facades()
 	print("ParkLoader: done")
 
@@ -1475,17 +1481,21 @@ func _build_bridge(path: Dictionary) -> void:
 	var _skip_parapets := total_len < 6.0
 
 	if not _skip_parapets:
-		match style:
-			BridgeStyle.CAST_IRON:
-				_build_iron_railings(pts, pt_y, cum_len, n_pts, hw2,
-					par_ramp_start, par_ramp_end, bridge_miter)
-			BridgeStyle.RUSTIC_WOOD:
-				_build_wood_railings(pts, pt_y, cum_len, n_pts, hw2,
-					par_ramp_start, par_ramp_end, bridge_miter)
-			_:
-				_build_solid_parapets(pts, pt_y, cum_len, n_pts, hw2,
-					par_ramp_start, par_ramp_end, rw_alb, rw_nrm, rw_rgh,
-					parapet_tint, bridge_miter)
+		if bridge_name == "Bow Bridge":
+			_build_bow_bridge_railings(pts, pt_y, cum_len, n_pts, hw2,
+				par_ramp_start, par_ramp_end, bridge_miter)
+		else:
+			match style:
+				BridgeStyle.CAST_IRON:
+					_build_iron_railings(pts, pt_y, cum_len, n_pts, hw2,
+						par_ramp_start, par_ramp_end, bridge_miter)
+				BridgeStyle.RUSTIC_WOOD:
+					_build_wood_railings(pts, pt_y, cum_len, n_pts, hw2,
+						par_ramp_start, par_ramp_end, bridge_miter)
+				_:
+					_build_solid_parapets(pts, pt_y, cum_len, n_pts, hw2,
+						par_ramp_start, par_ramp_end, rw_alb, rw_nrm, rw_rgh,
+						parapet_tint, bridge_miter)
 
 	# ----------------------------------------------------------------
 	# Abutment wing walls — only on bridges with real underpasses (>= 15m)
@@ -2041,6 +2051,166 @@ func _build_iron_railings(pts: Array, pt_y: PackedFloat32Array,
 	mi.name = "Bridge_IronRailings"
 	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(mi)
+
+
+func _build_bow_bridge_railings(pts: Array, pt_y: PackedFloat32Array,
+		cum_len: PackedFloat32Array, n_pts: int, hw2: float,
+		ramp_start: float, ramp_end: float,
+		bmiter: Array[Vector2] = []) -> void:
+	## Bow Bridge special: interlocking circles railing + planting urns.
+	var rail_verts   := PackedVector3Array()
+	var rail_normals := PackedVector3Array()
+	var circle_r := 0.15     # each circle radius
+	var tube_r := 0.012      # tube thickness
+	var circle_spacing := 0.25  # horizontal spacing (30% overlap)
+	var circle_segs := 10
+	var cap_h := PARAPET_H + 0.06
+	var ohw := hw2
+
+	# Top + bottom horizontal rails (frame)
+	for i in range(n_pts - 1):
+		if cum_len[i + 1] < ramp_start or cum_len[i] > ramp_end:
+			continue
+		var p1 := Vector3(float(pts[i][0]), pt_y[i], float(pts[i][2]))
+		var p2 := Vector3(float(pts[i+1][0]), pt_y[i+1], float(pts[i+1][2]))
+		var seg2 := Vector2(p2.x - p1.x, p2.z - p1.z)
+		if seg2.length_squared() < 0.0001:
+			continue
+		var dv := seg2.normalized()
+		var nv := Vector2(-dv.y, dv.x)
+		var im1 := bmiter[i] if not bmiter.is_empty() else nv
+		var im2 := bmiter[i + 1] if not bmiter.is_empty() else nv
+		for rh in [0.03, PARAPET_H]:
+			for side in [-1.0, 1.0]:
+				var s: float = float(side)
+				var ox1 := im1.x * ohw * s; var oz1 := im1.y * ohw * s
+				var ox2 := im2.x * ohw * s; var oz2 := im2.y * ohw * s
+				var ra := Vector3(p1.x + ox1, p1.y + rh, p1.z + oz1)
+				var rb := Vector3(p2.x + ox2, p2.y + rh, p2.z + oz2)
+				var rc := Vector3(p2.x + ox2, p2.y + rh + 0.04, p2.z + oz2)
+				var rd := Vector3(p1.x + ox1, p1.y + rh + 0.04, p1.z + oz1)
+				rail_verts.append_array(PackedVector3Array([ra, rb, rc, ra, rc, rd]))
+				var wall_n := Vector3(nv.x * s, 0.0, nv.y * s)
+				for _j in 6: rail_normals.append(wall_n)
+
+	# Interlocking circles along each side
+	var d := ramp_start
+	while d <= ramp_end:
+		# Interpolate position along path
+		var idx := 0
+		for k in range(n_pts - 1):
+			if cum_len[k + 1] >= d:
+				idx = k
+				break
+		var seg_d := cum_len[idx + 1] - cum_len[idx]
+		var t_val := (d - cum_len[idx]) / seg_d if seg_d > 0.001 else 0.0
+		var px := lerpf(float(pts[idx][0]), float(pts[idx + 1][0]), t_val)
+		var pz := lerpf(float(pts[idx][2]), float(pts[idx + 1][2]), t_val)
+		var py := lerpf(pt_y[idx], pt_y[idx + 1], t_val)
+		var seg2 := Vector2(float(pts[idx+1][0]) - float(pts[idx][0]),
+							float(pts[idx+1][2]) - float(pts[idx][2]))
+		if seg2.length_squared() < 0.001:
+			d += circle_spacing
+			continue
+		var nv := Vector2(-seg2.normalized().y, seg2.normalized().x)
+
+		for side in [-1.0, 1.0]:
+			var s := float(side)
+			var cx := px + nv.x * ohw * s
+			var cz := pz + nv.y * ohw * s
+			var cy := py + PARAPET_H * 0.5 + 0.03  # center of circle
+			# Draw circle as tube segments
+			for ci in circle_segs:
+				var a0 := TAU * float(ci) / float(circle_segs)
+				var a1 := TAU * float(ci + 1) / float(circle_segs)
+				# Circle in the plane perpendicular to path (Y-up plane facing outward)
+				var dv2 := seg2.normalized()
+				var y0 := cy + sin(a0) * circle_r
+				var y1 := cy + sin(a1) * circle_r
+				var along0 := cos(a0) * circle_r
+				var along1 := cos(a1) * circle_r
+				var x0 := cx + dv2.x * along0
+				var z0 := cz + dv2.y * along0
+				var x1 := cx + dv2.x * along1
+				var z1 := cz + dv2.y * along1
+				# Tube quad (outward face) — 2 triangles (6 verts, non-indexed)
+				var v0 := Vector3(x0, y0 - tube_r, z0)
+				var v1 := Vector3(x1, y1 - tube_r, z1)
+				var v2 := Vector3(x1, y1 + tube_r, z1)
+				var v3 := Vector3(x0, y0 + tube_r, z0)
+				rail_verts.append_array(PackedVector3Array([v0, v1, v2, v0, v2, v3]))
+				var wall_n := Vector3(nv.x * s, 0.0, nv.y * s)
+				for _j in 6: rail_normals.append(wall_n)
+		d += circle_spacing
+
+	# Planting urns — 8 evenly spaced along bridge
+	var urn_verts := PackedVector3Array()
+	var urn_normals := PackedVector3Array()
+	var urn_indices := PackedInt32Array()
+	var urn_count := 8
+	var urn_spacing := (ramp_end - ramp_start) / float(urn_count + 1)
+	for ui in urn_count:
+		var ud := ramp_start + urn_spacing * float(ui + 1)
+		var uidx := 0
+		for k in range(n_pts - 1):
+			if cum_len[k + 1] >= ud:
+				uidx = k
+				break
+		var seg_d := cum_len[uidx + 1] - cum_len[uidx]
+		var t_val := (ud - cum_len[uidx]) / seg_d if seg_d > 0.001 else 0.0
+		var ux := lerpf(float(pts[uidx][0]), float(pts[uidx + 1][0]), t_val)
+		var uz := lerpf(float(pts[uidx][2]), float(pts[uidx + 1][2]), t_val)
+		var uy := lerpf(pt_y[uidx], pt_y[uidx + 1], t_val)
+		var seg2 := Vector2(float(pts[uidx+1][0]) - float(pts[uidx][0]),
+							float(pts[uidx+1][2]) - float(pts[uidx][2]))
+		if seg2.length_squared() < 0.001:
+			continue
+		var nv := Vector2(-seg2.normalized().y, seg2.normalized().x)
+		# Alternate sides
+		var s := 1.0 if ui % 2 == 0 else -1.0
+		var ucx := ux + nv.x * ohw * s
+		var ucz := uz + nv.y * ohw * s
+		var uby := uy + cap_h
+		# Urn: pedestal + flared cylinder
+		_add_box_verts(urn_verts, urn_normals, urn_indices, ucx, uby + 0.075, ucz, 0.08, 0.075, 0.08)
+		_add_cylinder_verts(urn_verts, urn_normals, urn_indices, ucx, uby + 0.15, ucz, 0.14, 0.22, 8, 0.18)
+		_add_cylinder_verts(urn_verts, urn_normals, urn_indices, ucx, uby + 0.37, ucz, 0.18, 0.04, 8, 0.20)
+
+	if rail_verts.is_empty():
+		return
+	# Iron material
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(0.12, 0.12, 0.14)
+	mat.metallic = 0.6
+	mat.roughness = 0.35
+	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	# Build railing mesh
+	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = rail_verts
+	arrays[Mesh.ARRAY_NORMAL] = rail_normals
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	mesh.surface_set_material(0, mat)
+	var mi := MeshInstance3D.new()
+	mi.mesh = mesh
+	mi.name = "BowBridge_Railings"
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(mi)
+	# Urn mesh (stone/bronze)
+	if not urn_verts.is_empty():
+		var urn_mat := StandardMaterial3D.new()
+		urn_mat.albedo_color = Color(0.25, 0.22, 0.18)
+		urn_mat.roughness = 0.65
+		urn_mat.metallic = 0.2
+		var ua: Array = []; ua.resize(Mesh.ARRAY_MAX)
+		ua[Mesh.ARRAY_VERTEX] = urn_verts; ua[Mesh.ARRAY_NORMAL] = urn_normals; ua[Mesh.ARRAY_INDEX] = urn_indices
+		var urn_mesh := ArrayMesh.new()
+		urn_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, ua)
+		urn_mesh.surface_set_material(0, urn_mat)
+		var umi := MeshInstance3D.new()
+		umi.mesh = urn_mesh
+		umi.name = "BowBridge_Urns"
+		add_child(umi)
 
 
 func _build_wood_railings(pts: Array, pt_y: PackedFloat32Array,
@@ -6016,6 +6186,149 @@ func _build_boundary(boundary: Array) -> void:
 		body.add_child(col)
 
 
+func _build_perimeter_wall(boundary: Array) -> void:
+	## Central Park's brownstone perimeter wall — 1.17m tall, 0.45m thick,
+	## slanted top (15-degree batter angle on inner cap). rock_wall texture.
+	if boundary.size() < 3:
+		return
+	var wall_h := 1.17
+	var wall_t := 0.45
+	var batter := tan(deg_to_rad(15.0))  # inner face cap slope
+	var rw_alb := _load_tex("res://textures/rock_wall_diff.jpg")
+	var rw_nrm := _load_tex("res://textures/rock_wall_nrm.jpg")
+	var rw_rgh := _load_tex("res://textures/rock_wall_rgh.jpg")
+
+	# Centroid for inward normal
+	var cx := 0.0; var cz := 0.0
+	for pt in boundary:
+		cx += float(pt[0]); cz += float(pt[1])
+	cx /= float(boundary.size()); cz /= float(boundary.size())
+
+	# Find gate positions: where paths cross the boundary
+	var gate_positions: Array = []  # Array of Vector2 positions along boundary
+	# We'll skip gate detection for now and just build continuous wall
+
+	var verts := PackedVector3Array()
+	var normals := PackedVector3Array()
+	var uvs := PackedVector2Array()
+
+	var n := boundary.size()
+	var cum_d := 0.0
+	for i in range(n):
+		var p1 := Vector2(float(boundary[i][0]), float(boundary[i][1]))
+		var p2 := Vector2(float(boundary[(i + 1) % n][0]), float(boundary[(i + 1) % n][1]))
+		var seg_len := p1.distance_to(p2)
+		if seg_len < 0.5:
+			cum_d += seg_len
+			continue
+
+		# Subdivide long segments for smooth curves
+		var n_sub := int(ceil(seg_len / 5.0))
+		for si in n_sub:
+			var t0 := float(si) / float(n_sub)
+			var t1 := float(si + 1) / float(n_sub)
+			var a := p1.lerp(p2, t0)
+			var b := p1.lerp(p2, t1)
+			var sub_len := a.distance_to(b)
+			var dir := (b - a) / sub_len if sub_len > 0.01 else Vector2.RIGHT
+			# Inward normal (toward centroid)
+			var nrm2 := Vector2(-dir.y, dir.x)
+			if nrm2.dot(Vector2(cx - a.x, cz - a.y)) < 0.0:
+				nrm2 = -nrm2
+			var outward := -nrm2
+
+			var ya := _terrain_y(a.x, a.y)
+			var yb := _terrain_y(b.x, b.y)
+			var ht := wall_t * 0.5
+
+			# Outer wall origin (outward from boundary center)
+			var oa := Vector2(a.x + outward.x * ht, a.y + outward.y * ht)
+			var ob := Vector2(b.x + outward.x * ht, b.y + outward.y * ht)
+			var ia2 := Vector2(a.x - outward.x * ht, a.y - outward.y * ht)
+			var ib2 := Vector2(b.x - outward.x * ht, b.y - outward.y * ht)
+
+			var u0 := cum_d / 1.5  # UV tiling 1.5m horizontal
+			var u1 := (cum_d + sub_len) / 1.5
+			var v_top := wall_h / 1.5
+
+			# Outer face (vertical)
+			var on3 := Vector3(outward.x, 0.0, outward.y)
+			var base := verts.size()
+			verts.append(Vector3(oa.x, ya, oa.y))
+			verts.append(Vector3(ob.x, yb, ob.y))
+			verts.append(Vector3(ob.x, yb + wall_h, ob.y))
+			verts.append(Vector3(oa.x, ya + wall_h, oa.y))
+			for _j in 4: normals.append(on3)
+			uvs.append(Vector2(u0, 0.0)); uvs.append(Vector2(u1, 0.0))
+			uvs.append(Vector2(u1, v_top)); uvs.append(Vector2(u0, v_top))
+
+			# Inner face (vertical)
+			var in3 := Vector3(-outward.x, 0.0, -outward.y)
+			base = verts.size()
+			verts.append(Vector3(ib2.x, yb, ib2.y))
+			verts.append(Vector3(ia2.x, ya, ia2.y))
+			verts.append(Vector3(ia2.x, ya + wall_h, ia2.y))
+			verts.append(Vector3(ib2.x, yb + wall_h, ib2.y))
+			for _j in 4: normals.append(in3)
+			uvs.append(Vector2(u1, 0.0)); uvs.append(Vector2(u0, 0.0))
+			uvs.append(Vector2(u0, v_top)); uvs.append(Vector2(u1, v_top))
+
+			# Slanted cap (outer edge at full height, inner edge slightly lower = batter)
+			var cap_inner_h := wall_h - wall_t * batter  # inner edge lower
+			var cap_n := Vector3(-outward.x * batter, 1.0, -outward.y * batter).normalized()
+			base = verts.size()
+			verts.append(Vector3(oa.x, ya + wall_h, oa.y))
+			verts.append(Vector3(ob.x, yb + wall_h, ob.y))
+			verts.append(Vector3(ib2.x, yb + cap_inner_h, ib2.y))
+			verts.append(Vector3(ia2.x, ya + cap_inner_h, ia2.y))
+			for _j in 4: normals.append(cap_n)
+			uvs.append(Vector2(u0, 0.0)); uvs.append(Vector2(u1, 0.0))
+			uvs.append(Vector2(u1, wall_t / 1.5)); uvs.append(Vector2(u0, wall_t / 1.5))
+
+			cum_d += sub_len
+
+	if verts.is_empty():
+		return
+
+	# Build indices (simple quads)
+	var indices := PackedInt32Array()
+	var n_quads := verts.size() / 4
+	for qi in n_quads:
+		var b2 := qi * 4
+		indices.append_array(PackedInt32Array([b2, b2+1, b2+2, b2, b2+2, b2+3]))
+
+	var mat := _make_stone_material(rw_alb, rw_nrm, rw_rgh, Color(0.65, 0.55, 0.42))
+	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts
+	arrays[Mesh.ARRAY_NORMAL] = normals
+	arrays[Mesh.ARRAY_TEX_UV] = uvs
+	arrays[Mesh.ARRAY_INDEX] = indices
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	mesh.surface_set_material(0, mat)
+	var mi := MeshInstance3D.new()
+	mi.mesh = mesh
+	mi.name = "PerimeterWall"
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
+	add_child(mi)
+
+	# Collision
+	var body := StaticBody3D.new()
+	body.name = "PerimeterWallCollision"
+	add_child(body)
+	var shape := ConcavePolygonShape3D.new()
+	var tri_verts := PackedVector3Array()
+	for qi in n_quads:
+		var b2 := qi * 4
+		tri_verts.append(verts[b2]); tri_verts.append(verts[b2+1]); tri_verts.append(verts[b2+2])
+		tri_verts.append(verts[b2]); tri_verts.append(verts[b2+2]); tri_verts.append(verts[b2+3])
+	shape.set_faces(tri_verts)
+	var col := CollisionShape3D.new()
+	col.shape = shape
+	body.add_child(col)
+	print("ParkLoader: perimeter wall = %d segments" % n_quads)
+
+
 func _build_boundary_facades() -> void:
 	## NYC building facades along the park boundary, matching real skyline.
 	## Coordinate mapping: Z = 1967 - (street - 59) * 74.7
@@ -6326,79 +6639,113 @@ func _build_boundary_facades() -> void:
 # ---------------------------------------------------------------------------
 # Lampposts & Benches – procedural furniture along paths
 # ---------------------------------------------------------------------------
+func _add_cylinder_verts(v: PackedVector3Array, n: PackedVector3Array, idx: PackedInt32Array,
+		cx: float, cy: float, cz: float, r: float, h: float, segs: int,
+		r_top: float = -1.0) -> void:
+	## Append a vertical cylinder (or cone if r_top >= 0) to existing arrays.
+	if r_top < 0.0:
+		r_top = r
+	for i in segs:
+		var a0 := TAU * float(i) / float(segs)
+		var a1 := TAU * float(i + 1) / float(segs)
+		var c0 := cos(a0); var s0 := sin(a0)
+		var c1 := cos(a1); var s1 := sin(a1)
+		var base := v.size()
+		v.append(Vector3(cx + c0 * r, cy, cz + s0 * r))
+		v.append(Vector3(cx + c1 * r, cy, cz + s1 * r))
+		v.append(Vector3(cx + c1 * r_top, cy + h, cz + s1 * r_top))
+		v.append(Vector3(cx + c0 * r_top, cy + h, cz + s0 * r_top))
+		var n0 := Vector3(c0, 0.0, s0); var n1 := Vector3(c1, 0.0, s1)
+		n.append(n0); n.append(n1); n.append(n1); n.append(n0)
+		idx.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
+
+func _add_box_verts(v: PackedVector3Array, n: PackedVector3Array, idx: PackedInt32Array,
+		cx: float, cy: float, cz: float, hx: float, hy: float, hz: float) -> void:
+	## Append a 6-face box to existing arrays.
+	var faces := [
+		[Vector3(cx-hx,cy-hy,cz+hz), Vector3(cx+hx,cy-hy,cz+hz), Vector3(cx+hx,cy+hy,cz+hz), Vector3(cx-hx,cy+hy,cz+hz), Vector3(0,0,1)],
+		[Vector3(cx+hx,cy-hy,cz-hz), Vector3(cx-hx,cy-hy,cz-hz), Vector3(cx-hx,cy+hy,cz-hz), Vector3(cx+hx,cy+hy,cz-hz), Vector3(0,0,-1)],
+		[Vector3(cx+hx,cy-hy,cz+hz), Vector3(cx+hx,cy-hy,cz-hz), Vector3(cx+hx,cy+hy,cz-hz), Vector3(cx+hx,cy+hy,cz+hz), Vector3(1,0,0)],
+		[Vector3(cx-hx,cy-hy,cz-hz), Vector3(cx-hx,cy-hy,cz+hz), Vector3(cx-hx,cy+hy,cz+hz), Vector3(cx-hx,cy+hy,cz-hz), Vector3(-1,0,0)],
+		[Vector3(cx-hx,cy+hy,cz+hz), Vector3(cx+hx,cy+hy,cz+hz), Vector3(cx+hx,cy+hy,cz-hz), Vector3(cx-hx,cy+hy,cz-hz), Vector3(0,1,0)],
+		[Vector3(cx-hx,cy-hy,cz-hz), Vector3(cx+hx,cy-hy,cz-hz), Vector3(cx+hx,cy-hy,cz+hz), Vector3(cx-hx,cy-hy,cz+hz), Vector3(0,-1,0)],
+	]
+	for face in faces:
+		var base := v.size()
+		v.append(face[0]); v.append(face[1]); v.append(face[2]); v.append(face[3])
+		for _j in 4: n.append(face[4])
+		idx.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
+
 func _make_lamppost_mesh_a() -> ArrayMesh:
-	## Variant A: Standard Bishop's crook — post + arm + lantern (~40 tris)
-	## Surface 0 = post+arm (no emission), Surface 1 = lantern (emission)
+	## Variant A: Henry Bacon Type B — fluted shaft, 3-tier base, Kent Bloomer luminaire, acorn finial
+	## Surface 0 = post+base (no emission), Surface 1 = luminaire (emission)
 	var p_verts   := PackedVector3Array()
 	var p_normals := PackedVector3Array()
 	var p_indices := PackedInt32Array()
-
-	var segments := 6
-	# --- Post: cylinder r=0.06, h=3.5 ---
-	var post_r := 0.06
+	var segs := 12  # 12-sided for fluted shaft
 	var post_h := 3.5
-	for i in segments:
-		var a0 := TAU * float(i) / float(segments)
-		var a1 := TAU * float(i + 1) / float(segments)
+	# --- 3-tier base ---
+	# Tier 1: square foot 0.18m half-width, 0.12m tall
+	_add_box_verts(p_verts, p_normals, p_indices, 0.0, 0.06, 0.0, 0.18, 0.06, 0.18)
+	# Tier 2: octagonal plinth (approximate as 12-sided cylinder r=0.14, h=0.15)
+	_add_cylinder_verts(p_verts, p_normals, p_indices, 0.0, 0.12, 0.0, 0.14, 0.15, segs, 0.10)
+	# Tier 3: fluted column shaft — 12-sided with alternating insets for flutes
+	var shaft_base := 0.27
+	var shaft_r := 0.065
+	var flute_depth := 0.012  # concave inset on alternating faces
+	for i in segs:
+		var a0 := TAU * float(i) / float(segs)
+		var a1 := TAU * float(i + 1) / float(segs)
 		var c0 := cos(a0); var s0 := sin(a0)
 		var c1 := cos(a1); var s1 := sin(a1)
+		# Alternate faces get slightly smaller radius (flute)
+		var r0 := shaft_r - (flute_depth if i % 2 == 0 else 0.0)
+		var r1 := shaft_r - (flute_depth if (i + 1) % segs % 2 == 0 else 0.0)
 		var base := p_verts.size()
-		p_verts.append(Vector3(c0 * post_r, 0.0, s0 * post_r))
-		p_verts.append(Vector3(c1 * post_r, 0.0, s1 * post_r))
-		p_verts.append(Vector3(c1 * post_r, post_h, s1 * post_r))
-		p_verts.append(Vector3(c0 * post_r, post_h, s0 * post_r))
-		var n0 := Vector3(c0, 0.0, s0)
-		var n1 := Vector3(c1, 0.0, s1)
+		p_verts.append(Vector3(c0 * r0, shaft_base, s0 * r0))
+		p_verts.append(Vector3(c1 * r1, shaft_base, s1 * r1))
+		p_verts.append(Vector3(c1 * r1, post_h, s1 * r1))
+		p_verts.append(Vector3(c0 * r0, post_h, s0 * r0))
+		var n0 := Vector3(c0, 0.0, s0); var n1 := Vector3(c1, 0.0, s1)
 		p_normals.append(n0); p_normals.append(n1); p_normals.append(n1); p_normals.append(n0)
 		p_indices.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
-
-	# --- Arm: horizontal cylinder r=0.03, length=0.25 at y=3.4 ---
-	var arm_y := 3.4
-	var arm_r := 0.03
-	var arm_len := 0.25
-	for i in segments:
-		var a0 := TAU * float(i) / float(segments)
-		var a1 := TAU * float(i + 1) / float(segments)
+	# --- S-curve arm (Bishop's crook) ---
+	var arm_segs := 6
+	var arm_r := 0.025
+	var arm_len := 0.30
+	var arm_y := post_h - 0.1
+	for i in arm_segs:
+		var a0 := TAU * float(i) / float(arm_segs)
+		var a1 := TAU * float(i + 1) / float(arm_segs)
 		var base := p_verts.size()
 		p_verts.append(Vector3(0.0, arm_y + cos(a0) * arm_r, sin(a0) * arm_r))
 		p_verts.append(Vector3(arm_len, arm_y + cos(a0) * arm_r, sin(a0) * arm_r))
 		p_verts.append(Vector3(arm_len, arm_y + cos(a1) * arm_r, sin(a1) * arm_r))
 		p_verts.append(Vector3(0.0, arm_y + cos(a1) * arm_r, sin(a1) * arm_r))
 		var n := Vector3(0.0, cos(a0), sin(a0)).normalized()
-		for _j in 4:
-			p_normals.append(n)
+		for _j in 4: p_normals.append(n)
 		p_indices.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
+	# --- Number plate (tiny rectangle at eye height ~1.6m) ---
+	_add_box_verts(p_verts, p_normals, p_indices, 0.07, 1.6, 0.0, 0.04, 0.03, 0.005)
 
-	# --- Lantern head: box 0.18 wide x 0.28 tall at end of arm ---
+	# --- Kent Bloomer luminaire (inverted bell / urn shape with ribs) ---
 	var l_verts   := PackedVector3Array()
 	var l_normals := PackedVector3Array()
 	var l_indices := PackedInt32Array()
 	var lx := arm_len
-	var ly := arm_y - 0.14
-	var lw := 0.09  # half-width
-	var lh := 0.28
-	var ld := 0.09  # half-depth
-	var box_faces := [
-		[Vector3(lx-lw, ly, ld), Vector3(lx+lw, ly, ld), Vector3(lx+lw, ly+lh, ld), Vector3(lx-lw, ly+lh, ld), Vector3(0,0,1)],
-		[Vector3(lx+lw, ly, -ld), Vector3(lx-lw, ly, -ld), Vector3(lx-lw, ly+lh, -ld), Vector3(lx+lw, ly+lh, -ld), Vector3(0,0,-1)],
-		[Vector3(lx+lw, ly, ld), Vector3(lx+lw, ly, -ld), Vector3(lx+lw, ly+lh, -ld), Vector3(lx+lw, ly+lh, ld), Vector3(1,0,0)],
-		[Vector3(lx-lw, ly, -ld), Vector3(lx-lw, ly, ld), Vector3(lx-lw, ly+lh, ld), Vector3(lx-lw, ly+lh, -ld), Vector3(-1,0,0)],
-		[Vector3(lx-lw, ly+lh, ld), Vector3(lx+lw, ly+lh, ld), Vector3(lx+lw, ly+lh, -ld), Vector3(lx-lw, ly+lh, -ld), Vector3(0,1,0)],
-		[Vector3(lx-lw, ly, -ld), Vector3(lx+lw, ly, -ld), Vector3(lx+lw, ly, ld), Vector3(lx-lw, ly, ld), Vector3(0,-1,0)],
-	]
-	for face in box_faces:
-		var base := l_verts.size()
-		l_verts.append(face[0]); l_verts.append(face[1]); l_verts.append(face[2]); l_verts.append(face[3])
-		for _j in 4:
-			l_normals.append(face[4])
-		l_indices.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
+	var l_base := arm_y - 0.18
+	var l_segs := 8  # 8 ribs
+	# Two-tier urn: wider bottom tapering to narrower top
+	_add_cylinder_verts(l_verts, l_normals, l_indices, lx, l_base, 0.0, 0.10, 0.18, l_segs, 0.08)
+	_add_cylinder_verts(l_verts, l_normals, l_indices, lx, l_base + 0.18, 0.0, 0.08, 0.12, l_segs, 0.06)
+	# Acorn finial: small sphere(ish) + cone cap on top
+	_add_cylinder_verts(l_verts, l_normals, l_indices, lx, l_base + 0.30, 0.0, 0.035, 0.05, 6, 0.025)
+	_add_cylinder_verts(l_verts, l_normals, l_indices, lx, l_base + 0.35, 0.0, 0.025, 0.04, 6, 0.005)
 
 	var mesh := ArrayMesh.new()
-	# Surface 0: post + arm
 	var pa: Array = []; pa.resize(Mesh.ARRAY_MAX)
 	pa[Mesh.ARRAY_VERTEX] = p_verts; pa[Mesh.ARRAY_NORMAL] = p_normals; pa[Mesh.ARRAY_INDEX] = p_indices
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, pa)
-	# Surface 1: lantern
 	var la: Array = []; la.resize(Mesh.ARRAY_MAX)
 	la[Mesh.ARRAY_VERTEX] = l_verts; la[Mesh.ARRAY_NORMAL] = l_normals; la[Mesh.ARRAY_INDEX] = l_indices
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, la)
@@ -6406,36 +6753,43 @@ func _make_lamppost_mesh_a() -> ArrayMesh:
 
 
 func _make_lamppost_mesh_b() -> ArrayMesh:
-	## Variant B: Double lantern — taller post, two arms, two lanterns
-	## Surface 0 = post+arms, Surface 1 = lanterns
+	## Variant B: Double luminaire — taller fluted post, two arms, two Kent Bloomer urns
+	## Surface 0 = post+arms, Surface 1 = luminaires
 	var p_verts   := PackedVector3Array()
 	var p_normals := PackedVector3Array()
 	var p_indices := PackedInt32Array()
 	var l_verts   := PackedVector3Array()
 	var l_normals := PackedVector3Array()
 	var l_indices := PackedInt32Array()
-	var segments := 6
-	# Post: r=0.065, h=4.0
-	var post_r := 0.065; var post_h := 4.0
-	for i in segments:
-		var a0 := TAU * float(i) / float(segments)
-		var a1 := TAU * float(i + 1) / float(segments)
+	var segs := 12
+	var post_h := 4.0
+	# 3-tier base
+	_add_box_verts(p_verts, p_normals, p_indices, 0.0, 0.06, 0.0, 0.20, 0.06, 0.20)
+	_add_cylinder_verts(p_verts, p_normals, p_indices, 0.0, 0.12, 0.0, 0.15, 0.15, segs, 0.11)
+	# Fluted shaft
+	var shaft_base := 0.27
+	var shaft_r := 0.07; var flute_depth := 0.012
+	for i in segs:
+		var a0 := TAU * float(i) / float(segs)
+		var a1 := TAU * float(i + 1) / float(segs)
 		var c0 := cos(a0); var s0 := sin(a0)
 		var c1 := cos(a1); var s1 := sin(a1)
+		var r0 := shaft_r - (flute_depth if i % 2 == 0 else 0.0)
+		var r1 := shaft_r - (flute_depth if (i + 1) % segs % 2 == 0 else 0.0)
 		var base := p_verts.size()
-		p_verts.append(Vector3(c0 * post_r, 0.0, s0 * post_r))
-		p_verts.append(Vector3(c1 * post_r, 0.0, s1 * post_r))
-		p_verts.append(Vector3(c1 * post_r, post_h, s1 * post_r))
-		p_verts.append(Vector3(c0 * post_r, post_h, s0 * post_r))
+		p_verts.append(Vector3(c0 * r0, shaft_base, s0 * r0))
+		p_verts.append(Vector3(c1 * r1, shaft_base, s1 * r1))
+		p_verts.append(Vector3(c1 * r1, post_h, s1 * r1))
+		p_verts.append(Vector3(c0 * r0, post_h, s0 * r0))
 		var n0 := Vector3(c0, 0.0, s0); var n1 := Vector3(c1, 0.0, s1)
 		p_normals.append(n0); p_normals.append(n1); p_normals.append(n1); p_normals.append(n0)
 		p_indices.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
 	# Two arms at y=3.8, opposite X directions
-	var arm_y := 3.8; var arm_r := 0.03; var arm_len := 0.25
+	var arm_y := 3.85; var arm_r := 0.025; var arm_len := 0.30
 	for arm_dir in [-1.0, 1.0]:
-		for i in segments:
-			var a0 := TAU * float(i) / float(segments)
-			var a1 := TAU * float(i + 1) / float(segments)
+		for i in 6:
+			var a0 := TAU * float(i) / 6.0
+			var a1 := TAU * float(i + 1) / 6.0
 			var base := p_verts.size()
 			p_verts.append(Vector3(0.0, arm_y + cos(a0) * arm_r, sin(a0) * arm_r))
 			p_verts.append(Vector3(arm_len * arm_dir, arm_y + cos(a0) * arm_r, sin(a0) * arm_r))
@@ -6444,22 +6798,14 @@ func _make_lamppost_mesh_b() -> ArrayMesh:
 			var n := Vector3(0.0, cos(a0), sin(a0)).normalized()
 			for _j in 4: p_normals.append(n)
 			p_indices.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
-		# Lantern at arm end
+		# Kent Bloomer luminaire at arm end
 		var lx: float = arm_len * arm_dir
-		var ly := arm_y - 0.14; var lw := 0.08; var lh := 0.26; var ld := 0.08
-		var box_faces := [
-			[Vector3(lx-lw,ly,ld), Vector3(lx+lw,ly,ld), Vector3(lx+lw,ly+lh,ld), Vector3(lx-lw,ly+lh,ld), Vector3(0,0,1)],
-			[Vector3(lx+lw,ly,-ld), Vector3(lx-lw,ly,-ld), Vector3(lx-lw,ly+lh,-ld), Vector3(lx+lw,ly+lh,-ld), Vector3(0,0,-1)],
-			[Vector3(lx+lw,ly,ld), Vector3(lx+lw,ly,-ld), Vector3(lx+lw,ly+lh,-ld), Vector3(lx+lw,ly+lh,ld), Vector3(1,0,0)],
-			[Vector3(lx-lw,ly,-ld), Vector3(lx-lw,ly,ld), Vector3(lx-lw,ly+lh,ld), Vector3(lx-lw,ly+lh,-ld), Vector3(-1,0,0)],
-			[Vector3(lx-lw,ly+lh,ld), Vector3(lx+lw,ly+lh,ld), Vector3(lx+lw,ly+lh,-ld), Vector3(lx-lw,ly+lh,-ld), Vector3(0,1,0)],
-			[Vector3(lx-lw,ly,-ld), Vector3(lx+lw,ly,-ld), Vector3(lx+lw,ly,ld), Vector3(lx-lw,ly,ld), Vector3(0,-1,0)],
-		]
-		for face in box_faces:
-			var base := l_verts.size()
-			l_verts.append(face[0]); l_verts.append(face[1]); l_verts.append(face[2]); l_verts.append(face[3])
-			for _j in 4: l_normals.append(face[4])
-			l_indices.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
+		var l_base := arm_y - 0.18
+		_add_cylinder_verts(l_verts, l_normals, l_indices, lx, l_base, 0.0, 0.09, 0.16, 8, 0.07)
+		_add_cylinder_verts(l_verts, l_normals, l_indices, lx, l_base + 0.16, 0.0, 0.07, 0.10, 8, 0.05)
+		# Acorn finial
+		_add_cylinder_verts(l_verts, l_normals, l_indices, lx, l_base + 0.26, 0.0, 0.03, 0.04, 6, 0.02)
+		_add_cylinder_verts(l_verts, l_normals, l_indices, lx, l_base + 0.30, 0.0, 0.02, 0.035, 6, 0.005)
 	var mesh := ArrayMesh.new()
 	var pa: Array = []; pa.resize(Mesh.ARRAY_MAX)
 	pa[Mesh.ARRAY_VERTEX] = p_verts; pa[Mesh.ARRAY_NORMAL] = p_normals; pa[Mesh.ARRAY_INDEX] = p_indices
@@ -6471,45 +6817,45 @@ func _make_lamppost_mesh_b() -> ArrayMesh:
 
 
 func _make_lamppost_mesh_c() -> ArrayMesh:
-	## Variant C: Globe top — shorter post, no arm, wider globe lantern on top
-	## Surface 0 = post, Surface 1 = globe lantern
+	## Variant C: Globe top — shorter fluted post, globe luminaire on top
+	## Surface 0 = post, Surface 1 = globe luminaire
 	var p_verts   := PackedVector3Array()
 	var p_normals := PackedVector3Array()
 	var p_indices := PackedInt32Array()
-	var segments := 6
-	# Post: r=0.055, h=3.0
-	var post_r := 0.055; var post_h := 3.0
-	for i in segments:
-		var a0 := TAU * float(i) / float(segments)
-		var a1 := TAU * float(i + 1) / float(segments)
+	var segs := 12
+	var post_h := 3.2
+	# 3-tier base (slightly smaller)
+	_add_box_verts(p_verts, p_normals, p_indices, 0.0, 0.05, 0.0, 0.16, 0.05, 0.16)
+	_add_cylinder_verts(p_verts, p_normals, p_indices, 0.0, 0.10, 0.0, 0.12, 0.12, segs, 0.09)
+	# Fluted shaft
+	var shaft_base := 0.22
+	var shaft_r := 0.055; var flute_depth := 0.010
+	for i in segs:
+		var a0 := TAU * float(i) / float(segs)
+		var a1 := TAU * float(i + 1) / float(segs)
 		var c0 := cos(a0); var s0 := sin(a0)
 		var c1 := cos(a1); var s1 := sin(a1)
+		var r0 := shaft_r - (flute_depth if i % 2 == 0 else 0.0)
+		var r1 := shaft_r - (flute_depth if (i + 1) % segs % 2 == 0 else 0.0)
 		var base := p_verts.size()
-		p_verts.append(Vector3(c0 * post_r, 0.0, s0 * post_r))
-		p_verts.append(Vector3(c1 * post_r, 0.0, s1 * post_r))
-		p_verts.append(Vector3(c1 * post_r, post_h, s1 * post_r))
-		p_verts.append(Vector3(c0 * post_r, post_h, s0 * post_r))
+		p_verts.append(Vector3(c0 * r0, shaft_base, s0 * r0))
+		p_verts.append(Vector3(c1 * r1, shaft_base, s1 * r1))
+		p_verts.append(Vector3(c1 * r1, post_h, s1 * r1))
+		p_verts.append(Vector3(c0 * r0, post_h, s0 * r0))
 		var n0 := Vector3(c0, 0.0, s0); var n1 := Vector3(c1, 0.0, s1)
 		p_normals.append(n0); p_normals.append(n1); p_normals.append(n1); p_normals.append(n0)
 		p_indices.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
-	# Globe lantern directly on top: wider box (0.12 × 0.22 × 0.12)
+	# Globe luminaire directly on top
 	var l_verts   := PackedVector3Array()
 	var l_normals := PackedVector3Array()
 	var l_indices := PackedInt32Array()
-	var lx := 0.0; var ly := post_h - 0.05; var lw := 0.12; var lh := 0.22; var ld := 0.12
-	var box_faces := [
-		[Vector3(lx-lw,ly,ld), Vector3(lx+lw,ly,ld), Vector3(lx+lw,ly+lh,ld), Vector3(lx-lw,ly+lh,ld), Vector3(0,0,1)],
-		[Vector3(lx+lw,ly,-ld), Vector3(lx-lw,ly,-ld), Vector3(lx-lw,ly+lh,-ld), Vector3(lx+lw,ly+lh,-ld), Vector3(0,0,-1)],
-		[Vector3(lx+lw,ly,ld), Vector3(lx+lw,ly,-ld), Vector3(lx+lw,ly+lh,-ld), Vector3(lx+lw,ly+lh,ld), Vector3(1,0,0)],
-		[Vector3(lx-lw,ly,-ld), Vector3(lx-lw,ly,ld), Vector3(lx-lw,ly+lh,ld), Vector3(lx-lw,ly+lh,-ld), Vector3(-1,0,0)],
-		[Vector3(lx-lw,ly+lh,ld), Vector3(lx+lw,ly+lh,ld), Vector3(lx+lw,ly+lh,-ld), Vector3(lx-lw,ly+lh,-ld), Vector3(0,1,0)],
-		[Vector3(lx-lw,ly,-ld), Vector3(lx+lw,ly,-ld), Vector3(lx+lw,ly,ld), Vector3(lx-lw,ly,ld), Vector3(0,-1,0)],
-	]
-	for face in box_faces:
-		var base := l_verts.size()
-		l_verts.append(face[0]); l_verts.append(face[1]); l_verts.append(face[2]); l_verts.append(face[3])
-		for _j in 4: l_normals.append(face[4])
-		l_indices.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
+	var l_base := post_h - 0.02
+	# Wider urn/globe shape
+	_add_cylinder_verts(l_verts, l_normals, l_indices, 0.0, l_base, 0.0, 0.10, 0.12, 8, 0.12)
+	_add_cylinder_verts(l_verts, l_normals, l_indices, 0.0, l_base + 0.12, 0.0, 0.12, 0.10, 8, 0.08)
+	_add_cylinder_verts(l_verts, l_normals, l_indices, 0.0, l_base + 0.22, 0.0, 0.08, 0.06, 8, 0.03)
+	# Acorn finial
+	_add_cylinder_verts(l_verts, l_normals, l_indices, 0.0, l_base + 0.28, 0.0, 0.025, 0.04, 6, 0.005)
 	var mesh := ArrayMesh.new()
 	var pa: Array = []; pa.resize(Mesh.ARRAY_MAX)
 	pa[Mesh.ARRAY_VERTEX] = p_verts; pa[Mesh.ARRAY_NORMAL] = p_normals; pa[Mesh.ARRAY_INDEX] = p_indices
@@ -6520,127 +6866,116 @@ func _make_lamppost_mesh_c() -> ArrayMesh:
 	return mesh
 
 
-func _make_bench_mesh_a() -> ArrayMesh:
-	## Variant A: Standard park bench — seat + backrest + 4 legs + 2 armrests (~60 tris)
-	var verts   := PackedVector3Array()
-	var normals := PackedVector3Array()
-	var indices := PackedInt32Array()
+func _make_worlds_fair_bench(half_w: float) -> ArrayMesh:
+	## 1938 World's Fair bench: curved wood slats, circular cast-iron armrests,
+	## Art Deco S-curve legs. 2-surface mesh: S0=iron (green), S1=wood (brown).
+	var iv := PackedVector3Array()  # iron verts
+	var in_ := PackedVector3Array()  # iron normals
+	var ii := PackedInt32Array()     # iron indices
+	var wv := PackedVector3Array()   # wood verts
+	var wn := PackedVector3Array()   # wood normals
+	var wi := PackedInt32Array()     # wood indices
+	var seat_y := 0.44
+	var seat_depth := 0.44  # Z extent
+	var back_tilt := 0.10  # backrest leans back this much (Z)
 
-	# Helper: add a box given center + half-extents
-	var _add_box := func(cx: float, cy: float, cz: float,
-						 hx: float, hy: float, hz: float) -> void:
-		var faces := [
-			[Vector3(cx-hx,cy-hy,cz+hz), Vector3(cx+hx,cy-hy,cz+hz), Vector3(cx+hx,cy+hy,cz+hz), Vector3(cx-hx,cy+hy,cz+hz), Vector3(0,0,1)],
-			[Vector3(cx+hx,cy-hy,cz-hz), Vector3(cx-hx,cy-hy,cz-hz), Vector3(cx-hx,cy+hy,cz-hz), Vector3(cx+hx,cy+hy,cz-hz), Vector3(0,0,-1)],
-			[Vector3(cx+hx,cy-hy,cz+hz), Vector3(cx+hx,cy-hy,cz-hz), Vector3(cx+hx,cy+hy,cz-hz), Vector3(cx+hx,cy+hy,cz+hz), Vector3(1,0,0)],
-			[Vector3(cx-hx,cy-hy,cz-hz), Vector3(cx-hx,cy-hy,cz+hz), Vector3(cx-hx,cy+hy,cz+hz), Vector3(cx-hx,cy+hy,cz-hz), Vector3(-1,0,0)],
-			[Vector3(cx-hx,cy+hy,cz+hz), Vector3(cx+hx,cy+hy,cz+hz), Vector3(cx+hx,cy+hy,cz-hz), Vector3(cx-hx,cy+hy,cz-hz), Vector3(0,1,0)],
-			[Vector3(cx-hx,cy-hy,cz-hz), Vector3(cx+hx,cy-hy,cz-hz), Vector3(cx+hx,cy-hy,cz+hz), Vector3(cx-hx,cy-hy,cz+hz), Vector3(0,-1,0)],
-		]
-		for face in faces:
-			var base := verts.size()
-			verts.append(face[0]); verts.append(face[1])
-			verts.append(face[2]); verts.append(face[3])
-			for _j in 4:
-				normals.append(face[4])
-			indices.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
+	# --- Art Deco S-curve legs (2 per end) — heavier iron profile ---
+	for xsign in [-1.0, 1.0]:
+		var lx: float = half_w * 0.85 * float(xsign)
+		# Front leg
+		_add_box_verts(iv, in_, ii, lx, 0.22, 0.16, 0.025, 0.22, 0.018)
+		# Back leg (slightly angled back)
+		_add_box_verts(iv, in_, ii, lx, 0.22, -0.18 - back_tilt * 0.3, 0.025, 0.22, 0.018)
+		# Cross brace between front/back legs
+		_add_box_verts(iv, in_, ii, lx, 0.12, -0.01, 0.018, 0.018, 0.16)
 
-	# Seat: 1.5m wide (X), 0.04m thick (Y), 0.45m deep (Z), at y=0.45
-	_add_box.call(0.0, 0.45, 0.0, 0.75, 0.02, 0.225)
-	# Backrest: tilted slightly back
-	_add_box.call(0.0, 0.67, -0.23, 0.75, 0.175, 0.01)
-	# 4 legs
-	_add_box.call(-0.65, 0.225, 0.18, 0.02, 0.225, 0.02)
-	_add_box.call( 0.65, 0.225, 0.18, 0.02, 0.225, 0.02)
-	_add_box.call(-0.65, 0.225, -0.18, 0.02, 0.225, 0.02)
-	_add_box.call( 0.65, 0.225, -0.18, 0.02, 0.225, 0.02)
-	# 2 armrests
-	_add_box.call(-0.72, 0.56, 0.0, 0.02, 0.02, 0.20)
-	_add_box.call( 0.72, 0.56, 0.0, 0.02, 0.02, 0.20)
+	# --- Circular cast-iron armrests (the signature detail) ---
+	# 6-segment torus approximation, r=0.08m, tube_r=0.012m
+	var arm_r := 0.08
+	var tube_r := 0.012
+	for xsign in [-1.0, 1.0]:
+		var ax: float = (half_w + 0.02) * float(xsign)
+		var ay: float = seat_y + 0.18  # center of circle above seat
+		var az: float = -0.04
+		var torus_segs: int = 8
+		for i in torus_segs:
+			var a0 := TAU * float(i) / float(torus_segs)
+			var a1 := TAU * float(i + 1) / float(torus_segs)
+			# Points on the circle in YZ plane
+			var cy0 := ay + sin(a0) * arm_r; var cz0 := az + cos(a0) * arm_r
+			var cy1 := ay + sin(a1) * arm_r; var cz1 := az + cos(a1) * arm_r
+			# Approximate tube as thin box segments
+			var base := iv.size()
+			iv.append(Vector3(ax - tube_r, cy0, cz0))
+			iv.append(Vector3(ax + tube_r, cy0, cz0))
+			iv.append(Vector3(ax + tube_r, cy1, cz1))
+			iv.append(Vector3(ax - tube_r, cy1, cz1))
+			var n := Vector3(xsign, 0.0, 0.0)
+			for _j in 4: in_.append(n)
+			ii.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
 
-	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
-	arrays[Mesh.ARRAY_VERTEX] = verts
-	arrays[Mesh.ARRAY_NORMAL] = normals
-	arrays[Mesh.ARRAY_INDEX]  = indices
+	# --- 5 curved wood seat slats ---
+	var slat_h := 0.018  # slat thickness
+	var slat_gap := seat_depth / 5.0
+	for si in 5:
+		var sz := -seat_depth * 0.5 + slat_gap * (float(si) + 0.5)
+		# Slight arc: center higher by 0.01m
+		var arc_y := seat_y + 0.01 * (1.0 - pow(sz / (seat_depth * 0.5), 2.0))
+		var base := wv.size()
+		wv.append(Vector3(-half_w, arc_y, sz - slat_gap * 0.4))
+		wv.append(Vector3( half_w, arc_y, sz - slat_gap * 0.4))
+		wv.append(Vector3( half_w, arc_y, sz + slat_gap * 0.4))
+		wv.append(Vector3(-half_w, arc_y, sz + slat_gap * 0.4))
+		for _j in 4: wn.append(Vector3.UP)
+		wi.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
+		# Bottom face
+		base = wv.size()
+		wv.append(Vector3(-half_w, arc_y - slat_h, sz + slat_gap * 0.4))
+		wv.append(Vector3( half_w, arc_y - slat_h, sz + slat_gap * 0.4))
+		wv.append(Vector3( half_w, arc_y - slat_h, sz - slat_gap * 0.4))
+		wv.append(Vector3(-half_w, arc_y - slat_h, sz - slat_gap * 0.4))
+		for _j in 4: wn.append(Vector3.DOWN)
+		wi.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
+
+	# --- 2 curved wood backrest slats ---
+	for bi in 2:
+		var by := seat_y + 0.14 + float(bi) * 0.16
+		var bz := -seat_depth * 0.5 - 0.02 - back_tilt * float(bi) * 0.5
+		var base := wv.size()
+		wv.append(Vector3(-half_w, by, bz - 0.02))
+		wv.append(Vector3( half_w, by, bz - 0.02))
+		wv.append(Vector3( half_w, by + 0.06, bz))
+		wv.append(Vector3(-half_w, by + 0.06, bz))
+		var n := Vector3(0.0, 0.15, -1.0).normalized()
+		for _j in 4: wn.append(n)
+		wi.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
+
+	# --- Adopt-A-Bench plaque (tiny brass rectangle on backrest top rail) ---
+	var plaque_y := seat_y + 0.42
+	var plaque_z := -seat_depth * 0.5 - 0.03 - back_tilt
+	_add_box_verts(iv, in_, ii, 0.0, plaque_y, plaque_z, 0.06, 0.02, 0.003)
+
+	# Build 2-surface mesh: S0=iron, S1=wood
 	var mesh := ArrayMesh.new()
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	var ia: Array = []; ia.resize(Mesh.ARRAY_MAX)
+	ia[Mesh.ARRAY_VERTEX] = iv; ia[Mesh.ARRAY_NORMAL] = in_; ia[Mesh.ARRAY_INDEX] = ii
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, ia)
+	var wa: Array = []; wa.resize(Mesh.ARRAY_MAX)
+	wa[Mesh.ARRAY_VERTEX] = wv; wa[Mesh.ARRAY_NORMAL] = wn; wa[Mesh.ARRAY_INDEX] = wi
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, wa)
 	return mesh
 
+func _make_bench_mesh_a() -> ArrayMesh:
+	## Variant A: World's Fair 6ft (1.8m) — the standard Central Park bench
+	return _make_worlds_fair_bench(0.90)
 
 func _make_bench_mesh_b() -> ArrayMesh:
-	## Variant B: Wide backless slab bench — 1.8m seat, no backrest/armrests
-	var verts   := PackedVector3Array()
-	var normals := PackedVector3Array()
-	var indices := PackedInt32Array()
-	var _add_box := func(cx: float, cy: float, cz: float,
-						 hx: float, hy: float, hz: float) -> void:
-		var faces := [
-			[Vector3(cx-hx,cy-hy,cz+hz), Vector3(cx+hx,cy-hy,cz+hz), Vector3(cx+hx,cy+hy,cz+hz), Vector3(cx-hx,cy+hy,cz+hz), Vector3(0,0,1)],
-			[Vector3(cx+hx,cy-hy,cz-hz), Vector3(cx-hx,cy-hy,cz-hz), Vector3(cx-hx,cy+hy,cz-hz), Vector3(cx+hx,cy+hy,cz-hz), Vector3(0,0,-1)],
-			[Vector3(cx+hx,cy-hy,cz+hz), Vector3(cx+hx,cy-hy,cz-hz), Vector3(cx+hx,cy+hy,cz-hz), Vector3(cx+hx,cy+hy,cz+hz), Vector3(1,0,0)],
-			[Vector3(cx-hx,cy-hy,cz-hz), Vector3(cx-hx,cy-hy,cz+hz), Vector3(cx-hx,cy+hy,cz+hz), Vector3(cx-hx,cy+hy,cz-hz), Vector3(-1,0,0)],
-			[Vector3(cx-hx,cy+hy,cz+hz), Vector3(cx+hx,cy+hy,cz+hz), Vector3(cx+hx,cy+hy,cz-hz), Vector3(cx-hx,cy+hy,cz-hz), Vector3(0,1,0)],
-			[Vector3(cx-hx,cy-hy,cz-hz), Vector3(cx+hx,cy-hy,cz-hz), Vector3(cx+hx,cy-hy,cz+hz), Vector3(cx-hx,cy-hy,cz+hz), Vector3(0,-1,0)],
-		]
-		for face in faces:
-			var base := verts.size()
-			verts.append(face[0]); verts.append(face[1])
-			verts.append(face[2]); verts.append(face[3])
-			for _j in 4: normals.append(face[4])
-			indices.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
-	# Wider seat slab: 1.8m × 0.06m thick × 0.50m deep, at y=0.42
-	_add_box.call(0.0, 0.42, 0.0, 0.90, 0.03, 0.25)
-	# 4 legs (wider apart)
-	_add_box.call(-0.78, 0.21, 0.20, 0.03, 0.21, 0.03)
-	_add_box.call( 0.78, 0.21, 0.20, 0.03, 0.21, 0.03)
-	_add_box.call(-0.78, 0.21, -0.20, 0.03, 0.21, 0.03)
-	_add_box.call( 0.78, 0.21, -0.20, 0.03, 0.21, 0.03)
-	# Cross-bar under seat
-	_add_box.call(0.0, 0.30, 0.0, 0.78, 0.015, 0.015)
-	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
-	arrays[Mesh.ARRAY_VERTEX] = verts; arrays[Mesh.ARRAY_NORMAL] = normals
-	arrays[Mesh.ARRAY_INDEX] = indices
-	var mesh := ArrayMesh.new()
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-	return mesh
-
+	## Variant B: World's Fair 8ft (2.4m) — wider version for major paths
+	return _make_worlds_fair_bench(1.20)
 
 func _make_bench_mesh_c() -> ArrayMesh:
-	## Variant C: Compact bench — 1.2m seat, tall backrest, no armrests
-	var verts   := PackedVector3Array()
-	var normals := PackedVector3Array()
-	var indices := PackedInt32Array()
-	var _add_box := func(cx: float, cy: float, cz: float,
-						 hx: float, hy: float, hz: float) -> void:
-		var faces := [
-			[Vector3(cx-hx,cy-hy,cz+hz), Vector3(cx+hx,cy-hy,cz+hz), Vector3(cx+hx,cy+hy,cz+hz), Vector3(cx-hx,cy+hy,cz+hz), Vector3(0,0,1)],
-			[Vector3(cx+hx,cy-hy,cz-hz), Vector3(cx-hx,cy-hy,cz-hz), Vector3(cx-hx,cy+hy,cz-hz), Vector3(cx+hx,cy+hy,cz-hz), Vector3(0,0,-1)],
-			[Vector3(cx+hx,cy-hy,cz+hz), Vector3(cx+hx,cy-hy,cz-hz), Vector3(cx+hx,cy+hy,cz-hz), Vector3(cx+hx,cy+hy,cz+hz), Vector3(1,0,0)],
-			[Vector3(cx-hx,cy-hy,cz-hz), Vector3(cx-hx,cy-hy,cz+hz), Vector3(cx-hx,cy+hy,cz+hz), Vector3(cx-hx,cy+hy,cz-hz), Vector3(-1,0,0)],
-			[Vector3(cx-hx,cy+hy,cz+hz), Vector3(cx+hx,cy+hy,cz+hz), Vector3(cx+hx,cy+hy,cz-hz), Vector3(cx-hx,cy+hy,cz-hz), Vector3(0,1,0)],
-			[Vector3(cx-hx,cy-hy,cz-hz), Vector3(cx+hx,cy-hy,cz-hz), Vector3(cx+hx,cy-hy,cz+hz), Vector3(cx-hx,cy-hy,cz+hz), Vector3(0,-1,0)],
-		]
-		for face in faces:
-			var base := verts.size()
-			verts.append(face[0]); verts.append(face[1])
-			verts.append(face[2]); verts.append(face[3])
-			for _j in 4: normals.append(face[4])
-			indices.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
-	# Narrower seat: 1.2m × 0.04m thick × 0.42m deep, at y=0.45
-	_add_box.call(0.0, 0.45, 0.0, 0.60, 0.02, 0.21)
-	# Taller backrest
-	_add_box.call(0.0, 0.72, -0.22, 0.60, 0.22, 0.01)
-	# 4 legs (closer together)
-	_add_box.call(-0.50, 0.225, 0.16, 0.02, 0.225, 0.02)
-	_add_box.call( 0.50, 0.225, 0.16, 0.02, 0.225, 0.02)
-	_add_box.call(-0.50, 0.225, -0.16, 0.02, 0.225, 0.02)
-	_add_box.call( 0.50, 0.225, -0.16, 0.02, 0.225, 0.02)
-	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
-	arrays[Mesh.ARRAY_VERTEX] = verts; arrays[Mesh.ARRAY_NORMAL] = normals
-	arrays[Mesh.ARRAY_INDEX] = indices
-	var mesh := ArrayMesh.new()
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-	return mesh
+	## Variant C: World's Fair 4ft (1.2m) — compact version for smaller spaces
+	return _make_worlds_fair_bench(0.60)
 
 
 func _build_furniture(paths: Array) -> void:
@@ -6653,15 +6988,15 @@ func _build_furniture(paths: Array) -> void:
 	var lamp_meshes: Array = [_make_lamppost_mesh_a(), _make_lamppost_mesh_b(), _make_lamppost_mesh_c()]
 	var bench_meshes: Array = [_make_bench_mesh_a(), _make_bench_mesh_b(), _make_bench_mesh_c()]
 
-	# Post material — dark green iron, no emission
+	# Post material — dark green iron (Henry Bacon authentic)
 	var lamp_post_mat := StandardMaterial3D.new()
-	lamp_post_mat.albedo_color = Color(0.12, 0.16, 0.10)
-	lamp_post_mat.roughness    = 0.55
-	lamp_post_mat.metallic     = 0.3
+	lamp_post_mat.albedo_color = Color(0.08, 0.14, 0.06)
+	lamp_post_mat.roughness    = 0.50
+	lamp_post_mat.metallic     = 0.15
 
-	# Lantern material — same base but with emission (controlled by day/night cycle)
+	# Lantern material — frosted glass with emission (controlled by day/night cycle)
 	var lamp_lantern_mat := StandardMaterial3D.new()
-	lamp_lantern_mat.albedo_color = Color(0.95, 0.92, 0.82)  # frosted glass
+	lamp_lantern_mat.albedo_color = Color(0.95, 0.92, 0.82)
 	lamp_lantern_mat.roughness    = 0.25
 	lamp_lantern_mat.emission_enabled = true
 	lamp_lantern_mat.emission         = Color(1.0, 0.45, 0.08)
@@ -6673,9 +7008,17 @@ func _build_furniture(paths: Array) -> void:
 		lm.surface_set_material(0, lamp_post_mat)
 		lm.surface_set_material(1, lamp_lantern_mat)
 
-	var bench_mat := StandardMaterial3D.new()
-	bench_mat.albedo_color = Color(0.35, 0.22, 0.12)
-	bench_mat.roughness    = 0.75
+	# Bench materials — 2-surface: S0=deep evergreen iron, S1=warm wood
+	var bench_iron_mat := StandardMaterial3D.new()
+	bench_iron_mat.albedo_color = Color(0.12, 0.22, 0.10)
+	bench_iron_mat.roughness    = 0.55
+	bench_iron_mat.metallic     = 0.15
+	var bench_wood_mat := StandardMaterial3D.new()
+	bench_wood_mat.albedo_color = Color(0.40, 0.26, 0.14)
+	bench_wood_mat.roughness    = 0.72
+	for bm in bench_meshes:
+		bm.surface_set_material(0, bench_iron_mat)
+		bm.surface_set_material(1, bench_wood_mat)
 
 	var lamp_xf:  Array = [[], [], []]
 	var bench_xf: Array = [[], [], []]
@@ -6771,7 +7114,7 @@ func _build_furniture(paths: Array) -> void:
 		if not lamp_xf[vi].is_empty():
 			_spawn_multimesh(lamp_meshes[vi], null, lamp_xf[vi], "Lampposts_%d" % vi)
 		if not bench_xf[vi].is_empty():
-			_spawn_multimesh(bench_meshes[vi], bench_mat, bench_xf[vi], "Benches_%d" % vi)
+			_spawn_multimesh(bench_meshes[vi], null, bench_xf[vi], "Benches_%d" % vi)
 
 
 # ---------------------------------------------------------------------------
@@ -6800,6 +7143,81 @@ func _make_dirt_circle_mesh() -> ArrayMesh:
 	var mesh := ArrayMesh.new()
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 	return mesh
+
+
+func _build_trash_cans(paths: Array) -> void:
+	## Dark green cylindrical trash receptacles (~every 60m along paths).
+	if paths.is_empty():
+		return
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 77711
+	# Mesh: cylinder 0.35m radius × 0.9m tall + domed lid
+	var v := PackedVector3Array(); var n := PackedVector3Array(); var idx := PackedInt32Array()
+	var segs := 8
+	_add_cylinder_verts(v, n, idx, 0.0, 0.0, 0.0, 0.35, 0.85, segs)
+	# Domed lid (tapers to 0.20 over 0.10m)
+	_add_cylinder_verts(v, n, idx, 0.0, 0.85, 0.0, 0.36, 0.10, segs, 0.20)
+	# Top cap
+	var base := v.size()
+	for i in segs:
+		var a0 := TAU * float(i) / float(segs)
+		var a1 := TAU * float(i + 1) / float(segs)
+		v.append(Vector3(0.0, 0.95, 0.0))
+		v.append(Vector3(cos(a0) * 0.20, 0.95, sin(a0) * 0.20))
+		v.append(Vector3(cos(a1) * 0.20, 0.95, sin(a1) * 0.20))
+		for _j in 3: n.append(Vector3.UP)
+		var b2 := base + i * 3
+		idx.append_array(PackedInt32Array([b2, b2+1, b2+2]))
+	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = v; arrays[Mesh.ARRAY_NORMAL] = n; arrays[Mesh.ARRAY_INDEX] = idx
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(0.08, 0.14, 0.06)
+	mat.roughness = 0.60
+	mat.metallic = 0.10
+	var xforms: Array = []
+	for path in paths:
+		var hw: String = str(path.get("highway", "path"))
+		if hw == "cycleway" or hw == "track" or hw == "steps":
+			continue
+		if bool(path.get("bridge", false)) or bool(path.get("tunnel", false)):
+			continue
+		var pts: Array = path["points"]
+		if pts.size() < 2:
+			continue
+		var half_w := _hw_width(hw) * 0.5
+		var cum := 0.0
+		var next := rng.randf_range(45.0, 75.0)
+		var side := 1.0 if rng.randf() > 0.5 else -1.0
+		for pi in range(1, pts.size()):
+			var x0 := float(pts[pi-1][0]); var z0 := float(pts[pi-1][2])
+			var x1 := float(pts[pi][0]);   var z1 := float(pts[pi][2])
+			var dx := x1 - x0; var dz := z1 - z0
+			var seg_len := sqrt(dx * dx + dz * dz)
+			if seg_len < 0.01:
+				continue
+			cum += seg_len
+			if cum >= next:
+				cum = 0.0
+				next = rng.randf_range(50.0, 70.0)
+				side = -side
+				var nx := -dz / seg_len; var nz := dx / seg_len
+				var tx := x1 + nx * (half_w + 0.6) * side
+				var tz := z1 + nz * (half_w + 0.6) * side
+				if not _in_boundary(tx, tz):
+					continue
+				var bgk := Vector2i(int(floor(tx / BRIDGE_GRID_CELL)), int(floor(tz / BRIDGE_GRID_CELL)))
+				if _bridge_grid.has(bgk):
+					continue
+				var bbk := Vector2i(int(floor(tx / BUILDING_GRID_CELL)), int(floor(tz / BUILDING_GRID_CELL)))
+				if _building_grid.has(bbk):
+					continue
+				var ty := _terrain_y(tx, tz)
+				xforms.append(Transform3D(Basis.IDENTITY, Vector3(tx, ty, tz)))
+	if not xforms.is_empty():
+		_spawn_multimesh(mesh, mat, xforms, "TrashCans")
+	print("ParkLoader: trash cans = ", xforms.size())
 
 
 func _build_tree_dirt(trees: Array) -> void:
@@ -7772,6 +8190,360 @@ void fragment() {
 	BACKLIGHT = col * 0.2;
 }
 """
+
+
+func _bobbing_shader_code() -> String:
+	return """shader_type spatial;
+render_mode cull_disabled;
+
+uniform vec3 base_color : source_color = vec3(0.45, 0.30, 0.15);
+
+varying vec3 origin;
+
+void vertex() {
+	origin = (MODEL_MATRIX * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+	float bob = sin(TIME * 0.8 + origin.x * 0.3 + origin.z * 0.5) * 0.05;
+	VERTEX.y += bob;
+	// Gentle rock
+	float rock = sin(TIME * 0.5 + origin.z * 0.2) * 0.02;
+	VERTEX.x += rock * VERTEX.y;
+}
+
+void fragment() {
+	ALBEDO = base_color;
+	ROUGHNESS = 0.75;
+	SPECULAR = 0.1;
+	METALLIC = 0.0;
+}
+"""
+
+func _make_boat_mesh() -> ArrayMesh:
+	## Simple rowing boat hull: elongated oval, open top, 2 seat planks, 2 oars.
+	var v := PackedVector3Array(); var n := PackedVector3Array(); var idx := PackedInt32Array()
+	var hull_len := 1.25  # half-length
+	var hull_w := 0.50    # half-width
+	var hull_d := 0.25    # depth
+	var segs := 10
+	# Hull sides: ring of quads
+	for i in segs:
+		var a0 := TAU * float(i) / float(segs)
+		var a1 := TAU * float(i + 1) / float(segs)
+		var x0 := cos(a0) * hull_len; var z0 := sin(a0) * hull_w
+		var x1 := cos(a1) * hull_len; var z1 := sin(a1) * hull_w
+		var base := v.size()
+		v.append(Vector3(x0, -hull_d, z0))
+		v.append(Vector3(x1, -hull_d, z1))
+		v.append(Vector3(x1, 0.05, z1))
+		v.append(Vector3(x0, 0.05, z0))
+		var nn := Vector3(sin(a0), 0.0, cos(a0)).normalized()
+		for _j in 4: n.append(nn)
+		idx.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
+	# Bottom (flat)
+	var base := v.size()
+	for i in segs:
+		var a0 := TAU * float(i) / float(segs)
+		v.append(Vector3(cos(a0) * hull_len * 0.9, -hull_d, sin(a0) * hull_w * 0.9))
+		n.append(Vector3.DOWN)
+	v.append(Vector3(0.0, -hull_d, 0.0)); n.append(Vector3.DOWN)
+	var center_idx := base + segs
+	for i in segs:
+		idx.append_array(PackedInt32Array([center_idx, base + (i + 1) % segs, base + i]))
+	# 2 seat planks
+	_add_box_verts(v, n, idx, 0.0, 0.0, 0.0, 0.08, 0.02, hull_w * 0.8)
+	_add_box_verts(v, n, idx, -0.5, 0.0, 0.0, 0.08, 0.02, hull_w * 0.8)
+	# 2 oars (thin cylinders angled outward)
+	_add_box_verts(v, n, idx, 0.0, 0.08, hull_w + 0.3, 0.7, 0.015, 0.015)
+	_add_box_verts(v, n, idx, 0.0, 0.08, -hull_w - 0.3, 0.7, 0.015, 0.015)
+	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = v; arrays[Mesh.ARRAY_NORMAL] = n; arrays[Mesh.ARRAY_INDEX] = idx
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	return mesh
+
+func _build_boats(water: Array) -> void:
+	## Scatter ~12 rowing boats on "The Lake" (largest water body).
+	if water.is_empty():
+		return
+	# Find the largest water body by point count (The Lake)
+	var lake_idx := 0
+	var max_pts := 0
+	for wi in water.size():
+		if water[wi]["points"].size() > max_pts:
+			max_pts = water[wi]["points"].size()
+			lake_idx = wi
+	var lake_pts: Array = water[lake_idx]["points"]
+	if lake_pts.size() < 3:
+		return
+	# Compute lake centroid and scatter boats around it
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 55533
+	var cx := 0.0; var cz := 0.0
+	for pt in lake_pts:
+		cx += float(pt[0]); cz += float(pt[1])
+	cx /= float(lake_pts.size()); cz /= float(lake_pts.size())
+	var boat_mesh := _make_boat_mesh()
+	var boat_sh := _get_shader("boat_bob", _bobbing_shader_code())
+	var boat_mat := ShaderMaterial.new()
+	boat_mat.shader = boat_sh
+	boat_mat.set_shader_parameter("base_color", Vector3(0.45, 0.30, 0.15))
+	var xforms: Array = []
+	for _bi in 12:
+		# Place 15-30m from random shore point, but toward centroid
+		var shore_i := rng.randi_range(0, lake_pts.size() - 1)
+		var sx := float(lake_pts[shore_i][0])
+		var sz := float(lake_pts[shore_i][1])
+		var to_center := Vector2(cx - sx, cz - sz).normalized()
+		var dist := rng.randf_range(15.0, 35.0)
+		var bx := sx + to_center.x * dist
+		var bz := sz + to_center.y * dist
+		# Check it's actually on water
+		var wgk := Vector2i(int(floor(bx / WATER_GRID_CELL)), int(floor(bz / WATER_GRID_CELL)))
+		if not _water_grid.has(wgk):
+			continue
+		var by := WATER_Y
+		var angle := rng.randf() * TAU
+		var basis := Basis(Vector3.UP, angle)
+		xforms.append(Transform3D(basis, Vector3(bx, by, bz)))
+	if not xforms.is_empty():
+		_spawn_multimesh(boat_mesh, boat_mat, xforms, "RowingBoats")
+	print("ParkLoader: rowing boats = ", xforms.size())
+
+func _person_shader_code() -> String:
+	return """shader_type spatial;
+render_mode cull_disabled;
+uniform vec3 person_color : source_color = vec3(0.15, 0.15, 0.18);
+void vertex() {
+	vec3 origin = (MODEL_MATRIX * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+	float sway = sin(TIME * 2.0 + origin.x * 0.3 + origin.z * 0.4) * 0.01;
+	VERTEX.x += sway * max(VERTEX.y, 0.0);
+}
+void fragment() {
+	ALBEDO = person_color;
+	ROUGHNESS = 0.85;
+	SPECULAR = 0.0;
+	METALLIC = 0.0;
+}
+"""
+
+func _make_person_material(color: Color) -> ShaderMaterial:
+	var mat := ShaderMaterial.new()
+	mat.shader = _get_shader("person", _person_shader_code())
+	mat.set_shader_parameter("person_color", Vector3(color.r, color.g, color.b))
+	return mat
+
+func _make_person_mesh_walker() -> ArrayMesh:
+	## Flat vertical quad 0.5m wide × 1.75m tall, origin at bottom-center.
+	## Two crossed quads (X-shape) so visible from all angles.
+	var v := PackedVector3Array()
+	var n := PackedVector3Array()
+	var hw := 0.25; var h := 1.75
+	# Quad 1: along X
+	v.append(Vector3(-hw, 0.0, 0.0)); v.append(Vector3(hw, 0.0, 0.0))
+	v.append(Vector3(hw, h, 0.0)); v.append(Vector3(-hw, h, 0.0))
+	for _j in 4: n.append(Vector3.BACK)
+	# Quad 2: along Z (crossed)
+	v.append(Vector3(0.0, 0.0, -hw)); v.append(Vector3(0.0, 0.0, hw))
+	v.append(Vector3(0.0, h, hw)); v.append(Vector3(0.0, h, -hw))
+	for _j in 4: n.append(Vector3.RIGHT)
+	var idx := PackedInt32Array([0,1,2, 0,2,3, 4,5,6, 4,6,7])
+	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = v; arrays[Mesh.ARRAY_NORMAL] = n; arrays[Mesh.ARRAY_INDEX] = idx
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	return mesh
+
+func _make_person_mesh_sitter() -> ArrayMesh:
+	## Flat vertical quad 0.4m wide × 0.9m tall for seated person.
+	var v := PackedVector3Array()
+	var n := PackedVector3Array()
+	var hw := 0.20; var h := 0.90
+	v.append(Vector3(-hw, 0.0, 0.0)); v.append(Vector3(hw, 0.0, 0.0))
+	v.append(Vector3(hw, h, 0.0)); v.append(Vector3(-hw, h, 0.0))
+	for _j in 4: n.append(Vector3.BACK)
+	v.append(Vector3(0.0, 0.0, -hw)); v.append(Vector3(0.0, 0.0, hw))
+	v.append(Vector3(0.0, h, hw)); v.append(Vector3(0.0, h, -hw))
+	for _j in 4: n.append(Vector3.RIGHT)
+	var idx := PackedInt32Array([0,1,2, 0,2,3, 4,5,6, 4,6,7])
+	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = v; arrays[Mesh.ARRAY_NORMAL] = n; arrays[Mesh.ARRAY_INDEX] = idx
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	return mesh
+
+func _build_pedestrians(paths: Array) -> void:
+	## Billboard pedestrian silhouettes along paths + on benches.
+	if paths.is_empty():
+		return
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 44422
+	var walk_mat := _make_person_material(Color(0.15, 0.15, 0.18))
+	var sit_mat := _make_person_material(Color(0.22, 0.18, 0.14))
+	var walker_mesh := _make_person_mesh_walker()
+	var sitter_mesh := _make_person_mesh_sitter()
+
+	var walk_xf: Array = []
+	var jog_xf: Array = []
+	var sit_xf: Array = []
+
+	# Walkers along paths (~every 40m)
+	for path in paths:
+		var hw: String = str(path.get("highway", "path"))
+		if hw == "steps" or hw == "track":
+			continue
+		if bool(path.get("bridge", false)) or bool(path.get("tunnel", false)):
+			continue
+		var pts: Array = path["points"]
+		if pts.size() < 2:
+			continue
+		var half_w := _hw_width(hw) * 0.5
+		var cum := 0.0
+		var is_major := hw == "pedestrian" or hw == "footway"
+		var spacing := 35.0 if is_major else 55.0
+		var next := rng.randf_range(spacing * 0.7, spacing * 1.3)
+		for pi in range(1, pts.size()):
+			var x0 := float(pts[pi-1][0]); var z0 := float(pts[pi-1][2])
+			var x1 := float(pts[pi][0]);   var z1 := float(pts[pi][2])
+			var dx := x1 - x0; var dz := z1 - z0
+			var seg_len := sqrt(dx * dx + dz * dz)
+			if seg_len < 0.01:
+				continue
+			cum += seg_len
+			if cum >= next:
+				cum = 0.0
+				next = rng.randf_range(spacing * 0.7, spacing * 1.3)
+				var nx := -dz / seg_len; var nz := dx / seg_len
+				var side := 1.0 if rng.randf() > 0.5 else -1.0
+				var off := half_w * rng.randf_range(0.1, 0.8) * side
+				var px := x1 + nx * off
+				var pz := z1 + nz * off
+				if not _in_boundary(px, pz):
+					continue
+				var py := _terrain_y(px, pz)
+				var angle := atan2(dx, dz) + rng.randf_range(-0.5, 0.5)
+				walk_xf.append(Transform3D(Basis(Vector3.UP, angle), Vector3(px, py, pz)))
+				# Occasionally add joggers on major paths
+				if is_major and rng.randf() < 0.15:
+					var jx := x1 + nx * half_w * 0.3 * (-side)
+					var jz := z1 + nz * half_w * 0.3 * (-side)
+					var jy := _terrain_y(jx, jz)
+					jog_xf.append(Transform3D(Basis(Vector3.UP, angle), Vector3(jx, jy, jz)))
+
+	# Bench sitters: 25% of benches get a sitter
+	for child in get_children():
+		if not (child is MultiMeshInstance3D):
+			continue
+		if not child.name.begins_with("Benches_"):
+			continue
+		var mmi: MultiMeshInstance3D = child as MultiMeshInstance3D
+		var mm: MultiMesh = mmi.multimesh
+		for i in mm.instance_count:
+			if rng.randf() > 0.25:
+				continue
+			var xf: Transform3D = mm.get_instance_transform(i)
+			# Position sitter at bench center, raised to seat height
+			var sit_pos := xf.origin + Vector3(0.0, 0.45, 0.0)
+			sit_xf.append(Transform3D(xf.basis, sit_pos))
+
+	# Spawn multimeshes
+	if not walk_xf.is_empty():
+		_spawn_multimesh(walker_mesh, walk_mat, walk_xf, "Pedestrians_Walkers")
+	if not jog_xf.is_empty():
+		var jog_mat := _make_person_material(Color(0.20, 0.10, 0.10))
+		var jog_mesh := _make_person_mesh_walker()
+		_spawn_multimesh(jog_mesh, jog_mat, jog_xf, "Pedestrians_Joggers")
+	if not sit_xf.is_empty():
+		_spawn_multimesh(sitter_mesh, sit_mat, sit_xf, "Pedestrians_Sitters")
+	print("ParkLoader: pedestrians = %d walkers, %d joggers, %d sitters" % [
+		walk_xf.size(), jog_xf.size(), sit_xf.size()])
+
+func _build_waterfowl(water: Array) -> void:
+	## Tiny billboard ducks/geese on water surfaces near shorelines.
+	if water.is_empty():
+		return
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 33311
+	# Duck billboard quad
+	var duck_mat := _make_person_material(Color(0.35, 0.30, 0.22))
+	# Small crossed quads for duck silhouette
+	var dv := PackedVector3Array(); var dn := PackedVector3Array()
+	dv.append(Vector3(-0.11, 0.0, 0.0)); dv.append(Vector3(0.11, 0.0, 0.0))
+	dv.append(Vector3(0.11, 0.16, 0.0)); dv.append(Vector3(-0.11, 0.16, 0.0))
+	for _j in 4: dn.append(Vector3.BACK)
+	dv.append(Vector3(0.0, 0.0, -0.11)); dv.append(Vector3(0.0, 0.0, 0.11))
+	dv.append(Vector3(0.0, 0.16, 0.11)); dv.append(Vector3(0.0, 0.16, -0.11))
+	for _j in 4: dn.append(Vector3.RIGHT)
+	var di := PackedInt32Array([0,1,2, 0,2,3, 4,5,6, 4,6,7])
+	var da: Array = []; da.resize(Mesh.ARRAY_MAX)
+	da[Mesh.ARRAY_VERTEX] = dv; da[Mesh.ARRAY_NORMAL] = dn; da[Mesh.ARRAY_INDEX] = di
+	var duck_mesh := ArrayMesh.new()
+	duck_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, da)
+
+	var xforms: Array = []
+	for body in water:
+		var pts: Array = body["points"]
+		if pts.size() < 3:
+			continue
+		# Place clusters of 5-8 near shore points
+		var n_clusters := mini(8, pts.size() / 10 + 1)
+		for _ci in n_clusters:
+			var shore_i := rng.randi_range(0, pts.size() - 1)
+			var sx := float(pts[shore_i][0])
+			var sz := float(pts[shore_i][1])
+			var n_ducks := rng.randi_range(4, 8)
+			for _di in n_ducks:
+				var dx := sx + rng.randf_range(-5.0, 5.0)
+				var dz := sz + rng.randf_range(-5.0, 5.0)
+				var wgk := Vector2i(int(floor(dx / WATER_GRID_CELL)), int(floor(dz / WATER_GRID_CELL)))
+				if not _water_grid.has(wgk):
+					continue
+				var rot := rng.randf() * TAU
+				var scale := rng.randf_range(0.8, 1.2)
+				var basis := Basis(Vector3.UP, rot).scaled(Vector3(scale, scale, scale))
+				xforms.append(Transform3D(basis, Vector3(dx, WATER_Y + 0.02, dz)))
+	if not xforms.is_empty():
+		_spawn_multimesh(duck_mesh, duck_mat, xforms, "Waterfowl")
+	print("ParkLoader: waterfowl = ", xforms.size())
+
+
+func _build_squirrels(trees: Array) -> void:
+	## Tiny billboard squirrel silhouettes near ~5% of trees.
+	if trees.is_empty():
+		return
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 22211
+	# Small billboard quad for squirrels
+	var sq_mat := _make_person_material(Color(0.35, 0.22, 0.12))
+	# Tiny crossed quads for squirrel silhouette
+	var sv := PackedVector3Array(); var sn := PackedVector3Array()
+	sv.append(Vector3(-0.09, 0.0, 0.0)); sv.append(Vector3(0.09, 0.0, 0.0))
+	sv.append(Vector3(0.09, 0.14, 0.0)); sv.append(Vector3(-0.09, 0.14, 0.0))
+	for _j in 4: sn.append(Vector3.BACK)
+	sv.append(Vector3(0.0, 0.0, -0.09)); sv.append(Vector3(0.0, 0.0, 0.09))
+	sv.append(Vector3(0.0, 0.14, 0.09)); sv.append(Vector3(0.0, 0.14, -0.09))
+	for _j in 4: sn.append(Vector3.RIGHT)
+	var si := PackedInt32Array([0,1,2, 0,2,3, 4,5,6, 4,6,7])
+	var sa: Array = []; sa.resize(Mesh.ARRAY_MAX)
+	sa[Mesh.ARRAY_VERTEX] = sv; sa[Mesh.ARRAY_NORMAL] = sn; sa[Mesh.ARRAY_INDEX] = si
+	var sq_mesh := ArrayMesh.new()
+	sq_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, sa)
+	var xforms: Array = []
+	for tree in trees:
+		if rng.randf() > 0.05:
+			continue
+		var tx := float(tree[0])
+		var tz := float(tree[1])
+		if not _in_boundary(tx, tz):
+			continue
+		var dist := rng.randf_range(0.5, 2.0)
+		var angle := rng.randf() * TAU
+		var sx := tx + cos(angle) * dist
+		var sz := tz + sin(angle) * dist
+		var sy := _terrain_y(sx, sz)
+		var rot := rng.randf() * TAU
+		xforms.append(Transform3D(Basis(Vector3.UP, rot), Vector3(sx, sy, sz)))
+	if not xforms.is_empty():
+		_spawn_multimesh(sq_mesh, sq_mat, xforms, "Squirrels")
+	print("ParkLoader: squirrels = ", xforms.size())
 
 
 func _build_grass_blades(trees: Array) -> void:
