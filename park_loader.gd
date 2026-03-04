@@ -6664,7 +6664,7 @@ func _build_furniture(paths: Array) -> void:
 	lamp_lantern_mat.albedo_color = Color(0.95, 0.92, 0.82)  # frosted glass
 	lamp_lantern_mat.roughness    = 0.25
 	lamp_lantern_mat.emission_enabled = true
-	lamp_lantern_mat.emission         = Color(1.0, 0.57, 0.16)
+	lamp_lantern_mat.emission         = Color(1.0, 0.45, 0.08)
 	lamp_lantern_mat.emission_energy_multiplier = 2.0
 	lamppost_material = lamp_lantern_mat
 

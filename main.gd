@@ -527,7 +527,7 @@ func _setup_environment() -> void:
 # Day/night keyframes
 # ---------------------------------------------------------------------------
 func _build_keyframes() -> void:
-	# ---- 5.0  Pre-dawn (autumn overcast) ----
+	# ---- 5.0  Pre-dawn ----
 	_keyframes.append({
 		"hour": 5.0,
 		"sky_top":        Color(0.03, 0.04, 0.12),
@@ -536,9 +536,9 @@ func _build_keyframes() -> void:
 		"gnd_horizon":    Color(0.08, 0.06, 0.10),
 		"sun_angle_max":  3.0,
 		"sun_curve":      0.01,
-		"ambient_color":  Color(0.08, 0.08, 0.14),
-		"ambient_energy": 0.08,
-		"exposure":       0.55,
+		"ambient_color":  Color(0.10, 0.10, 0.18),
+		"ambient_energy": 0.15,
+		"exposure":       0.75,
 		"white":          5.0,
 		"glow_intensity": 0.7,
 		"glow_bloom":     0.20,
@@ -549,14 +549,14 @@ func _build_keyframes() -> void:
 		"ssao_intensity": 2.8,
 		"ssao_power":     2.0,
 		"ssil_intensity": 0.5,
-		"saturation":     0.50,
-		"contrast":       1.10,
-		"brightness":     0.70,
+		"saturation":     0.55,
+		"contrast":       1.08,
+		"brightness":     0.85,
 		"fog_color":      Color(0.12, 0.10, 0.14),
 		"fog_energy":     0.15,
 		"fog_scatter":    0.05,
-		"fog_density":    0.0025,
-		"fog_aerial":     0.55,
+		"fog_density":    0.0020,
+		"fog_aerial":     0.50,
 		"fog_sky_affect": 0.6,
 		"sun_energy":     0.05,
 		"sun_color":      Color(0.65, 0.72, 0.95),
@@ -564,7 +564,7 @@ func _build_keyframes() -> void:
 		"sun_yaw":        -100.0,
 		"shadow_dist":    180.0,
 		"lamp_emission":  2.0,
-		"vol_fog_density":    0.0015,
+		"vol_fog_density":    0.0010,
 		"vol_fog_anisotropy": 0.15,
 		"cloud_coverage":     0.30,
 		"cloud_density":      0.55,
@@ -573,7 +573,7 @@ func _build_keyframes() -> void:
 		"cloud_speed":        0.003,
 	})
 
-	# ---- 6.5  Sunrise / Golden hour (luminous overcast) ----
+	# ---- 6.5  Sunrise / Golden hour ----
 	_keyframes.append({
 		"hour": 6.5,
 		"sky_top":        Color(0.25, 0.38, 0.62),
@@ -583,43 +583,43 @@ func _build_keyframes() -> void:
 		"sun_angle_max":  5.0,
 		"sun_curve":      0.08,
 		"ambient_color":  Color(0.45, 0.35, 0.25),
-		"ambient_energy": 0.65,
-		"exposure":       0.85,
+		"ambient_energy": 0.60,
+		"exposure":       0.80,
 		"white":          5.0,
-		"glow_intensity": 0.85,
-		"glow_bloom":     0.25,
-		"glow_strength":  1.2,
-		"glow_threshold": 0.50,
+		"glow_intensity": 0.75,
+		"glow_bloom":     0.20,
+		"glow_strength":  1.0,
+		"glow_threshold": 0.55,
 		"glow_cap":       5.0,
 		"ssao_radius":    1.5,
 		"ssao_intensity": 2.5,
 		"ssao_power":     1.8,
 		"ssil_intensity": 0.7,
-		"saturation":     0.92,
-		"contrast":       1.04,
+		"saturation":     0.94,
+		"contrast":       1.06,
 		"brightness":     1.0,
 		"fog_color":      Color(0.55, 0.42, 0.34),
-		"fog_energy":     0.8,
-		"fog_scatter":    0.30,
-		"fog_density":    0.0020,
-		"fog_aerial":     0.50,
-		"fog_sky_affect": 0.4,
-		"sun_energy":     0.80,
+		"fog_energy":     0.6,
+		"fog_scatter":    0.20,
+		"fog_density":    0.0012,
+		"fog_aerial":     0.40,
+		"fog_sky_affect": 0.3,
+		"sun_energy":     0.85,
 		"sun_color":      Color(1.0, 0.72, 0.38),
 		"sun_pitch":      -15.0,
 		"sun_yaw":        -95.0,
 		"shadow_dist":    250.0,
 		"lamp_emission":  0.0,
-		"vol_fog_density":    0.0012,
+		"vol_fog_density":    0.0006,
 		"vol_fog_anisotropy": 0.75,
-		"cloud_coverage":     0.45,
-		"cloud_density":      0.60,
+		"cloud_coverage":     0.40,
+		"cloud_density":      0.55,
 		"cloud_color_top":    Color(0.92, 0.88, 0.78),
 		"cloud_color_bottom": Color(0.48, 0.40, 0.32),
 		"cloud_speed":        0.004,
 	})
 
-	# ---- 12.0  Noon (luminous overcast — bright diffuse, not dark) ----
+	# ---- 12.0  Noon (clear, punchy daylight) ----
 	_keyframes.append({
 		"hour": 12.0,
 		"sky_top":        Color(0.22, 0.42, 0.75),
@@ -629,43 +629,43 @@ func _build_keyframes() -> void:
 		"sun_angle_max":  1.5,
 		"sun_curve":      0.15,
 		"ambient_color":  Color(0.50, 0.46, 0.38),
-		"ambient_energy": 0.85,
-		"exposure":       0.90,
+		"ambient_energy": 0.75,
+		"exposure":       0.80,
 		"white":          6.0,
-		"glow_intensity": 0.65,
-		"glow_bloom":     0.20,
-		"glow_strength":  0.90,
-		"glow_threshold": 0.55,
+		"glow_intensity": 0.50,
+		"glow_bloom":     0.15,
+		"glow_strength":  0.70,
+		"glow_threshold": 0.60,
 		"glow_cap":       8.0,
 		"ssao_radius":    2.0,
 		"ssao_intensity": 2.5,
 		"ssao_power":     2.0,
 		"ssil_intensity": 1.0,
-		"saturation":     0.92,
-		"contrast":       1.02,
-		"brightness":     1.05,
+		"saturation":     0.95,
+		"contrast":       1.06,
+		"brightness":     1.00,
 		"fog_color":      Color(0.55, 0.52, 0.48),
-		"fog_energy":     0.8,
-		"fog_scatter":    0.08,
-		"fog_density":    0.0015,
-		"fog_aerial":     0.50,
-		"fog_sky_affect": 0.40,
-		"sun_energy":     0.60,
-		"sun_color":      Color(0.92, 0.90, 0.82),
+		"fog_energy":     0.6,
+		"fog_scatter":    0.05,
+		"fog_density":    0.0008,
+		"fog_aerial":     0.35,
+		"fog_sky_affect": 0.30,
+		"sun_energy":     0.75,
+		"sun_color":      Color(0.95, 0.92, 0.85),
 		"sun_pitch":      -55.0,
 		"sun_yaw":        -20.0,
 		"shadow_dist":    300.0,
 		"lamp_emission":  0.0,
-		"vol_fog_density":    0.0008,
+		"vol_fog_density":    0.0004,
 		"vol_fog_anisotropy": 0.18,
-		"cloud_coverage":     0.40,
-		"cloud_density":      0.55,
-		"cloud_color_top":    Color(0.92, 0.92, 0.90),
-		"cloud_color_bottom": Color(0.65, 0.65, 0.63),
+		"cloud_coverage":     0.35,
+		"cloud_density":      0.50,
+		"cloud_color_top":    Color(0.95, 0.95, 0.93),
+		"cloud_color_bottom": Color(0.68, 0.68, 0.66),
 		"cloud_speed":        0.005,
 	})
 
-	# ---- 19.0  Sunset / Golden hour (luminous overcast) ----
+	# ---- 19.0  Sunset / Golden hour ----
 	_keyframes.append({
 		"hour": 19.0,
 		"sky_top":        Color(0.25, 0.22, 0.38),
@@ -675,43 +675,43 @@ func _build_keyframes() -> void:
 		"sun_angle_max":  5.0,
 		"sun_curve":      0.08,
 		"ambient_color":  Color(0.42, 0.32, 0.22),
-		"ambient_energy": 0.62,
-		"exposure":       0.85,
+		"ambient_energy": 0.55,
+		"exposure":       0.80,
 		"white":          5.0,
-		"glow_intensity": 1.0,
-		"glow_bloom":     0.32,
-		"glow_strength":  1.5,
-		"glow_threshold": 0.42,
+		"glow_intensity": 0.85,
+		"glow_bloom":     0.25,
+		"glow_strength":  1.2,
+		"glow_threshold": 0.48,
 		"glow_cap":       5.0,
 		"ssao_radius":    2.0,
 		"ssao_intensity": 2.5,
 		"ssao_power":     1.9,
 		"ssil_intensity": 0.6,
-		"saturation":     0.92,
-		"contrast":       1.02,
+		"saturation":     0.94,
+		"contrast":       1.05,
 		"brightness":     1.0,
 		"fog_color":      Color(0.68, 0.52, 0.38),
-		"fog_energy":     0.8,
-		"fog_scatter":    0.35,
-		"fog_density":    0.0022,
-		"fog_aerial":     0.50,
-		"fog_sky_affect": 0.4,
-		"sun_energy":     0.75,
+		"fog_energy":     0.6,
+		"fog_scatter":    0.25,
+		"fog_density":    0.0014,
+		"fog_aerial":     0.40,
+		"fog_sky_affect": 0.3,
+		"sun_energy":     0.80,
 		"sun_color":      Color(1.0, 0.65, 0.30),
 		"sun_pitch":      -12.0,
 		"sun_yaw":        95.0,
 		"shadow_dist":    220.0,
 		"lamp_emission":  0.5,
-		"vol_fog_density":    0.0015,
+		"vol_fog_density":    0.0008,
 		"vol_fog_anisotropy": 0.78,
-		"cloud_coverage":     0.50,
-		"cloud_density":      0.60,
+		"cloud_coverage":     0.45,
+		"cloud_density":      0.55,
 		"cloud_color_top":    Color(0.78, 0.55, 0.42),
 		"cloud_color_bottom": Color(0.50, 0.28, 0.18),
 		"cloud_speed":        0.004,
 	})
 
-	# ---- 21.0  Night (autumn overcast) ----
+	# ---- 21.0  Night ----
 	_keyframes.append({
 		"hour": 21.0,
 		"sky_top":        Color(0.02, 0.03, 0.08),
@@ -720,9 +720,9 @@ func _build_keyframes() -> void:
 		"gnd_horizon":    Color(0.02, 0.03, 0.06),
 		"sun_angle_max":  3.0,
 		"sun_curve":      0.01,
-		"ambient_color":  Color(0.06, 0.06, 0.12),
-		"ambient_energy": 0.08,
-		"exposure":       0.55,
+		"ambient_color":  Color(0.10, 0.10, 0.18),
+		"ambient_energy": 0.15,
+		"exposure":       0.75,
 		"white":          5.0,
 		"glow_intensity": 0.7,
 		"glow_bloom":     0.25,
@@ -733,14 +733,14 @@ func _build_keyframes() -> void:
 		"ssao_intensity": 3.0,
 		"ssao_power":     2.0,
 		"ssil_intensity": 0.6,
-		"saturation":     0.50,
-		"contrast":       1.12,
-		"brightness":     0.70,
+		"saturation":     0.55,
+		"contrast":       1.08,
+		"brightness":     0.85,
 		"fog_color":      Color(0.08, 0.08, 0.12),
 		"fog_energy":     0.15,
 		"fog_scatter":    0.05,
-		"fog_density":    0.0025,
-		"fog_aerial":     0.55,
+		"fog_density":    0.0020,
+		"fog_aerial":     0.50,
 		"fog_sky_affect": 0.6,
 		"sun_energy":     0.05,
 		"sun_color":      Color(0.70, 0.78, 1.00),
@@ -748,7 +748,7 @@ func _build_keyframes() -> void:
 		"sun_yaw":        40.0,
 		"shadow_dist":    200.0,
 		"lamp_emission":  2.0,
-		"vol_fog_density":    0.0015,
+		"vol_fog_density":    0.0010,
 		"vol_fog_anisotropy": 0.10,
 		"cloud_coverage":     0.25,
 		"cloud_density":      0.50,
@@ -876,7 +876,7 @@ func _apply_time_of_day() -> void:
 		if em < 0.01:
 			_lamp_mat.emission = Color(0.0, 0.0, 0.0)
 		else:
-			_lamp_mat.emission = Color(1.0, 0.57, 0.16) * em
+			_lamp_mat.emission = Color(1.0, 0.45, 0.08) * em
 
 
 # ---------------------------------------------------------------------------
@@ -1695,7 +1695,7 @@ func _setup_lamp_lights() -> void:
 	# Create light pool — SpotLight3D pointing downward (lamppost shade)
 	for i in LAMP_LIGHT_COUNT:
 		var light := SpotLight3D.new()
-		light.light_color = Color(1.0, 0.57, 0.16)  # sodium vapor
+		light.light_color = Color(1.0, 0.45, 0.08)  # deep sodium vapor
 		light.light_energy = 0.0  # off until positioned
 		light.spot_range = 18.0
 		light.spot_angle = 70.0  # ~140° cone — wide pool below
@@ -1729,7 +1729,7 @@ func _update_lamp_lights() -> void:
 		if li < dists.size() and night_energy > 0.1:
 			var idx: int = dists[li][1]
 			_lamp_lights[li].global_position = _lamp_positions[idx]
-			_lamp_lights[li].light_energy = night_energy * 5.0
+			_lamp_lights[li].light_energy = night_energy * 8.0
 		else:
 			_lamp_lights[li].light_energy = 0.0
 
