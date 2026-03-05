@@ -554,9 +554,10 @@ func _ready() -> void:
 	_build_barriers(barriers)
 	_build_staircases(paths)
 	_build_statues(statues)
-	_build_boats(water)
-	_build_waterfowl(water)
-	_build_pedestrians(paths)
+	# Disabled — not ready yet:
+	#_build_boats(water)
+	#_build_waterfowl(water)
+	#_build_pedestrians(paths)
 	_build_boundary(boundary)
 	_build_perimeter_wall(boundary)
 	_build_boundary_facades()
