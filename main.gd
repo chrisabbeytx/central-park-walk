@@ -32,6 +32,10 @@ var _time_speed_idx: int = 0
 const TIME_SPEEDS: Array = [0.001, 0.01, 0.1, 0.0]
 const TIME_SPEED_NAMES: Array = ["1x", "10x", "100x", "Paused"]
 
+# Weather state: 0=clear, 1=partly_cloudy, 2=overcast
+var _weather_state: int = 1
+const WEATHER_NAMES: Array = ["Clear", "Partly Cloudy", "Overcast"]
+
 var _env: Environment
 var _sky_mat: ShaderMaterial
 var _sun: DirectionalLight3D
@@ -69,12 +73,19 @@ func _ready() -> void:
 		_apply_gpu_path_textures()
 	if _park_loader and _park_loader.boundary_polygon.size() > 2:
 		_apply_boundary_mask(_park_loader.boundary_polygon)
+	if _park_loader and _park_loader.water_proximity_texture:
+		_terrain_mat.set_shader_parameter("water_prox_map", _park_loader.water_proximity_texture)
+		print("Terrain: water proximity map applied")
+	if _park_loader and _park_loader.landuse_texture:
+		_terrain_mat.set_shader_parameter("landuse_map", _park_loader.landuse_texture)
+		print("Terrain: landuse map applied")
 	_player = _setup_player()
 	_setup_hud()
 	_setup_color_grade()
 	_setup_lamp_lights()
 	_setup_falling_leaves()
 	_setup_pigeons()
+	_setup_ramble_fog()
 	_setup_audio()
 	_apply_time_of_day()
 	# Check for --tour CLI arg
@@ -306,7 +317,7 @@ func _process(delta: float) -> void:
 			h12 = 12
 		var mins: int = int(fmod(_time_of_day, 1.0) * 60.0)
 		var ampm: String = "AM" if _time_of_day < 12.0 else "PM"
-		_time_label.text = "%d:%02d %s  [%s]" % [h12, mins, ampm, TIME_SPEED_NAMES[_time_speed_idx]]
+		_time_label.text = "%d:%02d %s  [%s] %s" % [h12, mins, ampm, TIME_SPEED_NAMES[_time_speed_idx], WEATHER_NAMES[_weather_state]]
 
 
 func _tour_teleport(idx: int) -> void:
@@ -354,6 +365,10 @@ func _unhandled_input(event: InputEvent) -> void:
 	elif event.keycode == KEY_BRACKETRIGHT:
 		_time_of_day = fmod(_time_of_day + 1.0, 24.0)
 		print("Time: %.1f h" % _time_of_day)
+	elif event.keycode == KEY_P:
+		_weather_state = (_weather_state + 1) % 3
+		print("Weather: ", WEATHER_NAMES[_weather_state])
+		_apply_time_of_day()
 
 
 # ---------------------------------------------------------------------------
@@ -893,6 +908,24 @@ func _apply_time_of_day() -> void:
 	_sun.rotation_degrees = Vector3(pitch, yaw, 0.0)
 	_sun.directional_shadow_max_distance = _lerp_kf("shadow_dist", a, b, t)
 
+	# --- Weather state modifiers ---
+	if _weather_state == 0:  # Clear
+		# Reduce clouds, boost sun, less fog
+		var cc: float = _sky_mat.get_shader_parameter("cloud_coverage")
+		_sky_mat.set_shader_parameter("cloud_coverage", cc * 0.5)
+		_sun.light_energy *= 1.2
+		_env.fog_density *= 0.7
+		_env.volumetric_fog_density *= 0.7
+	elif _weather_state == 2:  # Overcast
+		# Dense clouds, dim sun, more fog, muted colors
+		var cc2: float = _sky_mat.get_shader_parameter("cloud_coverage")
+		_sky_mat.set_shader_parameter("cloud_coverage", minf(cc2 * 1.3, 0.95))
+		_sun.light_energy *= 0.5
+		_env.fog_density *= 1.5
+		_env.volumetric_fog_density *= 1.5
+		_env.ambient_light_energy *= 1.3
+		_env.adjustment_saturation *= 0.85
+
 	# Lamppost emission
 	if _lamp_mat:
 		var em: float = _lerp_kf("lamp_emission", a, b, t)
@@ -902,6 +935,14 @@ func _apply_time_of_day() -> void:
 			_lamp_mat.emission = Color(0.0, 0.0, 0.0)
 		else:
 			_lamp_mat.emission = Color(1.0, 0.45, 0.08) * em
+
+	# Tunnel portal lights: proportional to sun energy (bright at night, dim at day)
+	if _park_loader:
+		var sun_e: float = _lerp_kf("sun_energy", a, b, t)
+		var portal_e := lerpf(2.5, 0.3, clampf(sun_e / 0.6, 0.0, 1.0))
+		for pl in _park_loader._portal_lights:
+			if is_instance_valid(pl):
+				pl.light_energy = portal_e
 
 	# Day/night audio modulation
 	if _audio_birds and _audio_birds.stream:
@@ -1223,6 +1264,12 @@ uniform int list_tex_w = 512;
 // Park boundary mask: white = inside park, black = outside
 uniform sampler2D park_mask : filter_linear, repeat_disable;
 
+// Water proximity: 1.0 at water edge, 0.0 beyond 20m
+uniform sampler2D water_prox_map : filter_linear, repeat_disable;
+
+// Landuse zones: 0=default, 1/255=mowed lawn, 2/255=garden, 3/255=woodland
+uniform sampler2D landuse_map : filter_nearest, repeat_disable;
+
 varying vec3 world_pos;
 
 float hash2(vec2 p) {
@@ -1457,11 +1504,38 @@ void fragment() {
 	grass_rgh = mix(grass_rgh, 0.30, mud * 0.6);
 
 	// Micro-normal bumps — uneven ground feel
-	float bump_a = vnoise(world_pos.xz * 0.8) * 0.5 + vnoise(world_pos.xz * 2.5) * 0.3;
 	float bump_dx = (vnoise(vec2(world_pos.x + 0.1, world_pos.z) * 0.8) - vnoise(vec2(world_pos.x - 0.1, world_pos.z) * 0.8)) * 2.5;
 	float bump_dz = (vnoise(vec2(world_pos.x, world_pos.z + 0.1) * 0.8) - vnoise(vec2(world_pos.x, world_pos.z - 0.1) * 0.8)) * 2.5;
 	grass_nrm.rg += vec2(bump_dx, bump_dz) * 0.15;
+	// High-freq micro-detail normals — distance-attenuated to prevent aliasing
+	float cam_dist = length(world_pos - INV_VIEW_MATRIX[3].xyz);
+	float micro_fade = 1.0 - smoothstep(10.0, 25.0, cam_dist);
+	float micro_dx = (vnoise(vec2(world_pos.x + 0.05, world_pos.z) * 4.0) - vnoise(vec2(world_pos.x - 0.05, world_pos.z) * 4.0)) * 5.0;
+	float micro_dz = (vnoise(vec2(world_pos.x, world_pos.z + 0.05) * 4.0) - vnoise(vec2(world_pos.x, world_pos.z - 0.05) * 4.0)) * 5.0;
+	grass_nrm.rg += vec2(micro_dx, micro_dz) * 0.10 * micro_fade;
 	grass_nrm = normalize(grass_nrm);
+
+	// Wet terrain near water — darkened, mossy, lower roughness
+	float water_prox = texture(water_prox_map, splat_uv).r;
+	grass_alb *= mix(1.0, 0.65, water_prox * 0.5);   // darken near water
+	grass_rgh = mix(grass_rgh, 0.25, water_prox * 0.7); // wet sheen
+	grass_alb.g += water_prox * 0.04;                 // moss/algae tint
+
+	// Landuse zone adjustments
+	int lu_zone = int(texture(landuse_map, splat_uv).r * 255.0 + 0.5);
+	if (lu_zone == 1) {
+		// Mowed lawn: brighter, suppress meadow, cleaner grass
+		grass_alb *= 1.08;
+		grass_rgh = min(grass_rgh + 0.05, 1.0);
+	} else if (lu_zone == 2) {
+		// Garden: darker richer soil, enhanced flower carpet areas
+		grass_alb *= 0.90;
+		grass_alb.g += 0.02;
+	} else if (lu_zone == 3) {
+		// Woodland: darker, more undergrowth feel
+		grass_alb *= 0.82;
+		grass_alb.g -= 0.02;
+	}
 
 	// Autumn lawn push — warm but still alive (not dead brown)
 	grass_alb.r *= 1.02;
@@ -1524,34 +1598,54 @@ void fragment() {
 	vec3 sun_tint = vec3(1.15, 1.02, 0.75); // warmer amber highlight
 	grass_alb *= mix(vec3(1.0), sun_tint, sun_patch * 0.32 * near_path_fade);
 
-	// --- Procedural grass blade overlay (4cm hash grid, 25 cells/m) ---
+	// --- Procedural grass blade overlay — dual rotated grids (breaks Moiré) ---
 	float blade_suppress = max(path_weight, wear);
-	vec2 blade_cell = floor(world_pos.xz * 25.0);
-	float blade_h = hash2(blade_cell);
-	float blade_h2 = hash2(blade_cell + vec2(71.3, 13.7));
-	float blade_h3 = hash2(blade_cell + vec2(37.1, 89.3));
-	vec2 blade_frac = fract(world_pos.xz * 25.0);
-	// Per-cell blade direction and center offset
-	float blade_ang = blade_h * 6.283;
-	vec2 blade_dir = vec2(cos(blade_ang), sin(blade_ang));
-	vec2 blade_cen = vec2(0.5) + (vec2(blade_h2, blade_h3) - 0.5) * 0.3;
-	vec2 blade_d = blade_frac - blade_cen;
-	// Elongated shape: project onto blade dir
-	float along = dot(blade_d, blade_dir);
-	float across = abs(dot(blade_d, vec2(-blade_dir.y, blade_dir.x)));
-	float blade_shape = smoothstep(0.22, 0.0, across) * smoothstep(0.48, 0.15, abs(along));
-	// Per-cell brightness variation (0.88–1.12) and warmth (±0.06)
-	float blade_bright = 0.88 + blade_h * 0.24;
-	float blade_warm = (blade_h2 - 0.5) * 0.12;
-	vec3 blade_tint = vec3(blade_bright + blade_warm, blade_bright, blade_bright - blade_warm * 0.5);
+	float blade_shape_combined = 0.0;
+	vec3 blade_tint_combined = vec3(1.0);
+	float blade_h_combined = 0.5;
+	float blade_h2_combined = 0.5;
+	// Grid A: original scale 25
+	{
+		vec2 bc = floor(world_pos.xz * 25.0);
+		float bh = hash2(bc); float bh2 = hash2(bc + vec2(71.3, 13.7)); float bh3 = hash2(bc + vec2(37.1, 89.3));
+		vec2 bf = fract(world_pos.xz * 25.0);
+		float ba = bh * 6.283; vec2 bd = vec2(cos(ba), sin(ba));
+		vec2 bcen = vec2(0.5) + (vec2(bh2, bh3) - 0.5) * 0.3;
+		vec2 dd = bf - bcen;
+		float al = dot(dd, bd); float ac = abs(dot(dd, vec2(-bd.y, bd.x)));
+		float bs = smoothstep(0.22, 0.0, ac) * smoothstep(0.48, 0.15, abs(al));
+		if (bs > blade_shape_combined) {
+			blade_shape_combined = bs; blade_h_combined = bh; blade_h2_combined = bh2;
+			float bb = 0.88 + bh * 0.24; float bw = (bh2 - 0.5) * 0.12;
+			blade_tint_combined = vec3(bb + bw, bb, bb - bw * 0.5);
+		}
+	}
+	// Grid B: rotated 37°, scale 29 (different freq breaks alignment)
+	{
+		float rot_s = sin(0.6458); float rot_c = cos(0.6458); // 37 degrees
+		vec2 rp = vec2(world_pos.x * rot_c - world_pos.z * rot_s, world_pos.x * rot_s + world_pos.z * rot_c);
+		vec2 bc = floor(rp * 29.0);
+		float bh = hash2(bc + vec2(53.7, 97.1)); float bh2 = hash2(bc + vec2(19.3, 61.7)); float bh3 = hash2(bc + vec2(83.1, 27.9));
+		vec2 bf = fract(rp * 29.0);
+		float ba = bh * 6.283; vec2 bd = vec2(cos(ba), sin(ba));
+		vec2 bcen = vec2(0.5) + (vec2(bh2, bh3) - 0.5) * 0.3;
+		vec2 dd = bf - bcen;
+		float al = dot(dd, bd); float ac = abs(dot(dd, vec2(-bd.y, bd.x)));
+		float bs = smoothstep(0.22, 0.0, ac) * smoothstep(0.48, 0.15, abs(al));
+		if (bs > blade_shape_combined) {
+			blade_shape_combined = bs; blade_h_combined = bh; blade_h2_combined = bh2;
+			float bb = 0.88 + bh * 0.24; float bw = (bh2 - 0.5) * 0.12;
+			blade_tint_combined = vec3(bb + bw, bb, bb - bw * 0.5);
+		}
+	}
 	float blade_intensity = 0.35 * (1.0 - blade_suppress);
-	grass_alb = mix(grass_alb, grass_alb * blade_tint, blade_shape * blade_intensity);
+	grass_alb = mix(grass_alb, grass_alb * blade_tint_combined, blade_shape_combined * blade_intensity);
 	// Per-blade normal perturbation
-	grass_nrm.r += (blade_h - 0.5) * blade_shape * blade_intensity * 0.3;
-	grass_nrm.g += (blade_h2 - 0.5) * blade_shape * blade_intensity * 0.3;
+	grass_nrm.r += (blade_h_combined - 0.5) * blade_shape_combined * blade_intensity * 0.3;
+	grass_nrm.g += (blade_h2_combined - 0.5) * blade_shape_combined * blade_intensity * 0.3;
 
 	// --- Anisotropic flow direction for grass shimmer ---
-	float aniso_flow = vnoise(world_pos.xz * 0.5);
+	float aniso_flow = vnoise(world_pos.xz * 0.5 + TIME * 0.08);
 
 	if (mat_idx > 0 && path_weight > 0.001) {
 		// --- Path shading ---
@@ -1562,6 +1656,11 @@ void fragment() {
 		vec3 p_alb = texture(path_alb_arr, vec3(path_uv, tex_set)).rgb * tint;
 		vec3 p_nrm = texture(path_nrm_arr, vec3(path_uv, tex_set)).rgb;
 		float p_rgh = clamp(texture(path_rgh_arr, vec3(path_uv, tex_set)).r + 0.10, 0.0, 1.0);
+
+		// Path center wear — polished stone effect where foot traffic is heaviest
+		float center_weight = smoothstep(0.3, 0.9, best_cov) * (0.8 + vnoise(world_pos.xz * 0.3) * 0.4);
+		p_alb *= mix(1.0, 0.85, center_weight);  // darken 15% at center
+		p_rgh *= mix(1.0, 0.70, center_weight);   // reduce roughness 30% (polished)
 
 		// Smooth path-grass transition — tight crisp edge
 		float soft_weight = smoothstep(0.05, 0.65, path_weight);
@@ -1991,6 +2090,45 @@ func _setup_falling_leaves() -> void:
 	_falling_leaves = particles
 
 
+func _setup_ramble_fog() -> void:
+	## FogVolume nodes in the Ramble for volumetric god rays.
+	## Hardcoded AABB: X ∈ [-550, -250], Z ∈ [400, 800].
+	var fog_shader_code := """shader_type fog;
+
+void fog() {
+	// Noise-based density for ray-like streaks using UVW (0-1 in volume space)
+	float n = sin(UVW.x * 12.0 + UVW.z * 8.0 + TIME * 0.05) * 0.5 + 0.5;
+	n *= sin(UVW.z * 10.0 + UVW.x * 6.0 + TIME * 0.03) * 0.5 + 0.5;
+	float height_fade = smoothstep(1.0, 0.0, UVW.y);
+	DENSITY = n * height_fade * 0.12;
+	ALBEDO = vec3(0.95, 0.92, 0.85);
+	EMISSION = vec3(0.0);
+}
+"""
+	var fog_sh := Shader.new()
+	fog_sh.code = fog_shader_code
+	var fog_mat := ShaderMaterial.new()
+	fog_mat.shader = fog_sh
+
+	# 2 FogVolume boxes covering the Ramble
+	var positions := [
+		Vector3(-400.0, 15.0, 600.0),  # center of Ramble
+		Vector3(-350.0, 12.0, 500.0),  # southern Ramble
+	]
+	var sizes := [
+		Vector3(200.0, 30.0, 200.0),
+		Vector3(150.0, 25.0, 150.0),
+	]
+	for i in positions.size():
+		var fv := FogVolume.new()
+		fv.position = positions[i]
+		fv.size = sizes[i]
+		fv.material = fog_mat
+		fv.name = "RambleFog_%d" % i
+		add_child(fv)
+	print("Ramble fog: %d volumes" % positions.size())
+
+
 func _setup_pigeons() -> void:
 	## 3 pigeon flocks at key gathering spots as GPUParticles3D.
 	var locations := [
@@ -2052,6 +2190,11 @@ var _audio_footstep_stone: AudioStreamPlayer
 var _footstep_timer: float = 0.0
 var _footstep_interval: float = 0.65  # seconds per step at walk speed
 
+# Audio zone system — smooth crossfading between zones
+var _audio_zone: int = 0  # 0=default, 1=ramble, 2=great_lawn, 3=reservoir, 4=tunnel
+var _zone_blend: float = 0.0  # 0.0-1.0 blend toward target zone
+var _zone_target: int = 0
+
 func _setup_audio() -> void:
 	## Initialize layered ambient soundscape.
 	# Background layers (non-spatial)
@@ -2101,13 +2244,44 @@ func _update_audio(delta: float) -> void:
 		var city_vol := lerpf(-12.0, -22.0, clampf(min_dist / 200.0, 0.0, 1.0))
 		_audio_city.volume_db = city_vol
 
-	# Birds louder in dense tree areas (use tree density heuristic)
+	# Audio zone detection
+	var new_zone := 0  # default
+	if ppos.x > -550 and ppos.x < -250 and ppos.z > 400 and ppos.z < 800:
+		new_zone = 1  # Ramble — dense birdsong
+	elif ppos.x > -400 and ppos.x < 100 and ppos.z > -200 and ppos.z < 200:
+		new_zone = 2  # Great Lawn — wind, distant city
+	elif ppos.x > -300 and ppos.x < 300 and ppos.z > -900 and ppos.z < -300:
+		new_zone = 3  # Reservoir — water lapping
+	# Tunnel detection: check if player is below terrain by > 1m
+	if _park_loader:
+		var terrain_h := _terrain_height(ppos.x, ppos.z)
+		if ppos.y < terrain_h - 1.0:
+			new_zone = 4  # tunnel
+	_zone_target = new_zone
+	# Crossfade zone blend
+	if _audio_zone != _zone_target:
+		_zone_blend -= delta * 0.25  # fade out over ~4s
+		if _zone_blend <= 0.0:
+			_audio_zone = _zone_target
+			_zone_blend = 0.0
+	else:
+		_zone_blend = minf(_zone_blend + delta * 0.25, 1.0)
+
+	# Zone-aware audio modulation
 	if _audio_birds and _audio_birds.stream:
 		var bird_vol := -10.0  # base volume
-		# Louder in The Ramble area (dense trees)
-		if ppos.x > -550 and ppos.x < -250 and ppos.z > 400 and ppos.z < 800:
-			bird_vol = -5.0
+		if _audio_zone == 1:  # Ramble
+			bird_vol = lerpf(-10.0, -3.0, _zone_blend)  # dense birdsong
+		elif _audio_zone == 4:  # Tunnel
+			bird_vol = lerpf(-10.0, -25.0, _zone_blend)  # muffled
 		_audio_birds.volume_db = bird_vol
+	if _audio_wind and _audio_wind.stream:
+		var wind_adj := 0.0
+		if _audio_zone == 2:  # Great Lawn — open wind
+			wind_adj = lerpf(0.0, 4.0, _zone_blend)
+		elif _audio_zone == 4:  # Tunnel — no wind
+			wind_adj = lerpf(0.0, -10.0, _zone_blend)
+		_audio_wind.volume_db = -14.0 + wind_adj
 
 	# Water proximity
 	if _audio_water and _audio_water.stream and _park_loader:

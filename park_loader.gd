@@ -62,6 +62,10 @@ var gpu_path_seg_tex_w: int = 256
 var gpu_path_list_tex_w: int = 512
 var tunnel_depressions: Array = []  # stairwell depressions for terrain carving
 var boundary_polygon: PackedVector2Array  # XZ boundary for player clamping
+var water_proximity_texture: ImageTexture  # 1024×1024 R8 — distance to water edges
+var _water_polygons: Array = []  # stored water polygon edges for proximity baking
+var _portal_lights: Array = []  # OmniLight3D refs for day/night modulation
+var landuse_texture: ImageTexture  # 1024×1024 R8 — zone type enum
 
 
 # ---------------------------------------------------------------------------
@@ -513,6 +517,7 @@ func _ready() -> void:
 	_build_buildings(data.get("buildings", []))
 	_build_paths(data.get("paths", []))
 	_build_water(data.get("water", []))
+	_bake_water_proximity()
 	_populate_water_grid(data.get("water", []))
 	_build_shore_vegetation(data.get("water", []))
 	_build_labels(data.get("water", []))
@@ -538,6 +543,7 @@ func _ready() -> void:
 	_build_boundary(data.get("boundary", []))
 	_build_perimeter_wall(data.get("boundary", []))
 	_build_boundary_facades()
+	_bake_landuse_texture(data.get("landuse", []))
 	print("ParkLoader: done")
 
 
@@ -1420,6 +1426,11 @@ func _build_bridge(path: Dictionary) -> void:
 			parapet_tint = Color(0.65, 0.42, 0.32)
 			abut_tint = Color(0.62, 0.41, 0.31)
 
+	# --- GAPSTOW BRIDGE HERO TREATMENT ---
+	if bridge_name == "Gapstow Bridge":
+		_build_gapstow_bridge(pts, cum_len, total_len, width, rw_alb, rw_nrm, rw_rgh, bridge_miter)
+		return
+
 	# Terrain heights at the two endpoints
 	var y_start := float(pts[0][1])
 	var y_end   := float(pts[n_pts - 1][1])
@@ -1856,6 +1867,209 @@ func _build_bridge(path: Dictionary) -> void:
 		lbl.position = label_pos
 		lbl.name = "Bridge_Label"
 		add_child(lbl)
+
+
+# ---------------------------------------------------------------------------
+# Gapstow Bridge — custom hero geometry
+# Single stone arch, fieldstone texture, semicircular profile, humped deck
+# ---------------------------------------------------------------------------
+func _build_gapstow_bridge(pts: Array, cum_len: PackedFloat32Array,
+		total_len: float, width: float,
+		rw_alb: Texture2D, rw_nrm: Texture2D, rw_rgh: Texture2D,
+		bridge_miter: Array[Vector2]) -> void:
+	var n_pts := pts.size()
+	var hw2 := width * 0.5 + 0.5  # wider than normal
+	var y_start := float(pts[0][1])
+	var y_end   := float(pts[n_pts - 1][1])
+	var mid_terrain := y_start
+	for i in range(n_pts):
+		mid_terrain = minf(mid_terrain, float(pts[i][1]))
+	# Gapstow: low arch, ~2.5m clearance at crown
+	var arch_clearance := 2.5
+	var crown_y := mid_terrain + arch_clearance
+	var deck_y := crown_y + 0.35  # deck thickness above arch crown
+
+	# Build arch profile: semicircular arch visible from below (soffit)
+	var arch_segs := 12
+	var arch_span := total_len * 0.7  # arch covers 70% of bridge length
+	var arch_rise := arch_clearance
+	var arch_start_d := total_len * 0.15  # arch starts 15% from each end
+
+	# Per-point deck height: humped profile (higher at center)
+	var pt_y := PackedFloat32Array()
+	pt_y.resize(n_pts)
+	for i in range(n_pts):
+		var d := cum_len[i]
+		var t_along := d / total_len
+		# Parabolic hump: peaks at center
+		var hump := 1.0 - (2.0 * t_along - 1.0) * (2.0 * t_along - 1.0)
+		var ramp_frac := 0.15
+		var base_y: float
+		if t_along < ramp_frac:
+			var rt := t_along / ramp_frac
+			rt = rt * rt * (3.0 - 2.0 * rt)
+			base_y = lerpf(y_start + PATH_Y, deck_y, rt)
+		elif t_along > 1.0 - ramp_frac:
+			var rt := (1.0 - t_along) / ramp_frac
+			rt = rt * rt * (3.0 - 2.0 * rt)
+			base_y = lerpf(y_end + PATH_Y, deck_y, rt)
+		else:
+			base_y = deck_y
+		pt_y[i] = base_y + hump * 0.6  # subtle hump
+
+	# Build deck + soffit geometry
+	var stone_tint := Color(0.75, 0.72, 0.68)
+	var stone_mat := _make_stone_material(rw_alb, rw_nrm, rw_rgh, stone_tint)
+	var deck_v := PackedVector3Array()
+	var deck_n := PackedVector3Array()
+	var deck_uv := PackedVector2Array()
+	var col_faces := PackedVector3Array()
+	var u_d := 0.0
+
+	for i in range(n_pts - 1):
+		var x1 := float(pts[i][0]);   var z1 := float(pts[i][2])
+		var x2 := float(pts[i+1][0]); var z2 := float(pts[i+1][2])
+		var dy1 := pt_y[i]; var dy2 := pt_y[i+1]
+		var seg2 := Vector2(x2 - x1, z2 - z1)
+		if seg2.length_squared() < 0.0001:
+			continue
+		var seg_len := seg2.length()
+		var nv1 := bridge_miter[i]; var nv2 := bridge_miter[i + 1]
+		var u2 := u_d + seg_len / width
+		# Deck top (faces up)
+		var d0l := Vector3(x1 + nv1.x * hw2, dy1, z1 + nv1.y * hw2)
+		var d0r := Vector3(x1 - nv1.x * hw2, dy1, z1 - nv1.y * hw2)
+		var d1l := Vector3(x2 + nv2.x * hw2, dy2, z2 + nv2.y * hw2)
+		var d1r := Vector3(x2 - nv2.x * hw2, dy2, z2 - nv2.y * hw2)
+		deck_v.append_array([d0l, d0r, d1r, d0l, d1r, d1l])
+		for _j in 6: deck_n.append(Vector3.UP)
+		deck_uv.append_array([Vector2(0, u_d), Vector2(1, u_d), Vector2(1, u2),
+			Vector2(0, u_d), Vector2(1, u2), Vector2(0, u2)])
+		# Collision
+		col_faces.append_array([d0l, d0r, d1r, d0l, d1r, d1l])
+		# Soffit (faces down) — only in arch span
+		var d_mid := (cum_len[i] + cum_len[i+1]) * 0.5
+		if d_mid >= arch_start_d and d_mid <= total_len - arch_start_d:
+			var s_thick := 0.35
+			var s0l := Vector3(d0l.x, dy1 - s_thick, d0l.z)
+			var s0r := Vector3(d0r.x, dy1 - s_thick, d0r.z)
+			var s1l := Vector3(d1l.x, dy2 - s_thick, d1l.z)
+			var s1r := Vector3(d1r.x, dy2 - s_thick, d1r.z)
+			deck_v.append_array([s0r, s0l, s1l, s0r, s1l, s1r])
+			for _j in 6: deck_n.append(Vector3.DOWN)
+			deck_uv.append_array([Vector2(0, u_d), Vector2(1, u_d), Vector2(1, u2),
+				Vector2(0, u_d), Vector2(1, u2), Vector2(0, u2)])
+		u_d = u2
+
+	if not deck_v.is_empty():
+		_add_stone_mesh(deck_v, deck_n, rw_alb, rw_nrm, rw_rgh, stone_tint, "GapstowDeck")
+
+	# Collision
+	if not col_faces.is_empty():
+		var shape := ConcavePolygonShape3D.new()
+		shape.set_faces(col_faces)
+		var body := StaticBody3D.new()
+		body.name = "GapstowCollision"
+		var coll := CollisionShape3D.new()
+		coll.shape = shape
+		body.add_child(coll)
+		add_child(body)
+
+	# Wider stone parapets (0.35m thick, 1.0m tall)
+	var par_h := 1.0; var par_t := 0.35
+	var par_v := PackedVector3Array()
+	var par_n := PackedVector3Array()
+	var par_uv := PackedVector2Array()
+	for side in [-1.0, 1.0]:
+		var u_p := 0.0
+		for i in range(n_pts - 1):
+			var x1 := float(pts[i][0]); var z1 := float(pts[i][2])
+			var x2 := float(pts[i+1][0]); var z2 := float(pts[i+1][2])
+			var nv1 := bridge_miter[i]; var nv2 := bridge_miter[i+1]
+			var seg_len := Vector2(x2-x1, z2-z1).length()
+			if seg_len < 0.001: continue
+			var u2_p := u_p + seg_len / par_h
+			var outer_off := hw2 + par_t * 0.5
+			var inner_off := hw2 - par_t * 0.5
+			# Outer face
+			var o1 := Vector3(x1 + nv1.x*outer_off*side, pt_y[i], z1 + nv1.y*outer_off*side)
+			var o2 := Vector3(x2 + nv2.x*outer_off*side, pt_y[i+1], z2 + nv2.y*outer_off*side)
+			var o1t := o1 + Vector3(0, par_h, 0); var o2t := o2 + Vector3(0, par_h, 0)
+			par_v.append_array([o1, o2, o2t, o1, o2t, o1t])
+			var fn := Vector3(nv1.x * side, 0, nv1.y * side).normalized()
+			for _j in 6: par_n.append(fn)
+			par_uv.append_array([Vector2(u_p, 0), Vector2(u2_p, 0), Vector2(u2_p, 1),
+				Vector2(u_p, 0), Vector2(u2_p, 1), Vector2(u_p, 1)])
+			# Top cap
+			var i1 := Vector3(x1 + nv1.x*inner_off*side, pt_y[i]+par_h, z1 + nv1.y*inner_off*side)
+			var i2 := Vector3(x2 + nv2.x*inner_off*side, pt_y[i+1]+par_h, z2 + nv2.y*inner_off*side)
+			par_v.append_array([o1t, o2t, i2, o1t, i2, i1])
+			for _j in 6: par_n.append(Vector3.UP)
+			par_uv.append_array([Vector2(u_p, 0), Vector2(u2_p, 0), Vector2(u2_p, 0.3),
+				Vector2(u_p, 0), Vector2(u2_p, 0.3), Vector2(u_p, 0.3)])
+			u_p = u2_p
+
+	if not par_v.is_empty():
+		_add_stone_mesh(par_v, par_n, rw_alb, rw_nrm, rw_rgh,
+			Color(0.72, 0.70, 0.66), "GapstowParapets")
+
+	# Stone arch face at each end — semicircular voussoir profile
+	var arch_v := PackedVector3Array()
+	var arch_n := PackedVector3Array()
+	var arch_uv_a := PackedVector2Array()
+	for end_i in [0, n_pts - 1]:
+		var ex := float(pts[end_i][0]); var ez := float(pts[end_i][2])
+		var ey := pt_y[end_i]
+		# Direction: inward from end
+		var dir_sign := 1.0 if end_i == 0 else -1.0
+		var seg_idx := 0 if end_i == 0 else n_pts - 2
+		var dx := float(pts[seg_idx + 1][0]) - float(pts[seg_idx][0])
+		var dz := float(pts[seg_idx + 1][2]) - float(pts[seg_idx][2])
+		var seg_l := sqrt(dx*dx + dz*dz)
+		if seg_l < 0.001: continue
+		var fwd := Vector3(dx/seg_l, 0, dz/seg_l) * dir_sign
+		var face_n := -fwd
+		var right := Vector3(fwd.z, 0, -fwd.x)  # perpendicular
+		# Draw rough-cut voussoir arch
+		var arch_w := hw2 + par_t
+		var arch_base_y := ey - 0.5
+		var arch_top_y := ey
+		# Rectangular frame around arch
+		var n_arch := 10
+		for ai in range(n_arch):
+			var a0 := PI * float(ai) / float(n_arch)
+			var a1 := PI * float(ai + 1) / float(n_arch)
+			var ax0 := cos(a0) * arch_w; var ay0 := sin(a0) * arch_rise + arch_base_y
+			var ax1 := cos(a1) * arch_w; var ay1 := sin(a1) * arch_rise + arch_base_y
+			var p0 := Vector3(ex, ay0, ez) + right * ax0
+			var p1 := Vector3(ex, ay1, ez) + right * ax1
+			# Keystone voussoir — small trapezoidal face
+			var p0o := p0 + Vector3(0, 0.15, 0)
+			var p1o := p1 + Vector3(0, 0.15, 0)
+			arch_v.append_array([p0, p1, p1o, p0, p1o, p0o])
+			for _j in 6: arch_n.append(face_n)
+			arch_uv_a.append_array([Vector2(0, 0), Vector2(0.2, 0), Vector2(0.2, 0.2),
+				Vector2(0, 0), Vector2(0.2, 0.2), Vector2(0, 0.2)])
+
+	if not arch_v.is_empty():
+		_add_stone_mesh(arch_v, arch_n, rw_alb, rw_nrm, rw_rgh,
+			Color(0.68, 0.65, 0.60), "GapstowArch")
+
+	# Label
+	var cx := (float(pts[0][0]) + float(pts[n_pts-1][0])) * 0.5
+	var cz := (float(pts[0][2]) + float(pts[n_pts-1][2])) * 0.5
+	var cy := deck_y + 2.0
+	var lbl := Label3D.new()
+	lbl.text = "Gapstow Bridge"
+	lbl.font_size = 64; lbl.pixel_size = 0.04
+	lbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	lbl.modulate = Color(1.0, 1.0, 1.0, 0.95)
+	lbl.outline_size = 8
+	lbl.outline_modulate = Color(0.0, 0.08, 0.25, 0.85)
+	lbl.position = Vector3(cx, cy, cz)
+	lbl.name = "Label_GapstowBridge"
+	add_child(lbl)
+	print("  Gapstow Bridge: hero treatment applied")
 
 
 # ---------------------------------------------------------------------------
@@ -2855,6 +3069,21 @@ func _build_tunnel(path: Dictionary) -> void:
 			next_light += light_spacing
 		cum_d += lseg
 
+	# Portal lights at each tunnel entrance — brighter, wider range
+	for end_i in [0, pts.size() - 1]:
+		var px := float(pts[end_i][0])
+		var py := float(pts[end_i][1])
+		var pz := float(pts[end_i][2])
+		var portal_light := OmniLight3D.new()
+		portal_light.position = Vector3(px, py + PATH_Y - TUNNEL_H * 0.3, pz)
+		portal_light.light_color = Color(1.0, 0.95, 0.85)  # warm white
+		portal_light.light_energy = 2.5
+		portal_light.omni_range = 12.0
+		portal_light.omni_attenuation = 2.0
+		portal_light.shadow_enabled = false
+		portal_light.name = "TunnelPortalLight"
+		add_child(portal_light)
+		_portal_lights.append(portal_light)
 
 
 func _build_tunnel_portals(pts: Array, width: float, height: float, mat: Material) -> void:
@@ -3753,6 +3982,9 @@ func _build_water(water: Array) -> void:
 		if not expanded.is_empty():
 			polygon = expanded[0]
 
+		# Store polygon edges for water proximity baking
+		_water_polygons.append(polygon)
+
 		# Grid-based mesh: dense interior vertices so terrain clamping works
 		# Without this, large triangles span the lake and terrain pokes through.
 		var bb_min_x := INF; var bb_max_x := -INF
@@ -3822,6 +4054,120 @@ func _build_water(water: Array) -> void:
 	add_child(mi)
 
 
+func _bake_water_proximity() -> void:
+	## Bake 512×512 R8 water proximity texture using spatial grid acceleration.
+	## Value = 1.0 at water edge, 0.0 beyond 20m.
+	if _water_polygons.is_empty():
+		return
+	const WP_RES := 512
+	const MAX_DIST := 20.0
+	const GRID_CELL := 25.0  # spatial grid cell size
+	var half := _hm_world_size * 0.5
+	# Build spatial grid of edge indices for fast lookup
+	var grid_n := int(ceil(_hm_world_size / GRID_CELL))
+	var edge_grid: Dictionary = {}
+	var edges: Array = []
+	for poly in _water_polygons:
+		for i in range(poly.size()):
+			var a: Vector2 = poly[i]
+			var b: Vector2 = poly[(i + 1) % poly.size()]
+			var eidx := edges.size()
+			edges.append([a, b])
+			# Insert into all grid cells the edge AABB touches (with MAX_DIST margin)
+			var emin_x := minf(a.x, b.x) - MAX_DIST
+			var emax_x := maxf(a.x, b.x) + MAX_DIST
+			var emin_z := minf(a.y, b.y) - MAX_DIST
+			var emax_z := maxf(a.y, b.y) + MAX_DIST
+			var gx0 := clampi(int((emin_x + half) / GRID_CELL), 0, grid_n - 1)
+			var gx1 := clampi(int((emax_x + half) / GRID_CELL), 0, grid_n - 1)
+			var gz0 := clampi(int((emin_z + half) / GRID_CELL), 0, grid_n - 1)
+			var gz1 := clampi(int((emax_z + half) / GRID_CELL), 0, grid_n - 1)
+			for gz in range(gz0, gz1 + 1):
+				for gx in range(gx0, gx1 + 1):
+					var gk := gz * grid_n + gx
+					if not edge_grid.has(gk):
+						edge_grid[gk] = []
+					edge_grid[gk].append(eidx)
+	var img := Image.create(WP_RES, WP_RES, false, Image.FORMAT_R8)
+	for pz in range(WP_RES):
+		var wz := -half + (float(pz) + 0.5) / float(WP_RES) * _hm_world_size
+		var gz := clampi(int((wz + half) / GRID_CELL), 0, grid_n - 1)
+		for px in range(WP_RES):
+			var wx := -half + (float(px) + 0.5) / float(WP_RES) * _hm_world_size
+			var gx := clampi(int((wx + half) / GRID_CELL), 0, grid_n - 1)
+			var gk := gz * grid_n + gx
+			var min_d := MAX_DIST
+			if edge_grid.has(gk):
+				var pt := Vector2(wx, wz)
+				for eidx in edge_grid[gk]:
+					var edge: Array = edges[eidx]
+					var a: Vector2 = edge[0]
+					var b: Vector2 = edge[1]
+					var ab := b - a
+					var ap := pt - a
+					var t := clampf(ap.dot(ab) / maxf(ab.dot(ab), 0.0001), 0.0, 1.0)
+					var closest := a + ab * t
+					var d := pt.distance_to(closest)
+					if d < min_d:
+						min_d = d
+			var val := 1.0 - clampf(min_d / MAX_DIST, 0.0, 1.0)
+			img.set_pixel(px, pz, Color(val, 0.0, 0.0, 1.0))
+	water_proximity_texture = ImageTexture.create_from_image(img)
+	print("Water proximity: %dx%d baked (%d edges)" % [WP_RES, WP_RES, edges.size()])
+
+
+func _bake_landuse_texture(landuse: Array) -> void:
+	## Bake 1024×1024 R8 landuse texture. Zone types:
+	## 0 = default, 1 = mowed lawn (Sheep Meadow, Great Lawn), 2 = garden, 3 = woodland
+	if landuse.is_empty():
+		print("Landuse: no data, skipping")
+		return
+	const LU_RES := 1024
+	var half := _hm_world_size * 0.5
+	var img := Image.create(LU_RES, LU_RES, false, Image.FORMAT_R8)
+	# Classify zones and build polygon arrays
+	var zone_polys: Array = []  # [PackedVector2Array, zone_type_float]
+	for zone in landuse:
+		var pts: Array = zone.get("points", [])
+		if pts.size() < 3:
+			continue
+		var name_lower: String = str(zone.get("name", "")).to_lower()
+		var zone_type: String = str(zone.get("type", ""))
+		var zone_val := 0.0
+		# Mowed lawns: Sheep Meadow, Great Lawn, North Meadow, etc.
+		if name_lower.contains("meadow") or name_lower.contains("lawn") or \
+		   name_lower.contains("north meadow") or zone_type == "grass":
+			zone_val = 1.0 / 255.0  # type 1
+		elif name_lower.contains("garden") or name_lower.contains("conservatory") or \
+			 zone_type == "garden" or zone_type == "allotments":
+			zone_val = 2.0 / 255.0  # type 2
+		elif name_lower.contains("ramble") or name_lower.contains("north woods") or \
+			 zone_type == "forest" or zone_type == "wood":
+			zone_val = 3.0 / 255.0  # type 3
+		else:
+			continue  # skip unknown zones
+		var poly := PackedVector2Array()
+		for pt in pts:
+			poly.append(Vector2(float(pt[0]), float(pt[1])))
+		zone_polys.append([poly, zone_val])
+	if zone_polys.is_empty():
+		print("Landuse: no recognized zones")
+		return
+	# Rasterize zones
+	for pz in range(LU_RES):
+		var wz := -half + (float(pz) + 0.5) / float(LU_RES) * _hm_world_size
+		for px in range(LU_RES):
+			var wx := -half + (float(px) + 0.5) / float(LU_RES) * _hm_world_size
+			var pt := Vector2(wx, wz)
+			for zp in zone_polys:
+				var poly: PackedVector2Array = zp[0]
+				if Geometry2D.is_point_in_polygon(pt, poly):
+					img.set_pixel(px, pz, Color(zp[1], 0.0, 0.0, 1.0))
+					break  # first matching zone wins
+	landuse_texture = ImageTexture.create_from_image(img)
+	print("Landuse: %dx%d baked (%d zones)" % [LU_RES, LU_RES, zone_polys.size()])
+
+
 func _water_shader_code() -> String:
 	return """shader_type spatial;
 render_mode cull_disabled;
@@ -3834,6 +4180,8 @@ uniform float hm_res        = 256.0;
 uniform float water_y_offset = 0.03;
 
 varying vec3 world_pos;
+varying float v_shore_dist;
+varying float v_water_depth;
 
 // Decode 16-bit height from RG8
 float decode_h(vec4 s) {
@@ -3905,6 +4253,18 @@ void vertex() {
 		w.y = terrain_h;
 	}
 	world_pos = w;
+	// Shore softening: sample terrain at 4 neighboring points
+	float step_d = 3.0;
+	float t_n = sample_terrain(w.xz + vec2(0.0, -step_d));
+	float t_s = sample_terrain(w.xz + vec2(0.0,  step_d));
+	float t_e = sample_terrain(w.xz + vec2( step_d, 0.0));
+	float t_w = sample_terrain(w.xz + vec2(-step_d, 0.0));
+	float max_neighbor = max(max(t_n, t_s), max(t_e, t_w));
+	v_shore_dist = max(0.0, w.y - max_neighbor) * 3.0 + 0.5;
+	if (max_neighbor > w.y) { v_shore_dist = max(0.0, w.y - max_neighbor + 0.5); }
+	// Depth tinting
+	float bed_h = sample_terrain(w.xz);
+	v_water_depth = max(0.0, w.y - bed_h);
 }
 
 void fragment() {
@@ -3918,26 +4278,29 @@ void fragment() {
 	float n_fine  = gnoise(uv * 3.5 + vec2(t * 0.15, -t * 0.12));
 	float wave_h  = n_large * 0.4 + n_med * 0.35 + n_fine * 0.25;
 
+	// Depth-based tinting — deeper water is darker
 	vec3 deep    = vec3(0.025, 0.045, 0.050);
-	vec3 shallow = vec3(0.055, 0.10, 0.085);
-	// Subtle blend — mostly deep, shallow only at wave peaks
-	vec3 base_col = mix(deep, shallow, smoothstep(-0.3, 0.6, wave_h));
+	vec3 shallow = vec3(0.065, 0.12, 0.095);
+	float depth_blend = smoothstep(0.0, 3.0, v_water_depth);
+	vec3 base_col = mix(shallow, deep, depth_blend);
+	// Subtle wave-based variation on top
+	base_col = mix(base_col, base_col * 1.15, smoothstep(-0.3, 0.6, wave_h) * 0.3);
 
 	NORMAL    = normalize((VIEW_MATRIX * vec4(wave_nrm, 0.0)).xyz);
 
-	// Fresnel — glancing angles reflect sky
+	// Let SSR handle reflections — Fresnel controls roughness for glancing reflection
 	float fresnel = pow(1.0 - max(dot(NORMAL, VIEW), 0.0), 4.0);
-	vec3 sky_col = vec3(0.40, 0.48, 0.58);
-	vec3 col = mix(base_col, sky_col, fresnel * 0.6);
 
 	// Foam — white caps at wave peaks
 	float foam = smoothstep(0.6, 0.85, wave_h);
-	col = mix(col, vec3(0.85, 0.90, 0.92), foam * 0.7);
+	base_col = mix(base_col, vec3(0.85, 0.90, 0.92), foam * 0.7);
 
-	ALBEDO    = col;
-	ROUGHNESS = mix(0.20, 0.05, fresnel);
-	METALLIC  = 0.0;
-	SPECULAR  = 0.6;
+	ALBEDO    = base_col;
+	ROUGHNESS = mix(0.12, 0.02, fresnel);
+	METALLIC  = 0.05;
+	SPECULAR  = 0.5;
+	// Shore softening — fade alpha near edges
+	ALPHA     = smoothstep(0.0, 1.5, v_shore_dist);
 }
 """
 
@@ -4790,15 +5153,18 @@ func _build_trees(trees: Array) -> void:
 	var bark_rgh  := _load_tex("res://textures/Bark007_2K-JPG_Roughness.jpg")
 	var bark_ao   := _load_tex("res://textures/Bark007_2K-JPG_AmbientOcclusion.jpg")
 
-	# Leaf card meshes (broadleaf dome / conifer cone)
+	# Leaf card meshes — 3 LOD levels
 	var broad_leaf_mesh := _make_leaf_card_mesh(false)
 	var conif_leaf_mesh := _make_leaf_card_mesh(true)
+	var broad_lod1 := _make_leaf_card_mesh_lod1(false)
+	var conif_lod1 := _make_leaf_card_mesh_lod1(true)
+	var lod2_mesh  := _make_leaf_card_mesh_lod2()
 
 	# Per-species leaf materials: oak=LeafSet003, maple+shrub=LeafSet005, elm=LeafSet009, conifer=LeafSet019
-	var oak_mat   := _make_leaf_mat(true, "LeafSet003")   # broader, rounder
-	var maple_mat := _make_leaf_mat(true, "LeafSet005")   # existing
-	var elm_mat   := _make_leaf_mat(true, "LeafSet009")   # smaller, denser
-	var conif_mat := _make_leaf_mat(false)                 # LeafSet019
+	var oak_mat   := _make_leaf_mat(true, "LeafSet003", 0)   # oak
+	var maple_mat := _make_leaf_mat(true, "LeafSet005", 1)   # maple
+	var elm_mat   := _make_leaf_mat(true, "LeafSet009", 2)   # elm
+	var conif_mat := _make_leaf_mat(false, "", 3)             # conifer
 
 	# 8 trunk mesh variants with randomized branches for visual variety
 	const N_TRUNK_VARIANTS := 8
@@ -4875,10 +5241,37 @@ func _build_trees(trees: Array) -> void:
 		trunk_xf_by_variant[variant_idx].append(tf)
 		all_trunk_xf.append(tf)
 
-	_spawn_multimesh(broad_leaf_mesh, oak_mat,   oak_xf,   "TreeCanopies_Oak")
-	_spawn_multimesh(broad_leaf_mesh, maple_mat, maple_xf, "TreeCanopies_Maple")
-	_spawn_multimesh(broad_leaf_mesh, elm_mat,   elm_xf,   "TreeCanopies_Elm")
-	_spawn_multimesh(conif_leaf_mesh, conif_mat, conif_xf, "TreeCanopies_Conifer")
+	# LOD0: full detail 0-80m, LOD1: reduced 60-200m, LOD2: billboard 150-600m
+	var lod_specs: Array = [
+		["Oak",    oak_xf,   oak_mat,   broad_leaf_mesh, broad_lod1],
+		["Maple",  maple_xf, maple_mat, broad_leaf_mesh, broad_lod1],
+		["Elm",    elm_xf,   elm_mat,   broad_leaf_mesh, broad_lod1],
+		["Conifer",conif_xf, conif_mat, conif_leaf_mesh, conif_lod1],
+	]
+	for spec in lod_specs:
+		var sname: String = spec[0]; var sxf: Array = spec[1]
+		var smat: ShaderMaterial = spec[2]; var smesh0: ArrayMesh = spec[3]
+		var smesh1: ArrayMesh = spec[4]
+		if sxf.is_empty():
+			continue
+		# LOD0: full detail
+		var mmi0 := _spawn_multimesh(smesh0, smat, sxf, "TreeCanopies_%s_L0" % sname)
+		if mmi0:
+			mmi0.visibility_range_begin = 0.0
+			mmi0.visibility_range_end = 80.0
+			mmi0.visibility_range_fade_mode = GeometryInstance3D.VISIBILITY_RANGE_FADE_SELF
+		# LOD1: reduced
+		var mmi1 := _spawn_multimesh(smesh1, smat, sxf, "TreeCanopies_%s_L1" % sname)
+		if mmi1:
+			mmi1.visibility_range_begin = 60.0
+			mmi1.visibility_range_end = 200.0
+			mmi1.visibility_range_fade_mode = GeometryInstance3D.VISIBILITY_RANGE_FADE_SELF
+		# LOD2: billboard
+		var mmi2 := _spawn_multimesh(lod2_mesh, smat, sxf, "TreeCanopies_%s_L2" % sname)
+		if mmi2:
+			mmi2.visibility_range_begin = 150.0
+			mmi2.visibility_range_end = 600.0
+			mmi2.visibility_range_fade_mode = GeometryInstance3D.VISIBILITY_RANGE_FADE_SELF
 	for vi in N_TRUNK_VARIANTS:
 		_spawn_multimesh(trunk_meshes[vi], trunk_mat, trunk_xf_by_variant[vi],
 			"TreeTrunks_%d" % vi)
@@ -5252,6 +5645,109 @@ func _make_leaf_card_mesh(is_conifer: bool) -> ArrayMesh:
 	return mesh
 
 
+func _make_leaf_card_mesh_lod1(is_conifer: bool) -> ArrayMesh:
+	## LOD1: ~40 cards — outer shell + sparse fill, for 60-200m range.
+	var verts   := PackedVector3Array()
+	var normals := PackedVector3Array()
+	var uvs     := PackedVector2Array()
+	var indices := PackedInt32Array()
+	var colors  := PackedColorArray()
+	var card_defs: Array = []
+	if not is_conifer:
+		# Equator ring: 10 cards
+		for i in 10:
+			var a := TAU * float(i) / 10.0
+			card_defs.append([Vector3(cos(a) * 0.65, 0.0, sin(a) * 0.65), 0.30,
+				Vector3(-sin(a), 0.0, cos(a)), 20.0 + float(i) * 4.0])
+		# Upper ring: 8 cards
+		for i in 8:
+			var a := TAU * float(i) / 8.0 + 0.4
+			card_defs.append([Vector3(cos(a) * 0.45, 0.35, sin(a) * 0.45), 0.26,
+				Vector3(-sin(a), 0.0, cos(a)), 30.0 + float(i) * 5.0])
+		# Crown: 6 cards
+		for i in 6:
+			var a := TAU * float(i) / 6.0 + 0.8
+			card_defs.append([Vector3(cos(a) * 0.20, 0.65, sin(a) * 0.20), 0.22,
+				Vector3(cos(a+1.0), 0.0, sin(a+1.0)), 40.0 + float(i) * 6.0])
+		# Fill: 16 crossing cards
+		for i in 16:
+			var a := TAU * float(i) / 16.0 + 0.2
+			var iy := -0.1 + float(i) * 0.06
+			var ir := 0.15 + fmod(float(i) * 0.447, 1.0) * 0.30
+			card_defs.append([Vector3(cos(a)*ir, iy, sin(a)*ir), 0.22,
+				Vector3(cos(a+0.5), 0.0, sin(a+0.5)), 25.0 + float(i) * 3.5])
+	else:
+		# 4 tiers × 6 cards = 24 cards
+		for tier in 4:
+			var n := 6; var r := 0.60 - float(tier) * 0.12; var y := -0.5 + float(tier) * 0.30
+			for i in n:
+				var a := TAU * float(i) / float(n) + float(tier) * 0.5
+				card_defs.append([Vector3(cos(a)*r, y, sin(a)*r), 0.18 - float(tier)*0.02,
+					Vector3(-sin(a), 0.0, cos(a)), 35.0 + float(tier)*5.0])
+		# Fill: 8 crossing cards
+		for i in 8:
+			var a := TAU * float(i) / 8.0
+			card_defs.append([Vector3(cos(a)*0.15, -0.1+float(i)*0.1, sin(a)*0.15), 0.16,
+				Vector3(cos(a+0.5), 0.0, sin(a+0.5)), 30.0])
+	# Build quads from card_defs (same code as LOD0)
+	for ci in card_defs.size():
+		var cd: Array = card_defs[ci]
+		var pos: Vector3 = cd[0]; var hs: float = cd[1]
+		var tax: Vector3 = cd[2]; var ta: float = cd[3]
+		var qn := Vector3.UP.rotated(tax.normalized(), deg_to_rad(ta))
+		var qr := qn.cross(tax.normalized()).normalized() * hs
+		var qu := tax.normalized() * hs
+		var bi := verts.size()
+		verts.append(pos - qr - qu); verts.append(pos + qr - qu)
+		verts.append(pos + qr + qu); verts.append(pos - qr + qu)
+		for _ni in 4: normals.append(qn)
+		uvs.append(Vector2(0, 0)); uvs.append(Vector2(1, 0))
+		uvs.append(Vector2(1, 1)); uvs.append(Vector2(0, 1))
+		indices.append_array(PackedInt32Array([bi, bi+1, bi+2, bi, bi+2, bi+3]))
+		var gr := fmod(float(ci) * 0.618 + 0.1, 1.0)
+		var cc := Color(fmod(gr+0.293, 1.0), fmod(gr+0.382, 1.0), fmod(gr+0.618, 1.0), fmod(gr+0.247, 1.0))
+		for _cv in 4: colors.append(cc)
+	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts; arrays[Mesh.ARRAY_NORMAL] = normals
+	arrays[Mesh.ARRAY_TEX_UV] = uvs; arrays[Mesh.ARRAY_INDEX] = indices
+	arrays[Mesh.ARRAY_COLOR] = colors
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	return mesh
+
+
+func _make_leaf_card_mesh_lod2() -> ArrayMesh:
+	## LOD2: 2 crossed quads (billboard-like), for 150-600m range.
+	var verts   := PackedVector3Array()
+	var normals := PackedVector3Array()
+	var uvs     := PackedVector2Array()
+	var indices := PackedInt32Array()
+	var colors  := PackedColorArray()
+	# Two crossing planes at 90° — each covers the whole canopy
+	for qi in 2:
+		var a := float(qi) * PI * 0.5
+		var right := Vector3(cos(a), 0.0, sin(a)) * 0.85
+		var up := Vector3(0.0, 0.85, 0.0)
+		var center := Vector3(0.0, 0.1, 0.0)
+		var nrm := Vector3(-sin(a), 0.0, cos(a))
+		var bi := verts.size()
+		verts.append(center - right - up); verts.append(center + right - up)
+		verts.append(center + right + up); verts.append(center - right + up)
+		for _ni in 4: normals.append(nrm)
+		uvs.append(Vector2(0, 0)); uvs.append(Vector2(1, 0))
+		uvs.append(Vector2(1, 1)); uvs.append(Vector2(0, 1))
+		indices.append_array(PackedInt32Array([bi, bi+1, bi+2, bi, bi+2, bi+3]))
+		var cc := Color(0.5, 0.5, 0.3, 0.2)
+		for _cv in 4: colors.append(cc)
+	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts; arrays[Mesh.ARRAY_NORMAL] = normals
+	arrays[Mesh.ARRAY_TEX_UV] = uvs; arrays[Mesh.ARRAY_INDEX] = indices
+	arrays[Mesh.ARRAY_COLOR] = colors
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	return mesh
+
+
 func _make_bush_leaf_mesh() -> ArrayMesh:
 	# 24 leaf card quads in a low dome for understorey bushes.
 	var verts   := PackedVector3Array()
@@ -5349,7 +5845,7 @@ func _make_bush_leaf_mesh() -> ArrayMesh:
 	return mesh
 
 
-func _make_leaf_mat(broad: bool, leaf_set: String = "") -> ShaderMaterial:
+func _make_leaf_mat(broad: bool, leaf_set: String = "", species_idx: int = 0) -> ShaderMaterial:
 	var prefix := leaf_set if leaf_set != "" else ("LeafSet005" if broad else "LeafSet019")
 	var color_tex := _load_tex("res://textures/%s_2K-JPG_Color.jpg" % prefix)
 	var norm_tex  := _load_tex("res://textures/%s_2K-JPG_NormalGL.jpg" % prefix)
@@ -5365,13 +5861,14 @@ func _make_leaf_mat(broad: bool, leaf_set: String = "") -> ShaderMaterial:
 		mat.set_shader_parameter("leaf_rough", rough_tex)
 	if opac_tex:
 		mat.set_shader_parameter("leaf_opacity", opac_tex)
+	mat.set_shader_parameter("species", species_idx)
 	return mat
 
 
 func _spawn_multimesh(mesh: Mesh, mat: Material,
-					  transforms: Array, node_name: String) -> void:
+					  transforms: Array, node_name: String) -> MultiMeshInstance3D:
 	if transforms.is_empty():
-		return
+		return null
 	var mm             := MultiMesh.new()
 	mm.transform_format = MultiMesh.TRANSFORM_3D
 	mm.mesh             = mesh
@@ -5384,6 +5881,7 @@ func _spawn_multimesh(mesh: Mesh, mat: Material,
 	if mat != null:
 		mmi.material_override = mat
 	add_child(mmi)
+	return mmi
 
 
 func _leaf_shader_code() -> String:
@@ -5395,6 +5893,7 @@ uniform sampler2D leaf_normal  : hint_normal,        filter_linear_mipmap_anisot
 uniform sampler2D leaf_rough   : hint_default_white, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D leaf_opacity : hint_default_white, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform float understorey : hint_range(0.0, 1.0) = 0.0;
+uniform int species = 0; // 0=oak, 1=maple, 2=elm, 3=conifer, 4=shrub
 
 varying vec3 tree_origin;
 
@@ -5407,14 +5906,23 @@ float hash21(vec2 p) {
 void vertex() {
 	tree_origin = (MODEL_MATRIX * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
 
-	// Wind sway: phase from tree world position, weight by local height
+	// Spatial wind field — visible waves across canopy
 	float sway = max(VERTEX.y, 0.0);
-	VERTEX.x += sin(TIME * 0.7 + tree_origin.x * 0.04 + tree_origin.z * 0.06) * 0.09 * sway;
-	VERTEX.z += sin(TIME * 1.1 + tree_origin.z * 0.05) * 0.05 * sway;
+	float wind_base = sin(tree_origin.x * 0.02 + tree_origin.z * 0.025 + TIME * 0.3) * 0.5 + 0.5;
+	float gust = max(0.0, sin(TIME * 0.15 + tree_origin.x * 0.005) * 0.6 + 0.2);
+	float wind_str = (0.5 + wind_base * 0.5) * (1.0 + gust);
+	VERTEX.x += sin(TIME * 0.7 + tree_origin.x * 0.04 + tree_origin.z * 0.06) * 0.09 * sway * wind_str;
+	VERTEX.z += sin(TIME * 1.1 + tree_origin.z * 0.05) * 0.05 * sway * wind_str;
 
 	// Leaf flutter: small high-frequency jitter per-card
 	float flutter = sin(TIME * 3.5 + VERTEX.x * 11.0 + VERTEX.z * 7.0) * 0.012;
 	VERTEX.y += flutter * sway;
+}
+
+void light() {
+	DIFFUSE_LIGHT += clamp(dot(NORMAL, LIGHT), 0.0, 1.0) * ATTENUATION * LIGHT_COLOR;
+	float translucency = pow(max(dot(VIEW, -LIGHT), 0.0), 4.0);
+	DIFFUSE_LIGHT += LIGHT_COLOR * ATTENUATION * translucency * vec3(0.35, 0.18, 0.06) * 0.5;
 }
 
 void fragment() {
@@ -5433,9 +5941,9 @@ void fragment() {
 	float dist_fill = smoothstep(10.0, 40.0, cam_dist) * 0.25;
 	ALPHA = min(alpha + dist_fill, 1.0);
 
-	// Desaturate leaf texture — removes green dominance, preserves structural detail
+	// Desaturate leaf texture — preserves structural detail, let species tint drive color
 	float grey = dot(alb, vec3(0.299, 0.587, 0.114));
-	alb = mix(vec3(grey), alb, 0.35);
+	alb = mix(vec3(grey), alb, 0.50);
 
 	// Per-card brightness from vertex color red channel (range 0.7–1.3)
 	float card_bright = COLOR.r * 0.6 + 0.7;
@@ -5447,24 +5955,49 @@ void fragment() {
 	float bright = mix(0.65 + h * 0.55, 0.45 + h * 0.30, understorey);
 	vec3 col = alb * bright * card_bright;
 
-	// Pastel autumn palette: golden-peach 25%, coral-rose 23%, dusty mauve 17%, sage 17%, warm amber 18%
+	// Species-aware autumn palettes
 	vec3 autumn_tint;
-	if (h < 0.25) {
-		autumn_tint = vec3(0.85, 0.65, 0.22);       // warm golden-peach
-	} else if (h < 0.48) {
-		autumn_tint = vec3(0.82, 0.42, 0.35);       // soft coral-rose
-	} else if (h < 0.65) {
-		autumn_tint = vec3(0.72, 0.45, 0.58);       // dusty mauve
-	} else if (h < 0.82) {
-		autumn_tint = vec3(0.55, 0.62, 0.30);       // sage green
+	float bare_chance = 0.0;
+	float green_thresh = 1.0; // h above this → stays green (never by default)
+	if (species == 0) {
+		// Oak: russet brown/dark brown/tan-gold — oaks hold leaves
+		bare_chance = 0.05; green_thresh = 0.80;
+		if (h < 0.33) autumn_tint = vec3(0.70, 0.40, 0.18);       // russet brown
+		else if (h < 0.66) autumn_tint = vec3(0.55, 0.32, 0.15);  // dark brown
+		else autumn_tint = vec3(0.82, 0.65, 0.28);                 // tan-gold
+	} else if (species == 1 || species == 4) {
+		// Maple/shrub: brilliant red/orange/yellow/deep crimson
+		bare_chance = 0.15; green_thresh = 0.85;
+		if (h < 0.25) autumn_tint = vec3(0.90, 0.22, 0.12);       // brilliant red
+		else if (h < 0.50) autumn_tint = vec3(0.92, 0.55, 0.15);  // orange
+		else if (h < 0.75) autumn_tint = vec3(0.88, 0.78, 0.22);  // yellow
+		else autumn_tint = vec3(0.72, 0.12, 0.15);                 // deep crimson
+	} else if (species == 2) {
+		// Elm: golden yellow/pale gold — early droppers
+		bare_chance = 0.25; green_thresh = 0.80;
+		if (h < 0.50) autumn_tint = vec3(0.88, 0.78, 0.25);       // golden yellow
+		else autumn_tint = vec3(0.82, 0.72, 0.38);                 // pale gold
 	} else {
-		autumn_tint = vec3(0.78, 0.58, 0.28);       // warm amber
+		// Conifer: stays green — no autumn tint
+		bare_chance = 0.0; green_thresh = 0.0;
+		autumn_tint = vec3(0.45, 0.55, 0.28);
 	}
+
+	// Still-green trees: ~15-20% of broadleaf stay green
+	if (species != 3 && h > green_thresh) {
+		autumn_tint = vec3(0.50, 0.62, 0.25); // still-green mid-autumn
+	}
+
+	// Bare trees: discard canopy entirely (trunk stays visible)
+	if (h < bare_chance) {
+		discard;
+	}
+
 	// Per-card hue shift from green channel (±0.15 warm/cool)
 	float hue_shift = (COLOR.g - 0.5) * 0.30;
 	autumn_tint.r += hue_shift;
 	autumn_tint.b -= hue_shift * 0.5;
-	col *= autumn_tint * 2.1;
+	col *= autumn_tint * 1.7;
 
 	// Age desaturation
 	float col_grey = dot(col, vec3(0.299, 0.587, 0.114));
@@ -5479,7 +6012,7 @@ void fragment() {
 	ROUGHNESS  = clamp(rgh * 0.15 + 0.65, 0.0, 1.0);
 	SPECULAR   = 0.08;
 	METALLIC   = 0.0;
-	BACKLIGHT  = vec3(0.15, 0.08, 0.02);
+	BACKLIGHT  = vec3(0.25, 0.12, 0.04);
 }
 """
 
@@ -5546,7 +6079,7 @@ func _build_undergrowth(trees: Array, paths: Array) -> void:
 	var rng := RandomNumberGenerator.new()
 	rng.seed = 77777
 
-	var bush_mat  := _make_leaf_mat(true)   # reuse LeafSet005 PBR textures
+	var bush_mat  := _make_leaf_mat(true, "", 4)   # shrub species
 	bush_mat.set_shader_parameter("understorey", 1.0)
 	var bush_mesh := _make_bush_leaf_mesh()
 	var xforms: Array = []
@@ -7507,8 +8040,11 @@ varying vec3 origin;
 void vertex() {
 	origin = (MODEL_MATRIX * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
 	float sway = max(VERTEX.y, 0.0);
-	VERTEX.x += sin(TIME * 1.2 + origin.x * 0.08 + origin.z * 0.1) * 0.04 * sway;
-	VERTEX.z += sin(TIME * 1.6 + origin.z * 0.09) * 0.03 * sway;
+	float wind_base = sin(origin.x * 0.02 + origin.z * 0.025 + TIME * 0.3) * 0.5 + 0.5;
+	float gust = max(0.0, sin(TIME * 0.15 + origin.x * 0.005) * 0.6 + 0.2);
+	float wind_str = (0.5 + wind_base * 0.5) * (1.0 + gust);
+	VERTEX.x += sin(TIME * 1.2 + origin.x * 0.08 + origin.z * 0.1) * 0.04 * sway * wind_str;
+	VERTEX.z += sin(TIME * 1.6 + origin.z * 0.09) * 0.03 * sway * wind_str;
 }
 
 void fragment() {
@@ -7549,8 +8085,11 @@ varying vec3 origin;
 void vertex() {
 	origin = (MODEL_MATRIX * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
 	float sway = max(VERTEX.y, 0.0);
-	VERTEX.x += sin(TIME * 1.2 + origin.x * 0.08 + origin.z * 0.1) * 0.03 * sway;
-	VERTEX.z += sin(TIME * 1.6 + origin.z * 0.09) * 0.02 * sway;
+	float wind_base = sin(origin.x * 0.02 + origin.z * 0.025 + TIME * 0.3) * 0.5 + 0.5;
+	float gust = max(0.0, sin(TIME * 0.15 + origin.x * 0.005) * 0.6 + 0.2);
+	float wind_str = (0.5 + wind_base * 0.5) * (1.0 + gust);
+	VERTEX.x += sin(TIME * 1.2 + origin.x * 0.08 + origin.z * 0.1) * 0.03 * sway * wind_str;
+	VERTEX.z += sin(TIME * 1.6 + origin.z * 0.09) * 0.02 * sway * wind_str;
 }
 
 void fragment() {
@@ -8022,8 +8561,11 @@ float hash21(vec2 p) {
 void vertex() {
 	tree_origin = (MODEL_MATRIX * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
 	float sway = max(VERTEX.y, 0.0);
-	VERTEX.x += sin(TIME * 0.7 + tree_origin.x * 0.04 + tree_origin.z * 0.06) * 0.09 * sway;
-	VERTEX.z += sin(TIME * 1.1 + tree_origin.z * 0.05) * 0.05 * sway;
+	float wind_base = sin(tree_origin.x * 0.02 + tree_origin.z * 0.025 + TIME * 0.3) * 0.5 + 0.5;
+	float gust = max(0.0, sin(TIME * 0.15 + tree_origin.x * 0.005) * 0.6 + 0.2);
+	float wind_str = (0.5 + wind_base * 0.5) * (1.0 + gust);
+	VERTEX.x += sin(TIME * 0.7 + tree_origin.x * 0.04 + tree_origin.z * 0.06) * 0.09 * sway * wind_str;
+	VERTEX.z += sin(TIME * 1.1 + tree_origin.z * 0.05) * 0.05 * sway * wind_str;
 	float flutter = sin(TIME * 3.5 + VERTEX.x * 11.0 + VERTEX.z * 7.0) * 0.012;
 	VERTEX.y += flutter * sway;
 }
@@ -8330,22 +8872,24 @@ func _build_leaf_litter(trees: Array) -> void:
 	var opac_tex_b := _load_tex("res://textures/LeafSet005_2K-JPG_Opacity.jpg")
 	var leaf_mesh := _make_flower_billboard_mesh()  # 3-crossed quads work well for litter
 
-	# Two leaf tint variants: brown/amber autumn leaves
+	# Species-matched leaf litter tints: oak russet, maple red-orange, elm golden, amber
 	var litter_tints := [
-		Vector3(0.55, 0.35, 0.18),  # warm copper
-		Vector3(0.65, 0.48, 0.28),  # golden amber
+		Vector3(0.55, 0.32, 0.15),  # oak russet brown
+		Vector3(0.80, 0.35, 0.15),  # maple red-orange
+		Vector3(0.82, 0.70, 0.25),  # elm golden
+		Vector3(0.65, 0.48, 0.28),  # amber fallback
 	]
 	var litter_mats: Array = []
-	for ti in 2:
+	for ti in 4:
 		var mat := ShaderMaterial.new()
 		mat.shader = _get_shader("flower", _flower_shader_code())
-		var opac := opac_tex_a if ti == 0 else opac_tex_b
+		var opac := opac_tex_a if (ti == 0 or ti == 2) else opac_tex_b
 		if opac:
 			mat.set_shader_parameter("petal_opacity", opac)
 		mat.set_shader_parameter("flower_tint", litter_tints[ti])
 		litter_mats.append(mat)
 
-	var xf: Array = [[], []]
+	var xf: Array = [[], [], [], []]
 
 	for i in trees.size():
 		rng.seed = i * 445566 + 778899
@@ -8364,13 +8908,26 @@ func _build_leaf_litter(trees: Array) -> void:
 					break
 		if tree_near_path:
 			continue
-		# 70% of trees get leaf litter
-		if rng.randf() > 0.70:
+		# 90% of trees get leaf litter
+		if rng.randf() > 0.90:
 			continue
-		var n_leaves := rng.randi_range(3, 8)
+		# Species-matched litter color via stable hash
+		var sp_rng := RandomNumberGenerator.new()
+		sp_rng.seed = i * 7 + 3
+		var sp_r := sp_rng.randf()
+		var litter_ti := 3  # amber fallback
+		if sp_r < 0.30: litter_ti = 0       # oak → russet
+		elif sp_r < 0.55: litter_ti = 1     # maple → red-orange
+		elif sp_r < 0.75: litter_ti = 2     # elm → golden
+		# else amber
+		# Bare trees get 3× more litter
+		var bare_mult := 1
+		if litter_ti == 2 and sp_rng.randf() < 0.25: bare_mult = 3  # elm bare
+		elif litter_ti == 1 and sp_rng.randf() < 0.15: bare_mult = 3  # maple bare
+		var n_leaves := rng.randi_range(4, 10) * bare_mult
 		for _li in n_leaves:
 			var angle := rng.randf() * TAU
-			var dist := rng.randf_range(1.0, 8.0)
+			var dist := rng.randf_range(1.0, 12.0)
 			var lx := tx + cos(angle) * dist
 			var lz := tz + sin(angle) * dist
 			if _is_excluded(lx, lz) or _is_on_path(lx, lz):
@@ -8378,7 +8935,7 @@ func _build_leaf_litter(trees: Array) -> void:
 			var ly := _terrain_y(lx, lz) + 0.02
 			var s := rng.randf_range(0.1, 0.3)
 			var rot := rng.randf() * TAU
-			var ti := 0 if rng.randf() < 0.55 else 1
+			var ti := litter_ti
 			var basis := Basis(
 				Vector3(cos(rot) * s, 0.0, sin(rot) * s),
 				Vector3(0.0, s * 0.6, 0.0),
@@ -8386,8 +8943,8 @@ func _build_leaf_litter(trees: Array) -> void:
 			xf[ti].append(Transform3D(basis, Vector3(lx, ly, lz)))
 
 	var total := 0
-	var names := ["BrownOak", "AmberMaple"]
-	for ti in 2:
+	var names := ["RussetOak", "RedMaple", "GoldenElm", "Amber"]
+	for ti in 4:
 		total += xf[ti].size()
 		if not xf[ti].is_empty():
 			_spawn_multimesh(leaf_mesh, litter_mats[ti], xf[ti],
@@ -8452,8 +9009,11 @@ void vertex() {
 	origin = (MODEL_MATRIX * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
 	float sway = max(VERTEX.y, 0.0);
 	float hash = fract(sin(origin.x * 12.9898 + origin.z * 78.233) * 43758.5453);
-	VERTEX.x += sin(TIME * 1.5 + hash * 6.28 + origin.x * 0.1) * 0.06 * sway;
-	VERTEX.z += sin(TIME * 1.8 + hash * 3.14 + origin.z * 0.12) * 0.04 * sway;
+	float wind_base = sin(origin.x * 0.02 + origin.z * 0.025 + TIME * 0.3) * 0.5 + 0.5;
+	float gust = max(0.0, sin(TIME * 0.15 + origin.x * 0.005) * 0.6 + 0.2);
+	float wind_str = (0.5 + wind_base * 0.5) * (1.0 + gust);
+	VERTEX.x += sin(TIME * 1.5 + hash * 6.28 + origin.x * 0.1) * 0.06 * sway * wind_str;
+	VERTEX.z += sin(TIME * 1.8 + hash * 3.14 + origin.z * 0.12) * 0.04 * sway * wind_str;
 }
 
 void fragment() {
@@ -8837,9 +9397,9 @@ func _build_grass_blades(trees: Array) -> void:
 
 	var xforms: Array = []
 
-	# Grid scan across park
+	# Dense grid scan across park — 6m step, 10-18 blades/cell, visibility-limited to 40m
 	var half_w := _hm_world_size * 0.5
-	var step := 8.0
+	var step := 6.0
 	var x := -half_w
 	while x < half_w:
 		var z := -half_w
@@ -8862,24 +9422,29 @@ func _build_grass_blades(trees: Array) -> void:
 				continue
 
 			rng.seed = int(x * 1000.0 + z * 7.0 + 556677.0) & 0x7FFFFFFF
-			var n_blades := rng.randi_range(8, 16)
+			var n_blades := rng.randi_range(10, 18)
 			for _bi in n_blades:
 				var bx := x + rng.randf_range(-step * 0.45, step * 0.45)
 				var bz := z + rng.randf_range(-step * 0.45, step * 0.45)
 				if _is_on_path(bx, bz):
 					continue
 				var by := _terrain_y(bx, bz)
-				var h := rng.randf_range(0.15, 0.40)
+				var h := rng.randf_range(0.05, 0.25)
 				var rot := rng.randf() * TAU
+				# Lean direction per-instance
+				var lean := rng.randf_range(-0.15, 0.15)
 				var s := h * 0.4  # width scales with height
 				var basis := Basis(
 					Vector3(cos(rot) * s, 0.0, sin(rot) * s),
-					Vector3(0.0, h, 0.0),
+					Vector3(lean * s, h, lean * s * 0.5),
 					Vector3(-sin(rot) * s, 0.0, cos(rot) * s))
 				xforms.append(Transform3D(basis, Vector3(bx, by, bz)))
 			z += step
 		x += step
 
 	if not xforms.is_empty():
-		_spawn_multimesh(blade_mesh, blade_mat, xforms, "GrassBlades")
+		var mmi := _spawn_multimesh(blade_mesh, blade_mat, xforms, "GrassBlades")
+		if mmi:
+			mmi.visibility_range_end = 40.0
+			mmi.visibility_range_fade_mode = GeometryInstance3D.VISIBILITY_RANGE_FADE_SELF
 	print("ParkLoader: grass blades = ", xforms.size())

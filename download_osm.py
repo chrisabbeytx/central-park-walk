@@ -49,6 +49,14 @@ QUERY = f"""[out:json][timeout:180];
     ({BBOX});
   node["man_made"]
     ({BBOX});
+  way["leisure"]
+    ({BBOX});
+  relation["leisure"]
+    ({BBOX});
+  way["landuse"]
+    ({BBOX});
+  relation["landuse"]
+    ({BBOX});
 );
 out body;
 >;

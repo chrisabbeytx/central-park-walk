@@ -598,6 +598,45 @@ def main() -> None:
         })
 
     # -------------------------------------------------------------------
+    # Landuse / leisure zones
+    # -------------------------------------------------------------------
+    landuse_out = []
+    for wid, tags in ways_tags.items():
+        zone_type = tags.get("leisure") or tags.get("landuse")
+        if not zone_type:
+            continue
+        nids = ways_nodes.get(wid, [])
+        if len(nids) < 4 or nids[0] != nids[-1]:
+            continue
+        pts = _extract_polygon(nids)
+        if len(pts) >= 3:
+            landuse_out.append({
+                "name": tags.get("name", ""),
+                "type": zone_type,
+                "points": pts,
+            })
+    # Relation-based landuse/leisure
+    for e in elements:
+        if e["type"] != "relation":
+            continue
+        tags = e.get("tags", {})
+        zone_type = tags.get("leisure") or tags.get("landuse")
+        if not zone_type:
+            continue
+        members = e.get("members", [])
+        outer_nids = []
+        for m in members:
+            if m.get("role") == "outer" and m.get("type") == "way":
+                outer_nids.extend(ways_nodes.get(m["ref"], []))
+        pts = _extract_polygon(outer_nids)
+        if len(pts) >= 3:
+            landuse_out.append({
+                "name": tags.get("name", ""),
+                "type": zone_type,
+                "points": pts,
+            })
+
+    # -------------------------------------------------------------------
     # Write park_data.json
     # -------------------------------------------------------------------
     out = {
@@ -613,6 +652,7 @@ def main() -> None:
         "buildings":          buildings_out,
         "barriers":           barriers_out,
         "statues":            statues_out,
+        "landuse":            landuse_out,
     }
 
     with open("park_data.json", "w") as fh:
@@ -626,6 +666,7 @@ def main() -> None:
     print(f"Buildings:  {len(buildings_out):5d}")
     print(f"Barriers:   {len(barriers_out):5d}")
     print(f"Statues:    {len(statues_out):5d}")
+    print(f"Landuse:    {len(landuse_out):5d}")
     print(f"\nSaved → park_data.json  ({size_kb:.0f} KB)")
 
 
