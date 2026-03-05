@@ -598,6 +598,62 @@ def main() -> None:
         })
 
     # -------------------------------------------------------------------
+    # Benches  – node/way amenity=bench → [x, terrain_y, z, direction]
+    # -------------------------------------------------------------------
+    benches_out = []
+    for e in elements:
+        if e["type"] == "node" and "lat" in e:
+            tags = e.get("tags", {})
+            if tags.get("amenity") == "bench":
+                x, z = project(e["lat"], e["lon"])
+                direction = 0.0
+                raw_dir = tags.get("direction", "")
+                if raw_dir:
+                    try:
+                        direction = float(raw_dir)
+                    except ValueError:
+                        compass = {"N": 0, "NE": 45, "E": 90, "SE": 135,
+                                   "S": 180, "SW": 225, "W": 270, "NW": 315}
+                        direction = float(compass.get(raw_dir.upper(), 0))
+                benches_out.append([x, round(terrain(x, z), 2), z, direction])
+    # Benches mapped as ways (centroids)
+    for wid, tags in ways_tags.items():
+        if tags.get("amenity") != "bench":
+            continue
+        nids = ways_nodes.get(wid, [])
+        pts_2d = []
+        for nid in nids:
+            if nid in nodes_ll:
+                pts_2d.append(project(*nodes_ll[nid]))
+        if not pts_2d:
+            continue
+        cx = sum(p[0] for p in pts_2d) / len(pts_2d)
+        cz = sum(p[1] for p in pts_2d) / len(pts_2d)
+        benches_out.append([cx, round(terrain(cx, cz), 2), cz, 0.0])
+
+    # -------------------------------------------------------------------
+    # Lampposts  – node highway=street_lamp → [x, terrain_y, z]
+    # -------------------------------------------------------------------
+    lampposts_out = []
+    for e in elements:
+        if e["type"] == "node" and "lat" in e:
+            tags = e.get("tags", {})
+            if tags.get("highway") == "street_lamp":
+                x, z = project(e["lat"], e["lon"])
+                lampposts_out.append([x, round(terrain(x, z), 2), z])
+
+    # -------------------------------------------------------------------
+    # Trash cans  – node amenity=waste_basket → [x, terrain_y, z]
+    # -------------------------------------------------------------------
+    trash_cans_out = []
+    for e in elements:
+        if e["type"] == "node" and "lat" in e:
+            tags = e.get("tags", {})
+            if tags.get("amenity") == "waste_basket":
+                x, z = project(e["lat"], e["lon"])
+                trash_cans_out.append([x, round(terrain(x, z), 2), z])
+
+    # -------------------------------------------------------------------
     # Write park_data.json
     # -------------------------------------------------------------------
     out = {
@@ -613,6 +669,9 @@ def main() -> None:
         "buildings":          buildings_out,
         "barriers":           barriers_out,
         "statues":            statues_out,
+        "benches":            benches_out,
+        "lampposts":          lampposts_out,
+        "trash_cans":         trash_cans_out,
     }
 
     with open("park_data.json", "w") as fh:
@@ -626,6 +685,9 @@ def main() -> None:
     print(f"Buildings:  {len(buildings_out):5d}")
     print(f"Barriers:   {len(barriers_out):5d}")
     print(f"Statues:    {len(statues_out):5d}")
+    print(f"Benches:    {len(benches_out):5d}")
+    print(f"Lampposts:  {len(lampposts_out):5d}")
+    print(f"Trash cans: {len(trash_cans_out):5d}")
     print(f"\nSaved → park_data.json  ({size_kb:.0f} KB)")
 
 
