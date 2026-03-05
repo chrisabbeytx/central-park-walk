@@ -4830,19 +4830,17 @@ void fragment() {
 				is_lit = wrand < 0.80;  // storefronts more likely lit
 			}
 			if (is_lit) {
-				// Warm white with per-window color variation
+				// Candlelight — dim, warm amber glow
 				float warmth = fract(wrand * 7.3);
-				vec3 warm_light = mix(vec3(1.0, 0.82, 0.50), vec3(1.0, 0.92, 0.76), warmth);
-				// ~10% of lit windows have blue-ish TV glow
+				vec3 warm_light = mix(vec3(1.0, 0.68, 0.28), vec3(1.0, 0.76, 0.40), warmth);
+				// ~10% of lit windows have faint blue TV glow
 				if (fract(wrand * 13.7) < 0.10) {
-					warm_light = vec3(0.60, 0.72, 0.95);
+					warm_light = vec3(0.35, 0.42, 0.58);
 				}
-				float em_strength = gnd_win ? 2.5 : 1.8;
-				// Slight brightness variation per window
-				em_strength *= (0.7 + wrand * 0.6);
+				float em_strength = gnd_win ? 0.50 : 0.35;
+				em_strength *= (0.6 + wrand * 0.5);
 				emission = warm_light * em_strength * night_factor;
-				// Lit windows look brighter — override albedo to warm interior
-				col = warm_light * 0.15;
+				col = warm_light * 0.08;
 				rough = 0.9;
 				metal = 0.0;
 			}
@@ -5006,14 +5004,14 @@ void fragment() {
 			if (gnd_win) { is_lit = wrand < 0.80; }
 			if (is_lit) {
 				float warmth = fract(wrand * 7.3);
-				vec3 warm_light = mix(vec3(1.0, 0.82, 0.50), vec3(1.0, 0.92, 0.76), warmth);
+				vec3 warm_light = mix(vec3(1.0, 0.68, 0.28), vec3(1.0, 0.76, 0.40), warmth);
 				if (fract(wrand * 13.7) < 0.10) {
-					warm_light = vec3(0.60, 0.72, 0.95);
+					warm_light = vec3(0.35, 0.42, 0.58);
 				}
-				float em_strength = gnd_win ? 2.5 : 1.8;
-				em_strength *= (0.7 + wrand * 0.6);
+				float em_strength = gnd_win ? 0.50 : 0.35;
+				em_strength *= (0.6 + wrand * 0.5);
 				emission = warm_light * em_strength * night_factor;
-				win_col = warm_light * 0.15;
+				win_col = warm_light * 0.08;
 				ROUGHNESS = 0.9;
 				METALLIC = 0.0;
 			}
@@ -7915,14 +7913,14 @@ func _build_furniture(bench_data: Array, lamppost_data: Array, paths: Array) -> 
 	lamp_post_mat.roughness    = 0.50
 	lamp_post_mat.metallic     = 0.15
 	var lamp_mat_override: Material = lamp_post_mat
-	# Day/night emission material (stored for main.gd to modulate)
-	var lamp_lantern_mat := StandardMaterial3D.new()
-	lamp_lantern_mat.albedo_color = Color(0.95, 0.92, 0.82)
-	lamp_lantern_mat.roughness    = 0.25
-	lamp_lantern_mat.emission_enabled = true
-	lamp_lantern_mat.emission         = Color(1.0, 0.45, 0.08)
-	lamp_lantern_mat.emission_energy_multiplier = 2.0
-	lamppost_material = lamp_lantern_mat
+	# Emissive bulb material (main.gd modulates emission for day/night)
+	var lamp_bulb_mat := StandardMaterial3D.new()
+	lamp_bulb_mat.albedo_color = Color(1.0, 0.72, 0.32)
+	lamp_bulb_mat.roughness    = 0.3
+	lamp_bulb_mat.emission_enabled = true
+	lamp_bulb_mat.emission         = Color(1.0, 0.72, 0.32)
+	lamp_bulb_mat.emission_energy_multiplier = 3.0
+	lamppost_material = lamp_bulb_mat
 
 	# --- Bench meshes (multiple variants for variety) ---
 	var bench_variants: Array[Mesh] = []
@@ -8051,6 +8049,18 @@ func _build_furniture(bench_data: Array, lamppost_data: Array, paths: Array) -> 
 		bench_xf.size(), osm_bench_count, bench_xf.size() - osm_bench_count])
 	if not lamp_xf.is_empty():
 		_spawn_multimesh(lamp_mesh, lamp_mat_override, lamp_xf, "Lampposts")
+		# Emissive bulb sphere at dome cap (confirmed by debug: NORMAL.y<-0.7 faces)
+		var bulb_mesh := SphereMesh.new()
+		bulb_mesh.radius = 0.07
+		bulb_mesh.height = 0.14
+		bulb_mesh.radial_segments = 8
+		bulb_mesh.rings = 4
+		var bulb_xf: Array = []
+		for xf in lamp_xf:
+			var bxf: Transform3D = xf
+			bxf.origin += Vector3(0.012, 2.79, 0.475)
+			bulb_xf.append(bxf)
+		_spawn_multimesh(bulb_mesh, lamp_bulb_mat, bulb_xf, "LampBulbs")
 	# Distribute benches across variants for visual variety
 	if not bench_xf.is_empty():
 		var n_variants := bench_variants.size()
