@@ -5368,6 +5368,8 @@ func _build_trees(trees: Array) -> void:
 		# filter. Only reject trees that fall completely outside the world bounds.
 		if absf(tx) > 2400.0 or absf(tz) > 2400.0:
 			continue
+		if _is_on_path(tx, tz):
+			continue
 		var ty := _terrain_y(tx, tz)
 		rng.seed = i * 1234567891 + 987654321
 

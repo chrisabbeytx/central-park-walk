@@ -43,6 +43,12 @@ var _time_label: Label
 # Dynamic lamppost lighting — pool of SpotLight3D nodes that follow player
 var _lamp_lights: Array = []  # Array of SpotLight3D
 var _lamp_positions: PackedVector3Array = PackedVector3Array()
+
+# Cinematic letterbox overlay
+var _letterbox_canvas: CanvasLayer
+var _letterbox_top: ColorRect
+var _letterbox_bot: ColorRect
+var _letterbox_on: bool = false
 var _lamp_light_timer: float = 0.0
 const LAMP_LIGHT_COUNT := 32
 const LAMP_LIGHT_RANGE := 18.0
@@ -83,6 +89,7 @@ func _ready() -> void:
 	_player = _setup_player()
 	_setup_hud()
 	_setup_color_grade()
+	_setup_letterbox()
 	if not _terrain_only:
 		_setup_lamp_lights()
 		_setup_falling_leaves()
@@ -288,6 +295,13 @@ func _process(delta: float) -> void:
 		_last_applied_tod = _time_of_day
 		_apply_time_of_day()
 
+	# Letterbox bar sizing (adapts to viewport resize)
+	if _letterbox_on and _letterbox_top:
+		var vp := get_viewport().get_visible_rect().size
+		var bar_h := maxf((vp.y - vp.x / 2.35) * 0.5, 0.0)
+		_letterbox_top.offset_bottom = bar_h
+		_letterbox_bot.offset_top = -bar_h
+
 	_update_hud()
 
 
@@ -355,6 +369,10 @@ func _unhandled_input(event: InputEvent) -> void:
 	elif event.keycode == KEY_BRACKETRIGHT:
 		_time_of_day = fmod(_time_of_day + 1.0, 24.0)
 		print("Time: %.1f h" % _time_of_day)
+	elif event.keycode == KEY_L:
+		_letterbox_on = not _letterbox_on
+		_letterbox_canvas.visible = _letterbox_on
+		print("Letterbox: ", "ON" if _letterbox_on else "OFF")
 
 
 # ---------------------------------------------------------------------------
@@ -1926,6 +1944,33 @@ void fragment() {
 	grade_canvas.add_child(rect)
 	add_child(grade_canvas)
 	print("Post-process: color grade shader applied")
+
+
+func _setup_letterbox() -> void:
+	# Cinematic 2.35:1 letterbox — black bars top and bottom, toggled with L key.
+	# Bar height = (viewport_h - viewport_w / 2.35) / 2
+	_letterbox_canvas = CanvasLayer.new()
+	_letterbox_canvas.name = "Letterbox"
+	_letterbox_canvas.layer = 101  # above color grade
+	_letterbox_canvas.visible = false
+
+	_letterbox_top = ColorRect.new()
+	_letterbox_top.color = Color.BLACK
+	_letterbox_top.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_letterbox_top.set_anchors_preset(Control.PRESET_TOP_WIDE)
+	_letterbox_top.anchor_bottom = 0.0
+	_letterbox_top.offset_bottom = 1.0  # will be resized in _process
+	_letterbox_canvas.add_child(_letterbox_top)
+
+	_letterbox_bot = ColorRect.new()
+	_letterbox_bot.color = Color.BLACK
+	_letterbox_bot.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_letterbox_bot.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
+	_letterbox_bot.anchor_top = 1.0
+	_letterbox_bot.offset_top = -1.0  # will be resized in _process
+	_letterbox_canvas.add_child(_letterbox_bot)
+
+	add_child(_letterbox_canvas)
 
 
 func _setup_hud() -> void:

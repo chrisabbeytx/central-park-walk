@@ -20,7 +20,7 @@ var _park_rect: PackedVector2Array = PackedVector2Array([
 
 
 func _ready() -> void:
-	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	floor_snap_length = 0.3  # snap down stairs (STEP_RISE = 0.17m)
 
 	# Capsule collider
@@ -35,14 +35,14 @@ func _ready() -> void:
 	# Head node – only rotates on X (pitch)
 	head = Node3D.new()
 	head.name     = "Head"
-	head.position = Vector3(0.0, 1.15, 0.0)
+	head.position = Vector3(0.0, 1.30, 0.0)
 	add_child(head)
 
 	# Camera attached to head
 	var cam := Camera3D.new()
 	cam.name    = "Camera"
 	cam.current = true
-	cam.fov     = 110.0
+	cam.fov     = 120.0
 	# Depth of field — subtle far blur for atmospheric depth
 	var cam_attr := CameraAttributesPractical.new()
 	cam_attr.dof_blur_far_enabled    = true
@@ -64,22 +64,17 @@ func _physics_process(delta: float) -> void:
 		position.z = pre_pos.z
 	# Smooth camera on stair step teleports
 	var dy := position.y - pre_y
-	if absf(dy) > 0.1:  # sudden jump = stair step, not normal movement
+	if absf(dy) > 0.08:  # sudden jump = stair step, not normal movement
 		_stair_offset += dy
-	_stair_offset = lerpf(_stair_offset, 0.0, clampf(15.0 * delta, 0.0, 1.0))
-	head.position.y = 1.15 - _stair_offset
+	_stair_offset = lerpf(_stair_offset, 0.0, clampf(10.0 * delta, 0.0, 1.0))
+	head.position.y = 1.30 - _stair_offset
 
 
 func _unhandled_input(event: InputEvent) -> void:
-	if event is InputEventMouseMotion:
+	if event is InputEventMouseMotion and Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT):
 		rotation_degrees.y      -= event.relative.x * 0.15
 		head.rotation_degrees.x -= event.relative.y * 0.15
 		head.rotation_degrees.x  = clampf(head.rotation_degrees.x, -80.0, 80.0)
-	elif event is InputEventKey and event.pressed:
-		if event.keycode == KEY_ESCAPE:
-			Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
-		elif event.keycode == KEY_F:
-			Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
 
 func _handle_look(delta: float) -> void:
