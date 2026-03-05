@@ -602,46 +602,200 @@ def main() -> None:
     trash_cans_out = []
 
     # -------------------------------------------------------------------
-    # Trees — NYC Parks Forestry census (preferred) or OSM nodes (fallback)
+    # Trees — woodland polygons + NYC census (outside woodlands) + OSM
+    #
+    # Strategy:
+    #   1. Build woodland polygons from OSM natural=wood
+    #   2. Fill woodland polygons with trees at ~4m spacing
+    #   3. Add NYC census trees that are OUTSIDE woodland polygons
+    #   4. Add OSM individual tree nodes outside woodlands
+    #   This avoids double-counting: woodland areas get dense fill,
+    #   non-woodland areas get real census positions.
     # -------------------------------------------------------------------
+    import random as _random
+    _rng_wood = _random.Random(42)
+
+    SPECIES_MAP = {
+        "quercus":     "oak",
+        "acer":        "maple",
+        "ulmus":       "elm",
+        "picea":       "conifer",
+        "pinus":       "conifer",
+        "abies":       "conifer",
+        "tsuga":       "conifer",
+        "juniperus":   "conifer",
+        "thuja":       "conifer",
+        "cedrus":      "conifer",
+        "taxus":       "conifer",
+    }
+
+    def _point_in_poly(px, pz, poly):
+        """Ray-casting point-in-polygon test. poly = list of (x, z)."""
+        n = len(poly)
+        inside = False
+        j = n - 1
+        for i in range(n):
+            xi, zi = poly[i]
+            xj, zj = poly[j]
+            if ((zi > pz) != (zj > pz)) and (px < (xj - xi) * (pz - zi) / (zj - zi) + xi):
+                inside = not inside
+            j = i
+        return inside
+
+    def _poly_area(poly):
+        """Shoelace formula for polygon area."""
+        n = len(poly)
+        a = 0.0
+        for i in range(n):
+            j = (i + 1) % n
+            a += poly[i][0] * poly[j][1]
+            a -= poly[j][0] * poly[i][1]
+        return abs(a) / 2.0
+
+    def _in_any_wood(px, pz, polys):
+        """Check if point is inside any woodland polygon."""
+        for poly in polys:
+            if _point_in_poly(px, pz, poly):
+                return True
+        return False
+
+    # --- Step 1: Build woodland polygons ---
+    wood_polys = []
+    for e in elements:
+        if e["type"] != "way":
+            continue
+        tags = e.get("tags", {})
+        if tags.get("natural") != "wood":
+            continue
+        nds = e.get("nodes", [])
+        if len(nds) < 3:
+            continue
+        pts = []
+        for nid in nds:
+            if nid in nodes_ll:
+                lat, lon = nodes_ll[nid]
+                x, z = project(lat, lon)
+                pts.append((x, z))
+        if len(pts) >= 3:
+            wood_polys.append(pts)
+
+    # Also resolve woodland relations (outer ways)
+    for e in elements:
+        if e["type"] != "relation":
+            continue
+        tags = e.get("tags", {})
+        if tags.get("natural") != "wood":
+            continue
+        for member in e.get("members", []):
+            if member.get("type") == "way" and member.get("role", "outer") == "outer":
+                wid = member["ref"]
+                if wid in ways_nodes:
+                    nds = ways_nodes[wid]
+                    pts = []
+                    for nid in nds:
+                        if nid in nodes_ll:
+                            lat, lon = nodes_ll[nid]
+                            x, z = project(lat, lon)
+                            pts.append((x, z))
+                    if len(pts) >= 3:
+                        wood_polys.append(pts)
+
+    wood_area = sum(_poly_area(p) for p in wood_polys if _poly_area(p) >= 10.0)
+    print(f"  Woodland polygons: {len(wood_polys)} ({wood_area:.0f} m²)")
+
+    # --- Step 2: Fill woodland polygons with trees ---
+    DEDUP_DIST = 5.0
+    CELL = 10.0
+    tree_hash: dict = {}
+    WOOD_SPACING = 4.0
+    WOOD_JITTER = 1.5
+    wood_added = 0
+    for poly in wood_polys:
+        xs = [p[0] for p in poly]
+        zs = [p[1] for p in poly]
+        xmin, xmax = min(xs), max(xs)
+        zmin, zmax = min(zs), max(zs)
+        area = _poly_area(poly)
+        if area < 10.0:
+            continue
+        gx = xmin
+        while gx <= xmax:
+            gz = zmin
+            while gz <= zmax:
+                tx = gx + _rng_wood.uniform(-WOOD_JITTER, WOOD_JITTER)
+                tz = gz + _rng_wood.uniform(-WOOD_JITTER, WOOD_JITTER)
+                if _point_in_poly(tx, tz, poly):
+                    h = round(terrain(tx, tz), 2)
+                    sp = _rng_wood.choice(["oak", "maple", "elm", "deciduous", "deciduous"])
+                    dbh = _rng_wood.randint(8, 24)
+                    trees_out.append({"pos": [round(tx, 2), h, round(tz, 2)], "species": sp, "dbh": dbh})
+                    ck = (int(tx // CELL), int(tz // CELL))
+                    if ck not in tree_hash:
+                        tree_hash[ck] = []
+                    tree_hash[ck].append((tx, tz))
+                    wood_added += 1
+                gz += WOOD_SPACING
+            gx += WOOD_SPACING
+    print(f"  Trees: {wood_added} from woodland polygons (natural=wood)")
+
+    # --- Step 3: NYC census trees OUTSIDE woodlands ---
     NYC_TREES = "lidar_data/central_park_trees.json"
+    nyc_count = 0
+    nyc_skipped = 0
     if os.path.exists(NYC_TREES):
         with open(NYC_TREES) as fh:
             nyc_trees = json.load(fh)
-        # Map genus/species to tree archetype for Godot
-        SPECIES_MAP = {
-            "quercus":     "oak",
-            "acer":        "maple",
-            "ulmus":       "elm",
-            "picea":       "conifer",
-            "pinus":       "conifer",
-            "abies":       "conifer",
-            "tsuga":       "conifer",
-            "juniperus":   "conifer",
-            "thuja":       "conifer",
-            "cedrus":      "conifer",
-            "taxus":       "conifer",
-        }
         for t in nyc_trees:
             x, z = project(t["lat"], t["lon"])
+            # Skip trees in woodland areas — those areas are already filled
+            if _in_any_wood(x, z, wood_polys):
+                nyc_skipped += 1
+                continue
             h = round(terrain(x, z), 2)
             sp_raw = t.get("species", "").lower()
             genus = sp_raw.split()[0] if sp_raw else ""
             archetype = SPECIES_MAP.get(genus, "deciduous")
             dbh = t.get("dbh", 0)
             trees_out.append({"pos": [x, h, z], "species": archetype, "dbh": dbh})
-        print(f"  Trees: {len(trees_out)} from NYC Parks Forestry census")
-    else:
-        # Fallback: OSM tree nodes
-        for e in elements:
-            if e["type"] != "node" or "lat" not in e:
-                continue
-            tags = e.get("tags", {})
-            if tags.get("natural") == "tree":
-                x, z = project(e["lat"], e["lon"])
-                h = round(terrain(x, z), 2)
-                trees_out.append({"pos": [x, h, z], "species": "deciduous", "dbh": 12})
-        print(f"  Trees: {len(trees_out)} from OSM (fallback)")
+            ck = (int(x // CELL), int(z // CELL))
+            if ck not in tree_hash:
+                tree_hash[ck] = []
+            tree_hash[ck].append((x, z))
+            nyc_count += 1
+        print(f"  Trees: +{nyc_count} from NYC census (outside woodlands, {nyc_skipped} skipped)")
+
+    # --- Step 4: OSM individual tree nodes outside woodlands ---
+    osm_added = 0
+    for e in elements:
+        if e["type"] != "node" or "lat" not in e:
+            continue
+        tags = e.get("tags", {})
+        if tags.get("natural") != "tree":
+            continue
+        x, z = project(e["lat"], e["lon"])
+        if _in_any_wood(x, z, wood_polys):
+            continue
+        ck = (int(x // CELL), int(z // CELL))
+        duplicate = False
+        for dx in range(-1, 2):
+            for dz in range(-1, 2):
+                for (tx, tz) in tree_hash.get((ck[0] + dx, ck[1] + dz), []):
+                    if abs(tx - x) < DEDUP_DIST and abs(tz - z) < DEDUP_DIST:
+                        duplicate = True
+                        break
+                if duplicate:
+                    break
+            if duplicate:
+                break
+        if not duplicate:
+            h = round(terrain(x, z), 2)
+            trees_out.append({"pos": [x, h, z], "species": "deciduous", "dbh": 12})
+            if ck not in tree_hash:
+                tree_hash[ck] = []
+            tree_hash[ck].append((x, z))
+            osm_added += 1
+    print(f"  Trees: +{osm_added} from OSM individual nodes")
+    print(f"  Trees total: {len(trees_out)}")
 
     for e in elements:
         if e["type"] != "node" or "lat" not in e:

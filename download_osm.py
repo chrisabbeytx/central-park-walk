@@ -57,6 +57,24 @@ QUERY = f"""[out:json][timeout:180];
     ({BBOX});
   node["amenity"="waste_basket"]
     ({BBOX});
+  way["natural"="wood"]
+    ({BBOX});
+  relation["natural"="wood"]
+    ({BBOX});
+  way["landuse"="forest"]
+    ({BBOX});
+  relation["landuse"="forest"]
+    ({BBOX});
+  way["leisure"="nature_reserve"]
+    ({BBOX});
+  relation["leisure"="nature_reserve"]
+    ({BBOX});
+  way["leisure"="garden"]
+    ({BBOX});
+  relation["leisure"="garden"]
+    ({BBOX});
+  way["landuse"="grass"]
+    ({BBOX});
 );
 out body;
 >;

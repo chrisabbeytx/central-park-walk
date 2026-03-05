@@ -547,30 +547,32 @@ func _ready() -> void:
 	_build_paths(paths)
 	_build_water(water)
 	_populate_water_grid(water)
-	_build_shore_vegetation(water)
 	_build_labels(water)
 	_build_trees(trees)
 	_build_furniture(benches, lampposts, paths)
 	_build_trash_cans(trash_cans, paths)
-	_build_undergrowth(trees, paths)
-	_build_rocks(trees, water)
 	_build_barriers(barriers)
 	_build_staircases(paths)
 	_build_statues(statues)
-	_build_tree_dirt(trees)
-	_build_blossoms(trees)
-	_build_wildflowers(trees, water)
-	_build_meadow_grass(trees)
-	_build_ground_cover(trees, water, buildings)
-	_build_leaf_litter(trees)
-	_build_grass_blades(trees)
 	_build_boats(water)
 	_build_waterfowl(water)
 	_build_pedestrians(paths)
-	_build_squirrels(trees)
 	_build_boundary(boundary)
 	_build_perimeter_wall(boundary)
 	_build_boundary_facades()
+	# Procedural vegetation disabled — only real-data features above.
+	# Re-enable selectively as real-world data sources become available:
+	#_build_shore_vegetation(water)
+	#_build_undergrowth(trees, paths)
+	#_build_rocks(trees, water)
+	#_build_tree_dirt(trees)
+	#_build_blossoms(trees)
+	#_build_wildflowers(trees, water)
+	#_build_meadow_grass(trees)
+	#_build_ground_cover(trees, water, buildings)
+	#_build_leaf_litter(trees)
+	#_build_grass_blades(trees)
+	#_build_squirrels(trees)
 	print("ParkLoader: done")
 
 
@@ -4864,10 +4866,28 @@ func _build_trees(trees: Array) -> void:
 			print("WARNING: generate_scene returned null for %s" % species)
 			continue
 		var meshes: Array = []
+		var node_scale := 1.0
+		_collect_meshes(root, meshes)
+		# Detect node scale: Quaternius models have scale=100 on mesh nodes.
+		# Scene tree: root → RootNode → NormalTree_N (scale=100, has mesh).
+		for child in root.get_children():
+			if child is Node3D:
+				var s: Vector3 = (child as Node3D).scale
+				if s.x > 1.0:
+					node_scale = s.x
+					break
+				for gc in child.get_children():
+					if gc is Node3D:
+						var gs: Vector3 = (gc as Node3D).scale
+						if gs.x > 1.0:
+							node_scale = gs.x
+							break
+				if node_scale > 1.0:
+					break
+		# Compute mesh height — use RAW AABB since we need the scale factor
+		# to include the GLB node scale (100x for Quaternius centimetre models).
+		# desired_h / raw_mesh_h gives the correct total scale factor.
 		var max_h := 0.0
-		_collect_meshes(root, meshes, max_h)
-		# max_h was passed by value — recompute
-		max_h = 0.0
 		for m: Mesh in meshes:
 			var ab: AABB = m.get_aabb()
 			var h := maxf(ab.size.x, maxf(ab.size.y, ab.size.z))
@@ -4878,7 +4898,7 @@ func _build_trees(trees: Array) -> void:
 			continue
 		species_meshes[species] = meshes
 		species_heights[species] = max_h
-		print("Trees: loaded %s — %d variants, mesh height %.4f" % [species, meshes.size(), max_h])
+		print("Trees: loaded %s — %d variants, raw=%.4f actual=%.1fm" % [species, meshes.size(), max_h, max_h * node_scale])
 
 	if species_meshes.is_empty():
 		print("WARNING: no tree GLB models loaded, falling back skipped")
@@ -4905,6 +4925,7 @@ func _build_trees(trees: Array) -> void:
 	# Key: "species_variantIdx" -> Array[Transform3D]
 	var xf_by_key: Dictionary = {}
 	var all_trunk_xf: Array = []  # for collision
+	var all_lod1_xf: Array = []   # billboard transforms (Y-up, no Z-up fix)
 
 	for i in trees.size():
 		var tree_entry = trees[i]
@@ -4919,7 +4940,9 @@ func _build_trees(trees: Array) -> void:
 		else:
 			pt = tree_entry
 		var tx := float(pt[0]); var tz := float(pt[2])
-		if not _in_boundary(tx, tz):
+		# NYC census trees are already GPS-positioned in Central Park — skip boundary
+		# filter. Only reject trees that fall completely outside the world bounds.
+		if absf(tx) > 2400.0 or absf(tz) > 2400.0:
 			continue
 		var ty := _terrain_y(tx, tz)
 		rng.seed = i * 1234567891 + 987654321
@@ -4962,6 +4985,10 @@ func _build_trees(trees: Array) -> void:
 			xf_by_key[key] = []
 		xf_by_key[key].append(tf)
 
+		# LOD1 billboard transform: Y-up (no Z-up fix), scaled to desired height
+		var lod1_basis := Basis(Vector3.UP, y_rot) * Basis().scaled(Vector3(desired_h * 0.5, desired_h, desired_h * 0.5))
+		all_lod1_xf.append(Transform3D(lod1_basis, Vector3(tx, ty, tz)))
+
 		# Collision: simplified cylinder at trunk position
 		var trunk_r := desired_h * 0.02
 		var col_basis := Basis(
@@ -4970,20 +4997,154 @@ func _build_trees(trees: Array) -> void:
 			Vector3(0.0,     0.0,      trunk_r))
 		all_trunk_xf.append(Transform3D(col_basis, Vector3(tx, ty + desired_h * 0.5, tz)))
 
-	# Spawn MultiMeshes — one per species-variant combo
+	# --- Two-tier LOD with spatial chunking ---
+	# Each chunk's MMI is positioned at its spatial centre so that
+	# visibility_range works per-chunk (distance from camera to node).
+	# LOD0 (0-120m): Full GLB mesh — high detail
+	# LOD1 (100-400m): Simple billboard cross — very cheap
+	const CHUNK := 150.0
+	const LOD0_END := 120.0
+	const LOD1_BEGIN := 100.0
+	const LOD1_END := 400.0
+
+	# Build a simple crossed-billboard mesh for LOD1
+	var lod1_mesh := _make_tree_billboard_mesh()
+	var lod1_mat := StandardMaterial3D.new()
+	lod1_mat.albedo_color = Color(0.30, 0.45, 0.20, 0.85)
+	lod1_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
+	lod1_mat.alpha_scissor_threshold = 0.1
+	lod1_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	lod1_mat.shading_mode = BaseMaterial3D.SHADING_MODE_PER_VERTEX
+
+	# Bucket transforms by spatial chunk
+	# LOD0: per-species-variant per-chunk (key: "meshkey|cx|cz")
+	# LOD1: per-chunk, species-independent (key: "cx|cz"), uses Y-up billboard xf
+	var lod0_chunks: Dictionary = {}
+	var lod1_chunks: Dictionary = {}
+
 	for key in xf_by_key:
-		var parts: PackedStringArray = key.split("_")
-		var species: String = parts[0]
-		var vi: int = int(parts[1])
-		var xf_list: Array = xf_by_key[key]
+		for tf: Transform3D in xf_by_key[key]:
+			var cx := int(floorf(tf.origin.x / CHUNK))
+			var cz := int(floorf(tf.origin.z / CHUNK))
+			var ck0 := "%s|%d|%d" % [key, cx, cz]
+			if not lod0_chunks.has(ck0):
+				lod0_chunks[ck0] = {"mesh_key": key, "cx": cx, "cz": cz, "xf": []}
+			lod0_chunks[ck0]["xf"].append(tf)
+
+	# Separate LOD1 chunking with billboard transforms
+	for idx in all_lod1_xf.size():
+		var tf: Transform3D = all_lod1_xf[idx]
+		var cx := int(floorf(tf.origin.x / CHUNK))
+		var cz := int(floorf(tf.origin.z / CHUNK))
+		var ck1 := "%d|%d" % [cx, cz]
+		if not lod1_chunks.has(ck1):
+			lod1_chunks[ck1] = {"cx": cx, "cz": cz, "xf": []}
+		lod1_chunks[ck1]["xf"].append(tf)
+
+	# Spawn LOD0 chunks — position MMI at chunk centre, offset transforms
+	for ckey in lod0_chunks:
+		var info: Dictionary = lod0_chunks[ckey]
+		var mesh_key: String = info["mesh_key"]
+		var xf_list: Array = info["xf"]
 		if xf_list.is_empty():
 			continue
-		var mesh: Mesh = species_meshes[species][vi]
-		# Pass null material — GLB models have their own embedded materials
-		_spawn_multimesh(mesh, null, xf_list, "Trees_%s" % key)
+		var parts: PackedStringArray = mesh_key.split("_")
+		var sp_name: String = parts[0]
+		var vi: int = int(parts[1])
+		var mesh: Mesh = species_meshes[sp_name][vi]
+		# Chunk centre in world space
+		var cx_f: float = float(info["cx"]) * CHUNK + CHUNK * 0.5
+		var cz_f: float = float(info["cz"]) * CHUNK + CHUNK * 0.5
+		var chunk_origin := Vector3(cx_f, 0.0, cz_f)
+		var mm := MultiMesh.new()
+		mm.transform_format = MultiMesh.TRANSFORM_3D
+		mm.mesh = mesh
+		mm.instance_count = xf_list.size()
+		for i in xf_list.size():
+			var tf: Transform3D = xf_list[i]
+			# Make transform relative to chunk origin
+			var local_tf := Transform3D(tf.basis, tf.origin - chunk_origin)
+			mm.set_instance_transform(i, local_tf)
+		var mmi := MultiMeshInstance3D.new()
+		mmi.multimesh = mm
+		mmi.position = chunk_origin
+		mmi.name = "TrL0_%s" % ckey.replace("|", "_")
+		mmi.visibility_range_end = LOD0_END
+		mmi.visibility_range_fade_mode = GeometryInstance3D.VISIBILITY_RANGE_FADE_SELF
+		add_child(mmi)
+
+	# Spawn LOD1 chunks — billboard crosses, long range
+	for ck1 in lod1_chunks:
+		var info: Dictionary = lod1_chunks[ck1]
+		var xf_list: Array = info["xf"]
+		if xf_list.is_empty():
+			continue
+		var cx_f: float = float(info["cx"]) * CHUNK + CHUNK * 0.5
+		var cz_f: float = float(info["cz"]) * CHUNK + CHUNK * 0.5
+		var chunk_origin := Vector3(cx_f, 0.0, cz_f)
+		var mm := MultiMesh.new()
+		mm.transform_format = MultiMesh.TRANSFORM_3D
+		mm.mesh = lod1_mesh
+		mm.instance_count = xf_list.size()
+		for i in xf_list.size():
+			var tf: Transform3D = xf_list[i]
+			var local_tf := Transform3D(tf.basis, tf.origin - chunk_origin)
+			mm.set_instance_transform(i, local_tf)
+		var mmi := MultiMeshInstance3D.new()
+		mmi.multimesh = mm
+		mmi.position = chunk_origin
+		mmi.name = "TrL1_%s" % ck1.replace("|", "_")
+		mmi.material_override = lod1_mat
+		mmi.visibility_range_begin = LOD1_BEGIN
+		mmi.visibility_range_end = LOD1_END
+		mmi.visibility_range_fade_mode = GeometryInstance3D.VISIBILITY_RANGE_FADE_SELF
+		add_child(mmi)
 
 	_build_tree_collision(all_trunk_xf)
-	print("Trees: %d placed via GLB models" % all_trunk_xf.size())
+	print("Trees: %d placed, LOD0 chunks=%d, LOD1 chunks=%d" % [all_trunk_xf.size(), lod0_chunks.size(), lod1_chunks.size()])
+
+
+func _make_tree_billboard_mesh() -> ArrayMesh:
+	# Simple crossed-quad billboard: 2 perpendicular quads forming a + shape.
+	# Unit scale: width=1, height=1, centred at base (Y 0..1).
+	# The trunk is a narrow rectangle at bottom, canopy is a wider oval shape.
+	# 4 triangles total — extremely cheap for LOD1.
+	var verts   := PackedVector3Array()
+	var normals := PackedVector3Array()
+	var uvs     := PackedVector2Array()
+	var indices := PackedInt32Array()
+
+	# Two perpendicular quads; each is a diamond/tree silhouette
+	for rot_idx in 2:
+		var a := float(rot_idx) * PI * 0.5  # 0° and 90°
+		var ca := cos(a)
+		var sa := sin(a)
+		var hw := 0.4  # half-width at canopy level
+		var base := verts.size()
+		# Bottom-left, bottom-right, top-right, top-left
+		verts.append(Vector3(-hw * ca, 0.0, -hw * sa))      # bottom-left
+		verts.append(Vector3( hw * ca, 0.0,  hw * sa))      # bottom-right
+		verts.append(Vector3( hw * ca, 1.0,  hw * sa))      # top-right
+		verts.append(Vector3(-hw * ca, 1.0, -hw * sa))      # top-left
+		var n := Vector3(sa, 0.0, -ca).normalized()
+		for _i in 4:
+			normals.append(n)
+		uvs.append(Vector2(0.0, 1.0))
+		uvs.append(Vector2(1.0, 1.0))
+		uvs.append(Vector2(1.0, 0.0))
+		uvs.append(Vector2(0.0, 0.0))
+		indices.append(base); indices.append(base + 1); indices.append(base + 2)
+		indices.append(base); indices.append(base + 2); indices.append(base + 3)
+
+	var arr := []
+	arr.resize(Mesh.ARRAY_MAX)
+	arr[Mesh.ARRAY_VERTEX]  = verts
+	arr[Mesh.ARRAY_NORMAL]  = normals
+	arr[Mesh.ARRAY_TEX_UV]  = uvs
+	arr[Mesh.ARRAY_INDEX]   = indices
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
+	return mesh
 
 
 func _build_tree_collision(trunk_xf: Array) -> void:

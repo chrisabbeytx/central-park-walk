@@ -1747,7 +1747,7 @@ func _setup_player() -> CharacterBody3D:
 		p.rotation_degrees.y = 0.0
 		p.set_physics_process(false)
 	else:
-		p.position = Vector3(-400.0, _terrain_height(-400.0, 600.0) + 2.0, 600.0)  # Ramble
+		p.position = Vector3(-600.0, _terrain_height(-600.0, 1420.0) + 2.0, 1420.0)  # Literary Walk
 	p.rotation_degrees.y = 30.0
 	add_child(p)
 	if _terrain_only and p.head:
