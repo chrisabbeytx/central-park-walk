@@ -608,9 +608,9 @@ func _splat_mat_idx(hw: String, surface: String) -> int:
 		"mulch":              return 22
 		"sand":               return 23
 	match hw:
-		"footway":    return 24
+		"footway":    return 1   # asphalt (same as explicit surface=asphalt)
 		"cycleway":   return 25
-		"pedestrian": return 26
+		"pedestrian": return 1   # asphalt (prevents overlapping path material conflicts)
 		"path":       return 27
 		"steps":      return 28
 		"track":      return 29
@@ -720,31 +720,10 @@ func _generate_splat_map(paths: Array, bridge_centroids: Array) -> ImageTexture:
 		var raw: Array = seg["points"]
 		var is_poly := _is_closed_polygon(raw)
 		if is_poly:
-			# Closed polygon — compute area
-			var poly_area := 0.0
-			for pi in range(raw.size() - 1):
-				poly_area += float(raw[pi][0]) * float(raw[pi+1][2]) - float(raw[pi+1][0]) * float(raw[pi][2])
-			poly_area = absf(poly_area) * 0.5
-			if poly_area < 20000.0:
-				# Expand polygon outward by hw2 from centroid, then scanline fill
-				# This covers the area thick-line strokes used to cover, without jagged edges
-				var cx := 0.0; var cz := 0.0
-				var nv := raw.size() - 1  # skip duplicate last point
-				for pi in nv:
-					cx += float(raw[pi][0]); cz += float(raw[pi][2])
-				cx /= float(nv); cz /= float(nv)
-				var expanded: Array = []
-				for pi in nv:
-					var px := float(raw[pi][0]); var pz := float(raw[pi][2])
-					var dx := px - cx; var dz := pz - cz
-					var dl := sqrt(dx * dx + dz * dz)
-					if dl > 0.1:
-						px += dx / dl * hw2
-						pz += dz / dl * hw2
-					expanded.append([px, 0.0, pz])
-				expanded.append(expanded[0])  # close polygon
-				_raster_scanline_fill(data, expanded, mat_idx)
-				continue
+			# Skip closed polygon fills — they create visible rectangle artifacts
+			# on paths. The analytical GPU path system handles all open polylines.
+			# Closed polygon outlines still get thick-line stroked below.
+			pass
 		var smoothed: Array = _smooth_path_catmull_rom(raw) if raw.size() >= 3 and hw != "steps" else raw
 		var pts: Array = _subdivide_pts(smoothed, 2.5)
 		for i in range(pts.size() - 1):
@@ -753,7 +732,7 @@ func _generate_splat_map(paths: Array, bridge_centroids: Array) -> ImageTexture:
 
 	_splat_data = data  # store for path coverage queries (dirt circles, leaf litter)
 	var img := Image.create_from_data(SPLAT_RES, SPLAT_RES, false, Image.FORMAT_RG8, data)
-	img.generate_mipmaps()
+	# No mipmaps — material indices are discrete values, filtering creates garbage
 	var tex := ImageTexture.create_from_image(img)
 	print("ParkLoader: splat map generated (%d×%d), %d ground paths" % [SPLAT_RES, SPLAT_RES, ground_segs.size()])
 	return tex
@@ -6164,8 +6143,8 @@ func _build_wall_segments(pts: Array, height: float,
 	for i in range(pts.size() - 1):
 		var p1x := float(pts[i][0]);   var p1z := float(pts[i][2])
 		var p2x := float(pts[i+1][0]); var p2z := float(pts[i+1][2])
-		var p1y := _terrain_y(p1x, p1z)
-		var p2y := _terrain_y(p2x, p2z)
+		var p1y := _terrain_y(p1x, p1z) - 0.02  # sink base below terrain
+		var p2y := _terrain_y(p2x, p2z) - 0.02
 
 		var seg2 := Vector2(p2x - p1x, p2z - p1z)
 		if seg2.length_squared() < 0.01:
@@ -6723,8 +6702,8 @@ func _build_perimeter_wall(boundary: Array) -> void:
 				nrm2 = -nrm2
 			var outward := -nrm2
 
-			var ya := _terrain_y(a.x, a.y)
-			var yb := _terrain_y(b.x, b.y)
+			var ya := _terrain_y(a.x, a.y) - 0.02  # sink base below terrain
+			var yb := _terrain_y(b.x, b.y) - 0.02
 			var ht := wall_t * 0.5
 
 			# Outer wall origin (outward from boundary center)
@@ -7443,6 +7422,7 @@ func _build_tree_dirt(trees: Array) -> void:
 	dirt_mat.roughness       = 0.92
 	dirt_mat.transparency    = BaseMaterial3D.TRANSPARENCY_ALPHA
 	dirt_mat.render_priority = -1
+	dirt_mat.depth_draw_mode = BaseMaterial3D.DEPTH_DRAW_ALWAYS
 
 	var xforms: Array = []
 	for i in trees.size():
@@ -7450,7 +7430,7 @@ func _build_tree_dirt(trees: Array) -> void:
 		var tx := float(pt[0]); var tz := float(pt[2])
 		if not _in_boundary(tx, tz):
 			continue
-		var ty := _terrain_y(tx, tz) + 0.02
+		var ty := _terrain_y(tx, tz) + 0.04  # above terrain (+0.04 in overlay hierarchy)
 		rng.seed = i * 271828 + 31415
 		var r := rng.randf_range(2.0, 4.0)
 		# Skip dirt circles that would overlap any path — check at actual circle radius + buffer
@@ -7778,7 +7758,7 @@ func _build_wildflowers(trees: Array, water: Array) -> void:
 				if _is_excluded(fx, fz) or _is_on_path(fx, fz):
 					continue
 
-				var fy := _terrain_y(fx, fz) + 0.01
+				var fy := _terrain_y(fx, fz) + 0.03  # vegetation overlay layer
 
 				# 75% dominant for uniform-color patches, 25% random
 				var sp := dom_species
@@ -7926,7 +7906,7 @@ func _build_meadow_grass(trees: Array) -> void:
 				if _is_excluded(gx, gz) or _is_on_path(gx, gz):
 					continue
 
-				var gy := _terrain_y(gx, gz) + 0.01
+				var gy := _terrain_y(gx, gz) + 0.03  # vegetation overlay layer
 				var h := rng.randf_range(0.15, 0.45)
 				var w := rng.randf_range(0.12, 0.35)
 				var rot := rng.randf() * TAU
