@@ -467,9 +467,20 @@ var _park_rect: PackedVector2Array = PackedVector2Array([
 	Vector2(80.6, -2034.9),     # NW
 ])
 
+# AABB of _park_rect for fast rejection in _in_boundary()
+var _park_aabb_min_x: float = -1211.0
+var _park_aabb_max_x: float = 1217.0
+var _park_aabb_min_z: float = -2034.9
+var _park_aabb_max_z: float = 2159.4
+
 func _in_boundary(px: float, pz: float) -> bool:
 	## Point-in-rectangle test using the park's tilted rectangular boundary.
-	## Uses ray-casting for a 4-vertex convex polygon.
+	# Fast AABB rejection first (avoids polygon test for ~60% of calls)
+	if px < _park_aabb_min_x or px > _park_aabb_max_x:
+		return false
+	if pz < _park_aabb_min_z or pz > _park_aabb_max_z:
+		return false
+	# Ray-casting for 4-vertex convex polygon
 	var inside := false
 	var n := _park_rect.size()
 	var j := n - 1
@@ -512,34 +523,46 @@ func _ready() -> void:
 		for i in range(raw_boundary.size()):
 			boundary_polygon[i] = Vector2(float(raw_boundary[i][0]), float(raw_boundary[i][1]))
 
+	# Cache data arrays once — avoids repeated Dictionary.get() calls
+	var paths: Array = data.get("paths", [])
+	var water: Array = data.get("water", [])
+	var trees: Array = data.get("trees", [])
+	var buildings: Array = data.get("buildings", [])
+	var barriers: Array = data.get("barriers", [])
+	var statues: Array = data.get("statues", [])
+	var benches: Array = data.get("benches", [])
+	var lampposts: Array = data.get("lampposts", [])
+	var trash_cans: Array = data.get("trash_cans", [])
+	var boundary: Array = data.get("boundary", [])
+
 	print("ParkLoader: building path meshes…")
-	_build_buildings(data.get("buildings", []))
-	_build_paths(data.get("paths", []))
-	_build_water(data.get("water", []))
-	_populate_water_grid(data.get("water", []))
-	_build_shore_vegetation(data.get("water", []))
-	_build_labels(data.get("water", []))
-	_build_trees(data.get("trees", []))
-	_build_furniture(data.get("benches", []), data.get("lampposts", []), data.get("paths", []))
-	_build_trash_cans(data.get("trash_cans", []), data.get("paths", []))
-	_build_undergrowth(data.get("trees", []), data.get("paths", []))
-	_build_rocks(data.get("trees", []), data.get("water", []))
-	_build_barriers(data.get("barriers", []))
-	_build_staircases(data.get("paths", []))
-	_build_statues(data.get("statues", []))
-	_build_tree_dirt(data.get("trees", []))
-	_build_blossoms(data.get("trees", []))
-	_build_wildflowers(data.get("trees", []), data.get("water", []))
-	_build_meadow_grass(data.get("trees", []))
-	_build_ground_cover(data.get("trees", []), data.get("water", []), data.get("buildings", []))
-	_build_leaf_litter(data.get("trees", []))
-	_build_grass_blades(data.get("trees", []))
-	_build_boats(data.get("water", []))
-	_build_waterfowl(data.get("water", []))
-	_build_pedestrians(data.get("paths", []))
-	_build_squirrels(data.get("trees", []))
-	_build_boundary(data.get("boundary", []))
-	_build_perimeter_wall(data.get("boundary", []))
+	_build_buildings(buildings)
+	_build_paths(paths)
+	_build_water(water)
+	_populate_water_grid(water)
+	_build_shore_vegetation(water)
+	_build_labels(water)
+	_build_trees(trees)
+	_build_furniture(benches, lampposts, paths)
+	_build_trash_cans(trash_cans, paths)
+	_build_undergrowth(trees, paths)
+	_build_rocks(trees, water)
+	_build_barriers(barriers)
+	_build_staircases(paths)
+	_build_statues(statues)
+	_build_tree_dirt(trees)
+	_build_blossoms(trees)
+	_build_wildflowers(trees, water)
+	_build_meadow_grass(trees)
+	_build_ground_cover(trees, water, buildings)
+	_build_leaf_litter(trees)
+	_build_grass_blades(trees)
+	_build_boats(water)
+	_build_waterfowl(water)
+	_build_pedestrians(paths)
+	_build_squirrels(trees)
+	_build_boundary(boundary)
+	_build_perimeter_wall(boundary)
 	_build_boundary_facades()
 	print("ParkLoader: done")
 

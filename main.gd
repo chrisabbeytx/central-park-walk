@@ -29,6 +29,7 @@ var _latlon_label:  Label
 var _time_of_day: float = 16.0        # start at 4 PM
 var _time_speed: float  = 0.001      # game-hours per real-second (~400 min full cycle)
 var _time_speed_idx: int = 0
+var _last_applied_tod: float = -999.0  # tracks last _apply_time_of_day() value
 const TIME_SPEEDS: Array = [0.001, 0.01, 0.1, 0.0]
 const TIME_SPEED_NAMES: Array = ["1x", "10x", "100x", "Paused"]
 
@@ -237,14 +238,16 @@ func _process(delta: float) -> void:
 	# Auto-screenshot for dev review (non-tour mode)
 	if not _screenshot_done:
 		_screenshot_timer += delta
-		_player.set_physics_process(false)
-		_player.velocity = Vector3.ZERO
+		if _screenshot_timer <= delta:  # first frame only
+			_player.set_physics_process(false)
+			_player.velocity = Vector3.ZERO
 		if _screenshot_timer >= 4.0:
 			_screenshot_done = true
 			var img := get_viewport().get_texture().get_image()
 			if img:
 				img.save_png("/tmp/godot_screenshot.png")
 				print("Screenshot saved to /tmp/godot_screenshot.png")
+			img = null
 			_player.set_physics_process(true)
 	# Update lamp lights every 0.5s
 	_lamp_light_timer += delta
@@ -265,7 +268,10 @@ func _process(delta: float) -> void:
 		_time_of_day -= 24.0
 	elif _time_of_day < 0.0:
 		_time_of_day += 24.0
-	_apply_time_of_day()
+	# Only update sky/env/lighting when time actually changes (saves ~50 ops/frame when paused)
+	if absf(_time_of_day - _last_applied_tod) > 0.0005:
+		_last_applied_tod = _time_of_day
+		_apply_time_of_day()
 
 	if not _player or not _coord_label:
 		return
@@ -1773,11 +1779,14 @@ func _update_lamp_lights() -> void:
 	var player_pos := _player.global_position
 	# Find closest lamps within 30m
 	var dists: Array = []
+	var pool_size: int = _lamp_lights.size()
 	for i in _lamp_positions.size():
 		var d := player_pos.distance_squared_to(_lamp_positions[i])
 		if d < 900.0:  # within 30m
 			dists.append([d, i])
-	dists.sort_custom(func(a, b): return a[0] < b[0])
+	# Only sort if we have more candidates than light slots
+	if dists.size() > pool_size:
+		dists.sort_custom(func(a, b): return a[0] < b[0])
 
 	# Get current lamp emission energy from day/night cycle
 	var night_energy: float = 0.0
@@ -2034,20 +2043,26 @@ func _make_audio_player(path: String, vol_db: float, autoplay: bool = true) -> A
 			add_child(player)
 	return player
 
+var _boundary_dist_timer: float = 0.0
+var _cached_boundary_dist: float = 999999.0
+
 func _update_audio(delta: float) -> void:
 	if not _player:
 		return
 	var ppos := _player.global_position
 
-	# City hum louder near boundary
+	# City hum louder near boundary — throttle expensive polygon scan to every 0.2s
 	if _audio_city and _audio_city.stream:
-		var min_dist := 999999.0
-		if _park_loader and _park_loader.boundary_polygon.size() > 2:
-			for pt in _park_loader.boundary_polygon:
-				var d := Vector2(ppos.x - pt.x, ppos.z - pt.y).length()
-				if d < min_dist:
-					min_dist = d
-		var city_vol := lerpf(-12.0, -22.0, clampf(min_dist / 200.0, 0.0, 1.0))
+		_boundary_dist_timer += delta
+		if _boundary_dist_timer >= 0.2:
+			_boundary_dist_timer = 0.0
+			_cached_boundary_dist = 999999.0
+			if _park_loader and _park_loader.boundary_polygon.size() > 2:
+				for pt in _park_loader.boundary_polygon:
+					var d := Vector2(ppos.x - pt.x, ppos.z - pt.y).length()
+					if d < _cached_boundary_dist:
+						_cached_boundary_dist = d
+		var city_vol := lerpf(-12.0, -22.0, clampf(_cached_boundary_dist / 200.0, 0.0, 1.0))
 		_audio_city.volume_db = city_vol
 
 	# Birds louder in dense tree areas (use tree density heuristic)

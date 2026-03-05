@@ -189,24 +189,34 @@ def build_height_grid() -> tuple[list, float, float]:
     # separate meshes for bridges/tunnels, so the heightmap only needs to
     # capture the park's overall terrain shape (hills, slopes), not fine features.
     W, H = GRID_W, GRID_H
-    for _pass in range(10):
-        smoothed = list(grid)
+    # Double-buffer: swap between grid and buf to avoid list(grid) copy each pass
+    buf = [0.0] * (W * H)
+    for _pass in range(5):
         for zi in range(1, H - 1):
+            b = zi * W
+            bm = (zi - 1) * W
+            bp = (zi + 1) * W
             for xi in range(1, W - 1):
-                b = zi * W
-                smoothed[b + xi] = (
-                    grid[b + xi]         * 0.25 +
-                    grid[b + xi - 1]     * 0.125 +
-                    grid[b + xi + 1]     * 0.125 +
-                    grid[(zi-1)*W + xi]  * 0.125 +
-                    grid[(zi+1)*W + xi]  * 0.125 +
-                    grid[(zi-1)*W+xi-1]  * 0.0625 +
-                    grid[(zi-1)*W+xi+1]  * 0.0625 +
-                    grid[(zi+1)*W+xi-1]  * 0.0625 +
-                    grid[(zi+1)*W+xi+1]  * 0.0625
+                buf[b + xi] = (
+                    grid[b + xi]       * 0.25 +
+                    grid[b + xi - 1]   * 0.125 +
+                    grid[b + xi + 1]   * 0.125 +
+                    grid[bm + xi]      * 0.125 +
+                    grid[bp + xi]      * 0.125 +
+                    grid[bm + xi - 1]  * 0.0625 +
+                    grid[bm + xi + 1]  * 0.0625 +
+                    grid[bp + xi - 1]  * 0.0625 +
+                    grid[bp + xi + 1]  * 0.0625
                 )
-        grid = smoothed
-    print(f"  Applied 10-pass Gaussian smooth to heightmap")
+        # Copy edges (unchanged by smoothing)
+        for xi in range(W):
+            buf[xi] = grid[xi]
+            buf[(H-1)*W + xi] = grid[(H-1)*W + xi]
+        for zi in range(H):
+            buf[zi*W] = grid[zi*W]
+            buf[zi*W + W - 1] = grid[zi*W + W - 1]
+        grid, buf = buf, grid  # swap without copy
+    print(f"  Applied 5-pass Gaussian smooth to heightmap")
 
     min_elev = min(grid)
 
@@ -327,8 +337,8 @@ def main() -> None:
     terrain = make_sampler(hm_grid, min_elev)
 
     if have_terrain:
-        # Full precision — rounding to 0.01m caused visible "plowed row" banding
-        flat_grid = [round(v - min_elev, 6) for v in hm_grid]
+        # 3 decimal places (~1mm) — sufficient for terrain, saves ~15-20MB vs 6 decimals
+        flat_grid = [round(v - min_elev, 3) for v in hm_grid]
         hm_out = {
             "width":         GRID_W,
             "depth":         GRID_H,
@@ -507,57 +517,37 @@ def main() -> None:
             })
 
     # -------------------------------------------------------------------
-    # Trees  – points become [x, terrain_y, z]
-    # -------------------------------------------------------------------
-    trees_out = []
-    for e in elements:
-        if e["type"] == "node" and e.get("tags", {}).get("natural") == "tree" and "lat" in e:
-            x, z = project(e["lat"], e["lon"])
-            trees_out.append([x, round(terrain(x, z), 2), z])
-
-    # -------------------------------------------------------------------
-    # Barriers  – walls, fences, retaining walls, hedges, guard rails
+    # Single-pass node extraction: trees, statues, benches, lampposts, trash
+    # (Previously 5 separate loops over elements — now 1)
     # -------------------------------------------------------------------
     BARRIER_HEIGHTS = {
         "wall": 1.2, "retaining_wall": 1.8, "fence": 1.5,
         "hedge": 1.2, "guard_rail": 0.9, "city_wall": 2.5,
     }
-    barriers_out = []
-    for wid, tags in ways_tags.items():
-        btype = tags.get("barrier")
-        if btype not in BARRIER_HEIGHTS:
-            continue
-        nids = ways_nodes.get(wid, [])
-        pts = []
-        for nid in nids:
-            if nid in nodes_ll:
-                x, z = project(*nodes_ll[nid])
-                pts.append([x, round(terrain(x, z), 2), z])
-        if len(pts) < 2:
-            continue
-        h = BARRIER_HEIGHTS[btype]
-        raw_h = tags.get("height", "")
-        if raw_h:
-            try:
-                h = float(raw_h.replace("m", "").strip())
-            except ValueError:
-                pass
-        barriers_out.append({
-            "type":     btype,
-            "height":   round(h, 1),
-            "points":   pts,
-            "material": tags.get("material", ""),
-        })
+    COMPASS = {"N": 0, "NE": 45, "E": 90, "SE": 135,
+               "S": 180, "SW": 225, "W": 270, "NW": 315}
 
-    # -------------------------------------------------------------------
-    # Statues, monuments, memorials, artworks
-    # -------------------------------------------------------------------
+    trees_out = []
     statues_out = []
-    # From nodes
+    benches_out = []
+    lampposts_out = []
+    trash_cans_out = []
+
     for e in elements:
         if e["type"] != "node" or "lat" not in e:
             continue
         tags = e.get("tags", {})
+        if not tags:
+            continue
+        x, z = project(e["lat"], e["lon"])
+        h = round(terrain(x, z), 2)
+
+        # Trees
+        if tags.get("natural") == "tree":
+            trees_out.append([x, h, z])
+            continue
+
+        # Statues / monuments / artworks
         stype = None
         if tags.get("historic") in ("memorial", "monument"):
             stype = tags["historic"]
@@ -565,93 +555,92 @@ def main() -> None:
             stype = tags.get("artwork_type", "statue")
         elif tags.get("man_made") == "obelisk":
             stype = "obelisk"
-        if not stype:
+        if stype:
+            statues_out.append({
+                "name": tags.get("name", ""), "type": stype,
+                "position": [x, h, z],
+            })
             continue
-        x, z = project(e["lat"], e["lon"])
-        statues_out.append({
-            "name":     tags.get("name", ""),
-            "type":     stype,
-            "position": [x, round(terrain(x, z), 2), z],
-        })
-    # From ways (some monuments are mapped as areas)
+
+        # Benches
+        if tags.get("amenity") == "bench":
+            direction = 0.0
+            raw_dir = tags.get("direction", "")
+            if raw_dir:
+                try:
+                    direction = float(raw_dir)
+                except ValueError:
+                    direction = float(COMPASS.get(raw_dir.upper(), 0))
+            benches_out.append([x, h, z, direction])
+            continue
+
+        # Lampposts
+        if tags.get("highway") == "street_lamp":
+            lampposts_out.append([x, h, z])
+            continue
+
+        # Trash cans
+        if tags.get("amenity") == "waste_basket":
+            trash_cans_out.append([x, h, z])
+
+    # -------------------------------------------------------------------
+    # Barriers  – walls, fences, retaining walls (ways only)
+    # -------------------------------------------------------------------
+    barriers_out = []
+
+    # -------------------------------------------------------------------
+    # Single-pass way extraction: barriers, statues, benches (from ways)
+    # -------------------------------------------------------------------
     for wid, tags in ways_tags.items():
+        # Barriers
+        btype = tags.get("barrier")
+        if btype in BARRIER_HEIGHTS:
+            nids = ways_nodes.get(wid, [])
+            pts = []
+            for nid in nids:
+                if nid in nodes_ll:
+                    x, z = project(*nodes_ll[nid])
+                    pts.append([x, round(terrain(x, z), 2), z])
+            if len(pts) >= 2:
+                h = BARRIER_HEIGHTS[btype]
+                raw_h = tags.get("height", "")
+                if raw_h:
+                    try:
+                        h = float(raw_h.replace("m", "").strip())
+                    except ValueError:
+                        pass
+                barriers_out.append({
+                    "type": btype, "height": round(h, 1),
+                    "points": pts, "material": tags.get("material", ""),
+                })
+            continue
+
+        # Statues from ways (monuments mapped as areas)
         stype = None
         if tags.get("historic") in ("memorial", "monument"):
             stype = tags["historic"]
         elif tags.get("man_made") == "obelisk":
             stype = "obelisk"
-        if not stype:
+        if stype:
+            nids = ways_nodes.get(wid, [])
+            pts_2d = [list(project(*nodes_ll[nid])) for nid in nids if nid in nodes_ll]
+            if len(pts_2d) >= 2:
+                cx = sum(p[0] for p in pts_2d) / len(pts_2d)
+                cz = sum(p[1] for p in pts_2d) / len(pts_2d)
+                statues_out.append({
+                    "name": tags.get("name", ""), "type": stype,
+                    "position": [cx, round(terrain(cx, cz), 2), cz],
+                })
             continue
-        nids = ways_nodes.get(wid, [])
-        pts_2d = []
-        for nid in nids:
-            if nid in nodes_ll:
-                pts_2d.append(list(project(*nodes_ll[nid])))
-        if len(pts_2d) < 2:
-            continue
-        cx = sum(p[0] for p in pts_2d) / len(pts_2d)
-        cz = sum(p[1] for p in pts_2d) / len(pts_2d)
-        statues_out.append({
-            "name":     tags.get("name", ""),
-            "type":     stype,
-            "position": [cx, round(terrain(cx, cz), 2), cz],
-        })
 
-    # -------------------------------------------------------------------
-    # Benches  – node/way amenity=bench → [x, terrain_y, z, direction]
-    # -------------------------------------------------------------------
-    benches_out = []
-    for e in elements:
-        if e["type"] == "node" and "lat" in e:
-            tags = e.get("tags", {})
-            if tags.get("amenity") == "bench":
-                x, z = project(e["lat"], e["lon"])
-                direction = 0.0
-                raw_dir = tags.get("direction", "")
-                if raw_dir:
-                    try:
-                        direction = float(raw_dir)
-                    except ValueError:
-                        compass = {"N": 0, "NE": 45, "E": 90, "SE": 135,
-                                   "S": 180, "SW": 225, "W": 270, "NW": 315}
-                        direction = float(compass.get(raw_dir.upper(), 0))
-                benches_out.append([x, round(terrain(x, z), 2), z, direction])
-    # Benches mapped as ways (centroids)
-    for wid, tags in ways_tags.items():
-        if tags.get("amenity") != "bench":
-            continue
-        nids = ways_nodes.get(wid, [])
-        pts_2d = []
-        for nid in nids:
-            if nid in nodes_ll:
-                pts_2d.append(project(*nodes_ll[nid]))
-        if not pts_2d:
-            continue
-        cx = sum(p[0] for p in pts_2d) / len(pts_2d)
-        cz = sum(p[1] for p in pts_2d) / len(pts_2d)
-        benches_out.append([cx, round(terrain(cx, cz), 2), cz, 0.0])
-
-    # -------------------------------------------------------------------
-    # Lampposts  – node highway=street_lamp → [x, terrain_y, z]
-    # -------------------------------------------------------------------
-    lampposts_out = []
-    for e in elements:
-        if e["type"] == "node" and "lat" in e:
-            tags = e.get("tags", {})
-            if tags.get("highway") == "street_lamp":
-                x, z = project(e["lat"], e["lon"])
-                lampposts_out.append([x, round(terrain(x, z), 2), z])
-
-    # -------------------------------------------------------------------
-    # Trash cans  – node amenity=waste_basket → [x, terrain_y, z]
-    # -------------------------------------------------------------------
-    trash_cans_out = []
-    for e in elements:
-        if e["type"] == "node" and "lat" in e:
-            tags = e.get("tags", {})
-            if tags.get("amenity") == "waste_basket":
-                x, z = project(e["lat"], e["lon"])
-                trash_cans_out.append([x, round(terrain(x, z), 2), z])
+        # Benches from ways (centroids)
+        if tags.get("amenity") == "bench":
+            nids = ways_nodes.get(wid, [])
+            pts_2d = [project(*nodes_ll[nid]) for nid in nids if nid in nodes_ll]
+            if pts_2d:
+                cx = sum(p[0] for p in pts_2d) / len(pts_2d)
+                cz = sum(p[1] for p in pts_2d) / len(pts_2d)
+                benches_out.append([cx, round(terrain(cx, cz), 2), cz, 0.0])
 
     # -------------------------------------------------------------------
     # Write park_data.json

@@ -128,10 +128,15 @@ def main() -> None:
     print(f"Saved → {OUTPUT}")
 
     print(f"\nQuerying buildings…")
-    b_counts = save(fetch(B_QUERY), B_OUTPUT)
-    print(f"\n  nodes:     {b_counts['node']}")
-    print(f"  ways:      {b_counts['way']}")
-    print(f"Saved → {B_OUTPUT}")
+    try:
+        b_raw = fetch(B_QUERY)
+        b_counts = save(b_raw, B_OUTPUT)
+        print(f"\n  nodes:     {b_counts['node']}")
+        print(f"  ways:      {b_counts['way']}")
+        print(f"Saved → {B_OUTPUT}")
+    except (json.JSONDecodeError, Exception) as exc:
+        print(f"  WARNING: buildings query failed ({exc}), using existing {B_OUTPUT} if available",
+              file=sys.stderr)
 
 
 if __name__ == "__main__":
