@@ -5195,10 +5195,9 @@ func _build_tree_collision(trunk_xf: Array) -> void:
 	add_child(body)
 
 
-func _make_trunk_with_branches_mesh(variant_seed: int = 0) -> ArrayMesh:
-	# Procedural trunk cylinder + randomized branches. Unit scale:
-	# trunk height=1.0, bottom_r=1.0, top_r=0.5. Bark UVs wrap.
-	# variant_seed produces distinct branch layouts per mesh variant.
+func _UNUSED_make_trunk_with_branches_mesh(variant_seed: int = 0) -> ArrayMesh:
+	# DEAD CODE — kept temporarily for reference. Procedural trunk+branches replaced by GLB models.
+	# TODO: remove once GLB tree pipeline is fully stable.
 	var verts   := PackedVector3Array()
 	var normals := PackedVector3Array()
 	var uvs     := PackedVector2Array()
@@ -6492,6 +6491,39 @@ func _build_statues(statues: Array) -> void:
 	bronze_mat.roughness    = 0.55
 	bronze_mat.metallic     = 0.65
 
+	# Load GLB statue models (3 variants for variety)
+	var statue_glb_meshes: Array[Mesh] = []
+	var statue_glb_heights: Array[float] = []
+	for glb_name in ["statue1", "statue2", "statue3"]:
+		var abs_path := ProjectSettings.globalize_path("res://models/furniture/%s.glb" % glb_name)
+		if not FileAccess.file_exists(abs_path):
+			continue
+		var meshes: Array = []
+		var gd := GLTFDocument.new()
+		var gs := GLTFState.new()
+		if gd.append_from_file(abs_path, gs) == OK:
+			var root: Node = gd.generate_scene(gs)
+			if root:
+				_collect_meshes(root, meshes)
+				# Detect node scale (these models have scale=0.33)
+				var node_scale := 1.0
+				for child in root.get_children():
+					if child is Node3D:
+						var s: Vector3 = (child as Node3D).scale
+						if absf(s.x - 1.0) > 0.01:
+							node_scale = s.x
+							break
+				if not meshes.is_empty():
+					var m: Mesh = meshes[0]
+					var ab: AABB = m.get_aabb()
+					var raw_h := maxf(ab.size.x, maxf(ab.size.y, ab.size.z))
+					statue_glb_meshes.append(m)
+					statue_glb_heights.append(raw_h * node_scale)
+				root.queue_free()
+	var use_glb := not statue_glb_meshes.is_empty()
+	if use_glb:
+		print("Statues: loaded %d GLB variants" % statue_glb_meshes.size())
+
 	var statue_col_shapes: Array = []
 
 	for statue in statues:
@@ -6525,57 +6557,38 @@ func _build_statues(statues: Array) -> void:
 		_make_cylinder_mesh(sx, sy, sz, ped_r, ped_h, stone_mat,
 							"Pedestal_%s" % sname if sname else "Pedestal")
 
-		# Figure on top — composite humanoid silhouette
 		var fig_y := sy + ped_h
 		var safe_name: String = sname if sname else stype.capitalize()
+
 		if stype == "obelisk":
-			# Tall tapered column
+			# Tall tapered column — keep procedural (unique shape)
 			_make_cylinder_mesh(sx, fig_y, sz, 0.8, fig_h, stone_mat,
 								"Obelisk_%s" % safe_name, 4)
+		elif use_glb and stype != "bust":
+			# Use GLB statue model
+			var vi := hash(sname) % statue_glb_meshes.size()
+			if vi < 0:
+				vi = -vi % statue_glb_meshes.size()
+			var mesh: Mesh = statue_glb_meshes[vi]
+			var glb_h: float = statue_glb_heights[vi]
+			# Scale to desired figure height
+			var desired_h := fig_h
+			var s := desired_h / maxf(glb_h, 0.01)
+			var mi := MeshInstance3D.new()
+			mi.mesh = mesh
+			mi.material_override = bronze_mat
+			# GLB models are Y-up, so just scale + position
+			mi.transform = Transform3D(
+				Basis().scaled(Vector3(s, s, s)),
+				Vector3(sx, fig_y, sz))
+			mi.name = "Statue_%s" % safe_name
+			add_child(mi)
 		elif stype == "bust":
-			# Head + torso only
+			# Small bust — keep simple cylinder approximation
 			_make_cylinder_mesh(sx, fig_y, sz, 0.14, 0.30, bronze_mat,
 								"BustTorso_%s" % safe_name, 10)
 			_make_cylinder_mesh(sx, fig_y + 0.30, sz, 0.10, 0.20, bronze_mat,
 								"BustHead_%s" % safe_name, 8)
-		elif stype == "monument":
-			# Larger composite humanoid (1.5x scale)
-			var leg_h := 0.90; var torso_h := 1.05; var head_h := 0.30
-			# Legs
-			_make_cylinder_mesh(sx - 0.12, fig_y, sz, 0.105, leg_h, bronze_mat,
-								"MonLegL_%s" % safe_name, 8)
-			_make_cylinder_mesh(sx + 0.12, fig_y, sz, 0.105, leg_h, bronze_mat,
-								"MonLegR_%s" % safe_name, 8)
-			# Torso (tapered)
-			_make_cylinder_mesh(sx, fig_y + leg_h, sz, 0.27, torso_h, bronze_mat,
-								"MonTorso_%s" % safe_name, 10)
-			# Arms
-			_make_cylinder_mesh(sx - 0.30, fig_y + leg_h + 0.15, sz, 0.075, 0.75, bronze_mat,
-								"MonArmL_%s" % safe_name, 6)
-			_make_cylinder_mesh(sx + 0.30, fig_y + leg_h + 0.15, sz, 0.075, 0.75, bronze_mat,
-								"MonArmR_%s" % safe_name, 6)
-			# Head
-			_make_cylinder_mesh(sx, fig_y + leg_h + torso_h, sz, 0.15, head_h, bronze_mat,
-								"MonHead_%s" % safe_name, 8)
-		else:
-			# Default statue — composite humanoid (~1.5m total)
-			var leg_h := 0.60; var torso_h := 0.70; var head_h := 0.20
-			# Legs
-			_make_cylinder_mesh(sx - 0.08, fig_y, sz, 0.07, leg_h, bronze_mat,
-								"FigLegL_%s" % safe_name, 8)
-			_make_cylinder_mesh(sx + 0.08, fig_y, sz, 0.07, leg_h, bronze_mat,
-								"FigLegR_%s" % safe_name, 8)
-			# Torso (tapered)
-			_make_cylinder_mesh(sx, fig_y + leg_h, sz, 0.18, torso_h, bronze_mat,
-								"FigTorso_%s" % safe_name, 10)
-			# Arms (slight outward angle)
-			_make_cylinder_mesh(sx - 0.22, fig_y + leg_h + 0.10, sz, 0.05, 0.50, bronze_mat,
-								"FigArmL_%s" % safe_name, 6)
-			_make_cylinder_mesh(sx + 0.22, fig_y + leg_h + 0.10, sz, 0.05, 0.50, bronze_mat,
-								"FigArmR_%s" % safe_name, 6)
-			# Head
-			_make_cylinder_mesh(sx, fig_y + leg_h + torso_h, sz, 0.10, head_h, bronze_mat,
-								"FigHead_%s" % safe_name, 8)
 
 		# Label
 		var lbl := Label3D.new()
