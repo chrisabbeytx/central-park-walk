@@ -1396,118 +1396,26 @@ void fragment() {
 	// --- Grass shading (textureNoTile — Inigo Quilez anti-tiling) ---
 	vec2 uv  = world_pos.xz / tile_m;
 	vec3 grass_alb = textureNoTile_c(grass_albedo, uv);
-	// Boost green saturation — the Grass004 CC0 texture is too desaturated
-	float g_lum = dot(grass_alb, vec3(0.299, 0.587, 0.114));
-	grass_alb = mix(vec3(g_lum), grass_alb, 1.35);
-	grass_alb *= vec3(0.82, 0.95, 0.75);  // shift toward green, darken slightly
 	vec3 grass_nrm = textureNoTile_n(grass_normal, uv);
-	float grass_rgh = clamp(textureNoTile_r(grass_rough, uv) * 0.15 + 0.72, 0.0, 1.0);
-	// Roughness micro-variation — wet/dry patches at ~8m scale
-	float rgh_var = vnoise(world_pos.xz * 0.125) * 0.16 - 0.08;
-	grass_rgh = clamp(grass_rgh + rgh_var, 0.0, 1.0);
-	float f = clamp(fbm(world_pos.xz * 0.004, 4) * 0.45
-	              + fbm(world_pos.xz * 0.025, 3) * 0.35 + 0.30, 0.50, 0.95);
-	vec3 dirt = vec3(0.22, 0.16, 0.08);
-	float wear = smoothstep(0.60, 0.50, f);
-	grass_alb = mix(grass_alb * f, dirt, wear * 0.35);
-	// Macro color variation — warm vs cool patches at ~20m scale
-	float color_var = vnoise(world_pos.xz * 0.05 + vec2(17.3, 41.7));
-	vec3 warm_tint = grass_alb * vec3(1.05, 0.98, 0.88);  // slightly warm
-	vec3 cool_tint = grass_alb * vec3(0.95, 1.00, 0.92);  // slightly cool
-	grass_alb = mix(cool_tint, warm_tint, color_var);
+	float grass_rgh = clamp(textureNoTile_r(grass_rough, uv) * 0.20 + 0.65, 0.0, 1.0);
 
-	// Meadow/wild grass blend — large-scale FBM patches
+	// Meadow/wild grass blend — large-scale FBM patches for biome variety
 	vec2 muv = world_pos.xz / meadow_tile_m;
-	// Rotate meadow UV 60° to break alignment with grass striations
 	float s60 = 0.866; float c60 = 0.5;
 	vec2 muv_rot = vec2(muv.x * c60 + muv.y * s60, -muv.x * s60 + muv.y * c60);
 	vec3 m_alb = texture(meadow_albedo, muv_rot).rgb;
 	vec3 m_nrm_raw = texture(meadow_normal, muv_rot).rgb;
-	// Un-rotate normal back to world alignment
 	vec3 m_nrm = vec3(
 		(m_nrm_raw.r - 0.5) * c60 + (m_nrm_raw.g - 0.5) * s60 + 0.5,
 		-(m_nrm_raw.r - 0.5) * s60 + (m_nrm_raw.g - 0.5) * c60 + 0.5,
 		m_nrm_raw.b);
-	float m_rgh = clamp(texture(meadow_rough, muv).r * 0.15 + 0.72, 0.0, 1.0);
+	float m_rgh = clamp(texture(meadow_rough, muv).r * 0.20 + 0.65, 0.0, 1.0);
 	float meadow_noise = fbm(world_pos.xz * 0.003, 3) * 0.6
 	                    + fbm(world_pos.xz * 0.018, 2) * 0.4;
 	float meadow_blend = smoothstep(0.42, 0.58, meadow_noise);
-	grass_alb = mix(grass_alb, m_alb * f, meadow_blend);
+	grass_alb = mix(grass_alb, m_alb, meadow_blend);
 	grass_nrm = mix(grass_nrm, m_nrm, meadow_blend);
 	grass_rgh = mix(grass_rgh, m_rgh, meadow_blend);
-
-	// Mud puddles where wear patches exist
-	float mud = smoothstep(0.25, 0.45, wear);
-	grass_alb = mix(grass_alb, vec3(0.15, 0.10, 0.06), mud * 0.25);
-	grass_rgh = mix(grass_rgh, 0.30, mud * 0.3);
-
-	// Micro-normal bumps — uneven ground feel
-	float bump_a = vnoise(world_pos.xz * 0.8) * 0.5 + vnoise(world_pos.xz * 2.5) * 0.3;
-	float bump_dx = (vnoise(vec2(world_pos.x + 0.1, world_pos.z) * 0.8) - vnoise(vec2(world_pos.x - 0.1, world_pos.z) * 0.8)) * 2.5;
-	float bump_dz = (vnoise(vec2(world_pos.x, world_pos.z + 0.1) * 0.8) - vnoise(vec2(world_pos.x, world_pos.z - 0.1) * 0.8)) * 2.5;
-	grass_nrm.rg += vec2(bump_dx, bump_dz) * 0.15;
-	grass_nrm = normalize(grass_nrm);
-
-	// Subtle autumn warmth — keep grass clearly green
-	grass_alb.r *= 1.02;
-	grass_alb.g *= 0.96;
-	grass_alb.b *= 0.88;
-	// (Removed: vnoise at 50.0 freq aliased with mesh grid → plowed-row artifacts)
-
-	// Canopy shadow pools — subtle dark patches under/between trees
-	// Suppress near paths to avoid spotted bleed-through at edges
-	float near_path_fade = 1.0 - smoothstep(0.0, 0.10, path_weight);
-	float shade_noise = fbm(world_pos.xz * 0.05, 4);
-	float canopy_dark = smoothstep(0.35, 0.70, shade_noise);
-	grass_alb *= mix(0.85, 1.0, mix(1.0, canopy_dark, near_path_fade));
-
-	// Flower carpet — per-pixel flower dots for bluebell carpet illusion
-	// Large-scale patch mask matches CPU wildflower placement noise
-	float flower_n = fbm(world_pos.xz * 0.007, 3);
-	float carpet_mask = smoothstep(0.25, 0.50, flower_n);
-	carpet_mask *= (1.0 - wear * 0.8);
-	float canopy_shade = 1.0 - smoothstep(0.35, 0.65, fbm(world_pos.xz * 0.15, 3));
-	carpet_mask *= mix(0.15, 1.0, canopy_shade);
-	// Domain-warped flower dots — breaks lattice grid artifacts
-	vec2 warp = vec2(vnoise(world_pos.xz * 2.3 + vec2(41.0, 73.0)),
-	                 vnoise(world_pos.xz * 2.7 + vec2(91.0, 37.0))) * 0.4;
-	vec2 warped = world_pos.xz + warp;
-	float dot_n1 = vnoise(warped * 7.3);
-	float dot_n2 = vnoise(warped * 31.7 + vec2(33.7, 17.1));
-	float dot_combined = dot_n1 * 0.65 + dot_n2 * 0.35;
-	// Dot size varies with secondary noise — some tight, some diffuse
-	float size_var = vnoise(warped * 5.1 + vec2(7.1, 19.3));
-	float dot_lo = 0.40 + size_var * 0.06;  // 0.40–0.46
-	float dot_hi = dot_lo + 0.10;
-	float dot_mask = smoothstep(dot_lo, dot_hi, dot_combined);
-	// 3 autumn color bands: russet/brown (70%), goldenrod (20%), cream aster (10%)
-	float hue_var = vnoise(warped * 4.0);
-	float band_sel = vnoise(warped * 7.5 + vec2(42.0, 13.0));
-	vec3 flower_col;
-	if (band_sel > 0.90) {
-		// Cream aster (10%)
-		flower_col = mix(vec3(0.68, 0.62, 0.50), vec3(0.72, 0.66, 0.55), hue_var);
-	} else if (band_sel > 0.70) {
-		// Goldenrod (20%)
-		flower_col = mix(vec3(0.65, 0.55, 0.12), vec3(0.72, 0.60, 0.15), hue_var);
-	} else {
-		// Russet/brown (dominant)
-		flower_col = mix(vec3(0.40, 0.25, 0.10), vec3(0.50, 0.32, 0.14), hue_var);
-	}
-	// Vary density: denser near canopy shade → more saturated
-	float density_boost = canopy_shade * 0.3;
-	// Darken grass between flower dots for depth
-	vec3 carpet_ground = mix(grass_alb * 0.70, flower_col, dot_mask + density_boost * dot_mask);
-	grass_alb = mix(grass_alb, carpet_ground, carpet_mask * 0.15);
-
-	// Dappled sunlight — simulates light filtering through tree canopy
-	// Suppress near paths to avoid spotted bleed-through at edges
-	float dapple = fbm(world_pos.xz * 0.15, 3) * 0.5
-	             + fbm(world_pos.xz * 0.4, 2) * 0.3
-	             + fbm(world_pos.xz * 1.2, 2) * 0.2;
-	float sun_patch = smoothstep(0.38, 0.62, dapple);
-	vec3 sun_tint = vec3(1.08, 1.02, 0.90); // mild warm highlight
-	grass_alb *= mix(vec3(1.0), sun_tint, sun_patch * 0.20 * near_path_fade);
 
 	if (mat_idx > 0 && path_weight > 0.001) {
 		// --- Path shading ---
