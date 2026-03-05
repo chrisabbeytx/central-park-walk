@@ -102,6 +102,13 @@ AMBIENTCG_PACKS = [
     ("WoodFloor041_2K-JPG", ["Color.jpg", "NormalGL.jpg", "Roughness.jpg"]),
     # 2K bark upgrade
     ("Bark007_2K-JPG", ["Color.jpg", "NormalGL.jpg", "Roughness.jpg", "AmbientOcclusion.jpg"]),
+    # Building facade textures
+    ("Facade011_2K-JPG", ["Color.jpg", "NormalGL.jpg", "Roughness.jpg"]),
+    ("Bricks059_2K-JPG", ["Color.jpg", "NormalGL.jpg", "Roughness.jpg"]),
+    ("Bricks031_2K-JPG", ["Color.jpg", "NormalGL.jpg", "Roughness.jpg"]),
+    # Additional leaf sets for vegetation
+    ("LeafSet005_2K-JPG", ["Color.jpg", "NormalGL.jpg", "Roughness.jpg", "Opacity.jpg"]),
+    ("LeafSet019_2K-JPG", ["Color.jpg", "NormalGL.jpg", "Roughness.jpg", "Opacity.jpg"]),
 ]
 
 def download_ambientcg_packs():

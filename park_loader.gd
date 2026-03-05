@@ -4897,6 +4897,19 @@ func _build_trees(trees: Array) -> void:
 		if meshes.is_empty():
 			print("WARNING: no meshes found in %s" % species)
 			continue
+		# Darken leaf materials — Quaternius GLB leaves are too bright under our lighting.
+		# Materials are shared across variants, so only modify once (on first mesh).
+		if not meshes.is_empty():
+			var first_m: Mesh = meshes[0]
+			for si in first_m.get_surface_count():
+				var smat: Material = first_m.surface_get_material(si)
+				if smat is StandardMaterial3D:
+					var sm: StandardMaterial3D = smat as StandardMaterial3D
+					if sm.transparency != BaseMaterial3D.TRANSPARENCY_DISABLED:
+						sm.albedo_color = Color(0.50, 0.50, 0.50, 1.0)
+						sm.roughness = maxf(sm.roughness, 0.65)
+					else:
+						sm.albedo_color = Color(0.75, 0.75, 0.75, 1.0)
 		species_meshes[species] = meshes
 		species_heights[species] = max_h
 		print("Trees: loaded %s — %d variants, raw=%.4f actual=%.1fm" % [species, meshes.size(), max_h, max_h * node_scale])
@@ -5123,9 +5136,9 @@ func _make_tree_billboard_mesh() -> ArrayMesh:
 	var normals := PackedVector3Array()
 	var colors  := PackedColorArray()
 	var indices := PackedInt32Array()
-	var trunk_col := Color(0.35, 0.25, 0.15)
-	var canopy_col := Color(0.25, 0.40, 0.18)
-	var canopy_top := Color(0.30, 0.50, 0.20)
+	var trunk_col := Color(0.25, 0.18, 0.10)
+	var canopy_col := Color(0.12, 0.22, 0.08)
+	var canopy_top := Color(0.15, 0.28, 0.10)
 
 	for rot_idx in 2:
 		var a := float(rot_idx) * PI * 0.5

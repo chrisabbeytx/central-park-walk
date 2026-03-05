@@ -489,8 +489,8 @@ func _setup_environment() -> void:
 	_env.ambient_light_sky_contribution = 0.3
 	_env.tonemap_mode          = Environment.TONE_MAPPER_FILMIC
 	_env.tonemap_white         = 6.0
-	_env.glow_enabled          = true
-	_env.glow_blend_mode       = Environment.GLOW_BLEND_MODE_SOFTLIGHT
+	_env.glow_enabled          = false  # disabled until asset materials are tuned
+	_env.glow_blend_mode       = Environment.GLOW_BLEND_MODE_ADDITIVE
 	_env.ssao_enabled          = true
 	_env.ssao_detail           = 0.5
 	_env.ssil_enabled          = true
@@ -507,14 +507,14 @@ func _setup_environment() -> void:
 
 	# Volumetric fog — light shafts (god rays at sunrise/sunset via high anisotropy)
 	_env.volumetric_fog_enabled = true
-	_env.volumetric_fog_density = 0.0008
+	_env.volumetric_fog_density = 0.0003
 	_env.volumetric_fog_albedo = Color(1.0, 1.0, 1.0)
 	_env.volumetric_fog_emission = Color(0.8, 0.85, 0.9)
 	_env.volumetric_fog_emission_energy = 0.12
 	_env.volumetric_fog_anisotropy = 0.3
-	_env.volumetric_fog_length = 150.0
+	_env.volumetric_fog_length = 80.0
 	_env.volumetric_fog_detail_spread = 2.0
-	_env.volumetric_fog_ambient_inject = 0.8
+	_env.volumetric_fog_ambient_inject = 0.25
 	_env.volumetric_fog_gi_inject = 0.0
 	_env.volumetric_fog_sky_affect = 0.30
 	_env.volumetric_fog_temporal_reprojection_enabled = true
@@ -578,8 +578,8 @@ func _build_keyframes() -> void:
 		"fog_color":      Color(0.12, 0.10, 0.14),
 		"fog_energy":     0.15,
 		"fog_scatter":    0.05,
-		"fog_density":    0.0020,
-		"fog_aerial":     0.50,
+		"fog_density":    0.0005,
+		"fog_aerial":     0.20,
 		"fog_sky_affect": 0.6,
 		"sun_energy":     0.05,
 		"sun_color":      Color(0.65, 0.72, 0.95),
@@ -587,7 +587,7 @@ func _build_keyframes() -> void:
 		"sun_yaw":        -100.0,
 		"shadow_dist":    180.0,
 		"lamp_emission":  2.0,
-		"vol_fog_density":    0.0010,
+		"vol_fog_density":    0.0004,
 		"vol_fog_anisotropy": 0.15,
 		"cloud_coverage":     0.30,
 		"cloud_density":      0.55,
@@ -624,8 +624,8 @@ func _build_keyframes() -> void:
 		"fog_color":      Color(0.55, 0.42, 0.34),
 		"fog_energy":     0.6,
 		"fog_scatter":    0.20,
-		"fog_density":    0.0012,
-		"fog_aerial":     0.40,
+		"fog_density":    0.0003,
+		"fog_aerial":     0.15,
 		"fog_sky_affect": 0.3,
 		"sun_energy":     0.85,
 		"sun_color":      Color(1.0, 0.72, 0.38),
@@ -633,7 +633,7 @@ func _build_keyframes() -> void:
 		"sun_yaw":        -95.0,
 		"shadow_dist":    250.0,
 		"lamp_emission":  0.0,
-		"vol_fog_density":    0.0006,
+		"vol_fog_density":    0.0003,
 		"vol_fog_anisotropy": 0.75,
 		"cloud_coverage":     0.40,
 		"cloud_density":      0.55,
@@ -670,8 +670,8 @@ func _build_keyframes() -> void:
 		"fog_color":      Color(0.55, 0.52, 0.48),
 		"fog_energy":     0.6,
 		"fog_scatter":    0.05,
-		"fog_density":    0.0008,
-		"fog_aerial":     0.35,
+		"fog_density":    0.0002,
+		"fog_aerial":     0.10,
 		"fog_sky_affect": 0.30,
 		"sun_energy":     0.75,
 		"sun_color":      Color(0.95, 0.92, 0.85),
@@ -679,7 +679,7 @@ func _build_keyframes() -> void:
 		"sun_yaw":        -20.0,
 		"shadow_dist":    300.0,
 		"lamp_emission":  0.0,
-		"vol_fog_density":    0.0004,
+		"vol_fog_density":    0.0002,
 		"vol_fog_anisotropy": 0.18,
 		"cloud_coverage":     0.35,
 		"cloud_density":      0.50,
@@ -716,8 +716,8 @@ func _build_keyframes() -> void:
 		"fog_color":      Color(0.68, 0.52, 0.38),
 		"fog_energy":     0.6,
 		"fog_scatter":    0.25,
-		"fog_density":    0.0014,
-		"fog_aerial":     0.40,
+		"fog_density":    0.0004,
+		"fog_aerial":     0.18,
 		"fog_sky_affect": 0.3,
 		"sun_energy":     0.80,
 		"sun_color":      Color(1.0, 0.65, 0.30),
@@ -725,7 +725,7 @@ func _build_keyframes() -> void:
 		"sun_yaw":        95.0,
 		"shadow_dist":    220.0,
 		"lamp_emission":  0.5,
-		"vol_fog_density":    0.0008,
+		"vol_fog_density":    0.0004,
 		"vol_fog_anisotropy": 0.78,
 		"cloud_coverage":     0.45,
 		"cloud_density":      0.55,
@@ -762,8 +762,8 @@ func _build_keyframes() -> void:
 		"fog_color":      Color(0.08, 0.08, 0.12),
 		"fog_energy":     0.15,
 		"fog_scatter":    0.05,
-		"fog_density":    0.0020,
-		"fog_aerial":     0.50,
+		"fog_density":    0.0005,
+		"fog_aerial":     0.20,
 		"fog_sky_affect": 0.6,
 		"sun_energy":     0.05,
 		"sun_color":      Color(0.70, 0.78, 1.00),
@@ -771,7 +771,7 @@ func _build_keyframes() -> void:
 		"sun_yaw":        40.0,
 		"shadow_dist":    200.0,
 		"lamp_emission":  2.0,
-		"vol_fog_density":    0.0010,
+		"vol_fog_density":    0.0004,
 		"vol_fog_anisotropy": 0.10,
 		"cloud_coverage":     0.25,
 		"cloud_density":      0.50,
@@ -1407,20 +1407,24 @@ void fragment() {
 	// --- Grass shading (textureNoTile — Inigo Quilez anti-tiling) ---
 	vec2 uv  = world_pos.xz / tile_m;
 	vec3 grass_alb = textureNoTile_c(grass_albedo, uv);
+	// Boost green saturation — the Grass004 CC0 texture is too desaturated
+	float g_lum = dot(grass_alb, vec3(0.299, 0.587, 0.114));
+	grass_alb = mix(vec3(g_lum), grass_alb, 1.35);
+	grass_alb *= vec3(0.82, 0.95, 0.75);  // shift toward green, darken slightly
 	vec3 grass_nrm = textureNoTile_n(grass_normal, uv);
 	float grass_rgh = clamp(textureNoTile_r(grass_rough, uv) * 0.15 + 0.72, 0.0, 1.0);
 	// Roughness micro-variation — wet/dry patches at ~8m scale
 	float rgh_var = vnoise(world_pos.xz * 0.125) * 0.16 - 0.08;
 	grass_rgh = clamp(grass_rgh + rgh_var, 0.0, 1.0);
 	float f = clamp(fbm(world_pos.xz * 0.004, 4) * 0.45
-	              + fbm(world_pos.xz * 0.025, 3) * 0.35 + 0.30, 0.48, 1.1);
+	              + fbm(world_pos.xz * 0.025, 3) * 0.35 + 0.30, 0.50, 0.95);
 	vec3 dirt = vec3(0.22, 0.16, 0.08);
 	float wear = smoothstep(0.60, 0.50, f);
-	grass_alb = mix(grass_alb * f, dirt, wear * 0.6);
+	grass_alb = mix(grass_alb * f, dirt, wear * 0.35);
 	// Macro color variation — warm vs cool patches at ~20m scale
 	float color_var = vnoise(world_pos.xz * 0.05 + vec2(17.3, 41.7));
-	vec3 warm_tint = grass_alb * vec3(1.10, 0.95, 0.75);  // golden
-	vec3 cool_tint = grass_alb * vec3(0.92, 0.95, 0.80);  // olive
+	vec3 warm_tint = grass_alb * vec3(1.05, 0.98, 0.88);  // slightly warm
+	vec3 cool_tint = grass_alb * vec3(0.95, 1.00, 0.92);  // slightly cool
 	grass_alb = mix(cool_tint, warm_tint, color_var);
 
 	// Meadow/wild grass blend — large-scale FBM patches
@@ -1445,8 +1449,8 @@ void fragment() {
 
 	// Mud puddles where wear patches exist
 	float mud = smoothstep(0.25, 0.45, wear);
-	grass_alb = mix(grass_alb, vec3(0.15, 0.10, 0.06), mud * 0.5);
-	grass_rgh = mix(grass_rgh, 0.30, mud * 0.6);
+	grass_alb = mix(grass_alb, vec3(0.15, 0.10, 0.06), mud * 0.25);
+	grass_rgh = mix(grass_rgh, 0.30, mud * 0.3);
 
 	// Micro-normal bumps — uneven ground feel
 	float bump_a = vnoise(world_pos.xz * 0.8) * 0.5 + vnoise(world_pos.xz * 2.5) * 0.3;
@@ -1455,10 +1459,10 @@ void fragment() {
 	grass_nrm.rg += vec2(bump_dx, bump_dz) * 0.15;
 	grass_nrm = normalize(grass_nrm);
 
-	// Autumn lawn push — warm but still alive (not dead brown)
-	grass_alb.r *= 1.04;
-	grass_alb.g *= 0.92;
-	grass_alb.b *= 0.75;
+	// Subtle autumn warmth — keep grass clearly green
+	grass_alb.r *= 1.02;
+	grass_alb.g *= 0.96;
+	grass_alb.b *= 0.88;
 	// (Removed: vnoise at 50.0 freq aliased with mesh grid → plowed-row artifacts)
 
 	// Canopy shadow pools — subtle dark patches under/between trees
@@ -1466,7 +1470,7 @@ void fragment() {
 	float near_path_fade = 1.0 - smoothstep(0.0, 0.10, path_weight);
 	float shade_noise = fbm(world_pos.xz * 0.05, 4);
 	float canopy_dark = smoothstep(0.35, 0.70, shade_noise);
-	grass_alb *= mix(0.72, 1.0, mix(1.0, canopy_dark, near_path_fade));
+	grass_alb *= mix(0.85, 1.0, mix(1.0, canopy_dark, near_path_fade));
 
 	// Flower carpet — per-pixel flower dots for bluebell carpet illusion
 	// Large-scale patch mask matches CPU wildflower placement noise
@@ -1513,8 +1517,8 @@ void fragment() {
 	             + fbm(world_pos.xz * 0.4, 2) * 0.3
 	             + fbm(world_pos.xz * 1.2, 2) * 0.2;
 	float sun_patch = smoothstep(0.38, 0.62, dapple);
-	vec3 sun_tint = vec3(1.15, 1.02, 0.75); // warmer amber highlight
-	grass_alb *= mix(vec3(1.0), sun_tint, sun_patch * 0.32 * near_path_fade);
+	vec3 sun_tint = vec3(1.08, 1.02, 0.90); // mild warm highlight
+	grass_alb *= mix(vec3(1.0), sun_tint, sun_patch * 0.20 * near_path_fade);
 
 	if (mat_idx > 0 && path_weight > 0.001) {
 		// --- Path shading ---
