@@ -1363,15 +1363,13 @@ void fragment() {
 	int gcount = min(int(gd.g), 48);
 
 	// Track best and second-best path segments for material blending.
-	// At intersections where two paths overlap, we blend between their
-	// materials using distance from each centerline as the weight —
-	// producing a natural gradual transition instead of a hard seam.
 	float best_cov  = 0.0;
 	float best_hw   = 0.0;
 	float best_dist = 9999.0;
 	int   best_mat  = 0;
 
 	float sec_cov  = 0.0;
+	float sec_hw   = 0.0;
 	float sec_dist = 9999.0;
 	int   sec_mat  = 0;
 
@@ -1387,13 +1385,19 @@ void fragment() {
 
 		float d = point_segment_dist(world_pos.xz, ep.xy, ep.zw);
 		float hw = pr.x;
-		float cov = 1.0 - smoothstep(hw - feather * 0.3, hw + feather, d);
 		int mi = int(pr.y);
 
+		// Coverage fades to zero 0.5m before the nominal path edge.
+		// This ensures the polygon boundary is never visible — material
+		// is fully transparent before reaching the geometric edge.
+		float margin = 0.5;
+		float fade_w = min(1.5, hw * 0.4);
+		float cov = 1.0 - smoothstep(hw - fade_w - margin, hw - margin, d);
+
 		if (cov > best_cov + 0.05 || (cov > 0.3 && cov > best_cov - 0.05 && hw > best_hw)) {
-			// Demote current best to second (only if different material)
-			if (best_mat != mi && best_cov > 0.1) {
+			if (best_mat != mi && best_cov > 0.05) {
 				sec_cov  = best_cov;
+				sec_hw   = best_hw;
 				sec_dist = best_dist;
 				sec_mat  = best_mat;
 			}
@@ -1402,8 +1406,8 @@ void fragment() {
 			best_dist = d;
 			best_mat  = mi;
 		} else if (mi != best_mat && cov > sec_cov) {
-			// Second-best with a different material
 			sec_cov  = cov;
+			sec_hw   = hw;
 			sec_dist = d;
 			sec_mat  = mi;
 		}
@@ -1447,27 +1451,30 @@ void fragment() {
 		float p_rgh = clamp(texture(path_rgh_arr, vec3(path_uv, tex_set)).r + 0.10, 0.0, 1.0);
 
 		// Blend with second path material at intersections.
-		// Weight = distance ratio from each centerline: closer to a path's
-		// center → more of that path's material. Produces a natural gradient
-		// across the overlap zone instead of a hard material boundary.
-		if (sec_mat > 0 && sec_mat != best_mat && sec_cov > 0.1) {
+		// Uses distance ratio from each centerline as the blend direction,
+		// modulated by the second path's coverage so the blend fades to
+		// zero smoothly — no visible line at the polygon boundary.
+		if (sec_mat > 0 && sec_mat != best_mat && sec_cov > 0.01) {
 			vec4 ml2 = mat_lookup(sec_mat);
 			vec3 s_alb = texture(path_alb_arr, vec3(path_uv, ml2.x)).rgb * ml2.yzw;
 			vec3 s_nrm = texture(path_nrm_arr, vec3(path_uv, ml2.x)).rgb;
 			float s_rgh = clamp(texture(path_rgh_arr, vec3(path_uv, ml2.x)).r + 0.10, 0.0, 1.0);
 
-			// 0 = on best path center, 1 = on second path center
+			// Distance ratio: 0 = on best center, 1 = on second center
 			float t = best_dist / (best_dist + sec_dist + 0.001);
-			// Smooth the transition to avoid linear banding
 			t = smoothstep(0.0, 1.0, t);
+
+			// Modulate by second path's coverage — blend fades naturally
+			// as the second path fades, so no discontinuity at its edge.
+			t *= smoothstep(0.0, 0.4, sec_cov);
 
 			p_alb = mix(p_alb, s_alb, t);
 			p_nrm = mix(p_nrm, s_nrm, t);
 			p_rgh = mix(p_rgh, s_rgh, t);
 		}
 
-		// Path-grass transition — tighter edge to avoid muddy blending
-		float soft_weight = smoothstep(0.15, 0.45, path_weight);
+		// Path-grass transition
+		float soft_weight = smoothstep(0.05, 0.5, path_weight);
 
 		ALBEDO          = mix(grass_alb, p_alb, soft_weight);
 		vec3 _cn = mix(grass_nrm, p_nrm, soft_weight) * 2.0 - 1.0;
