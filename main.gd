@@ -37,6 +37,7 @@ var _env: Environment
 var _sky_mat: ShaderMaterial
 var _sun: DirectionalLight3D
 var _lamp_mat: StandardMaterial3D
+var _lamp_emission: float = 0.0  # cached for SpotLight3D pool
 var _terrain_mat: ShaderMaterial
 var _time_label: Label
 
@@ -144,7 +145,7 @@ const TOUR_ANGLES: Array = [
 	{"suffix": "_2", "yaw_offset": 0.0, "pitch": -25.0},   # down
 ]
 
-const TOUR_TIMES: Array = [7.0, 12.0, 17.0]
+const TOUR_TIMES: Array = [7.0, 12.0, 17.0, 22.0]
 
 func _build_tour_shots() -> void:
 	_tour_shots.clear()
@@ -584,9 +585,9 @@ func _build_keyframes() -> void:
 		"ambient_energy": 0.15,
 		"exposure":       0.75,
 		"white":          5.0,
-		"glow_intensity": 0.6,
-		"glow_bloom":     0.08,
-		"glow_strength":  0.8,
+		"glow_intensity": 0.5,
+		"glow_bloom":     0.06,
+		"glow_strength":  0.6,
 		"glow_threshold": 0.80,
 		"glow_cap":       5.0,
 		"ssao_radius":    2.0,
@@ -607,7 +608,7 @@ func _build_keyframes() -> void:
 		"sun_pitch":      -10.0,
 		"sun_yaw":        -100.0,
 		"shadow_dist":    180.0,
-		"lamp_emission":  2.0,
+		"lamp_emission":  3.0,
 		"vol_fog_density":    0.0004,
 		"vol_fog_anisotropy": 0.15,
 		"cloud_coverage":     0.30,
@@ -768,9 +769,9 @@ func _build_keyframes() -> void:
 		"ambient_energy": 0.15,
 		"exposure":       0.75,
 		"white":          5.0,
-		"glow_intensity": 0.6,
-		"glow_bloom":     0.08,
-		"glow_strength":  0.8,
+		"glow_intensity": 0.5,
+		"glow_bloom":     0.06,
+		"glow_strength":  0.6,
 		"glow_threshold": 0.80,
 		"glow_cap":       5.0,
 		"ssao_radius":    2.0,
@@ -791,7 +792,7 @@ func _build_keyframes() -> void:
 		"sun_pitch":      -65.0,
 		"sun_yaw":        40.0,
 		"shadow_dist":    200.0,
-		"lamp_emission":  2.0,
+		"lamp_emission":  3.0,
 		"vol_fog_density":    0.0004,
 		"vol_fog_anisotropy": 0.10,
 		"cloud_coverage":     0.25,
@@ -912,15 +913,14 @@ func _apply_time_of_day() -> void:
 	_sun.rotation_degrees = Vector3(pitch, yaw, 0.0)
 	_sun.directional_shadow_max_distance = _lerp_kf("shadow_dist", a, b, t)
 
-	# Lamppost emission
+	# Lamppost bulb emission
 	if _lamp_mat:
-		var em: float = _lerp_kf("lamp_emission", a, b, t)
-		_lamp_mat.emission_energy_multiplier = em
-		# Fade albedo brightness slightly when lamps are off (daytime)
-		if em < 0.01:
+		_lamp_emission = _lerp_kf("lamp_emission", a, b, t)
+		_lamp_mat.emission_energy_multiplier = _lamp_emission
+		if _lamp_emission < 0.01:
 			_lamp_mat.emission = Color(0.0, 0.0, 0.0)
 		else:
-			_lamp_mat.emission = Color(1.0, 0.45, 0.08) * em
+			_lamp_mat.emission = Color(1.0, 0.72, 0.32) * _lamp_emission
 
 	# Building window emission — smooth night_factor curve
 	# 0.0 during day (7h-18h), ramps to 1.0 at night (21h-5h)
@@ -1883,15 +1883,13 @@ func _update_lamp_lights() -> void:
 		dists.sort_custom(func(a, b): return a[0] < b[0])
 
 	# Get current lamp emission energy from day/night cycle
-	var night_energy: float = 0.0
-	if _lamp_mat:
-		night_energy = _lamp_mat.emission_energy_multiplier
+	var night_energy: float = _lamp_emission
 
 	for li in _lamp_lights.size():
 		if li < dists.size() and night_energy > 0.1:
 			var idx: int = dists[li][1]
 			_lamp_lights[li].global_position = _lamp_positions[idx]
-			_lamp_lights[li].light_energy = night_energy * 8.0
+			_lamp_lights[li].light_energy = night_energy * 5.5
 		else:
 			_lamp_lights[li].light_energy = 0.0
 
