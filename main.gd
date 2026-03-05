@@ -255,6 +255,12 @@ func _process(delta: float) -> void:
 			if img:
 				img.save_png("/tmp/godot_screenshot.png")
 				print("Screenshot saved to /tmp/godot_screenshot.png")
+			_player.set_physics_process(true)
+			_player.global_position = Vector3(sx, _terrain_height(sx, sz) + 2.0, sz)
+			_player.rotation_degrees.y = 90.0
+			if head_node:
+				head_node.rotation_degrees.x = 0.0
+			_time_speed = TIME_SPEEDS[_time_speed_idx]
 	# Update lamp lights every 0.5s
 	_lamp_light_timer += delta
 	if _lamp_light_timer >= LAMP_LIGHT_UPDATE_INTERVAL:
@@ -596,12 +602,12 @@ func _build_keyframes() -> void:
 	_keyframes.append({
 		"hour": 6.5,
 		"sky_top":        Color(0.25, 0.38, 0.62),
-		"sky_horizon":    Color(0.68, 0.50, 0.38),
+		"sky_horizon":    Color(0.75, 0.55, 0.45),
 		"gnd_bottom":     Color(0.10, 0.08, 0.06),
 		"gnd_horizon":    Color(0.42, 0.32, 0.22),
 		"sun_angle_max":  5.0,
 		"sun_curve":      0.08,
-		"ambient_color":  Color(0.45, 0.35, 0.25),
+		"ambient_color":  Color(0.50, 0.38, 0.30),
 		"ambient_energy": 0.60,
 		"exposure":       0.80,
 		"white":          5.0,
@@ -617,7 +623,7 @@ func _build_keyframes() -> void:
 		"saturation":     0.94,
 		"contrast":       1.06,
 		"brightness":     1.0,
-		"fog_color":      Color(0.55, 0.42, 0.34),
+		"fog_color":      Color(0.60, 0.48, 0.40),
 		"fog_energy":     0.6,
 		"fog_scatter":    0.20,
 		"fog_density":    0.0012,
@@ -641,13 +647,13 @@ func _build_keyframes() -> void:
 	# ---- 12.0  Noon (clear, punchy daylight) ----
 	_keyframes.append({
 		"hour": 12.0,
-		"sky_top":        Color(0.22, 0.42, 0.75),
-		"sky_horizon":    Color(0.55, 0.60, 0.68),
+		"sky_top":        Color(0.28, 0.48, 0.80),
+		"sky_horizon":    Color(0.62, 0.65, 0.72),
 		"gnd_bottom":     Color(0.12, 0.12, 0.10),
 		"gnd_horizon":    Color(0.38, 0.36, 0.32),
 		"sun_angle_max":  1.5,
 		"sun_curve":      0.15,
-		"ambient_color":  Color(0.50, 0.46, 0.38),
+		"ambient_color":  Color(0.52, 0.48, 0.42),
 		"ambient_energy": 0.75,
 		"exposure":       0.80,
 		"white":          6.0,
@@ -663,7 +669,7 @@ func _build_keyframes() -> void:
 		"saturation":     0.95,
 		"contrast":       1.06,
 		"brightness":     1.00,
-		"fog_color":      Color(0.55, 0.52, 0.48),
+		"fog_color":      Color(0.58, 0.55, 0.52),
 		"fog_energy":     0.6,
 		"fog_scatter":    0.05,
 		"fog_density":    0.0008,
@@ -687,8 +693,8 @@ func _build_keyframes() -> void:
 	# ---- 19.0  Sunset / Golden hour ----
 	_keyframes.append({
 		"hour": 19.0,
-		"sky_top":        Color(0.25, 0.22, 0.38),
-		"sky_horizon":    Color(0.72, 0.46, 0.30),
+		"sky_top":        Color(0.30, 0.22, 0.42),
+		"sky_horizon":    Color(0.78, 0.48, 0.38),
 		"gnd_bottom":     Color(0.08, 0.06, 0.04),
 		"gnd_horizon":    Color(0.42, 0.32, 0.20),
 		"sun_angle_max":  5.0,
@@ -709,7 +715,7 @@ func _build_keyframes() -> void:
 		"saturation":     0.94,
 		"contrast":       1.05,
 		"brightness":     1.0,
-		"fog_color":      Color(0.68, 0.52, 0.38),
+		"fog_color":      Color(0.72, 0.52, 0.42),
 		"fog_energy":     0.6,
 		"fog_scatter":    0.25,
 		"fog_density":    0.0014,
@@ -1402,8 +1408,12 @@ void fragment() {
 	float path_weight = max(best_cov, raster_cov);
 	int mat_idx = best_cov > raster_cov ? best_mat : raster_mat;
 
+	// --- Simple parallax offset on grass/meadow UV only (2.5cm depth) ---
+	vec3 view_ws = normalize(INV_VIEW_MATRIX[3].xyz - world_pos);
+	vec2 parallax_off = -view_ws.xz / max(view_ws.y, 0.15) * 0.025;
+
 	// --- Grass shading (textureNoTile — Inigo Quilez anti-tiling) ---
-	vec2 uv  = world_pos.xz / tile_m;
+	vec2 uv  = (world_pos.xz + parallax_off) / tile_m;
 	vec3 grass_alb = textureNoTile_c(grass_albedo, uv);
 	vec3 grass_nrm = textureNoTile_n(grass_normal, uv);
 	float grass_rgh = clamp(textureNoTile_r(grass_rough, uv) * 0.15 + 0.72, 0.0, 1.0);
@@ -1417,12 +1427,12 @@ void fragment() {
 	grass_alb = mix(grass_alb * f, dirt, wear * 0.6);
 	// Macro color variation — warm vs cool patches at ~20m scale
 	float color_var = vnoise(world_pos.xz * 0.05 + vec2(17.3, 41.7));
-	vec3 warm_tint = grass_alb * vec3(1.10, 0.95, 0.75);  // golden
-	vec3 cool_tint = grass_alb * vec3(0.92, 0.95, 0.80);  // olive
+	vec3 warm_tint = grass_alb * vec3(1.12, 0.98, 0.82);  // golden-peach
+	vec3 cool_tint = grass_alb * vec3(0.90, 1.00, 0.85);  // sage
 	grass_alb = mix(cool_tint, warm_tint, color_var);
 
 	// Meadow/wild grass blend — large-scale FBM patches
-	vec2 muv = world_pos.xz / meadow_tile_m;
+	vec2 muv = (world_pos.xz + parallax_off) / meadow_tile_m;
 	// Rotate meadow UV 60° to break alignment with grass striations
 	float s60 = 0.866; float c60 = 0.5;
 	vec2 muv_rot = vec2(muv.x * c60 + muv.y * s60, -muv.x * s60 + muv.y * c60);
@@ -1454,9 +1464,9 @@ void fragment() {
 	grass_nrm = normalize(grass_nrm);
 
 	// Autumn lawn push — warm but still alive (not dead brown)
-	grass_alb.r *= 1.04;
-	grass_alb.g *= 0.92;
-	grass_alb.b *= 0.75;
+	grass_alb.r *= 1.02;
+	grass_alb.g *= 0.95;
+	grass_alb.b *= 0.82;
 	// (Removed: vnoise at 50.0 freq aliased with mesh grid → plowed-row artifacts)
 
 	// Canopy shadow pools — subtle dark patches under/between trees
@@ -1485,19 +1495,19 @@ void fragment() {
 	float dot_lo = 0.40 + size_var * 0.06;  // 0.40–0.46
 	float dot_hi = dot_lo + 0.10;
 	float dot_mask = smoothstep(dot_lo, dot_hi, dot_combined);
-	// 3 autumn color bands: russet/brown (70%), goldenrod (20%), cream aster (10%)
+	// 3 pastel bands: lavender (10%), coral-gold (20%), soft rose (70%)
 	float hue_var = vnoise(warped * 4.0);
 	float band_sel = vnoise(warped * 7.5 + vec2(42.0, 13.0));
 	vec3 flower_col;
 	if (band_sel > 0.90) {
-		// Cream aster (10%)
-		flower_col = mix(vec3(0.68, 0.62, 0.50), vec3(0.72, 0.66, 0.55), hue_var);
+		// Lavender (10%)
+		flower_col = mix(vec3(0.62, 0.55, 0.72), vec3(0.68, 0.60, 0.75), hue_var);
 	} else if (band_sel > 0.70) {
-		// Goldenrod (20%)
-		flower_col = mix(vec3(0.65, 0.55, 0.12), vec3(0.72, 0.60, 0.15), hue_var);
+		// Coral-gold (20%)
+		flower_col = mix(vec3(0.78, 0.62, 0.30), vec3(0.82, 0.68, 0.35), hue_var);
 	} else {
-		// Russet/brown (dominant)
-		flower_col = mix(vec3(0.40, 0.25, 0.10), vec3(0.50, 0.32, 0.14), hue_var);
+		// Soft rose (dominant)
+		flower_col = mix(vec3(0.72, 0.48, 0.42), vec3(0.78, 0.52, 0.48), hue_var);
 	}
 	// Vary density: denser near canopy shade → more saturated
 	float density_boost = canopy_shade * 0.3;
@@ -1513,6 +1523,35 @@ void fragment() {
 	float sun_patch = smoothstep(0.38, 0.62, dapple);
 	vec3 sun_tint = vec3(1.15, 1.02, 0.75); // warmer amber highlight
 	grass_alb *= mix(vec3(1.0), sun_tint, sun_patch * 0.32 * near_path_fade);
+
+	// --- Procedural grass blade overlay (4cm hash grid, 25 cells/m) ---
+	float blade_suppress = max(path_weight, wear);
+	vec2 blade_cell = floor(world_pos.xz * 25.0);
+	float blade_h = hash2(blade_cell);
+	float blade_h2 = hash2(blade_cell + vec2(71.3, 13.7));
+	float blade_h3 = hash2(blade_cell + vec2(37.1, 89.3));
+	vec2 blade_frac = fract(world_pos.xz * 25.0);
+	// Per-cell blade direction and center offset
+	float blade_ang = blade_h * 6.283;
+	vec2 blade_dir = vec2(cos(blade_ang), sin(blade_ang));
+	vec2 blade_cen = vec2(0.5) + (vec2(blade_h2, blade_h3) - 0.5) * 0.3;
+	vec2 blade_d = blade_frac - blade_cen;
+	// Elongated shape: project onto blade dir
+	float along = dot(blade_d, blade_dir);
+	float across = abs(dot(blade_d, vec2(-blade_dir.y, blade_dir.x)));
+	float blade_shape = smoothstep(0.22, 0.0, across) * smoothstep(0.48, 0.15, abs(along));
+	// Per-cell brightness variation (0.88–1.12) and warmth (±0.06)
+	float blade_bright = 0.88 + blade_h * 0.24;
+	float blade_warm = (blade_h2 - 0.5) * 0.12;
+	vec3 blade_tint = vec3(blade_bright + blade_warm, blade_bright, blade_bright - blade_warm * 0.5);
+	float blade_intensity = 0.35 * (1.0 - blade_suppress);
+	grass_alb = mix(grass_alb, grass_alb * blade_tint, blade_shape * blade_intensity);
+	// Per-blade normal perturbation
+	grass_nrm.r += (blade_h - 0.5) * blade_shape * blade_intensity * 0.3;
+	grass_nrm.g += (blade_h2 - 0.5) * blade_shape * blade_intensity * 0.3;
+
+	// --- Anisotropic flow direction for grass shimmer ---
+	float aniso_flow = vnoise(world_pos.xz * 0.5);
 
 	if (mat_idx > 0 && path_weight > 0.001) {
 		// --- Path shading ---
@@ -1544,6 +1583,9 @@ void fragment() {
 		ROUGHNESS       = grass_rgh;
 		SPECULAR        = 0.15;
 		METALLIC        = 0.0;
+		// Anisotropic specular — directional sheen mimics wind shimmer
+		ANISOTROPY = 0.35;
+		ANISOTROPY_FLOW = vec2(cos(aniso_flow * 6.283), sin(aniso_flow * 6.283));
 	}
 
 	} // end park_inside else
@@ -1816,12 +1858,12 @@ void fragment() {
 	vec3 c = texture(SCREEN_TEXTURE, SCREEN_UV).rgb;
 
 	// Lift blacks slightly (prevents crushing, adds atmosphere)
-	c = max(c, vec3(0.012, 0.010, 0.015));
+	c = max(c, vec3(0.015, 0.012, 0.018));
 
 	// Split-tone: warm highlights, cool shadows
 	float lum = dot(c, vec3(0.2126, 0.7152, 0.0722));
-	vec3 shadow_tint = vec3(0.92, 0.95, 1.05);   // cool blue-ish shadows
-	vec3 highlight_tint = vec3(1.06, 1.02, 0.92); // warm golden highlights
+	vec3 shadow_tint = vec3(0.94, 0.92, 1.06);   // cool lavender shadows
+	vec3 highlight_tint = vec3(1.08, 1.00, 0.94); // warm peach highlights
 	float shadow_blend = 1.0 - smoothstep(0.0, 0.35, lum);
 	float highlight_blend = smoothstep(0.5, 0.85, lum);
 	c *= mix(vec3(1.0), shadow_tint, shadow_blend * 0.3);

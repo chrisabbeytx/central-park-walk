@@ -3918,8 +3918,8 @@ void fragment() {
 	float n_fine  = gnoise(uv * 3.5 + vec2(t * 0.15, -t * 0.12));
 	float wave_h  = n_large * 0.4 + n_med * 0.35 + n_fine * 0.25;
 
-	vec3 deep    = vec3(0.018, 0.035, 0.030);
-	vec3 shallow = vec3(0.045, 0.08, 0.055);
+	vec3 deep    = vec3(0.025, 0.045, 0.050);
+	vec3 shallow = vec3(0.055, 0.10, 0.085);
 	// Subtle blend — mostly deep, shallow only at wave peaks
 	vec3 base_col = mix(deep, shallow, smoothstep(-0.3, 0.6, wave_h));
 
@@ -3927,7 +3927,7 @@ void fragment() {
 
 	// Fresnel — glancing angles reflect sky
 	float fresnel = pow(1.0 - max(dot(NORMAL, VIEW), 0.0), 4.0);
-	vec3 sky_col = vec3(0.32, 0.38, 0.45);
+	vec3 sky_col = vec3(0.40, 0.48, 0.58);
 	vec3 col = mix(base_col, sky_col, fresnel * 0.6);
 
 	// Foam — white caps at wave peaks
@@ -5200,6 +5200,7 @@ func _make_leaf_card_mesh(is_conifer: bool) -> ArrayMesh:
 			card_defs.append([pos, hs, tilt_ax, 36.0 + float(i) * 3.0])
 
 	# Build each card as a quad (2 tris)
+	var colors := PackedColorArray()
 	for ci in card_defs.size():
 		var cd: Array = card_defs[ci]
 		var pos: Vector3     = cd[0]
@@ -5230,12 +5231,22 @@ func _make_leaf_card_mesh(is_conifer: bool) -> ArrayMesh:
 		indices.append_array(PackedInt32Array([
 			base, base + 1, base + 2, base, base + 2, base + 3,
 		]))
+		# Per-card variation via golden-ratio hash
+		var gr := fmod(float(ci) * 0.618033988, 1.0)
+		var card_col := Color(
+			fmod(gr + 0.0, 1.0),
+			fmod(gr + 0.382, 1.0),
+			fmod(gr + 0.618, 1.0),
+			fmod(gr + 0.247, 1.0))
+		for _cv in 4:
+			colors.append(card_col)
 
 	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
 	arrays[Mesh.ARRAY_VERTEX] = verts
 	arrays[Mesh.ARRAY_NORMAL] = normals
 	arrays[Mesh.ARRAY_TEX_UV] = uvs
 	arrays[Mesh.ARRAY_INDEX]  = indices
+	arrays[Mesh.ARRAY_COLOR]  = colors
 	var mesh := ArrayMesh.new()
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 	return mesh
@@ -5294,7 +5305,9 @@ func _make_bush_leaf_mesh() -> ArrayMesh:
 		var tilt_ax := Vector3(cos(a + 0.8), 0.0, sin(a + 0.8))
 		card_defs.append([pos, 0.24, tilt_ax, 22.0 + float(i) * 6.0])
 
-	for cd in card_defs:
+	var colors := PackedColorArray()
+	for ci in card_defs.size():
+		var cd: Array = card_defs[ci]
 		var pos: Vector3 = cd[0] as Vector3
 		var hs: float    = cd[1]
 		var tax: Vector3 = cd[2] as Vector3
@@ -5316,12 +5329,21 @@ func _make_bush_leaf_mesh() -> ArrayMesh:
 		indices.append_array(PackedInt32Array([
 			base, base+1, base+2, base, base+2, base+3,
 		]))
+		var gr := fmod(float(ci) * 0.618033988, 1.0)
+		var card_col := Color(
+			fmod(gr + 0.0, 1.0),
+			fmod(gr + 0.382, 1.0),
+			fmod(gr + 0.618, 1.0),
+			fmod(gr + 0.247, 1.0))
+		for _cv in 4:
+			colors.append(card_col)
 
 	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
 	arrays[Mesh.ARRAY_VERTEX] = verts
 	arrays[Mesh.ARRAY_NORMAL] = normals
 	arrays[Mesh.ARRAY_TEX_UV] = uvs
 	arrays[Mesh.ARRAY_INDEX]  = indices
+	arrays[Mesh.ARRAY_COLOR]  = colors
 	var mesh := ArrayMesh.new()
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 	return mesh
@@ -5368,10 +5390,10 @@ func _leaf_shader_code() -> String:
 	return """shader_type spatial;
 render_mode cull_disabled, depth_prepass_alpha;
 
-uniform sampler2D leaf_color   : source_color,      filter_linear_mipmap_anisotropic;
-uniform sampler2D leaf_normal  : hint_normal,        filter_linear_mipmap_anisotropic;
-uniform sampler2D leaf_rough   : hint_default_white, filter_linear_mipmap_anisotropic;
-uniform sampler2D leaf_opacity : hint_default_white, filter_linear_mipmap_anisotropic;
+uniform sampler2D leaf_color   : source_color,      filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D leaf_normal  : hint_normal,        filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D leaf_rough   : hint_default_white, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D leaf_opacity : hint_default_white, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform float understorey : hint_range(0.0, 1.0) = 0.0;
 
 varying vec3 tree_origin;
@@ -5396,9 +5418,11 @@ void vertex() {
 }
 
 void fragment() {
-	vec3 alb   = texture(leaf_color, UV).rgb;
-	float opac = texture(leaf_opacity, UV).r;
-	float rgh  = texture(leaf_rough, UV).r;
+	// Per-card UV offset from vertex color blue channel
+	vec2 card_uv = UV + vec2(COLOR.b * 0.4, COLOR.b * 0.3);
+	vec3 alb   = texture(leaf_color, card_uv).rgb;
+	float opac = texture(leaf_opacity, card_uv).r;
+	float rgh  = texture(leaf_rough, card_uv).r;
 
 	// Alpha cutout from opacity map — wider smoothstep for softer card edges
 	float alpha = smoothstep(0.02, 0.45, opac);
@@ -5413,32 +5437,45 @@ void fragment() {
 	float grey = dot(alb, vec3(0.299, 0.587, 0.114));
 	alb = mix(vec3(grey), alb, 0.35);
 
+	// Per-card brightness from vertex color red channel (range 0.7–1.3)
+	float card_bright = COLOR.r * 0.6 + 0.7;
+	// Per-card age/condition from alpha channel — desaturate + darken
+	float card_age = COLOR.a * 0.3;
+
 	// Per-tree autumn tone from hash
 	float h = hash21(floor(tree_origin.xz * 0.025));
 	float bright = mix(0.65 + h * 0.55, 0.45 + h * 0.30, understorey);
-	vec3 col = alb * bright;
+	vec3 col = alb * bright * card_bright;
 
-	// Autumn palette: gold/amber 30%, russet/burnt orange 25%, burgundy 20%, olive/green 15%, brown 10%
+	// Pastel autumn palette: golden-peach 25%, coral-rose 23%, dusty mauve 17%, sage 17%, warm amber 18%
 	vec3 autumn_tint;
-	if (h < 0.30) {
-		autumn_tint = vec3(0.72, 0.55, 0.12);       // gold/amber
-	} else if (h < 0.55) {
-		autumn_tint = vec3(0.65, 0.30, 0.08);       // russet/burnt orange
-	} else if (h < 0.75) {
-		autumn_tint = vec3(0.48, 0.12, 0.10);       // burgundy
-	} else if (h < 0.90) {
-		autumn_tint = vec3(0.35, 0.38, 0.12);       // olive/still-green
+	if (h < 0.25) {
+		autumn_tint = vec3(0.85, 0.65, 0.22);       // warm golden-peach
+	} else if (h < 0.48) {
+		autumn_tint = vec3(0.82, 0.42, 0.35);       // soft coral-rose
+	} else if (h < 0.65) {
+		autumn_tint = vec3(0.72, 0.45, 0.58);       // dusty mauve
+	} else if (h < 0.82) {
+		autumn_tint = vec3(0.55, 0.62, 0.30);       // sage green
 	} else {
-		autumn_tint = vec3(0.40, 0.25, 0.10);       // brown
+		autumn_tint = vec3(0.78, 0.58, 0.28);       // warm amber
 	}
-	col *= autumn_tint * 1.8;
+	// Per-card hue shift from green channel (±0.15 warm/cool)
+	float hue_shift = (COLOR.g - 0.5) * 0.30;
+	autumn_tint.r += hue_shift;
+	autumn_tint.b -= hue_shift * 0.5;
+	col *= autumn_tint * 2.1;
+
+	// Age desaturation
+	float col_grey = dot(col, vec3(0.299, 0.587, 0.114));
+	col = mix(col, vec3(col_grey) * 0.85, card_age);
 
 	// Fake subsurface scattering: warm amber backlit leaves
 	float sss = pow(1.0 - max(dot(NORMAL, VIEW), 0.0), 2.5) * 0.35;
-	col += vec3(0.18, 0.10, 0.02) * sss;
+	col += vec3(0.25, 0.14, 0.10) * sss;
 
 	ALBEDO     = clamp(col, 0.0, 1.0);
-	NORMAL_MAP = texture(leaf_normal, UV).rgb;
+	NORMAL_MAP = texture(leaf_normal, card_uv).rgb;
 	ROUGHNESS  = clamp(rgh * 0.15 + 0.65, 0.0, 1.0);
 	SPECULAR   = 0.08;
 	METALLIC   = 0.0;
@@ -7462,7 +7499,7 @@ func _flower_shader_code() -> String:
 	return """shader_type spatial;
 render_mode cull_disabled, depth_prepass_alpha;
 
-uniform sampler2D petal_opacity : hint_default_white, filter_linear_mipmap_anisotropic;
+uniform sampler2D petal_opacity : hint_default_white, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform vec3 flower_tint : source_color = vec3(0.95, 0.92, 0.75);
 
 varying vec3 origin;
@@ -7475,13 +7512,23 @@ void vertex() {
 }
 
 void fragment() {
-	float opac = texture(petal_opacity, UV).r;
+	vec2 card_uv = UV + vec2(COLOR.b * 0.4, COLOR.b * 0.3);
+	float opac = texture(petal_opacity, card_uv).r;
 	float alpha = smoothstep(0.25, 0.65, opac);
 	if (alpha < 0.05) discard;
 	ALPHA = alpha;
+	// Per-card brightness (0.7–1.3) and hue shift (±0.15)
+	float card_bright = COLOR.r * 0.6 + 0.7;
+	float hue_shift = (COLOR.g - 0.5) * 0.30;
 	// Slight color variation from world position
 	float var_ = sin(origin.x * 3.7 + origin.z * 5.3) * 0.08;
-	ALBEDO = flower_tint * (0.92 + var_);
+	vec3 tinted = flower_tint * (0.92 + var_) * card_bright;
+	tinted.r += hue_shift;
+	tinted.b -= hue_shift * 0.5;
+	// Age desaturation
+	float age = COLOR.a * 0.3;
+	float tgrey = dot(tinted, vec3(0.299, 0.587, 0.114));
+	ALBEDO = mix(tinted, vec3(tgrey) * 0.85, age);
 	ROUGHNESS = 0.80;
 	SPECULAR = 0.05;
 	METALLIC = 0.0;
@@ -7494,7 +7541,7 @@ func _flower_carpet_shader_code() -> String:
 	return """shader_type spatial;
 render_mode cull_disabled, depth_prepass_alpha;
 
-uniform sampler2D petal_opacity : hint_default_white, filter_linear_mipmap_anisotropic;
+uniform sampler2D petal_opacity : hint_default_white, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform vec3 flower_tint : source_color = vec3(0.25, 0.35, 0.75);
 
 varying vec3 origin;
@@ -7507,19 +7554,30 @@ void vertex() {
 }
 
 void fragment() {
-	float opac = texture(petal_opacity, UV).r;
+	vec2 card_uv = UV + vec2(COLOR.b * 0.4, COLOR.b * 0.3);
+	float opac = texture(petal_opacity, card_uv).r;
 	// Soft cutoff — keeps more foliage visible, gentle edges
 	float alpha = smoothstep(0.12, 0.55, opac);
 	if (alpha < 0.05) discard;
 
+	// Per-card brightness and hue shift
+	float card_bright = COLOR.r * 0.6 + 0.7;
+	float hue_shift = (COLOR.g - 0.5) * 0.30;
+
 	// Green stems near base (UV.y=1.0 is ground level) — more stem visible
-	float stem = smoothstep(0.35, 0.85, UV.y);
+	float stem = smoothstep(0.35, 0.85, card_uv.y);
 	vec3 stem_col = vec3(0.10, 0.18, 0.05);
 	// Natural color variation per instance
 	float v1 = sin(origin.x * 3.7 + origin.z * 5.3) * 0.18;
 	float v2 = sin(origin.x * 1.1 - origin.z * 2.3) * 0.10;
-	vec3 col = flower_tint * (0.82 + v1 + v2);
-	ALBEDO = mix(col, stem_col, stem * 0.45);
+	vec3 col = flower_tint * (0.82 + v1 + v2) * card_bright;
+	col.r += hue_shift;
+	col.b -= hue_shift * 0.5;
+	vec3 mixed = mix(col, stem_col, stem * 0.45);
+	// Age desaturation
+	float age = COLOR.a * 0.3;
+	float mgrey = dot(mixed, vec3(0.299, 0.587, 0.114));
+	ALBEDO = mix(mixed, vec3(mgrey) * 0.85, age);
 	ALPHA = alpha;
 
 	ROUGHNESS = 0.82;
@@ -7536,6 +7594,7 @@ func _make_flower_carpet_mesh() -> ArrayMesh:
 	var normals := PackedVector3Array()
 	var uvs     := PackedVector2Array()
 	var indices := PackedInt32Array()
+	var colors  := PackedColorArray()
 
 	# 2 vertical quads at 90 degrees
 	for i in 2:
@@ -7555,6 +7614,14 @@ func _make_flower_carpet_mesh() -> ArrayMesh:
 			normals.append(n)
 		indices.append_array(PackedInt32Array([
 			base, base + 1, base + 2, base, base + 2, base + 3]))
+		var gr := fmod(float(i) * 0.618033988, 1.0)
+		var card_col := Color(
+			fmod(gr + 0.0, 1.0),
+			fmod(gr + 0.382, 1.0),
+			fmod(gr + 0.618, 1.0),
+			fmod(gr + 0.247, 1.0))
+		for _cv in 4:
+			colors.append(card_col)
 
 	# 1 ground-facing quad just above terrain for carpet fill
 	var gbase := verts.size()
@@ -7568,6 +7635,9 @@ func _make_flower_carpet_mesh() -> ArrayMesh:
 		normals.append(Vector3(0.0, 1.0, 0.0))
 	indices.append_array(PackedInt32Array([
 		gbase, gbase + 1, gbase + 2, gbase, gbase + 2, gbase + 3]))
+	var ground_col := Color(0.5, 0.5, 0.5, 0.5)
+	for _cv in 4:
+		colors.append(ground_col)
 
 	var arrays: Array = []
 	arrays.resize(Mesh.ARRAY_MAX)
@@ -7575,6 +7645,7 @@ func _make_flower_carpet_mesh() -> ArrayMesh:
 	arrays[Mesh.ARRAY_NORMAL] = normals
 	arrays[Mesh.ARRAY_TEX_UV] = uvs
 	arrays[Mesh.ARRAY_INDEX]  = indices
+	arrays[Mesh.ARRAY_COLOR]  = colors
 	var mesh := ArrayMesh.new()
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 	return mesh
@@ -7586,6 +7657,7 @@ func _make_flower_billboard_mesh() -> ArrayMesh:
 	var normals := PackedVector3Array()
 	var uvs     := PackedVector2Array()
 	var indices := PackedInt32Array()
+	var colors  := PackedColorArray()
 
 	for i in 3:
 		var angle := float(i) * PI / 3.0
@@ -7605,6 +7677,14 @@ func _make_flower_billboard_mesh() -> ArrayMesh:
 			normals.append(n)
 		indices.append_array(PackedInt32Array([
 			base, base + 1, base + 2, base, base + 2, base + 3]))
+		var gr := fmod(float(i) * 0.618033988, 1.0)
+		var card_col := Color(
+			fmod(gr + 0.0, 1.0),
+			fmod(gr + 0.382, 1.0),
+			fmod(gr + 0.618, 1.0),
+			fmod(gr + 0.247, 1.0))
+		for _cv in 4:
+			colors.append(card_col)
 
 	var arrays: Array = []
 	arrays.resize(Mesh.ARRAY_MAX)
@@ -7612,6 +7692,7 @@ func _make_flower_billboard_mesh() -> ArrayMesh:
 	arrays[Mesh.ARRAY_NORMAL] = normals
 	arrays[Mesh.ARRAY_TEX_UV] = uvs
 	arrays[Mesh.ARRAY_INDEX]  = indices
+	arrays[Mesh.ARRAY_COLOR]  = colors
 	var mesh := ArrayMesh.new()
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 	return mesh
@@ -7628,14 +7709,14 @@ func _build_wildflowers(trees: Array, water: Array) -> void:
 
 	# 8 species — autumn wildflowers: warm golds/ambers/browns
 	var species_tints: Array = [
-		Color(0.65, 0.52, 0.12),  # goldenrod — warm gold
-		Color(0.72, 0.42, 0.08),  # marigold — deep orange
-		Color(0.52, 0.40, 0.28),  # dried aster — muted brown
-		Color(0.62, 0.38, 0.10),  # brown-eyed susan — amber
-		Color(0.45, 0.32, 0.15),  # dried seed head — dark brown
-		Color(0.58, 0.48, 0.14),  # late goldenrod — golden
-		Color(0.68, 0.60, 0.42),  # dried daisy — tan cream
-		Color(0.50, 0.35, 0.12),  # dried buttercup — brown-gold
+		Color(0.72, 0.62, 0.25),  # goldenrod — bright warm gold
+		Color(0.85, 0.52, 0.35),  # marigold — peach-coral
+		Color(0.62, 0.48, 0.72),  # aster — soft violet
+		Color(0.78, 0.55, 0.22),  # brown-eyed susan — amber-gold
+		Color(0.65, 0.35, 0.50),  # thistle — rose
+		Color(0.70, 0.65, 0.30),  # late goldenrod — warm chartreuse
+		Color(0.82, 0.72, 0.58),  # daisy — warm cream
+		Color(0.58, 0.42, 0.62),  # buttercup — lavender
 	]
 	var species_weights := [0.25, 0.20, 0.15, 0.12, 0.10, 0.08, 0.06, 0.04]
 	var species_h_min := [0.22, 0.25, 0.18, 0.20, 0.18, 0.20, 0.18, 0.20]
@@ -7774,6 +7855,7 @@ func _make_meadow_grass_mesh() -> ArrayMesh:
 	var normals := PackedVector3Array()
 	var uvs     := PackedVector2Array()
 	var indices := PackedInt32Array()
+	var colors  := PackedColorArray()
 
 	for i in 4:
 		var angle := float(i) * PI / 4.0
@@ -7796,6 +7878,14 @@ func _make_meadow_grass_mesh() -> ArrayMesh:
 			normals.append(n)
 		indices.append_array(PackedInt32Array([
 			base, base + 1, base + 2, base, base + 2, base + 3]))
+		var gr := fmod(float(i) * 0.618033988, 1.0)
+		var card_col := Color(
+			fmod(gr + 0.0, 1.0),
+			fmod(gr + 0.382, 1.0),
+			fmod(gr + 0.618, 1.0),
+			fmod(gr + 0.247, 1.0))
+		for _cv in 4:
+			colors.append(card_col)
 
 	var arrays: Array = []
 	arrays.resize(Mesh.ARRAY_MAX)
@@ -7803,6 +7893,7 @@ func _make_meadow_grass_mesh() -> ArrayMesh:
 	arrays[Mesh.ARRAY_NORMAL] = normals
 	arrays[Mesh.ARRAY_TEX_UV] = uvs
 	arrays[Mesh.ARRAY_INDEX]  = indices
+	arrays[Mesh.ARRAY_COLOR]  = colors
 	var mesh := ArrayMesh.new()
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 	return mesh
@@ -7817,8 +7908,8 @@ func _build_meadow_grass(trees: Array) -> void:
 
 	# Two tint variants: dried golden and straw
 	var tints := [
-		Vector3(0.48, 0.40, 0.15),  # dried golden
-		Vector3(0.55, 0.42, 0.12),  # straw
+		Vector3(0.62, 0.55, 0.28),  # warm golden
+		Vector3(0.68, 0.58, 0.25),  # honey-straw
 	]
 	var grass_mats: Array = []
 	for ti in 2:
@@ -7917,7 +8008,7 @@ func _blossom_shader_code() -> String:
 	return """shader_type spatial;
 render_mode cull_disabled, depth_prepass_alpha;
 
-uniform sampler2D leaf_opacity : hint_default_white, filter_linear_mipmap_anisotropic;
+uniform sampler2D leaf_opacity : hint_default_white, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform vec3 blossom_tint : source_color = vec3(0.95, 0.72, 0.80);
 
 varying vec3 tree_origin;
@@ -7938,17 +8029,28 @@ void vertex() {
 }
 
 void fragment() {
-	float opac = texture(leaf_opacity, UV).r;
+	vec2 card_uv = UV + vec2(COLOR.b * 0.4, COLOR.b * 0.3);
+	float opac = texture(leaf_opacity, card_uv).r;
 	float alpha = smoothstep(0.05, 0.30, opac) * 0.85;
 	if (alpha < 0.01) discard;
 
+	// Per-card brightness and hue shift
+	float card_bright = COLOR.r * 0.6 + 0.7;
+	float hue_shift = (COLOR.g - 0.5) * 0.30;
+
 	// Per-tree colour variation
 	float h = hash21(floor(tree_origin.xz * 0.025));
-	float bright = 0.85 + h * 0.30;
+	float bright = (0.85 + h * 0.30) * card_bright;
 	vec3 col = blossom_tint * bright;
-	// Warm petal variation
-	col.r += (h - 0.5) * 0.08;
+	// Warm petal variation + per-card hue shift
+	col.r += (h - 0.5) * 0.08 + hue_shift;
 	col.g -= (h - 0.5) * 0.04;
+	col.b -= hue_shift * 0.5;
+
+	// Age desaturation
+	float age = COLOR.a * 0.3;
+	float cgrey = dot(col, vec3(0.299, 0.587, 0.114));
+	col = mix(col, vec3(cgrey) * 0.85, age);
 
 	// Soft rim glow for dreamy look
 	float rim = pow(1.0 - max(dot(NORMAL, VIEW), 0.0), 2.0) * 0.15;
@@ -7977,10 +8079,10 @@ func _build_blossoms(trees: Array) -> void:
 
 	# Blossom species: cherry, magnolia, dogwood, crabapple
 	var blossom_tints: Array = [
-		Vector3(0.85, 0.35, 0.08),  # cherry — bright orange
-		Vector3(0.72, 0.58, 0.10),  # magnolia — bright gold
-		Vector3(0.78, 0.22, 0.12),  # dogwood — crimson
-		Vector3(0.55, 0.15, 0.10),  # crabapple — dark red
+		Vector3(0.90, 0.55, 0.58),  # cherry — soft pink
+		Vector3(0.88, 0.78, 0.45),  # magnolia — cream gold
+		Vector3(0.75, 0.50, 0.68),  # dogwood — lilac
+		Vector3(0.85, 0.42, 0.42),  # crabapple — dusty rose
 	]
 	# Percentage of broadleaf trees: 12%, 6%, 6%, 6% = 30% total
 	var blossom_thresholds := [0.12, 0.18, 0.24, 0.30]
@@ -8072,11 +8174,12 @@ func _build_blossoms(trees: Array) -> void:
 # Ground cover — ferns near water/trees + ivy near buildings
 # ---------------------------------------------------------------------------
 func _make_fern_mesh() -> ArrayMesh:
-	## 6 elongated leaf cards radiating from center, angled 30-deg upward
+	## 10 elongated leaf cards radiating from center, angled 30-deg upward
 	var verts   := PackedVector3Array()
 	var normals := PackedVector3Array()
 	var uvs     := PackedVector2Array()
 	var indices := PackedInt32Array()
+	var colors  := PackedColorArray()
 
 	for i in 10:
 		var angle := TAU * float(i) / 10.0 + 0.25
@@ -8104,6 +8207,14 @@ func _make_fern_mesh() -> ArrayMesh:
 			normals.append(n)
 		indices.append_array(PackedInt32Array([
 			base, base + 1, base + 2, base, base + 2, base + 3]))
+		var gr := fmod(float(i) * 0.618033988, 1.0)
+		var card_col := Color(
+			fmod(gr + 0.0, 1.0),
+			fmod(gr + 0.382, 1.0),
+			fmod(gr + 0.618, 1.0),
+			fmod(gr + 0.247, 1.0))
+		for _cv in 4:
+			colors.append(card_col)
 
 	var arrays: Array = []
 	arrays.resize(Mesh.ARRAY_MAX)
@@ -8111,6 +8222,7 @@ func _make_fern_mesh() -> ArrayMesh:
 	arrays[Mesh.ARRAY_NORMAL] = normals
 	arrays[Mesh.ARRAY_TEX_UV] = uvs
 	arrays[Mesh.ARRAY_INDEX]  = indices
+	arrays[Mesh.ARRAY_COLOR]  = colors
 	var mesh := ArrayMesh.new()
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 	return mesh
@@ -8127,7 +8239,7 @@ func _build_ground_cover(trees: Array, water: Array, buildings: Array) -> void:
 	fern_mat.shader = _get_shader("flower", _flower_shader_code())
 	if opac_tex:
 		fern_mat.set_shader_parameter("petal_opacity", opac_tex)
-	fern_mat.set_shader_parameter("flower_tint", Vector3(0.38, 0.32, 0.10))
+	fern_mat.set_shader_parameter("flower_tint", Vector3(0.42, 0.48, 0.18))
 
 	var fern_mesh := _make_fern_mesh()
 	var fern_xf: Array = []
@@ -8220,8 +8332,8 @@ func _build_leaf_litter(trees: Array) -> void:
 
 	# Two leaf tint variants: brown/amber autumn leaves
 	var litter_tints := [
-		Vector3(0.35, 0.22, 0.08),  # brown dried oak
-		Vector3(0.50, 0.35, 0.10),  # amber maple
+		Vector3(0.55, 0.35, 0.18),  # warm copper
+		Vector3(0.65, 0.48, 0.28),  # golden amber
 	]
 	var litter_mats: Array = []
 	for ti in 2:
