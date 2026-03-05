@@ -7135,306 +7135,6 @@ func _add_box_verts(v: PackedVector3Array, n: PackedVector3Array, idx: PackedInt
 		for _j in 4: n.append(face[4])
 		idx.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
 
-func _make_lamppost_mesh_a() -> ArrayMesh:
-	## Variant A: Henry Bacon Type B — fluted shaft, 3-tier base, Kent Bloomer luminaire, acorn finial
-	## Surface 0 = post+base (no emission), Surface 1 = luminaire (emission)
-	var p_verts   := PackedVector3Array()
-	var p_normals := PackedVector3Array()
-	var p_indices := PackedInt32Array()
-	var segs := 12  # 12-sided for fluted shaft
-	var post_h := 3.5
-	# --- 3-tier base ---
-	# Tier 1: square foot 0.18m half-width, 0.12m tall
-	_add_box_verts(p_verts, p_normals, p_indices, 0.0, 0.06, 0.0, 0.18, 0.06, 0.18)
-	# Tier 2: octagonal plinth (approximate as 12-sided cylinder r=0.14, h=0.15)
-	_add_cylinder_verts(p_verts, p_normals, p_indices, 0.0, 0.12, 0.0, 0.14, 0.15, segs, 0.10)
-	# Tier 3: fluted column shaft — 12-sided with alternating insets for flutes
-	var shaft_base := 0.27
-	var shaft_r := 0.065
-	var flute_depth := 0.012  # concave inset on alternating faces
-	for i in segs:
-		var a0 := TAU * float(i) / float(segs)
-		var a1 := TAU * float(i + 1) / float(segs)
-		var c0 := cos(a0); var s0 := sin(a0)
-		var c1 := cos(a1); var s1 := sin(a1)
-		# Alternate faces get slightly smaller radius (flute)
-		var r0 := shaft_r - (flute_depth if i % 2 == 0 else 0.0)
-		var r1 := shaft_r - (flute_depth if (i + 1) % segs % 2 == 0 else 0.0)
-		var base := p_verts.size()
-		p_verts.append(Vector3(c0 * r0, shaft_base, s0 * r0))
-		p_verts.append(Vector3(c1 * r1, shaft_base, s1 * r1))
-		p_verts.append(Vector3(c1 * r1, post_h, s1 * r1))
-		p_verts.append(Vector3(c0 * r0, post_h, s0 * r0))
-		var n0 := Vector3(c0, 0.0, s0); var n1 := Vector3(c1, 0.0, s1)
-		p_normals.append(n0); p_normals.append(n1); p_normals.append(n1); p_normals.append(n0)
-		p_indices.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
-	# --- S-curve arm (Bishop's crook) ---
-	var arm_segs := 6
-	var arm_r := 0.025
-	var arm_len := 0.30
-	var arm_y := post_h - 0.1
-	for i in arm_segs:
-		var a0 := TAU * float(i) / float(arm_segs)
-		var a1 := TAU * float(i + 1) / float(arm_segs)
-		var base := p_verts.size()
-		p_verts.append(Vector3(0.0, arm_y + cos(a0) * arm_r, sin(a0) * arm_r))
-		p_verts.append(Vector3(arm_len, arm_y + cos(a0) * arm_r, sin(a0) * arm_r))
-		p_verts.append(Vector3(arm_len, arm_y + cos(a1) * arm_r, sin(a1) * arm_r))
-		p_verts.append(Vector3(0.0, arm_y + cos(a1) * arm_r, sin(a1) * arm_r))
-		var n := Vector3(0.0, cos(a0), sin(a0)).normalized()
-		for _j in 4: p_normals.append(n)
-		p_indices.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
-	# --- Number plate (tiny rectangle at eye height ~1.6m) ---
-	_add_box_verts(p_verts, p_normals, p_indices, 0.07, 1.6, 0.0, 0.04, 0.03, 0.005)
-
-	# --- Kent Bloomer luminaire (inverted bell / urn shape with ribs) ---
-	var l_verts   := PackedVector3Array()
-	var l_normals := PackedVector3Array()
-	var l_indices := PackedInt32Array()
-	var lx := arm_len
-	var l_base := arm_y - 0.18
-	var l_segs := 8  # 8 ribs
-	# Two-tier urn: wider bottom tapering to narrower top
-	_add_cylinder_verts(l_verts, l_normals, l_indices, lx, l_base, 0.0, 0.10, 0.18, l_segs, 0.08)
-	_add_cylinder_verts(l_verts, l_normals, l_indices, lx, l_base + 0.18, 0.0, 0.08, 0.12, l_segs, 0.06)
-	# Acorn finial: small sphere(ish) + cone cap on top
-	_add_cylinder_verts(l_verts, l_normals, l_indices, lx, l_base + 0.30, 0.0, 0.035, 0.05, 6, 0.025)
-	_add_cylinder_verts(l_verts, l_normals, l_indices, lx, l_base + 0.35, 0.0, 0.025, 0.04, 6, 0.005)
-
-	var mesh := ArrayMesh.new()
-	var pa: Array = []; pa.resize(Mesh.ARRAY_MAX)
-	pa[Mesh.ARRAY_VERTEX] = p_verts; pa[Mesh.ARRAY_NORMAL] = p_normals; pa[Mesh.ARRAY_INDEX] = p_indices
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, pa)
-	var la: Array = []; la.resize(Mesh.ARRAY_MAX)
-	la[Mesh.ARRAY_VERTEX] = l_verts; la[Mesh.ARRAY_NORMAL] = l_normals; la[Mesh.ARRAY_INDEX] = l_indices
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, la)
-	return mesh
-
-
-func _make_lamppost_mesh_b() -> ArrayMesh:
-	## Variant B: Double luminaire — taller fluted post, two arms, two Kent Bloomer urns
-	## Surface 0 = post+arms, Surface 1 = luminaires
-	var p_verts   := PackedVector3Array()
-	var p_normals := PackedVector3Array()
-	var p_indices := PackedInt32Array()
-	var l_verts   := PackedVector3Array()
-	var l_normals := PackedVector3Array()
-	var l_indices := PackedInt32Array()
-	var segs := 12
-	var post_h := 4.0
-	# 3-tier base
-	_add_box_verts(p_verts, p_normals, p_indices, 0.0, 0.06, 0.0, 0.20, 0.06, 0.20)
-	_add_cylinder_verts(p_verts, p_normals, p_indices, 0.0, 0.12, 0.0, 0.15, 0.15, segs, 0.11)
-	# Fluted shaft
-	var shaft_base := 0.27
-	var shaft_r := 0.07; var flute_depth := 0.012
-	for i in segs:
-		var a0 := TAU * float(i) / float(segs)
-		var a1 := TAU * float(i + 1) / float(segs)
-		var c0 := cos(a0); var s0 := sin(a0)
-		var c1 := cos(a1); var s1 := sin(a1)
-		var r0 := shaft_r - (flute_depth if i % 2 == 0 else 0.0)
-		var r1 := shaft_r - (flute_depth if (i + 1) % segs % 2 == 0 else 0.0)
-		var base := p_verts.size()
-		p_verts.append(Vector3(c0 * r0, shaft_base, s0 * r0))
-		p_verts.append(Vector3(c1 * r1, shaft_base, s1 * r1))
-		p_verts.append(Vector3(c1 * r1, post_h, s1 * r1))
-		p_verts.append(Vector3(c0 * r0, post_h, s0 * r0))
-		var n0 := Vector3(c0, 0.0, s0); var n1 := Vector3(c1, 0.0, s1)
-		p_normals.append(n0); p_normals.append(n1); p_normals.append(n1); p_normals.append(n0)
-		p_indices.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
-	# Two arms at y=3.8, opposite X directions
-	var arm_y := 3.85; var arm_r := 0.025; var arm_len := 0.30
-	for arm_dir in [-1.0, 1.0]:
-		for i in 6:
-			var a0 := TAU * float(i) / 6.0
-			var a1 := TAU * float(i + 1) / 6.0
-			var base := p_verts.size()
-			p_verts.append(Vector3(0.0, arm_y + cos(a0) * arm_r, sin(a0) * arm_r))
-			p_verts.append(Vector3(arm_len * arm_dir, arm_y + cos(a0) * arm_r, sin(a0) * arm_r))
-			p_verts.append(Vector3(arm_len * arm_dir, arm_y + cos(a1) * arm_r, sin(a1) * arm_r))
-			p_verts.append(Vector3(0.0, arm_y + cos(a1) * arm_r, sin(a1) * arm_r))
-			var n := Vector3(0.0, cos(a0), sin(a0)).normalized()
-			for _j in 4: p_normals.append(n)
-			p_indices.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
-		# Kent Bloomer luminaire at arm end
-		var lx: float = arm_len * arm_dir
-		var l_base := arm_y - 0.18
-		_add_cylinder_verts(l_verts, l_normals, l_indices, lx, l_base, 0.0, 0.09, 0.16, 8, 0.07)
-		_add_cylinder_verts(l_verts, l_normals, l_indices, lx, l_base + 0.16, 0.0, 0.07, 0.10, 8, 0.05)
-		# Acorn finial
-		_add_cylinder_verts(l_verts, l_normals, l_indices, lx, l_base + 0.26, 0.0, 0.03, 0.04, 6, 0.02)
-		_add_cylinder_verts(l_verts, l_normals, l_indices, lx, l_base + 0.30, 0.0, 0.02, 0.035, 6, 0.005)
-	var mesh := ArrayMesh.new()
-	var pa: Array = []; pa.resize(Mesh.ARRAY_MAX)
-	pa[Mesh.ARRAY_VERTEX] = p_verts; pa[Mesh.ARRAY_NORMAL] = p_normals; pa[Mesh.ARRAY_INDEX] = p_indices
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, pa)
-	var la: Array = []; la.resize(Mesh.ARRAY_MAX)
-	la[Mesh.ARRAY_VERTEX] = l_verts; la[Mesh.ARRAY_NORMAL] = l_normals; la[Mesh.ARRAY_INDEX] = l_indices
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, la)
-	return mesh
-
-
-func _make_lamppost_mesh_c() -> ArrayMesh:
-	## Variant C: Globe top — shorter fluted post, globe luminaire on top
-	## Surface 0 = post, Surface 1 = globe luminaire
-	var p_verts   := PackedVector3Array()
-	var p_normals := PackedVector3Array()
-	var p_indices := PackedInt32Array()
-	var segs := 12
-	var post_h := 3.2
-	# 3-tier base (slightly smaller)
-	_add_box_verts(p_verts, p_normals, p_indices, 0.0, 0.05, 0.0, 0.16, 0.05, 0.16)
-	_add_cylinder_verts(p_verts, p_normals, p_indices, 0.0, 0.10, 0.0, 0.12, 0.12, segs, 0.09)
-	# Fluted shaft
-	var shaft_base := 0.22
-	var shaft_r := 0.055; var flute_depth := 0.010
-	for i in segs:
-		var a0 := TAU * float(i) / float(segs)
-		var a1 := TAU * float(i + 1) / float(segs)
-		var c0 := cos(a0); var s0 := sin(a0)
-		var c1 := cos(a1); var s1 := sin(a1)
-		var r0 := shaft_r - (flute_depth if i % 2 == 0 else 0.0)
-		var r1 := shaft_r - (flute_depth if (i + 1) % segs % 2 == 0 else 0.0)
-		var base := p_verts.size()
-		p_verts.append(Vector3(c0 * r0, shaft_base, s0 * r0))
-		p_verts.append(Vector3(c1 * r1, shaft_base, s1 * r1))
-		p_verts.append(Vector3(c1 * r1, post_h, s1 * r1))
-		p_verts.append(Vector3(c0 * r0, post_h, s0 * r0))
-		var n0 := Vector3(c0, 0.0, s0); var n1 := Vector3(c1, 0.0, s1)
-		p_normals.append(n0); p_normals.append(n1); p_normals.append(n1); p_normals.append(n0)
-		p_indices.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
-	# Globe luminaire directly on top
-	var l_verts   := PackedVector3Array()
-	var l_normals := PackedVector3Array()
-	var l_indices := PackedInt32Array()
-	var l_base := post_h - 0.02
-	# Wider urn/globe shape
-	_add_cylinder_verts(l_verts, l_normals, l_indices, 0.0, l_base, 0.0, 0.10, 0.12, 8, 0.12)
-	_add_cylinder_verts(l_verts, l_normals, l_indices, 0.0, l_base + 0.12, 0.0, 0.12, 0.10, 8, 0.08)
-	_add_cylinder_verts(l_verts, l_normals, l_indices, 0.0, l_base + 0.22, 0.0, 0.08, 0.06, 8, 0.03)
-	# Acorn finial
-	_add_cylinder_verts(l_verts, l_normals, l_indices, 0.0, l_base + 0.28, 0.0, 0.025, 0.04, 6, 0.005)
-	var mesh := ArrayMesh.new()
-	var pa: Array = []; pa.resize(Mesh.ARRAY_MAX)
-	pa[Mesh.ARRAY_VERTEX] = p_verts; pa[Mesh.ARRAY_NORMAL] = p_normals; pa[Mesh.ARRAY_INDEX] = p_indices
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, pa)
-	var la: Array = []; la.resize(Mesh.ARRAY_MAX)
-	la[Mesh.ARRAY_VERTEX] = l_verts; la[Mesh.ARRAY_NORMAL] = l_normals; la[Mesh.ARRAY_INDEX] = l_indices
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, la)
-	return mesh
-
-
-func _make_worlds_fair_bench(half_w: float) -> ArrayMesh:
-	## 1938 World's Fair bench: curved wood slats, circular cast-iron armrests,
-	## Art Deco S-curve legs. 2-surface mesh: S0=iron (green), S1=wood (brown).
-	var iv := PackedVector3Array()  # iron verts
-	var in_ := PackedVector3Array()  # iron normals
-	var ii := PackedInt32Array()     # iron indices
-	var wv := PackedVector3Array()   # wood verts
-	var wn := PackedVector3Array()   # wood normals
-	var wi := PackedInt32Array()     # wood indices
-	var seat_y := 0.44
-	var seat_depth := 0.44  # Z extent
-	var back_tilt := 0.10  # backrest leans back this much (Z)
-
-	# --- Art Deco S-curve legs (2 per end) — heavier iron profile ---
-	for xsign in [-1.0, 1.0]:
-		var lx: float = half_w * 0.85 * float(xsign)
-		# Front leg
-		_add_box_verts(iv, in_, ii, lx, 0.22, 0.16, 0.025, 0.22, 0.018)
-		# Back leg (slightly angled back)
-		_add_box_verts(iv, in_, ii, lx, 0.22, -0.18 - back_tilt * 0.3, 0.025, 0.22, 0.018)
-		# Cross brace between front/back legs
-		_add_box_verts(iv, in_, ii, lx, 0.12, -0.01, 0.018, 0.018, 0.16)
-
-	# --- Circular cast-iron armrests (the signature detail) ---
-	# 6-segment torus approximation, r=0.08m, tube_r=0.012m
-	var arm_r := 0.08
-	var tube_r := 0.012
-	for xsign in [-1.0, 1.0]:
-		var ax: float = (half_w + 0.02) * float(xsign)
-		var ay: float = seat_y + 0.18  # center of circle above seat
-		var az: float = -0.04
-		var torus_segs: int = 8
-		for i in torus_segs:
-			var a0 := TAU * float(i) / float(torus_segs)
-			var a1 := TAU * float(i + 1) / float(torus_segs)
-			# Points on the circle in YZ plane
-			var cy0 := ay + sin(a0) * arm_r; var cz0 := az + cos(a0) * arm_r
-			var cy1 := ay + sin(a1) * arm_r; var cz1 := az + cos(a1) * arm_r
-			# Approximate tube as thin box segments
-			var base := iv.size()
-			iv.append(Vector3(ax - tube_r, cy0, cz0))
-			iv.append(Vector3(ax + tube_r, cy0, cz0))
-			iv.append(Vector3(ax + tube_r, cy1, cz1))
-			iv.append(Vector3(ax - tube_r, cy1, cz1))
-			var n := Vector3(xsign, 0.0, 0.0)
-			for _j in 4: in_.append(n)
-			ii.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
-
-	# --- 5 curved wood seat slats ---
-	var slat_h := 0.018  # slat thickness
-	var slat_gap := seat_depth / 5.0
-	for si in 5:
-		var sz := -seat_depth * 0.5 + slat_gap * (float(si) + 0.5)
-		# Slight arc: center higher by 0.01m
-		var arc_y := seat_y + 0.01 * (1.0 - pow(sz / (seat_depth * 0.5), 2.0))
-		var base := wv.size()
-		wv.append(Vector3(-half_w, arc_y, sz - slat_gap * 0.4))
-		wv.append(Vector3( half_w, arc_y, sz - slat_gap * 0.4))
-		wv.append(Vector3( half_w, arc_y, sz + slat_gap * 0.4))
-		wv.append(Vector3(-half_w, arc_y, sz + slat_gap * 0.4))
-		for _j in 4: wn.append(Vector3.UP)
-		wi.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
-		# Bottom face
-		base = wv.size()
-		wv.append(Vector3(-half_w, arc_y - slat_h, sz + slat_gap * 0.4))
-		wv.append(Vector3( half_w, arc_y - slat_h, sz + slat_gap * 0.4))
-		wv.append(Vector3( half_w, arc_y - slat_h, sz - slat_gap * 0.4))
-		wv.append(Vector3(-half_w, arc_y - slat_h, sz - slat_gap * 0.4))
-		for _j in 4: wn.append(Vector3.DOWN)
-		wi.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
-
-	# --- 2 curved wood backrest slats ---
-	for bi in 2:
-		var by := seat_y + 0.14 + float(bi) * 0.16
-		var bz := -seat_depth * 0.5 - 0.02 - back_tilt * float(bi) * 0.5
-		var base := wv.size()
-		wv.append(Vector3(-half_w, by, bz - 0.02))
-		wv.append(Vector3( half_w, by, bz - 0.02))
-		wv.append(Vector3( half_w, by + 0.06, bz))
-		wv.append(Vector3(-half_w, by + 0.06, bz))
-		var n := Vector3(0.0, 0.15, -1.0).normalized()
-		for _j in 4: wn.append(n)
-		wi.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
-
-	# --- Adopt-A-Bench plaque (tiny brass rectangle on backrest top rail) ---
-	var plaque_y := seat_y + 0.42
-	var plaque_z := -seat_depth * 0.5 - 0.03 - back_tilt
-	_add_box_verts(iv, in_, ii, 0.0, plaque_y, plaque_z, 0.06, 0.02, 0.003)
-
-	# Build 2-surface mesh: S0=iron, S1=wood
-	var mesh := ArrayMesh.new()
-	var ia: Array = []; ia.resize(Mesh.ARRAY_MAX)
-	ia[Mesh.ARRAY_VERTEX] = iv; ia[Mesh.ARRAY_NORMAL] = in_; ia[Mesh.ARRAY_INDEX] = ii
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, ia)
-	var wa: Array = []; wa.resize(Mesh.ARRAY_MAX)
-	wa[Mesh.ARRAY_VERTEX] = wv; wa[Mesh.ARRAY_NORMAL] = wn; wa[Mesh.ARRAY_INDEX] = wi
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, wa)
-	return mesh
-
-func _make_bench_mesh_a() -> ArrayMesh:
-	## Variant A: World's Fair 6ft (1.8m) — the standard Central Park bench
-	return _make_worlds_fair_bench(0.90)
-
-func _make_bench_mesh_b() -> ArrayMesh:
-	## Variant B: World's Fair 8ft (2.4m) — wider version for major paths
-	return _make_worlds_fair_bench(1.20)
-
-func _make_bench_mesh_c() -> ArrayMesh:
-	## Variant C: World's Fair 4ft (1.2m) — compact version for smaller spaces
-	return _make_worlds_fair_bench(0.60)
 
 
 func _build_furniture(bench_data: Array, lamppost_data: Array, paths: Array) -> void:
@@ -7443,34 +7143,21 @@ func _build_furniture(bench_data: Array, lamppost_data: Array, paths: Array) -> 
 		var furn_path := ProjectSettings.globalize_path("res://models/furniture/park_furniture/glb/parkfurnitures.glb")
 		_furn_glb_meshes = _load_glb_meshes(furn_path)
 	var furn_meshes: Dictionary = _furn_glb_meshes
-	var use_glb := not furn_meshes.is_empty()
-	if use_glb:
-		print("Furniture: loaded %d meshes from GLB" % furn_meshes.size())
+	if furn_meshes.is_empty():
+		print("WARNING: furniture GLB not loaded, skipping furniture")
+		return
+	print("Furniture: loaded %d meshes from GLB" % furn_meshes.size())
 
 	# --- Lamp mesh + material ---
-	var lamp_mesh: Mesh
-	var lamp_mat_override: Material = null
-	if use_glb and furn_meshes.has("ParkFurn_Lamp_C"):
-		lamp_mesh = furn_meshes["ParkFurn_Lamp_C"]
-		var lamp_post_mat := StandardMaterial3D.new()
-		lamp_post_mat.albedo_color = Color(0.08, 0.14, 0.06)
-		lamp_post_mat.roughness    = 0.50
-		lamp_post_mat.metallic     = 0.15
-		lamp_mat_override = lamp_post_mat
-	else:
-		lamp_mesh = _make_lamppost_mesh_a()
-		var lamp_post_mat := StandardMaterial3D.new()
-		lamp_post_mat.albedo_color = Color(0.08, 0.14, 0.06)
-		lamp_post_mat.roughness    = 0.50
-		lamp_post_mat.metallic     = 0.15
-		var lamp_lantern_mat := StandardMaterial3D.new()
-		lamp_lantern_mat.albedo_color = Color(0.95, 0.92, 0.82)
-		lamp_lantern_mat.roughness    = 0.25
-		lamp_lantern_mat.emission_enabled = true
-		lamp_lantern_mat.emission         = Color(1.0, 0.45, 0.08)
-		lamp_lantern_mat.emission_energy_multiplier = 2.0
-		lamp_mesh.surface_set_material(0, lamp_post_mat)
-		lamp_mesh.surface_set_material(1, lamp_lantern_mat)
+	var lamp_mesh: Mesh = furn_meshes.get("ParkFurn_Lamp_C", null)
+	if lamp_mesh == null:
+		print("WARNING: ParkFurn_Lamp_C not found in GLB")
+		return
+	var lamp_post_mat := StandardMaterial3D.new()
+	lamp_post_mat.albedo_color = Color(0.08, 0.14, 0.06)
+	lamp_post_mat.roughness    = 0.50
+	lamp_post_mat.metallic     = 0.15
+	var lamp_mat_override: Material = lamp_post_mat
 	# Day/night emission material (stored for main.gd to modulate)
 	var lamp_lantern_mat := StandardMaterial3D.new()
 	lamp_lantern_mat.albedo_color = Color(0.95, 0.92, 0.82)
@@ -7480,26 +7167,17 @@ func _build_furniture(bench_data: Array, lamppost_data: Array, paths: Array) -> 
 	lamp_lantern_mat.emission_energy_multiplier = 2.0
 	lamppost_material = lamp_lantern_mat
 
-	# --- Bench mesh + material ---
-	var bench_mesh: Mesh
-	var bench_mat_override: Material = null
-	if use_glb and furn_meshes.has("ParkFurn_Bench_A"):
-		bench_mesh = furn_meshes["ParkFurn_Bench_A"]
-		var bench_wood_mat := StandardMaterial3D.new()
-		bench_wood_mat.albedo_color = Color(0.40, 0.26, 0.14)
-		bench_wood_mat.roughness    = 0.72
-		bench_mat_override = bench_wood_mat
-	else:
-		bench_mesh = _make_bench_mesh_a()
-		var bench_iron_mat := StandardMaterial3D.new()
-		bench_iron_mat.albedo_color = Color(0.12, 0.22, 0.10)
-		bench_iron_mat.roughness    = 0.55
-		bench_iron_mat.metallic     = 0.15
-		var bench_wood_mat := StandardMaterial3D.new()
-		bench_wood_mat.albedo_color = Color(0.40, 0.26, 0.14)
-		bench_wood_mat.roughness    = 0.72
-		bench_mesh.surface_set_material(0, bench_iron_mat)
-		bench_mesh.surface_set_material(1, bench_wood_mat)
+	# --- Bench meshes (multiple variants for variety) ---
+	var bench_variants: Array[Mesh] = []
+	for bname in ["ParkFurn_Bench_A", "ParkFurn_Bench_B", "ParkFurn_Bench_C"]:
+		if furn_meshes.has(bname):
+			bench_variants.append(furn_meshes[bname] as Mesh)
+	if bench_variants.is_empty():
+		print("WARNING: no bench meshes found in GLB")
+		return
+	var bench_mat := StandardMaterial3D.new()
+	bench_mat.albedo_color = Color(0.40, 0.26, 0.14)
+	bench_mat.roughness    = 0.72
 
 	# --- Place lampposts from OSM data, with procedural fallback ---
 	var lamp_xf: Array = []
@@ -7617,8 +7295,17 @@ func _build_furniture(bench_data: Array, lamppost_data: Array, paths: Array) -> 
 		"OSM" if not bench_data.is_empty() else "procedural"])
 	if not lamp_xf.is_empty():
 		_spawn_multimesh(lamp_mesh, lamp_mat_override, lamp_xf, "Lampposts")
+	# Distribute benches across variants for visual variety
 	if not bench_xf.is_empty():
-		_spawn_multimesh(bench_mesh, bench_mat_override, bench_xf, "Benches")
+		var n_variants := bench_variants.size()
+		var variant_xf: Array = []
+		for _vi in n_variants:
+			variant_xf.append([])
+		for i in bench_xf.size():
+			variant_xf[i % n_variants].append(bench_xf[i])
+		for vi in n_variants:
+			if not variant_xf[vi].is_empty():
+				_spawn_multimesh(bench_variants[vi], bench_mat, variant_xf[vi], "Benches_%d" % vi)
 
 
 # ---------------------------------------------------------------------------
@@ -7651,40 +7338,15 @@ func _make_dirt_circle_mesh() -> ArrayMesh:
 
 func _build_trash_cans(trash_data: Array, paths: Array) -> void:
 	## Trash receptacles from OSM data, with procedural fallback.
-	# Mesh
-	var mesh: Mesh
-	var mat: Material
-	if _furn_glb_meshes.has("ParkFurn_TrashCan_A"):
-		mesh = _furn_glb_meshes["ParkFurn_TrashCan_A"]
-		var trash_mat := StandardMaterial3D.new()
-		trash_mat.albedo_color = Color(0.08, 0.14, 0.06)
-		trash_mat.roughness = 0.60
-		trash_mat.metallic = 0.10
-		mat = trash_mat
-	else:
-		var v := PackedVector3Array(); var n := PackedVector3Array(); var idx := PackedInt32Array()
-		var segs := 8
-		_add_cylinder_verts(v, n, idx, 0.0, 0.0, 0.0, 0.35, 0.85, segs)
-		_add_cylinder_verts(v, n, idx, 0.0, 0.85, 0.0, 0.36, 0.10, segs, 0.20)
-		var base := v.size()
-		for i in segs:
-			var a0 := TAU * float(i) / float(segs)
-			var a1 := TAU * float(i + 1) / float(segs)
-			v.append(Vector3(0.0, 0.95, 0.0))
-			v.append(Vector3(cos(a0) * 0.20, 0.95, sin(a0) * 0.20))
-			v.append(Vector3(cos(a1) * 0.20, 0.95, sin(a1) * 0.20))
-			for _j in 3: n.append(Vector3.UP)
-			var b2 := base + i * 3
-			idx.append_array(PackedInt32Array([b2, b2+1, b2+2]))
-		var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
-		arrays[Mesh.ARRAY_VERTEX] = v; arrays[Mesh.ARRAY_NORMAL] = n; arrays[Mesh.ARRAY_INDEX] = idx
-		mesh = ArrayMesh.new()
-		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-		var trash_mat := StandardMaterial3D.new()
-		trash_mat.albedo_color = Color(0.08, 0.14, 0.06)
-		trash_mat.roughness = 0.60
-		trash_mat.metallic = 0.10
-		mat = trash_mat
+	if not _furn_glb_meshes.has("ParkFurn_TrashCan_A"):
+		print("WARNING: ParkFurn_TrashCan_A not found, skipping trash cans")
+		return
+	var mesh: Mesh = _furn_glb_meshes["ParkFurn_TrashCan_A"]
+	var trash_mat := StandardMaterial3D.new()
+	trash_mat.albedo_color = Color(0.08, 0.14, 0.06)
+	trash_mat.roughness = 0.60
+	trash_mat.metallic = 0.10
+	var mat: Material = trash_mat
 
 	# Place from OSM data or procedural fallback
 	var xforms: Array = []
