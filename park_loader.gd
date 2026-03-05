@@ -473,6 +473,13 @@ var _park_aabb_max_x: float = 1217.0
 var _park_aabb_min_z: float = -2034.9
 var _park_aabb_max_z: float = 2159.4
 
+static func _tree_pos(entry) -> Array:
+	## Extract [x, h, z] from tree entry (dict or legacy array).
+	if typeof(entry) == TYPE_DICTIONARY:
+		return entry["pos"]
+	return entry
+
+
 func _in_boundary(px: float, pz: float) -> bool:
 	## Point-in-rectangle test using the park's tilted rectangular boundary.
 	# Fast AABB rejection first (avoids polygon test for ~60% of calls)
@@ -4877,23 +4884,22 @@ func _build_trees(trees: Array) -> void:
 		print("WARNING: no tree GLB models loaded, falling back skipped")
 		return
 
-	# Archetype mapping: 0=oak, 1=maple, 2=elm, 3=shrub, 4=conifer
-	# Oak and elm use different GLB species for visual variety
-	var arch_to_species := [
-		"deciduous",  # 0 oak -> generic deciduous
-		"maple",      # 1 maple
-		"birch",      # 2 elm -> birch (different silhouette)
-		"maple",      # 3 shrub -> maple at small scale
-		"pine",       # 4 conifer
-	]
-	# Desired height ranges per archetype (metres)
-	var height_ranges := [
-		[15.0, 24.0],  # 0 oak
-		[12.0, 18.0],  # 1 maple
-		[20.0, 28.0],  # 2 elm
-		[1.5,   3.5],  # 3 shrub
-		[18.0, 32.0],  # 4 conifer
-	]
+	# Map data species to GLB model species
+	var glb_species_map := {
+		"oak":       "deciduous",
+		"maple":     "maple",
+		"elm":       "birch",    # birch silhouette works for elm
+		"conifer":   "pine",
+		"deciduous": "deciduous",
+	}
+	# Desired height ranges per species archetype (metres)
+	var height_ranges := {
+		"oak":       [15.0, 24.0],
+		"maple":     [12.0, 18.0],
+		"elm":       [20.0, 28.0],
+		"conifer":   [18.0, 32.0],
+		"deciduous": [12.0, 22.0],
+	}
 
 	# Collect transforms per species-variant for MultiMesh batching
 	# Key: "species_variantIdx" -> Array[Transform3D]
@@ -4901,25 +4907,28 @@ func _build_trees(trees: Array) -> void:
 	var all_trunk_xf: Array = []  # for collision
 
 	for i in trees.size():
-		var pt: Array = trees[i]
+		var tree_entry = trees[i]
+		var pt: Array
+		var tree_species := "deciduous"
+		var dbh := 12
+		# Support both new dict format and legacy [x, h, z] arrays
+		if typeof(tree_entry) == TYPE_DICTIONARY:
+			pt = tree_entry["pos"]
+			tree_species = str(tree_entry.get("species", "deciduous"))
+			dbh = int(tree_entry.get("dbh", 12))
+		else:
+			pt = tree_entry
 		var tx := float(pt[0]); var tz := float(pt[2])
 		if not _in_boundary(tx, tz):
 			continue
 		var ty := _terrain_y(tx, tz)
 		rng.seed = i * 1234567891 + 987654321
 
-		# Assign archetype (same distribution as before)
-		var rv := rng.randf()
-		var arch := 0
-		if   rv < 0.35: arch = 0
-		elif rv < 0.65: arch = 1
-		elif rv < 0.85: arch = 2
-		elif rv < 0.97: arch = 3
-		else:           arch = 4
-
-		var species: String = arch_to_species[arch]
+		var species: String = glb_species_map.get(tree_species, "deciduous")
 		if not species_meshes.has(species):
-			continue
+			species = "deciduous"
+			if not species_meshes.has(species):
+				continue
 		var variants: Array = species_meshes[species]
 		var n_variants := variants.size()
 		if n_variants == 0:
@@ -4928,9 +4937,11 @@ func _build_trees(trees: Array) -> void:
 		# Pick variant based on tree index
 		var variant_idx := i % n_variants
 
-		# Desired height
-		var h_range: Array = height_ranges[arch]
-		var desired_h := rng.randf_range(float(h_range[0]), float(h_range[1]))
+		# Desired height: scale from DBH (diameter at breast height, inches)
+		# DBH→height approximation: h ≈ 0.5 * DBH + 5, clamped to species range
+		var h_range: Array = height_ranges.get(tree_species, [12.0, 22.0])
+		var dbh_h := float(dbh) * 0.5 + 5.0
+		var desired_h := clampf(dbh_h, float(h_range[0]) * 0.5, float(h_range[1]))
 
 		# Scale factor: desired_height / mesh_height_in_raw_units
 		var mesh_h: float = species_heights[species]
@@ -5609,7 +5620,7 @@ func _build_undergrowth(trees: Array, paths: Array) -> void:
 		rng.seed = i * 314159 + 271828
 		if rng.randf() > 0.8:
 			continue
-		var pt: Array = trees[i]
+		var pt: Array = _tree_pos(trees[i])
 		var tx := float(pt[0]); var tz := float(pt[2])
 		if not _in_boundary(tx, tz):
 			continue
@@ -5747,7 +5758,7 @@ func _build_rocks(trees: Array, water: Array) -> void:
 	# Rocks near ~every 5th tree
 	for i in range(0, trees.size(), 5):
 		rng.seed = i * 135791 + 246810
-		var pt: Array = trees[i]
+		var pt: Array = _tree_pos(trees[i])
 		var tx := float(pt[0]); var tz := float(pt[2])
 		if not _in_boundary(tx, tz):
 			continue
@@ -7557,7 +7568,7 @@ func _build_tree_dirt(trees: Array) -> void:
 
 	var xforms: Array = []
 	for i in trees.size():
-		var pt: Array = trees[i]
+		var pt: Array = _tree_pos(trees[i])
 		var tx := float(pt[0]); var tz := float(pt[2])
 		if not _in_boundary(tx, tz):
 			continue
@@ -7814,7 +7825,8 @@ func _build_wildflowers(trees: Array, water: Array) -> void:
 
 	# Build a quick tree-position lookup for proximity bias
 	var tree_positions: PackedVector2Array = PackedVector2Array()
-	for pt in trees:
+	for pt_raw in trees:
+		var pt: Array = _tree_pos(pt_raw)
 		tree_positions.append(Vector2(float(pt[0]), float(pt[2])))
 
 	# Build a spatial hash of tree positions for fast proximity lookup
@@ -7986,7 +7998,8 @@ func _build_meadow_grass(trees: Array) -> void:
 	# Spatial hash for tree proximity
 	const MG_TREE_CELL := 30.0
 	var mg_tree_hash: Dictionary = {}
-	for pt in trees:
+	for pt_raw in trees:
+		var pt: Array = _tree_pos(pt_raw)
 		var tp := Vector2(float(pt[0]), float(pt[2]))
 		var tk := Vector2i(int(floor(tp.x / MG_TREE_CELL)), int(floor(tp.y / MG_TREE_CELL)))
 		if not mg_tree_hash.has(tk):
@@ -8158,7 +8171,7 @@ func _build_blossoms(trees: Array) -> void:
 	var blossom_xf: Array = [[], [], [], []]
 
 	for i in trees.size():
-		var pt: Array = trees[i]
+		var pt: Array = _tree_pos(trees[i])
 		var tx := float(pt[0]); var tz := float(pt[2])
 		if not _in_boundary(tx, tz):
 			continue
@@ -8330,7 +8343,7 @@ func _build_ground_cover(trees: Array, water: Array, buildings: Array) -> void:
 		rng.seed = i * 667788 + 112233
 		if rng.randf() > 0.65:
 			continue
-		var pt: Array = trees[i]
+		var pt: Array = _tree_pos(trees[i])
 		var tx := float(pt[0]); var tz := float(pt[2])
 		var n_ferns := rng.randi_range(2, 5)
 		for _fi in n_ferns:
@@ -8389,7 +8402,7 @@ func _build_leaf_litter(trees: Array) -> void:
 
 	for i in trees.size():
 		rng.seed = i * 445566 + 778899
-		var pt: Array = trees[i]
+		var pt: Array = _tree_pos(trees[i])
 		var tx := float(pt[0]); var tz := float(pt[2])
 		if not _in_boundary(tx, tz):
 			continue
@@ -8848,11 +8861,12 @@ func _build_squirrels(trees: Array) -> void:
 	var sq_mesh := ArrayMesh.new()
 	sq_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, sa)
 	var xforms: Array = []
-	for tree in trees:
+	for tree_raw in trees:
 		if rng.randf() > 0.05:
 			continue
+		var tree: Array = _tree_pos(tree_raw)
 		var tx := float(tree[0])
-		var tz := float(tree[1])
+		var tz := float(tree[2])
 		if not _in_boundary(tx, tz):
 			continue
 		var dist := rng.randf_range(0.5, 2.0)

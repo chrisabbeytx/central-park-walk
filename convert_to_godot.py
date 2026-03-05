@@ -44,9 +44,11 @@ HIGHWAY_WIDTH = {
 
 TERRAIN_Z   = 15           # zoom level matching download_terrain.py
 TERRAIN_DIR = "terrain_tiles"
+LIDAR_DEM   = "lidar_data/central_park_dem.tif"  # LiDAR DEM (preferred)
 GRID_W      = 2048         # heightmap output resolution (~2.4 m/cell)
 GRID_H      = 2048
 WORLD_SIZE  = 5000.0       # metres – must match main.gd ground plane size
+FT_TO_M     = 0.3048006096  # US Survey Foot → metres
 
 
 def project(lat: float, lon: float) -> tuple[float, float]:
@@ -65,133 +67,74 @@ def latlon_to_tile(lat: float, lon: float, z: int) -> tuple[int, int]:
 
 
 # ---------------------------------------------------------------------------
-# Terrain heightmap – built from Terrarium PNG tiles
+# Terrain heightmap – LiDAR DEM (preferred) or Terrarium PNG tiles (fallback)
 # ---------------------------------------------------------------------------
-def build_height_grid() -> tuple[list, float, float]:
+def build_height_grid_lidar() -> tuple[list, float, float] | tuple[None, float, float]:
     """
-    Stitch terrain tiles, sample on a GRID_W×GRID_H world grid, and return:
+    Read the clipped LiDAR DEM (WGS84, 2048×2048) and return:
         (flat_grid, min_elev, origin_height)
-    All three are in raw metres above sea level; callers subtract min_elev.
-    Returns (None, 0, 0) if tiles are missing.
+    Elevation values are in metres (converted from US Survey Feet).
+    Returns (None, 0, 0) if file missing or GDAL unavailable.
     """
+    if not os.path.exists(LIDAR_DEM):
+        return None, 0.0, 0.0
     try:
-        from PIL import Image
+        from osgeo import gdal
+        import numpy as np
     except ImportError:
-        print("  PIL not found – skipping terrain (pip install pillow)", file=sys.stderr)
+        print("  GDAL/numpy not available – skipping LiDAR DEM", file=sys.stderr)
         return None, 0.0, 0.0
 
-    bbox = dict(south=40.7644, north=40.7994, west=-73.9816, east=-73.9492)
-    x0, y1 = latlon_to_tile(bbox["south"], bbox["west"], TERRAIN_Z)
-    x1, y0 = latlon_to_tile(bbox["north"], bbox["east"], TERRAIN_Z)
-
-    # Check all tiles are present
-    missing = [f"{TERRAIN_DIR}/{TERRAIN_Z}_{x}_{y}.png"
-               for y in range(y0, y1 + 1) for x in range(x0, x1 + 1)
-               if not os.path.exists(f"{TERRAIN_DIR}/{TERRAIN_Z}_{x}_{y}.png")]
-    if missing:
-        print(f"  {len(missing)} tile(s) missing – run download_terrain.py", file=sys.stderr)
+    ds = gdal.Open(LIDAR_DEM)
+    if ds is None:
         return None, 0.0, 0.0
+    band = ds.GetRasterBand(1)
+    nodata = band.GetNoDataValue()
+    data = band.ReadAsArray()
+    rows, cols = data.shape
+    print(f"  LiDAR DEM: {cols}×{rows} pixels, nodata={nodata}")
 
-    TILE_PX   = 256
-    raster_w  = (x1 - x0 + 1) * TILE_PX
-    raster_h  = (y1 - y0 + 1) * TILE_PX
-    raster    = [0.0] * (raster_w * raster_h)
+    # Values are in US Survey Feet → convert to metres
+    valid_mask = data != nodata if nodata is not None else np.ones_like(data, dtype=bool)
+    elev_m = np.where(valid_mask, data * FT_TO_M, 0.0).astype(np.float64)
+    elev_m = np.maximum(elev_m, 0.0)  # clamp negative (underwater) to 0
+    print(f"  Valid pixels: {valid_mask.sum()}/{data.size} ({100*valid_mask.sum()/data.size:.1f}%)")
+    print(f"  Elevation range: {elev_m[valid_mask].min():.2f} – {elev_m[valid_mask].max():.2f} m")
 
-    print(f"  Loading {(x1-x0+1)*(y1-y0+1)} terrain tiles → {raster_w}×{raster_h} raster…")
-    for ty in range(y0, y1 + 1):
-        for tx in range(x0, x1 + 1):
-            path = f"{TERRAIN_DIR}/{TERRAIN_Z}_{tx}_{ty}.png"
-            img  = Image.open(path).convert("RGB")
-            raw  = img.tobytes()          # flat RGBRGB…
-            col0 = (tx - x0) * TILE_PX
-            row0 = (ty - y0) * TILE_PX
-            for py in range(TILE_PX):
-                for px in range(TILE_PX):
-                    off = (py * TILE_PX + px) * 3
-                    r, g, b = raw[off], raw[off + 1], raw[off + 2]
-                    h = r * 256 + g + b / 256 - 32768   # Terrarium decode
-                    h = max(h, 0.0)  # clamp ocean/river pixels to sea level
-                    raster[(row0 + py) * raster_w + (col0 + px)] = h
+    # Fill nodata via iterative nearest-neighbor expansion
+    invalid = ~valid_mask
+    fill = elev_m.copy()
+    for _ in range(300):
+        if not invalid.any():
+            break
+        padded = np.pad(fill, 1, mode='edge')
+        neighbors = np.zeros_like(fill)
+        counts = np.zeros_like(fill)
+        for dy, dx in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            s = padded[1 + dy:rows + 1 + dy, 1 + dx:cols + 1 + dx]
+            sv = np.pad(~invalid, 1, mode='constant', constant_values=False)[1 + dy:rows + 1 + dy, 1 + dx:cols + 1 + dx]
+            neighbors += np.where(sv, s, 0)
+            counts += sv.astype(float)
+        can_fill = invalid & (counts > 0)
+        fill[can_fill] = neighbors[can_fill] / counts[can_fill]
+        invalid[can_fill] = False
+    elev_m = fill
+    print(f"  Unfilled after fill: {invalid.sum()}")
 
-    # Raster sampler with bilinear interpolation
-    n = 2 ** TERRAIN_Z
+    # Resample to GRID_W × GRID_H if needed
+    if cols != GRID_W or rows != GRID_H:
+        print(f"  Resampling {cols}×{rows} → {GRID_W}×{GRID_H}")
+        from PIL import Image
+        img = Image.fromarray(elev_m.astype(np.float32), mode='F')
+        img = img.resize((GRID_W, GRID_H), Image.BILINEAR)
+        elev_m = np.array(img, dtype=np.float64)
 
-    def latlon_to_raster(lat: float, lon: float) -> tuple[float, float]:
-        lat_r = math.radians(lat)
-        fx    = (lon + 180) / 360 * n
-        fy    = (1 - math.log(math.tan(lat_r) + 1 / math.cos(lat_r)) / math.pi) / 2 * n
-        return (fx - x0) * TILE_PX, (fy - y0) * TILE_PX
-
-    def sample_raster(rx: float, ry: float) -> float:
-        rx  = max(0.0, min(rx, raster_w - 1.001))
-        ry  = max(0.0, min(ry, raster_h - 1.001))
-        ix, iy = int(rx), int(ry)
-        fx, fy = rx - ix, ry - iy
-        ix1, iy1 = ix + 1, iy + 1
-        h00 = raster[iy  * raster_w + ix ]
-        h10 = raster[iy  * raster_w + ix1]
-        h01 = raster[iy1 * raster_w + ix ]
-        h11 = raster[iy1 * raster_w + ix1]
-        return h00*(1-fx)*(1-fy) + h10*fx*(1-fy) + h01*(1-fx)*fy + h11*fx*fy
-
-    # Sample GRID_W × GRID_H world grid (row-major: row=z, col=x)
-    # Pre-compute per-row (ry) and per-column (rx) raster coordinates
-    # since lat depends only on zi and lon depends only on xi.
-    half = WORLD_SIZE / 2.0
-    cell = WORLD_SIZE / (GRID_W - 1)
-
-    rx_col = []  # rx for each column xi
-    for xi in range(GRID_W):
-        x_w = -half + xi * cell
-        lon = REF_LON + (x_w / METRES_PER_DEG_LON)
-        fx  = (lon + 180.0) / 360.0 * n
-        rx  = (fx - x0) * TILE_PX
-        rx_col.append(max(0.0, min(rx, raster_w - 1.001)))
-
-    ry_row = []  # ry for each row zi
-    for zi in range(GRID_H):
-        z_w = -half + zi * cell
-        lat   = REF_LAT + (-z_w / METRES_PER_DEG_LAT)
-        lat_r = math.radians(lat)
-        fy    = (1.0 - math.log(math.tan(lat_r) + 1.0 / math.cos(lat_r)) / math.pi) / 2.0 * n
-        ry    = (fy - y0) * TILE_PX
-        ry_row.append(max(0.0, min(ry, raster_h - 1.001)))
-
-    # Pre-compute integer indices and fractions for bilinear interpolation
-    ix_col  = [int(r) for r in rx_col]
-    fx_col  = [r - int(r) for r in rx_col]
-    iy_row  = [int(r) for r in ry_row]
-    fy_row  = [r - int(r) for r in ry_row]
-
-    grid = [0.0] * (GRID_W * GRID_H)
-    rw = raster_w
-    print(f"  Sampling {GRID_W}×{GRID_H} grid…")
-    for zi in range(GRID_H):
-        iy = iy_row[zi]
-        fy = fy_row[zi]
-        iy1 = min(iy + 1, raster_h - 1)
-        row0 = iy * rw
-        row1 = iy1 * rw
-        base = zi * GRID_W
-        for xi in range(GRID_W):
-            ix = ix_col[xi]
-            fx = fx_col[xi]
-            h00 = raster[row0 + ix]
-            h10 = raster[row0 + ix + 1]
-            h01 = raster[row1 + ix]
-            h11 = raster[row1 + ix + 1]
-            h = h00 * (1.0 - fx) * (1.0 - fy) + h10 * fx * (1.0 - fy) + \
-                h01 * (1.0 - fx) * fy + h11 * fx * fy
-            grid[base + xi] = max(h, 0.0)
-
-    # 3×3 Gaussian smooth — aggressive smoothing eliminates cell-to-cell noise
-    # that creates visible mesh facets at grazing angles. Our 3D world uses
-    # separate meshes for bridges/tunnels, so the heightmap only needs to
-    # capture the park's overall terrain shape (hills, slopes), not fine features.
+    # Light Gaussian smooth (2 passes) — LiDAR is already high quality,
+    # just reduce 1-foot quantization artifacts at our 2.4m grid spacing
     W, H = GRID_W, GRID_H
-    # Double-buffer: swap between grid and buf to avoid list(grid) copy each pass
+    grid = elev_m.flatten().tolist()
     buf = [0.0] * (W * H)
-    for _pass in range(5):
+    for _pass in range(2):
         for zi in range(1, H - 1):
             b = zi * W
             bm = (zi - 1) * W
@@ -208,25 +151,150 @@ def build_height_grid() -> tuple[list, float, float]:
                     grid[bp + xi - 1]  * 0.0625 +
                     grid[bp + xi + 1]  * 0.0625
                 )
-        # Copy edges (unchanged by smoothing)
         for xi in range(W):
             buf[xi] = grid[xi]
-            buf[(H-1)*W + xi] = grid[(H-1)*W + xi]
+            buf[(H - 1) * W + xi] = grid[(H - 1) * W + xi]
         for zi in range(H):
-            buf[zi*W] = grid[zi*W]
-            buf[zi*W + W - 1] = grid[zi*W + W - 1]
-        grid, buf = buf, grid  # swap without copy
-    print(f"  Applied 5-pass Gaussian smooth to heightmap")
+            buf[zi * W] = grid[zi * W]
+            buf[zi * W + W - 1] = grid[zi * W + W - 1]
+        grid, buf = buf, grid
+    print(f"  Applied 2-pass Gaussian smooth")
 
     min_elev = min(grid)
+    # Origin height: centre of grid
+    origin_height = grid[(H // 2) * W + W // 2] - min_elev
 
-    # Height at world origin (player spawn)
+    print(f"  Final: min={min_elev:.2f} m  max={max(grid):.2f} m  "
+          f"origin_above_min={origin_height:.2f} m")
+    ds = None
+    return grid, min_elev, origin_height
+
+
+def build_height_grid_terrarium() -> tuple[list, float, float] | tuple[None, float, float]:
+    """Fallback: build heightmap from Terrarium PNG tiles."""
+    try:
+        from PIL import Image
+    except ImportError:
+        print("  PIL not found – skipping terrain", file=sys.stderr)
+        return None, 0.0, 0.0
+
+    bbox = dict(south=40.7644, north=40.7994, west=-73.9816, east=-73.9492)
+    x0, y1 = latlon_to_tile(bbox["south"], bbox["west"], TERRAIN_Z)
+    x1, y0 = latlon_to_tile(bbox["north"], bbox["east"], TERRAIN_Z)
+
+    missing = [f"{TERRAIN_DIR}/{TERRAIN_Z}_{x}_{y}.png"
+               for y in range(y0, y1 + 1) for x in range(x0, x1 + 1)
+               if not os.path.exists(f"{TERRAIN_DIR}/{TERRAIN_Z}_{x}_{y}.png")]
+    if missing:
+        print(f"  {len(missing)} tile(s) missing – run download_terrain.py", file=sys.stderr)
+        return None, 0.0, 0.0
+
+    TILE_PX = 256
+    raster_w = (x1 - x0 + 1) * TILE_PX
+    raster_h = (y1 - y0 + 1) * TILE_PX
+    raster = [0.0] * (raster_w * raster_h)
+
+    print(f"  Loading {(x1-x0+1)*(y1-y0+1)} Terrarium tiles → {raster_w}×{raster_h} raster…")
+    for ty in range(y0, y1 + 1):
+        for tx in range(x0, x1 + 1):
+            path = f"{TERRAIN_DIR}/{TERRAIN_Z}_{tx}_{ty}.png"
+            img = Image.open(path).convert("RGB")
+            raw = img.tobytes()
+            col0 = (tx - x0) * TILE_PX
+            row0 = (ty - y0) * TILE_PX
+            for py in range(TILE_PX):
+                for px in range(TILE_PX):
+                    off = (py * TILE_PX + px) * 3
+                    r, g, b = raw[off], raw[off + 1], raw[off + 2]
+                    h = r * 256 + g + b / 256 - 32768
+                    h = max(h, 0.0)
+                    raster[(row0 + py) * raster_w + (col0 + px)] = h
+
+    n = 2 ** TERRAIN_Z
+
+    def latlon_to_raster(lat, lon):
+        lat_r = math.radians(lat)
+        fx = (lon + 180) / 360 * n
+        fy = (1 - math.log(math.tan(lat_r) + 1 / math.cos(lat_r)) / math.pi) / 2 * n
+        return (fx - x0) * TILE_PX, (fy - y0) * TILE_PX
+
+    def sample_raster(rx, ry):
+        rx = max(0.0, min(rx, raster_w - 1.001))
+        ry = max(0.0, min(ry, raster_h - 1.001))
+        ix, iy = int(rx), int(ry)
+        fx, fy = rx - ix, ry - iy
+        h00 = raster[iy * raster_w + ix]
+        h10 = raster[iy * raster_w + ix + 1]
+        h01 = raster[(iy + 1) * raster_w + ix]
+        h11 = raster[(iy + 1) * raster_w + ix + 1]
+        return h00*(1-fx)*(1-fy) + h10*fx*(1-fy) + h01*(1-fx)*fy + h11*fx*fy
+
+    half = WORLD_SIZE / 2.0
+    cell = WORLD_SIZE / (GRID_W - 1)
+    rx_col, ry_row = [], []
+    for xi in range(GRID_W):
+        lon = REF_LON + ((-half + xi * cell) / METRES_PER_DEG_LON)
+        fx = (lon + 180.0) / 360.0 * n
+        rx_col.append(max(0.0, min((fx - x0) * TILE_PX, raster_w - 1.001)))
+    for zi in range(GRID_H):
+        lat = REF_LAT + (-(-half + zi * cell) / METRES_PER_DEG_LAT)
+        lat_r = math.radians(lat)
+        fy = (1.0 - math.log(math.tan(lat_r) + 1.0 / math.cos(lat_r)) / math.pi) / 2.0 * n
+        ry_row.append(max(0.0, min((fy - y0) * TILE_PX, raster_h - 1.001)))
+
+    ix_col = [int(r) for r in rx_col]
+    fx_col = [r - int(r) for r in rx_col]
+    iy_row = [int(r) for r in ry_row]
+    fy_row = [r - int(r) for r in ry_row]
+
+    grid = [0.0] * (GRID_W * GRID_H)
+    rw = raster_w
+    print(f"  Sampling {GRID_W}×{GRID_H} grid…")
+    for zi in range(GRID_H):
+        iy, fy = iy_row[zi], fy_row[zi]
+        iy1 = min(iy + 1, raster_h - 1)
+        row0, row1 = iy * rw, iy1 * rw
+        base = zi * GRID_W
+        for xi in range(GRID_W):
+            ix, fx = ix_col[xi], fx_col[xi]
+            h = (raster[row0 + ix] * (1 - fx) * (1 - fy) + raster[row0 + ix + 1] * fx * (1 - fy) +
+                 raster[row1 + ix] * (1 - fx) * fy + raster[row1 + ix + 1] * fx * fy)
+            grid[base + xi] = max(h, 0.0)
+
+    W, H = GRID_W, GRID_H
+    buf = [0.0] * (W * H)
+    for _pass in range(5):
+        for zi in range(1, H - 1):
+            b, bm, bp = zi * W, (zi - 1) * W, (zi + 1) * W
+            for xi in range(1, W - 1):
+                buf[b + xi] = (grid[b + xi] * 0.25 + grid[b + xi - 1] * 0.125 +
+                    grid[b + xi + 1] * 0.125 + grid[bm + xi] * 0.125 +
+                    grid[bp + xi] * 0.125 + grid[bm + xi - 1] * 0.0625 +
+                    grid[bm + xi + 1] * 0.0625 + grid[bp + xi - 1] * 0.0625 +
+                    grid[bp + xi + 1] * 0.0625)
+        for xi in range(W):
+            buf[xi] = grid[xi]; buf[(H-1)*W + xi] = grid[(H-1)*W + xi]
+        for zi in range(H):
+            buf[zi*W] = grid[zi*W]; buf[zi*W + W - 1] = grid[zi*W + W - 1]
+        grid, buf = buf, grid
+    print(f"  Applied 5-pass Gaussian smooth")
+
+    min_elev = min(grid)
     origin_rx, origin_ry = latlon_to_raster(REF_LAT, REF_LON)
     origin_height = sample_raster(origin_rx, origin_ry) - min_elev
-
     print(f"  Elevation: min={min_elev:.1f} m  max={max(grid):.1f} m  "
           f"origin_above_min={origin_height:.1f} m")
     return grid, min_elev, origin_height
+
+
+def build_height_grid() -> tuple[list, float, float]:
+    """Try LiDAR DEM first, then Terrarium tiles."""
+    print("  Trying LiDAR DEM…")
+    grid, min_elev, origin_height = build_height_grid_lidar()
+    if grid is not None:
+        return grid, min_elev, origin_height
+    print("  LiDAR not available, trying Terrarium tiles…")
+    return build_height_grid_terrarium()
 
 
 def make_sampler(grid: list, min_elev: float):
@@ -324,9 +392,9 @@ def main() -> None:
             relations.append(e)
 
     # -------------------------------------------------------------------
-    # Terrain heightmap
+    # Terrain heightmap (LiDAR preferred, Terrarium fallback)
     # -------------------------------------------------------------------
-    have_terrain = os.path.isdir(TERRAIN_DIR)
+    have_terrain = os.path.exists(LIDAR_DEM) or os.path.isdir(TERRAIN_DIR)
     if have_terrain:
         print("Building terrain height grid…")
         hm_grid, min_elev, origin_height = build_height_grid()
@@ -533,6 +601,48 @@ def main() -> None:
     lampposts_out = []
     trash_cans_out = []
 
+    # -------------------------------------------------------------------
+    # Trees — NYC Parks Forestry census (preferred) or OSM nodes (fallback)
+    # -------------------------------------------------------------------
+    NYC_TREES = "lidar_data/central_park_trees.json"
+    if os.path.exists(NYC_TREES):
+        with open(NYC_TREES) as fh:
+            nyc_trees = json.load(fh)
+        # Map genus/species to tree archetype for Godot
+        SPECIES_MAP = {
+            "quercus":     "oak",
+            "acer":        "maple",
+            "ulmus":       "elm",
+            "picea":       "conifer",
+            "pinus":       "conifer",
+            "abies":       "conifer",
+            "tsuga":       "conifer",
+            "juniperus":   "conifer",
+            "thuja":       "conifer",
+            "cedrus":      "conifer",
+            "taxus":       "conifer",
+        }
+        for t in nyc_trees:
+            x, z = project(t["lat"], t["lon"])
+            h = round(terrain(x, z), 2)
+            sp_raw = t.get("species", "").lower()
+            genus = sp_raw.split()[0] if sp_raw else ""
+            archetype = SPECIES_MAP.get(genus, "deciduous")
+            dbh = t.get("dbh", 0)
+            trees_out.append({"pos": [x, h, z], "species": archetype, "dbh": dbh})
+        print(f"  Trees: {len(trees_out)} from NYC Parks Forestry census")
+    else:
+        # Fallback: OSM tree nodes
+        for e in elements:
+            if e["type"] != "node" or "lat" not in e:
+                continue
+            tags = e.get("tags", {})
+            if tags.get("natural") == "tree":
+                x, z = project(e["lat"], e["lon"])
+                h = round(terrain(x, z), 2)
+                trees_out.append({"pos": [x, h, z], "species": "deciduous", "dbh": 12})
+        print(f"  Trees: {len(trees_out)} from OSM (fallback)")
+
     for e in elements:
         if e["type"] != "node" or "lat" not in e:
             continue
@@ -541,11 +651,6 @@ def main() -> None:
             continue
         x, z = project(e["lat"], e["lon"])
         h = round(terrain(x, z), 2)
-
-        # Trees
-        if tags.get("natural") == "tree":
-            trees_out.append([x, h, z])
-            continue
 
         # Statues / monuments / artworks
         stype = None

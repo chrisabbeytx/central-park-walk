@@ -57,26 +57,35 @@ var _keyframes: Array = []
 const _KF_HOURS: Array = [5.0, 6.5, 12.0, 19.0, 21.0]
 
 
+var _terrain_only := false
+
 func _ready() -> void:
+	# Check for CLI args early
+	for arg in OS.get_cmdline_user_args():
+		if arg == "--terrain-only":
+			_terrain_only = true
 	_build_keyframes()
 	_load_heightmap()
 	_setup_environment()
-	_setup_park()
-	_apply_tunnel_depressions()
+	if not _terrain_only:
+		_setup_park()
+		_apply_tunnel_depressions()
 	_setup_ground()
-	if _park_loader and _park_loader.splat_texture:
-		_apply_splat_map(_park_loader.splat_texture)
-	if _park_loader and _park_loader.path_segs_texture:
-		_apply_gpu_path_textures()
-	if _park_loader and _park_loader.boundary_polygon.size() > 2:
-		_apply_boundary_mask(_park_loader.boundary_polygon)
+	if not _terrain_only:
+		if _park_loader and _park_loader.splat_texture:
+			_apply_splat_map(_park_loader.splat_texture)
+		if _park_loader and _park_loader.path_segs_texture:
+			_apply_gpu_path_textures()
+		if _park_loader and _park_loader.boundary_polygon.size() > 2:
+			_apply_boundary_mask(_park_loader.boundary_polygon)
 	_player = _setup_player()
 	_setup_hud()
 	_setup_color_grade()
-	_setup_lamp_lights()
-	_setup_falling_leaves()
-	_setup_pigeons()
-	_setup_audio()
+	if not _terrain_only:
+		_setup_lamp_lights()
+		_setup_falling_leaves()
+		_setup_pigeons()
+		_setup_audio()
 	_apply_time_of_day()
 	# Check for --tour CLI arg
 	for arg in OS.get_cmdline_user_args():
@@ -1731,9 +1740,18 @@ func _apply_boundary_mask(poly: PackedVector2Array) -> void:
 func _setup_player() -> CharacterBody3D:
 	var p: CharacterBody3D = load("res://player.gd").new()
 	p.name       = "Player"
-	p.position = Vector3(-400.0, _terrain_height(-400.0, 600.0) + 2.0, 600.0)  # Ramble
+	if _terrain_only:
+		# Bird's eye view for terrain inspection — disable physics, look down
+		# Bird's eye for terrain inspection
+		p.position = Vector3(-300.0, _terrain_height(-300.0, 200.0) + 200.0, 200.0)
+		p.rotation_degrees.y = 0.0
+		p.set_physics_process(false)
+	else:
+		p.position = Vector3(-400.0, _terrain_height(-400.0, 600.0) + 2.0, 600.0)  # Ramble
 	p.rotation_degrees.y = 30.0
 	add_child(p)
+	if _terrain_only and p.head:
+		p.head.rotation_degrees.x = -55.0  # look down at terrain
 	return p
 
 
