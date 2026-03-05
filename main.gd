@@ -1362,9 +1362,18 @@ void fragment() {
 	int gstart = int(gd.r);
 	int gcount = min(int(gd.g), 48);
 
-	float best_cov = 0.0;
-	float best_hw  = 0.0;
-	int   best_mat = 0;
+	// Track best and second-best path segments for material blending.
+	// At intersections where two paths overlap, we blend between their
+	// materials using distance from each centerline as the weight —
+	// producing a natural gradual transition instead of a hard seam.
+	float best_cov  = 0.0;
+	float best_hw   = 0.0;
+	float best_dist = 9999.0;
+	int   best_mat  = 0;
+
+	float sec_cov  = 0.0;
+	float sec_dist = 9999.0;
+	int   sec_mat  = 0;
 
 	for (int gi = 0; gi < gcount; gi++) {
 		int li = gstart + gi;
@@ -1379,20 +1388,27 @@ void fragment() {
 		float d = point_segment_dist(world_pos.xz, ep.xy, ep.zw);
 		float hw = pr.x;
 		float cov = 1.0 - smoothstep(hw - feather * 0.3, hw + feather, d);
+		int mi = int(pr.y);
 
-		// When two segments overlap (both high coverage), prefer the wider
-		// path. This prevents narrow cross-paths from cutting material seams
-		// through wide walkways like the Literary Walk.
 		if (cov > best_cov + 0.05 || (cov > 0.3 && cov > best_cov - 0.05 && hw > best_hw)) {
-			best_cov = cov;
-			best_hw  = hw;
-			best_mat = int(pr.y);
+			// Demote current best to second (only if different material)
+			if (best_mat != mi && best_cov > 0.1) {
+				sec_cov  = best_cov;
+				sec_dist = best_dist;
+				sec_mat  = best_mat;
+			}
+			best_cov  = cov;
+			best_hw   = hw;
+			best_dist = d;
+			best_mat  = mi;
+		} else if (mi != best_mat && cov > sec_cov) {
+			// Second-best with a different material
+			sec_cov  = cov;
+			sec_dist = d;
+			sec_mat  = mi;
 		}
 	}
 
-	// Single path system: analytical GPU only. The raster splat map was a
-	// redundant fallback that created material conflicts (different systems
-	// picking different materials for the same pixel = visible seams).
 	float path_weight = best_cov;
 	int mat_idx = best_mat;
 
@@ -1421,7 +1437,7 @@ void fragment() {
 	grass_rgh = mix(grass_rgh, m_rgh, meadow_blend);
 
 	if (mat_idx > 0 && path_weight > 0.001) {
-		// --- Path shading ---
+		// --- Path shading with intersection blending ---
 		vec4 ml = mat_lookup(mat_idx);
 		float tex_set = ml.x;
 		vec3 tint = ml.yzw;
@@ -1429,6 +1445,26 @@ void fragment() {
 		vec3 p_alb = texture(path_alb_arr, vec3(path_uv, tex_set)).rgb * tint;
 		vec3 p_nrm = texture(path_nrm_arr, vec3(path_uv, tex_set)).rgb;
 		float p_rgh = clamp(texture(path_rgh_arr, vec3(path_uv, tex_set)).r + 0.10, 0.0, 1.0);
+
+		// Blend with second path material at intersections.
+		// Weight = distance ratio from each centerline: closer to a path's
+		// center → more of that path's material. Produces a natural gradient
+		// across the overlap zone instead of a hard material boundary.
+		if (sec_mat > 0 && sec_mat != best_mat && sec_cov > 0.1) {
+			vec4 ml2 = mat_lookup(sec_mat);
+			vec3 s_alb = texture(path_alb_arr, vec3(path_uv, ml2.x)).rgb * ml2.yzw;
+			vec3 s_nrm = texture(path_nrm_arr, vec3(path_uv, ml2.x)).rgb;
+			float s_rgh = clamp(texture(path_rgh_arr, vec3(path_uv, ml2.x)).r + 0.10, 0.0, 1.0);
+
+			// 0 = on best path center, 1 = on second path center
+			float t = best_dist / (best_dist + sec_dist + 0.001);
+			// Smooth the transition to avoid linear banding
+			t = smoothstep(0.0, 1.0, t);
+
+			p_alb = mix(p_alb, s_alb, t);
+			p_nrm = mix(p_nrm, s_nrm, t);
+			p_rgh = mix(p_rgh, s_rgh, t);
+		}
 
 		// Path-grass transition — tighter edge to avoid muddy blending
 		float soft_weight = smoothstep(0.15, 0.45, path_weight);
