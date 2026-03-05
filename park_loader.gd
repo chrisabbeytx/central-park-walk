@@ -5003,16 +5003,14 @@ func _build_trees(trees: Array) -> void:
 	# LOD0 (0-120m): Full GLB mesh — high detail
 	# LOD1 (100-400m): Simple billboard cross — very cheap
 	const CHUNK := 150.0
-	const LOD0_END := 120.0
-	const LOD1_BEGIN := 100.0
+	const LOD0_END := 150.0
+	const LOD1_BEGIN := 130.0
 	const LOD1_END := 400.0
 
 	# Build a simple crossed-billboard mesh for LOD1
 	var lod1_mesh := _make_tree_billboard_mesh()
 	var lod1_mat := StandardMaterial3D.new()
-	lod1_mat.albedo_color = Color(0.30, 0.45, 0.20, 0.85)
-	lod1_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
-	lod1_mat.alpha_scissor_threshold = 0.1
+	lod1_mat.vertex_color_use_as_albedo = true
 	lod1_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
 	lod1_mat.shading_mode = BaseMaterial3D.SHADING_MODE_PER_VERTEX
 
@@ -5041,7 +5039,7 @@ func _build_trees(trees: Array) -> void:
 			lod1_chunks[ck1] = {"cx": cx, "cz": cz, "xf": []}
 		lod1_chunks[ck1]["xf"].append(tf)
 
-	# Spawn LOD0 chunks — position MMI at chunk centre, offset transforms
+	# Spawn LOD0 chunks — position MMI at instance centroid for accurate culling
 	for ckey in lod0_chunks:
 		var info: Dictionary = lod0_chunks[ckey]
 		var mesh_key: String = info["mesh_key"]
@@ -5052,10 +5050,16 @@ func _build_trees(trees: Array) -> void:
 		var sp_name: String = parts[0]
 		var vi: int = int(parts[1])
 		var mesh: Mesh = species_meshes[sp_name][vi]
-		# Chunk centre in world space
-		var cx_f: float = float(info["cx"]) * CHUNK + CHUNK * 0.5
-		var cz_f: float = float(info["cz"]) * CHUNK + CHUNK * 0.5
-		var chunk_origin := Vector3(cx_f, 0.0, cz_f)
+		# Centroid of all instances in this chunk (more accurate than grid centre)
+		var cx_sum := 0.0
+		var cy_sum := 0.0
+		var cz_sum := 0.0
+		for tf: Transform3D in xf_list:
+			cx_sum += tf.origin.x
+			cy_sum += tf.origin.y
+			cz_sum += tf.origin.z
+		var n := float(xf_list.size())
+		var chunk_origin := Vector3(cx_sum / n, cy_sum / n, cz_sum / n)
 		var mm := MultiMesh.new()
 		mm.transform_format = MultiMesh.TRANSFORM_3D
 		mm.mesh = mesh
@@ -5073,15 +5077,21 @@ func _build_trees(trees: Array) -> void:
 		mmi.visibility_range_fade_mode = GeometryInstance3D.VISIBILITY_RANGE_FADE_SELF
 		add_child(mmi)
 
-	# Spawn LOD1 chunks — billboard crosses, long range
+	# Spawn LOD1 chunks — billboard crosses, long range (centroid positioning)
 	for ck1 in lod1_chunks:
 		var info: Dictionary = lod1_chunks[ck1]
 		var xf_list: Array = info["xf"]
 		if xf_list.is_empty():
 			continue
-		var cx_f: float = float(info["cx"]) * CHUNK + CHUNK * 0.5
-		var cz_f: float = float(info["cz"]) * CHUNK + CHUNK * 0.5
-		var chunk_origin := Vector3(cx_f, 0.0, cz_f)
+		var cx_sum := 0.0
+		var cy_sum := 0.0
+		var cz_sum := 0.0
+		for tf: Transform3D in xf_list:
+			cx_sum += tf.origin.x
+			cy_sum += tf.origin.y
+			cz_sum += tf.origin.z
+		var nn := float(xf_list.size())
+		var chunk_origin := Vector3(cx_sum / nn, cy_sum / nn, cz_sum / nn)
 		var mm := MultiMesh.new()
 		mm.transform_format = MultiMesh.TRANSFORM_3D
 		mm.mesh = lod1_mesh
@@ -5105,42 +5115,60 @@ func _build_trees(trees: Array) -> void:
 
 
 func _make_tree_billboard_mesh() -> ArrayMesh:
-	# Simple crossed-quad billboard: 2 perpendicular quads forming a + shape.
-	# Unit scale: width=1, height=1, centred at base (Y 0..1).
-	# The trunk is a narrow rectangle at bottom, canopy is a wider oval shape.
-	# 4 triangles total — extremely cheap for LOD1.
+	# Tree-shaped crossed billboard: 2 perpendicular planes, each shaped like
+	# a tree silhouette (narrow trunk at bottom, diamond canopy at top).
+	# Vertex colors: brown trunk, green canopy. 12 tris per plane = 24 total.
 	var verts   := PackedVector3Array()
 	var normals := PackedVector3Array()
-	var uvs     := PackedVector2Array()
+	var colors  := PackedColorArray()
 	var indices := PackedInt32Array()
+	var trunk_col := Color(0.35, 0.25, 0.15)
+	var canopy_col := Color(0.25, 0.40, 0.18)
+	var canopy_top := Color(0.30, 0.50, 0.20)
 
-	# Two perpendicular quads; each is a diamond/tree silhouette
 	for rot_idx in 2:
-		var a := float(rot_idx) * PI * 0.5  # 0° and 90°
+		var a := float(rot_idx) * PI * 0.5
 		var ca := cos(a)
 		var sa := sin(a)
-		var hw := 0.4  # half-width at canopy level
 		var base := verts.size()
-		# Bottom-left, bottom-right, top-right, top-left
-		verts.append(Vector3(-hw * ca, 0.0, -hw * sa))      # bottom-left
-		verts.append(Vector3( hw * ca, 0.0,  hw * sa))      # bottom-right
-		verts.append(Vector3( hw * ca, 1.0,  hw * sa))      # top-right
-		verts.append(Vector3(-hw * ca, 1.0, -hw * sa))      # top-left
+		# Tree silhouette points (Y=0 at base, Y=1 at top):
+		# Trunk: narrow rectangle from Y=0 to Y=0.35
+		var tw := 0.06  # trunk half-width
+		# Canopy: diamond from Y=0.25 to Y=1.0, widest at Y=0.55
+		var cw := 0.35  # canopy half-width at widest
+		# Trunk bottom-left (0), bottom-right (1)
+		verts.append(Vector3(-tw * ca, 0.0,  -tw * sa))  # 0
+		verts.append(Vector3( tw * ca, 0.0,   tw * sa))  # 1
+		# Trunk top / canopy base: left (2), right (3)
+		verts.append(Vector3(-tw * ca, 0.30, -tw * sa))  # 2
+		verts.append(Vector3( tw * ca, 0.30,  tw * sa))  # 3
+		# Canopy widest: left (4), right (5)
+		verts.append(Vector3(-cw * ca, 0.55, -cw * sa))  # 4
+		verts.append(Vector3( cw * ca, 0.55,  cw * sa))  # 5
+		# Canopy top point (6)
+		verts.append(Vector3(0.0, 1.0, 0.0))             # 6
 		var n := Vector3(sa, 0.0, -ca).normalized()
-		for _i in 4:
+		for _i in 7:
 			normals.append(n)
-		uvs.append(Vector2(0.0, 1.0))
-		uvs.append(Vector2(1.0, 1.0))
-		uvs.append(Vector2(1.0, 0.0))
-		uvs.append(Vector2(0.0, 0.0))
-		indices.append(base); indices.append(base + 1); indices.append(base + 2)
-		indices.append(base); indices.append(base + 2); indices.append(base + 3)
+		# Vertex colors
+		colors.append(trunk_col); colors.append(trunk_col)   # 0,1
+		colors.append(trunk_col); colors.append(trunk_col)   # 2,3
+		colors.append(canopy_col); colors.append(canopy_col) # 4,5
+		colors.append(canopy_top)                             # 6
+		# Trunk quad: 0-1-3-2
+		indices.append(base+0); indices.append(base+1); indices.append(base+3)
+		indices.append(base+0); indices.append(base+3); indices.append(base+2)
+		# Canopy lower: 2-3-5-4
+		indices.append(base+2); indices.append(base+3); indices.append(base+5)
+		indices.append(base+2); indices.append(base+5); indices.append(base+4)
+		# Canopy upper: 4-5-6
+		indices.append(base+4); indices.append(base+5); indices.append(base+6)
 
 	var arr := []
 	arr.resize(Mesh.ARRAY_MAX)
 	arr[Mesh.ARRAY_VERTEX]  = verts
 	arr[Mesh.ARRAY_NORMAL]  = normals
-	arr[Mesh.ARRAY_TEX_UV]  = uvs
+	arr[Mesh.ARRAY_COLOR]   = colors
 	arr[Mesh.ARRAY_INDEX]   = indices
 	var mesh := ArrayMesh.new()
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)

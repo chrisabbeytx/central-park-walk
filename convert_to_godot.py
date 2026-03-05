@@ -726,7 +726,7 @@ def main() -> None:
                 tz = gz + _rng_wood.uniform(-WOOD_JITTER, WOOD_JITTER)
                 if _point_in_poly(tx, tz, poly):
                     h = round(terrain(tx, tz), 2)
-                    sp = _rng_wood.choice(["oak", "maple", "elm", "deciduous", "deciduous"])
+                    sp = _rng_wood.choice(["oak", "maple", "elm", "deciduous", "deciduous", "deciduous", "deciduous", "conifer"])
                     dbh = _rng_wood.randint(8, 24)
                     trees_out.append({"pos": [round(tx, 2), h, round(tz, 2)], "species": sp, "dbh": dbh})
                     ck = (int(tx // CELL), int(tz // CELL))
