@@ -40,6 +40,9 @@ HIGHWAY_WIDTH = {
     "path":       2.5,
     "steps":      2.5,
     "track":      3.0,
+    "service":    8.0,    # Park loop drives (East/West/Center Drive)
+    "secondary":  10.0,   # Major transverse roads
+    "bridleway":  3.5,    # Equestrian bridle paths
 }
 
 TERRAIN_Z   = 15           # zoom level matching download_terrain.py
@@ -432,10 +435,17 @@ def main() -> None:
     skipped_hw = 0
     skipped_pts = 0
 
+    skipped_sidewalk = 0
     for wid, tags in ways_tags.items():
         hw = tags.get("highway")
         if hw not in HIGHWAY_WIDTH:
             skipped_hw += 1
+            continue
+
+        # Filter out city sidewalks and street crossings — not park paths
+        footway_type = tags.get("footway", "")
+        if footway_type in ("sidewalk", "crossing", "traffic_island"):
+            skipped_sidewalk += 1
             continue
 
         pts = []
@@ -452,6 +462,17 @@ def main() -> None:
         is_bridge  = tags.get("bridge")  in ("yes", "viaduct", "aqueduct")
         is_tunnel  = tags.get("tunnel")  in ("yes", "building_passage", "culvert")
         entry = {"highway": hw, "surface": tags.get("surface", ""), "points": pts}
+        # Preserve path name (East Drive, The Mall, etc.)
+        path_name = tags.get("name", "")
+        if path_name:
+            entry["name"] = path_name
+        # Preserve explicit OSM width
+        osm_width = tags.get("width", "")
+        if osm_width:
+            try:
+                entry["width"] = float(osm_width.replace("m", "").strip())
+            except ValueError:
+                pass
         if layer != 0:
             entry["layer"] = layer
         if is_bridge:
@@ -461,6 +482,9 @@ def main() -> None:
                 entry["bridge_name"] = bridge_name
         if is_tunnel:
             entry["tunnel"] = True
+            tunnel_name = tags.get("name", "")
+            if tunnel_name:
+                entry["tunnel_name"] = tunnel_name
         # Staircase metadata (previously discarded)
         if hw == "steps":
             sc = tags.get("step_count", "")
@@ -475,6 +499,8 @@ def main() -> None:
             if inc:
                 entry["incline"] = inc
         paths_out.append(entry)
+    if skipped_sidewalk:
+        print(f"  Paths: filtered out {skipped_sidewalk} sidewalks/crossings")
 
     # -------------------------------------------------------------------
     # Boundary  (stays 2D – used for invisible walls only)
@@ -532,9 +558,13 @@ def main() -> None:
             continue
         pts = _extract_polygon(nids)
         if len(pts) >= 3:
-            water_out.append({"name": tags.get("name", ""),
-                               "water_y": _centroid_height(pts),
-                               "points": pts})
+            wb = {"name": tags.get("name", ""),
+                  "water_y": _centroid_height(pts),
+                  "points": pts}
+            wtype = tags.get("water", "")
+            if wtype:
+                wb["water_type"] = wtype  # reservoir, pond, lake, basin, etc.
+            water_out.append(wb)
 
     for rel in relations:
         tags = rel.get("tags", {})
@@ -547,9 +577,29 @@ def main() -> None:
             outer_ids = [m["ref"] for m in members if m["type"] == "way"]
         pts = _extract_polygon(assemble_ring(outer_ids, ways_nodes))
         if len(pts) >= 3:
-            water_out.append({"name": tags.get("name", ""),
-                               "water_y": _centroid_height(pts),
-                               "points": pts})
+            wb = {"name": tags.get("name", ""),
+                  "water_y": _centroid_height(pts),
+                  "points": pts}
+            wtype = tags.get("water", "")
+            if wtype:
+                wb["water_type"] = wtype
+            water_out.append(wb)
+
+    # --- Streams (linear waterways) ---
+    streams_out = []
+    for wid, tags in ways_tags.items():
+        ww = tags.get("waterway", "")
+        if ww not in ("stream", "river"):
+            continue
+        pts = []
+        for nid in ways_nodes.get(wid, []):
+            if nid in nodes_ll:
+                x, z = project(*nodes_ll[nid])
+                pts.append([x, round(terrain(x, z), 2), z])
+        if len(pts) >= 2:
+            streams_out.append({"name": tags.get("name", ""), "type": ww, "points": pts})
+    if streams_out:
+        print(f"  Streams: {len(streams_out)}")
 
     # -------------------------------------------------------------------
     # Buildings  – points stay [x, z]; building gains "base"
@@ -578,11 +628,29 @@ def main() -> None:
             continue
         pts = _extract_polygon(nids)
         if len(pts) >= 3:
-            buildings_out.append({
+            bld = {
                 "points": pts,
                 "height": round(building_height(tags), 1),
                 "base":   _centroid_height(pts),
-            })
+            }
+            # Preserve building name and type for landmark identification
+            bname = tags.get("name", "")
+            if bname:
+                bld["name"] = bname
+            btype = tags.get("building", "yes")
+            if btype != "yes":
+                bld["building_type"] = btype
+            # Material and colour for facade rendering
+            bmat = tags.get("building:material", "")
+            if bmat:
+                bld["material"] = bmat
+            bcolour = tags.get("building:colour", "")
+            if bcolour:
+                bld["colour"] = bcolour
+            roof_shape = tags.get("roof:shape", "")
+            if roof_shape and roof_shape != "flat":
+                bld["roof_shape"] = roof_shape
+            buildings_out.append(bld)
 
     # -------------------------------------------------------------------
     # Single-pass node extraction: trees, statues, benches, lampposts, trash
@@ -616,9 +684,32 @@ def main() -> None:
     _rng_wood = _random.Random(42)
 
     SPECIES_MAP = {
+        # Deciduous — broad-leaved
         "quercus":     "oak",
         "acer":        "maple",
         "ulmus":       "elm",
+        "betula":      "birch",
+        "gleditsia":   "deciduous",  # honey locust (17% of park) — open, airy canopy
+        "pyrus":       "deciduous",  # callery pear (10%)
+        "ginkgo":      "deciduous",  # ginkgo (9%) — fan-shaped leaves, distinctive
+        "platanus":    "deciduous",  # London plane (8%) — sycamore-like, tall
+        "tilia":       "deciduous",  # linden/basswood
+        "prunus":      "deciduous",  # cherry — spring blossoms
+        "robinia":     "deciduous",  # black locust
+        "celtis":      "deciduous",  # hackberry
+        "fraxinus":    "deciduous",  # ash
+        "liquidambar": "maple",      # sweetgum — star-shaped leaves, maple-like
+        "cornus":      "deciduous",  # dogwood — small ornamental
+        "magnolia":    "deciduous",  # magnolia
+        "cercis":      "deciduous",  # redbud
+        "malus":       "deciduous",  # crabapple
+        "salix":       "deciduous",  # willow
+        "fagus":       "deciduous",  # beech
+        "carpinus":    "deciduous",  # hornbeam
+        "zelkova":     "elm",        # zelkova — elm family, similar shape
+        "sophora":     "deciduous",  # Japanese pagoda tree
+        "catalpa":     "deciduous",  # catalpa — large leaves
+        # Conifers
         "picea":       "conifer",
         "pinus":       "conifer",
         "abies":       "conifer",
@@ -627,6 +718,8 @@ def main() -> None:
         "thuja":       "conifer",
         "cedrus":      "conifer",
         "taxus":       "conifer",
+        "metasequoia": "conifer",    # dawn redwood
+        "cryptomeria": "conifer",    # Japanese cedar
     }
 
     def _point_in_poly(px, pz, poly):
@@ -815,10 +908,21 @@ def main() -> None:
         elif tags.get("man_made") == "obelisk":
             stype = "obelisk"
         if stype:
-            statues_out.append({
+            statue = {
                 "name": tags.get("name", ""), "type": stype,
                 "position": [x, h, z],
-            })
+            }
+            # Preserve material, artist, inscription for future use
+            mat = tags.get("material", "")
+            if mat:
+                statue["material"] = mat
+            artist = tags.get("artist_name", "")
+            if artist:
+                statue["artist"] = artist
+            inscription = tags.get("inscription", "")
+            if inscription:
+                statue["inscription"] = inscription
+            statues_out.append(statue)
             continue
 
         # Benches
@@ -902,6 +1006,155 @@ def main() -> None:
                 benches_out.append([cx, round(terrain(cx, cz), 2), cz, 0.0])
 
     # -------------------------------------------------------------------
+    # Landuse zones — gardens, grass, pitches, playgrounds, etc.
+    # These are area polygons for terrain texture differentiation.
+    # -------------------------------------------------------------------
+    LANDUSE_TAGS = {
+        # tag_key: tag_value -> zone_type
+        ("leisure", "garden"):         "garden",
+        ("leisure", "pitch"):          "pitch",
+        ("leisure", "playground"):     "playground",
+        ("leisure", "swimming_pool"):  "pool",
+        ("leisure", "sports_centre"):  "sports",
+        ("leisure", "track"):          "track",
+        ("leisure", "dog_park"):       "dog_park",
+        ("landuse", "grass"):          "grass",
+        ("leisure", "nature_reserve"): "nature_reserve",
+        ("natural", "wood"):           "wood",
+        ("landuse", "forest"):         "forest",
+    }
+    landuse_out = []
+    for wid, tags in ways_tags.items():
+        for (tk, tv), zone_type in LANDUSE_TAGS.items():
+            if tags.get(tk) == tv:
+                nids = ways_nodes.get(wid, [])
+                if len(nids) < 4 or nids[0] != nids[-1]:
+                    break
+                pts = _extract_polygon(nids)
+                if len(pts) >= 3:
+                    landuse_out.append({
+                        "type": zone_type,
+                        "name": tags.get("name", ""),
+                        "points": pts,
+                    })
+                break
+    # Also resolve landuse relations (outer ways)
+    for rel in relations:
+        tags = rel.get("tags", {})
+        for (tk, tv), zone_type in LANDUSE_TAGS.items():
+            if tags.get(tk) == tv:
+                members = rel.get("members", [])
+                outer_ids = [m["ref"] for m in members
+                             if m["type"] == "way" and m.get("role", "outer") == "outer"]
+                if outer_ids:
+                    pts = _extract_polygon(assemble_ring(outer_ids, ways_nodes))
+                    if len(pts) >= 3:
+                        landuse_out.append({
+                            "type": zone_type,
+                            "name": tags.get("name", ""),
+                            "points": pts,
+                        })
+                break
+    if landuse_out:
+        print(f"  Landuse zones: {len(landuse_out)}")
+
+    # -------------------------------------------------------------------
+    # man_made=bridge and man_made=tunnel — structural outlines with names
+    # Cross-reference with path bridges/tunnels for names and materials.
+    # -------------------------------------------------------------------
+    bridge_outlines = []
+    tunnel_outlines = []
+    for wid, tags in ways_tags.items():
+        mm = tags.get("man_made", "")
+        if mm == "bridge":
+            nids = ways_nodes.get(wid, [])
+            pts = []
+            for nid in nids:
+                if nid in nodes_ll:
+                    x, z = project(*nodes_ll[nid])
+                    pts.append([x, round(terrain(x, z), 2), z])
+            if len(pts) >= 2:
+                bo = {"name": tags.get("name", ""), "points": pts}
+                structure = tags.get("bridge:structure", "")
+                if structure:
+                    bo["structure"] = structure  # arch, beam, humpback, etc.
+                material = tags.get("material", "")
+                if material:
+                    bo["material"] = material
+                bridge_outlines.append(bo)
+        elif mm == "tunnel":
+            nids = ways_nodes.get(wid, [])
+            pts = []
+            for nid in nids:
+                if nid in nodes_ll:
+                    x, z = project(*nodes_ll[nid])
+                    pts.append([x, round(terrain(x, z), 2), z])
+            if len(pts) >= 2:
+                to = {"name": tags.get("name", ""), "points": pts}
+                tunnel_outlines.append(to)
+    if bridge_outlines:
+        print(f"  Bridge outlines: {len(bridge_outlines)}")
+    if tunnel_outlines:
+        print(f"  Tunnel outlines: {len(tunnel_outlines)}")
+
+    # -------------------------------------------------------------------
+    # Rock outcrops — natural=rock (ways for outlines, nodes for points)
+    # -------------------------------------------------------------------
+    rocks_out = []
+    for wid, tags in ways_tags.items():
+        if tags.get("natural") != "rock":
+            continue
+        nids = ways_nodes.get(wid, [])
+        if len(nids) < 3:
+            continue
+        pts = _extract_polygon(nids)
+        if len(pts) >= 3:
+            rocks_out.append({"name": tags.get("name", ""), "points": pts})
+    for e in elements:
+        if e["type"] != "node" or "lat" not in e:
+            continue
+        tags = e.get("tags", {})
+        if tags.get("natural") == "rock":
+            x, z = project(e["lat"], e["lon"])
+            rocks_out.append({"name": tags.get("name", ""), "points": [[x, z]]})
+    if rocks_out:
+        print(f"  Rock outcrops: {len(rocks_out)}")
+
+    # -------------------------------------------------------------------
+    # Amenity points — fountains, toilets, restaurants, etc.
+    # -------------------------------------------------------------------
+    amenities_out = []
+    for e in elements:
+        if e["type"] != "node" or "lat" not in e:
+            continue
+        tags = e.get("tags", {})
+        amenity = tags.get("amenity", "")
+        if amenity in ("fountain", "drinking_water", "toilets", "restaurant", "cafe"):
+            x, z = project(e["lat"], e["lon"])
+            h = round(terrain(x, z), 2)
+            amenities_out.append({
+                "type": amenity,
+                "name": tags.get("name", ""),
+                "position": [x, h, z],
+            })
+    # Also from ways (fountain basins, restaurant buildings, etc.)
+    for wid, tags in ways_tags.items():
+        amenity = tags.get("amenity", "")
+        if amenity in ("fountain", "toilets", "restaurant", "cafe", "theatre"):
+            nids = ways_nodes.get(wid, [])
+            pts_2d = [project(*nodes_ll[nid]) for nid in nids if nid in nodes_ll]
+            if pts_2d:
+                cx = sum(p[0] for p in pts_2d) / len(pts_2d)
+                cz = sum(p[1] for p in pts_2d) / len(pts_2d)
+                amenities_out.append({
+                    "type": amenity,
+                    "name": tags.get("name", ""),
+                    "position": [cx, round(terrain(cx, cz), 2), cz],
+                })
+    if amenities_out:
+        print(f"  Amenities: {len(amenities_out)}")
+
+    # -------------------------------------------------------------------
     # Write park_data.json
     # -------------------------------------------------------------------
     out = {
@@ -913,6 +1166,7 @@ def main() -> None:
         "paths":              paths_out,
         "boundary":           boundary_pts,
         "water":              water_out,
+        "streams":            streams_out,
         "trees":              trees_out,
         "buildings":          buildings_out,
         "barriers":           barriers_out,
@@ -920,6 +1174,11 @@ def main() -> None:
         "benches":            benches_out,
         "lampposts":          lampposts_out,
         "trash_cans":         trash_cans_out,
+        "landuse":            landuse_out,
+        "bridge_outlines":    bridge_outlines,
+        "tunnel_outlines":    tunnel_outlines,
+        "rocks":              rocks_out,
+        "amenities":          amenities_out,
     }
 
     with open("park_data.json", "w") as fh:
@@ -929,6 +1188,7 @@ def main() -> None:
     print(f"\nPaths:      {len(paths_out):5d}  (skipped {skipped_pts} with missing nodes)")
     print(f"Boundary:   {len(boundary_pts):5d}  points")
     print(f"Water:      {len(water_out):5d}  bodies")
+    print(f"Streams:    {len(streams_out):5d}")
     print(f"Trees:      {len(trees_out):5d}")
     print(f"Buildings:  {len(buildings_out):5d}")
     print(f"Barriers:   {len(barriers_out):5d}")
@@ -936,6 +1196,11 @@ def main() -> None:
     print(f"Benches:    {len(benches_out):5d}")
     print(f"Lampposts:  {len(lampposts_out):5d}")
     print(f"Trash cans: {len(trash_cans_out):5d}")
+    print(f"Landuse:    {len(landuse_out):5d}  zones")
+    print(f"Bridges:    {len(bridge_outlines):5d}  outlines")
+    print(f"Tunnels:    {len(tunnel_outlines):5d}  outlines")
+    print(f"Rocks:      {len(rocks_out):5d}  outcrops")
+    print(f"Amenities:  {len(amenities_out):5d}")
     print(f"\nSaved → park_data.json  ({size_kb:.0f} KB)")
 
 

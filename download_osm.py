@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Download Central Park OSM data: footways, paths, cycleway, steps,
+Download Central Park OSM data: paths, drives, water, trees, buildings,
+barriers, furniture, statues, bridges, tunnels, landuse, amenities,
 and the park boundary relation.
 
 Saves raw Overpass JSON to central_park_osm.json.
@@ -16,65 +17,92 @@ import urllib.request
 # Bounding box: south, west, north, east
 BBOX = "40.7644,-73.9816,40.7994,-73.9492"
 
-# We want:
-#   • Ways tagged highway=footway/path/pedestrian/steps/cycleway/track
-#   • The Central Park boundary relation
-#   • Water bodies: closed ways and relations with natural=water
 # >;  recursively fetches all nodes referenced by ways and relations.
 QUERY = f"""[out:json][timeout:180];
 (
-  way["highway"~"^(footway|path|pedestrian|steps|cycleway|track)$"]
+  // --- Paths: footways, drives, bridle paths, cycleways ---
+  way["highway"~"^(footway|path|pedestrian|steps|cycleway|track|service|secondary|bridleway)$"]
     ({BBOX});
+
+  // --- Park boundary ---
   relation["name"="Central Park"]
     ({BBOX});
-  way["natural"="water"]
-    ({BBOX});
-  relation["natural"="water"]
-    ({BBOX});
-  node["natural"="tree"]
-    ({BBOX});
-  way["building"]
-    ({BBOX});
-  way["barrier"]
-    ({BBOX});
-  node["barrier"]
-    ({BBOX});
-  way["historic"]
-    ({BBOX});
-  node["historic"]
-    ({BBOX});
-  node["tourism"="artwork"]
-    ({BBOX});
-  way["man_made"]
-    ({BBOX});
-  node["man_made"]
-    ({BBOX});
-  node["amenity"="bench"]
-    ({BBOX});
-  way["amenity"="bench"]
-    ({BBOX});
-  node["highway"="street_lamp"]
-    ({BBOX});
-  node["amenity"="waste_basket"]
-    ({BBOX});
-  way["natural"="wood"]
-    ({BBOX});
-  relation["natural"="wood"]
-    ({BBOX});
-  way["landuse"="forest"]
-    ({BBOX});
-  relation["landuse"="forest"]
-    ({BBOX});
-  way["leisure"="nature_reserve"]
-    ({BBOX});
-  relation["leisure"="nature_reserve"]
-    ({BBOX});
-  way["leisure"="garden"]
-    ({BBOX});
-  relation["leisure"="garden"]
-    ({BBOX});
-  way["landuse"="grass"]
-    ({BBOX});
+
+  // --- Water ---
+  way["natural"="water"]({BBOX});
+  relation["natural"="water"]({BBOX});
+  way["waterway"~"^(stream|river)$"]({BBOX});
+  node["waterway"="waterfall"]({BBOX});
+
+  // --- Trees ---
+  node["natural"="tree"]({BBOX});
+
+  // --- Buildings ---
+  way["building"]({BBOX});
+
+  // --- Barriers ---
+  way["barrier"]({BBOX});
+  node["barrier"]({BBOX});
+
+  // --- Historic / artwork / monuments ---
+  way["historic"]({BBOX});
+  node["historic"]({BBOX});
+  node["tourism"="artwork"]({BBOX});
+  way["tourism"="artwork"]({BBOX});
+
+  // --- Man-made structures (bridges, tunnels, etc.) ---
+  way["man_made"]({BBOX});
+  node["man_made"]({BBOX});
+
+  // --- Furniture ---
+  node["amenity"="bench"]({BBOX});
+  way["amenity"="bench"]({BBOX});
+  node["highway"="street_lamp"]({BBOX});
+  node["amenity"="waste_basket"]({BBOX});
+
+  // --- Amenities ---
+  node["amenity"="fountain"]({BBOX});
+  way["amenity"="fountain"]({BBOX});
+  node["amenity"="drinking_water"]({BBOX});
+  node["amenity"="toilets"]({BBOX});
+  way["amenity"="toilets"]({BBOX});
+  node["amenity"="restaurant"]({BBOX});
+  node["amenity"="cafe"]({BBOX});
+  way["amenity"="restaurant"]({BBOX});
+  way["amenity"="cafe"]({BBOX});
+  way["amenity"="theatre"]({BBOX});
+
+  // --- Woodland / landuse ---
+  way["natural"="wood"]({BBOX});
+  relation["natural"="wood"]({BBOX});
+  way["landuse"="forest"]({BBOX});
+  relation["landuse"="forest"]({BBOX});
+  way["leisure"="nature_reserve"]({BBOX});
+  relation["leisure"="nature_reserve"]({BBOX});
+  way["leisure"="garden"]({BBOX});
+  relation["leisure"="garden"]({BBOX});
+  way["landuse"="grass"]({BBOX});
+
+  // --- Leisure / sport ---
+  way["leisure"="pitch"]({BBOX});
+  way["leisure"="playground"]({BBOX});
+  way["leisure"="sports_centre"]({BBOX});
+  way["leisure"="swimming_pool"]({BBOX});
+  way["leisure"="track"]({BBOX});
+  way["leisure"="dog_park"]({BBOX});
+
+  // --- Natural features ---
+  node["natural"="rock"]({BBOX});
+  way["natural"="rock"]({BBOX});
+  way["natural"="cliff"]({BBOX});
+  way["natural"="wetland"]({BBOX});
+  way["natural"="shrubbery"]({BBOX});
+
+  // --- Tourism ---
+  node["tourism"="attraction"]({BBOX});
+  way["tourism"="attraction"]({BBOX});
+  node["tourism"="information"]({BBOX});
+  node["tourism"="viewpoint"]({BBOX});
 );
 out body;
 >;

@@ -22,6 +22,9 @@ var _hm_max_h:      float   = 1.0
 # Cached furniture GLB meshes — loaded once, shared by _build_furniture + _build_trash_cans
 var _furn_glb_meshes: Dictionary = {}
 
+# Cached vegetation meshes — Quaternius Stylized Nature MegaKit (CC0)
+var _veg_meshes: Dictionary = {}  # name -> Mesh
+
 # Spatial hash of bench positions — used to keep undergrowth clear in front
 var _bench_grid:    Dictionary = {}  # Vector2i → true
 const BENCH_GRID_CELL := 4.0
@@ -65,6 +68,7 @@ var gpu_path_seg_tex_w: int = 256
 var gpu_path_list_tex_w: int = 512
 var tunnel_depressions: Array = []  # stairwell depressions for terrain carving
 var boundary_polygon: PackedVector2Array  # XZ boundary for player clamping
+var landuse_zones: Array = []             # from park_data.json: type, name, points
 
 
 # ---------------------------------------------------------------------------
@@ -93,6 +97,9 @@ func _hw_width(hw: String) -> float:
 		"cycleway":   return 3.5
 		"steps":      return 2.5
 		"track":      return 3.0
+		"service":    return 8.0   # Park loop drives
+		"secondary":  return 10.0  # Transverse roads
+		"bridleway":  return 3.5   # Bridle paths
 		_:            return 2.5   # "path" and unknowns
 
 
@@ -460,18 +467,14 @@ func _is_excluded(x: float, z: float) -> bool:
 # so we use a hardcoded rectangle derived from the park's known geometry:
 #   South center (-642.8, 1966.7) to North center (648.8, -1842.2)
 #   Length 4022m, perpendicular half-width 600m (generous, facades hide overshoot).
-var _park_rect: PackedVector2Array = PackedVector2Array([
-	Vector2(-1211.0, 1774.0),   # SW
-	Vector2(-74.6, 2159.4),     # SE
-	Vector2(1217.0, -1649.5),   # NE
-	Vector2(80.6, -2034.9),     # NW
-])
-
-# AABB of _park_rect for fast rejection in _in_boundary()
-var _park_aabb_min_x: float = -1211.0
-var _park_aabb_max_x: float = 1217.0
-var _park_aabb_min_z: float = -2034.9
-var _park_aabb_max_z: float = 2159.4
+# Rasterized boundary bitmap — populated from OSM boundary_polygon in _ready().
+# Each bit in the grid = 1 if inside park, 0 if outside.
+var _bnd_bitmap: PackedByteArray
+var _bnd_cell: float = 4.0  # metres per cell
+var _bnd_min_x: float = 0.0
+var _bnd_min_z: float = 0.0
+var _bnd_nx: int = 0
+var _bnd_nz: int = 0
 
 static func _tree_pos(entry) -> Array:
 	## Extract [x, h, z] from tree entry (dict or legacy array).
@@ -480,28 +483,58 @@ static func _tree_pos(entry) -> Array:
 	return entry
 
 
+func _rasterize_boundary() -> void:
+	## Scanline-rasterize boundary_polygon into _bnd_bitmap for O(1) lookups.
+	var poly := boundary_polygon
+	if poly.size() < 3:
+		return
+	# Compute AABB
+	var mn_x: float = poly[0].x; var mx_x: float = poly[0].x
+	var mn_z: float = poly[0].y; var mx_z: float = poly[0].y
+	for i in range(1, poly.size()):
+		mn_x = minf(mn_x, poly[i].x); mx_x = maxf(mx_x, poly[i].x)
+		mn_z = minf(mn_z, poly[i].y); mx_z = maxf(mx_z, poly[i].y)
+	# Pad by one cell
+	_bnd_min_x = mn_x - _bnd_cell
+	_bnd_min_z = mn_z - _bnd_cell
+	_bnd_nx = int(ceilf((mx_x - _bnd_min_x) / _bnd_cell)) + 2
+	_bnd_nz = int(ceilf((mx_z - _bnd_min_z) / _bnd_cell)) + 2
+	_bnd_bitmap.resize(_bnd_nx * _bnd_nz)
+	_bnd_bitmap.fill(0)
+	# Scanline fill: for each Z row, find X intersections with polygon edges
+	var n := poly.size()
+	for row in range(_bnd_nz):
+		var z := _bnd_min_z + (float(row) + 0.5) * _bnd_cell
+		var x_hits: Array = []
+		var j := n - 1
+		for i in range(n):
+			var zi := poly[i].y; var zj := poly[j].y
+			if (zi > z) != (zj > z):
+				var xi := poly[i].x; var xj := poly[j].x
+				x_hits.append(xi + (z - zi) / (zj - zi) * (xj - xi))
+			j = i
+		x_hits.sort()
+		# Fill between pairs of intersections
+		for hi in range(0, x_hits.size() - 1, 2):
+			var col0 := int(floorf((x_hits[hi] - _bnd_min_x) / _bnd_cell))
+			var col1 := int(floorf((x_hits[hi + 1] - _bnd_min_x) / _bnd_cell))
+			col0 = clampi(col0, 0, _bnd_nx - 1)
+			col1 = clampi(col1, 0, _bnd_nx - 1)
+			for col in range(col0, col1 + 1):
+				_bnd_bitmap[row * _bnd_nx + col] = 1
+	var inside_count := 0
+	for b in _bnd_bitmap:
+		if b: inside_count += 1
+	print("ParkLoader: boundary rasterized %dx%d grid, %d cells inside" % [_bnd_nx, _bnd_nz, inside_count])
+
+
 func _in_boundary(px: float, pz: float) -> bool:
-	## Point-in-rectangle test using the park's tilted rectangular boundary.
-	# Fast AABB rejection first (avoids polygon test for ~60% of calls)
-	if px < _park_aabb_min_x or px > _park_aabb_max_x:
+	## O(1) bitmap lookup against rasterized OSM boundary polygon.
+	var col := int(floorf((px - _bnd_min_x) / _bnd_cell))
+	var row := int(floorf((pz - _bnd_min_z) / _bnd_cell))
+	if col < 0 or col >= _bnd_nx or row < 0 or row >= _bnd_nz:
 		return false
-	if pz < _park_aabb_min_z or pz > _park_aabb_max_z:
-		return false
-	# Ray-casting for 4-vertex convex polygon
-	var inside := false
-	var n := _park_rect.size()
-	var j := n - 1
-	for i in range(n):
-		var zi := _park_rect[i].y
-		var zj := _park_rect[j].y
-		if (zi > pz) != (zj > pz):
-			var xi := _park_rect[i].x
-			var xj := _park_rect[j].x
-			var x_cross := xi + (pz - zi) / (zj - zi) * (xj - xi)
-			if px < x_cross:
-				inside = not inside
-		j = i
-	return inside
+	return _bnd_bitmap[row * _bnd_nx + col] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -529,6 +562,7 @@ func _ready() -> void:
 		boundary_polygon.resize(raw_boundary.size())
 		for i in range(raw_boundary.size()):
 			boundary_polygon[i] = Vector2(float(raw_boundary[i][0]), float(raw_boundary[i][1]))
+	_rasterize_boundary()
 
 	# Cache data arrays once — avoids repeated Dictionary.get() calls
 	var paths: Array = data.get("paths", [])
@@ -541,11 +575,16 @@ func _ready() -> void:
 	var lampposts: Array = data.get("lampposts", [])
 	var trash_cans: Array = data.get("trash_cans", [])
 	var boundary: Array = data.get("boundary", [])
+	landuse_zones = data.get("landuse", [])
+	var streams: Array = data.get("streams", [])
+	var amenities: Array = data.get("amenities", [])
 
 	print("ParkLoader: building path meshes…")
+	_load_vegetation_meshes()
 	_build_buildings(buildings)
 	_build_paths(paths)
 	_build_water(water)
+	_build_streams(streams)
 	_populate_water_grid(water)
 	_build_labels(water)
 	_build_trees(trees)
@@ -554,26 +593,24 @@ func _ready() -> void:
 	_build_barriers(barriers)
 	_build_staircases(paths)
 	_build_statues(statues)
+	_build_amenities(amenities)
+	_build_boats(water)
+	_build_waterfowl(water)
 	# Disabled — not ready yet:
-	#_build_boats(water)
-	#_build_waterfowl(water)
 	#_build_pedestrians(paths)
 	_build_boundary(boundary)
 	_build_perimeter_wall(boundary)
 	_build_boundary_facades()
-	# Procedural vegetation disabled — only real-data features above.
-	# Re-enable selectively as real-world data sources become available:
-	#_build_shore_vegetation(water)
-	#_build_undergrowth(trees, paths)
+	# Vegetation — Quaternius Stylized Nature MegaKit (CC0)
+	_build_undergrowth(trees, paths)
+	_build_blossoms(trees)
+	_build_wildflowers(trees, water)
+	_build_meadow_grass(trees)
+	_build_leaf_litter(trees)
+	_build_squirrels(trees)
+	# Remaining vegetation disabled:
 	#_build_rocks(trees, water)
-	#_build_tree_dirt(trees)
-	#_build_blossoms(trees)
-	#_build_wildflowers(trees, water)
-	#_build_meadow_grass(trees)
-	#_build_ground_cover(trees, water, buildings)
-	#_build_leaf_litter(trees)
 	#_build_grass_blades(trees)
-	#_build_squirrels(trees)
 	print("ParkLoader: done")
 
 
@@ -3837,6 +3874,79 @@ func _build_water(water: Array) -> void:
 	add_child(mi)
 
 
+func _build_streams(streams: Array) -> void:
+	if streams.is_empty():
+		return
+	var verts := PackedVector3Array()
+	var normals := PackedVector3Array()
+	const STREAM_W := 1.5  # half-width in metres
+
+	for stream in streams:
+		var pts: Array = stream.get("points", [])
+		if pts.size() < 2:
+			continue
+		# Build ribbon mesh along polyline
+		for i in range(pts.size() - 1):
+			var x0: float = pts[i][0]
+			var y0: float = pts[i][1]
+			var z0: float = pts[i][2]
+			var x1: float = pts[i + 1][0]
+			var y1: float = pts[i + 1][1]
+			var z1: float = pts[i + 1][2]
+
+			# Direction and perpendicular
+			var dx := x1 - x0
+			var dz := z1 - z0
+			var ln := sqrt(dx * dx + dz * dz)
+			if ln < 0.01:
+				continue
+			var nx := -dz / ln * STREAM_W
+			var nz := dx / ln * STREAM_W
+
+			# Clamp Y to terrain + small offset so stream sits on surface
+			var ty0 := _terrain_y(x0, z0) + 0.05
+			var ty1 := _terrain_y(x1, z1) + 0.05
+			y0 = maxf(y0, ty0)
+			y1 = maxf(y1, ty1)
+
+			# Two triangles per segment
+			var a := Vector3(x0 - nx, y0, z0 - nz)
+			var b := Vector3(x0 + nx, y0, z0 + nz)
+			var c := Vector3(x1 + nx, y1, z1 + nz)
+			var d := Vector3(x1 - nx, y1, z1 - nz)
+			verts.append(a); verts.append(b); verts.append(c)
+			verts.append(a); verts.append(c); verts.append(d)
+			for _j in 6:
+				normals.append(Vector3.UP)
+
+	if verts.is_empty():
+		return
+
+	var arrays: Array = []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts
+	arrays[Mesh.ARRAY_NORMAL] = normals
+
+	var s_mesh := ArrayMesh.new()
+	s_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+
+	var mat := ShaderMaterial.new()
+	mat.shader = _get_shader("water", _water_shader_code())
+	if _hm_texture:
+		mat.set_shader_parameter("heightmap_tex", _hm_texture)
+		mat.set_shader_parameter("hm_world_size", _hm_world_size)
+		mat.set_shader_parameter("hm_min_h",      _hm_min_h)
+		mat.set_shader_parameter("hm_range",      _hm_max_h - _hm_min_h)
+		mat.set_shader_parameter("hm_res",        float(_hm_width))
+	s_mesh.surface_set_material(0, mat)
+
+	var s_mi := MeshInstance3D.new()
+	s_mi.mesh = s_mesh
+	s_mi.name = "Streams"
+	add_child(s_mi)
+	print("  Streams: %d polylines, %d triangles" % [streams.size(), verts.size() / 3])
+
+
 func _water_shader_code() -> String:
 	return """shader_type spatial;
 render_mode cull_disabled;
@@ -4818,6 +4928,60 @@ func _collect_named_meshes(node: Node, out: Dictionary) -> void:
 		_collect_named_meshes(child, out)
 
 
+# ---------------------------------------------------------------------------
+# Vegetation mesh loader — Quaternius Stylized Nature MegaKit (CC0)
+# ---------------------------------------------------------------------------
+
+func _load_vegetation_meshes() -> void:
+	## Load all vegetation glTF models from models/vegetation/.
+	## Each model is one mesh at metre scale, Y-up, with shared PNG textures.
+	var veg_models := [
+		"Bush_Common", "Bush_Common_Flowers",
+		"Fern_1",
+		"Flower_3_Group", "Flower_3_Single", "Flower_4_Group", "Flower_4_Single",
+		"Grass_Common_Short", "Grass_Common_Tall", "Grass_Wispy_Short", "Grass_Wispy_Tall",
+		"Clover_1", "Clover_2",
+		"Plant_1", "Plant_1_Big",
+		"Mushroom_Common",
+		"Rock_Medium_1", "Rock_Medium_2", "Rock_Medium_3",
+	]
+	for model_name in veg_models:
+		var gltf_path := ProjectSettings.globalize_path(
+			"res://models/vegetation/%s.gltf" % model_name)
+		if not FileAccess.file_exists(gltf_path):
+			continue
+		var gltf_doc := GLTFDocument.new()
+		var gltf_state := GLTFState.new()
+		var err := gltf_doc.append_from_file(gltf_path, gltf_state)
+		if err != OK:
+			print("WARNING: vegetation load failed: %s (error %d)" % [model_name, err])
+			continue
+		var root: Node = gltf_doc.generate_scene(gltf_state)
+		if root == null:
+			continue
+		var meshes: Array = []
+		_collect_meshes(root, meshes)
+		if not meshes.is_empty():
+			# Tint foliage materials for coherent look under our lighting.
+			# Flower/bush textures are very saturated — desaturate toward
+			# muted autumn tones so they blend with the environment.
+			var m: Mesh = meshes[0]
+			var is_flower: bool = model_name.begins_with("Flower") or model_name == "Bush_Common_Flowers"
+			for si in m.get_surface_count():
+				var smat: Material = m.surface_get_material(si)
+				if smat is StandardMaterial3D:
+					var sm: StandardMaterial3D = smat as StandardMaterial3D
+					if is_flower:
+						# Desaturate flowers: pull toward warm gray
+						sm.albedo_color = Color(0.65, 0.60, 0.55, 1.0)
+					else:
+						sm.albedo_color = Color(0.85, 0.85, 0.85, 1.0)
+					sm.roughness = maxf(sm.roughness, 0.55)
+			_veg_meshes[model_name] = m
+		root.queue_free()
+	print("Vegetation: loaded %d meshes" % _veg_meshes.size())
+
+
 func _build_trees(trees: Array) -> void:
 	if trees.is_empty():
 		return
@@ -4876,8 +5040,8 @@ func _build_trees(trees: Array) -> void:
 		if meshes.is_empty():
 			print("WARNING: no meshes found in %s" % species)
 			continue
-		# Darken leaf materials — Quaternius GLB leaves are too bright under our lighting.
-		# Materials are shared across variants, so only modify once (on first mesh).
+		# Tint materials — warm autumn palette, coherent with terrain grass.
+		# Leaves: warm yellow-green tint. Bark: warm neutral.
 		if not meshes.is_empty():
 			var first_m: Mesh = meshes[0]
 			for si in first_m.get_surface_count():
@@ -4885,10 +5049,10 @@ func _build_trees(trees: Array) -> void:
 				if smat is StandardMaterial3D:
 					var sm: StandardMaterial3D = smat as StandardMaterial3D
 					if sm.transparency != BaseMaterial3D.TRANSPARENCY_DISABLED:
-						sm.albedo_color = Color(0.50, 0.50, 0.50, 1.0)
+						sm.albedo_color = Color(0.55, 0.50, 0.30, 1.0)  # warm autumn leaves
 						sm.roughness = maxf(sm.roughness, 0.65)
 					else:
-						sm.albedo_color = Color(0.75, 0.75, 0.75, 1.0)
+						sm.albedo_color = Color(0.72, 0.68, 0.60, 1.0)  # warm bark
 		species_meshes[species] = meshes
 		species_heights[species] = max_h
 		print("Trees: loaded %s — %d variants, raw=%.4f actual=%.1fm" % [species, meshes.size(), max_h, max_h * node_scale])
@@ -5785,98 +5949,232 @@ void fragment() {
 # Undergrowth bushes – scattered near trees and along path edges
 # ---------------------------------------------------------------------------
 func _build_undergrowth(trees: Array, paths: Array) -> void:
-	if trees.is_empty():
+	## Bushes, ferns, flowers, grass clumps — all Quaternius MegaKit models.
+	if trees.is_empty() or _veg_meshes.is_empty():
 		return
 
 	var rng := RandomNumberGenerator.new()
 	rng.seed = 77777
 
-	var bush_mat  := _make_leaf_mat(true)   # reuse LeafSet005 PBR textures
-	bush_mat.set_shader_parameter("understorey", 1.0)
-	var bush_mesh := _make_bush_leaf_mesh()
-	var xforms: Array = []
+	# Mesh pools — pick randomly from available variants
+	var bush_meshes: Array = []
+	for n in ["Bush_Common", "Bush_Common_Flowers"]:
+		if _veg_meshes.has(n): bush_meshes.append(_veg_meshes[n])
+	var fern_meshes: Array = []
+	for n in ["Fern_1"]:
+		if _veg_meshes.has(n): fern_meshes.append(_veg_meshes[n])
+	var flower_meshes: Array = []
+	for n in ["Flower_3_Single", "Flower_3_Group", "Flower_4_Single", "Flower_4_Group"]:
+		if _veg_meshes.has(n): flower_meshes.append(_veg_meshes[n])
+	var grass_meshes: Array = []
+	for n in ["Grass_Common_Short", "Grass_Common_Tall", "Grass_Wispy_Short", "Grass_Wispy_Tall"]:
+		if _veg_meshes.has(n): grass_meshes.append(_veg_meshes[n])
+	var cover_meshes: Array = []
+	for n in ["Clover_1", "Clover_2", "Plant_1"]:
+		if _veg_meshes.has(n): cover_meshes.append(_veg_meshes[n])
 
-	# Scatter 1–4 bushes within 3–12m of ~80% of trees
-	for i in trees.size():
-		rng.seed = i * 314159 + 271828
-		if rng.randf() > 0.8:
-			continue
-		var pt: Array = _tree_pos(trees[i])
-		var tx := float(pt[0]); var tz := float(pt[2])
-		if not _in_boundary(tx, tz):
-			continue
-		var n_bushes := rng.randi_range(1, 4)
-		for _b in range(n_bushes):
-			var angle := rng.randf() * TAU
-			var dist  := rng.randf_range(3.0, 12.0)
-			var bx := tx + cos(angle) * dist
-			var bz := tz + sin(angle) * dist
-			# Skip if near a bridge or outside boundary
-			var bgk := Vector2i(int(floor(bx / BRIDGE_GRID_CELL)), int(floor(bz / BRIDGE_GRID_CELL)))
-			if _bridge_grid.has(bgk):
-				continue
-			if not _in_boundary(bx, bz):
-				continue
-			var by := _terrain_y(bx, bz)
-			var r  := rng.randf_range(1.2, 3.0)
-			var h  := rng.randf_range(0.8, 2.2)
-			var rot := rng.randf() * TAU
-			var basis := Basis(
-				Vector3(cos(rot) * r, 0.0, sin(rot) * r),
-				Vector3(0.0, h, 0.0),
-				Vector3(-sin(rot) * r, 0.0, cos(rot) * r))
-			xforms.append(Transform3D(basis, Vector3(bx, by + h * 0.3, bz)))
+	# All vegetation collects into per-mesh transform arrays
+	var xf_by_mesh: Dictionary = {}  # Mesh -> Array[Transform3D]
 
-	# Scatter bushes along footway/path edges (every ~6m, 0.5–3m offset)
-	for path in paths:
-		var hw: String = str(path.get("highway", "path"))
-		if hw != "footway" and hw != "path":
-			continue
-		if bool(path.get("bridge", false)) or bool(path.get("tunnel", false)):
-			continue
-		var pts: Array = path["points"]
-		if pts.size() < 2:
-			continue
-		var half_w := _hw_width(hw) * 0.5
-		var cum := 0.0
-		var next_at := rng.randf_range(3.0, 6.0)
-		for pi in range(1, pts.size()):
-			var dx := float(pts[pi][0]) - float(pts[pi-1][0])
-			var dz := float(pts[pi][2]) - float(pts[pi-1][2])
-			cum += sqrt(dx * dx + dz * dz)
-			if cum >= next_at:
-				cum = 0.0
-				next_at = rng.randf_range(3.0, 6.0)
-				var px := float(pts[pi][0]); var pz := float(pts[pi][2])
-				var side := 1.0 if rng.randf() > 0.5 else -1.0
-				var off := half_w + rng.randf_range(0.5, 3.0)
-				# Perpendicular offset
-				var tlen := sqrt(dx * dx + dz * dz)
-				if tlen < 0.01:
+	# --- Helper to add a placement ---
+	var _add := func(mesh: Mesh, tf: Transform3D) -> void:
+		if not xf_by_mesh.has(mesh):
+			xf_by_mesh[mesh] = []
+		xf_by_mesh[mesh].append(tf)
+
+	# ===== BUSHES: 1-2 near ~40% of trees, 3-10m radius =====
+	if not bush_meshes.is_empty():
+		for i in trees.size():
+			rng.seed = i * 314159 + 271828
+			if rng.randf() > 0.40:
+				continue
+			var pt: Array = _tree_pos(trees[i])
+			var tx := float(pt[0]); var tz := float(pt[2])
+			if not _in_boundary(tx, tz):
+				continue
+			var n_bushes := rng.randi_range(1, 2)
+			for _b in range(n_bushes):
+				var angle := rng.randf() * TAU
+				var dist  := rng.randf_range(3.0, 10.0)
+				var bx := tx + cos(angle) * dist
+				var bz := tz + sin(angle) * dist
+				if _bridge_grid.has(Vector2i(int(floor(bx / BRIDGE_GRID_CELL)), int(floor(bz / BRIDGE_GRID_CELL)))):
 					continue
-				var nx := -dz / tlen * side; var nz := dx / tlen * side
-				var bx := px + nx * off; var bz := pz + nz * off
-				# Skip if in front of a bench or near a bridge
-				var gk := Vector2i(int(floor(bx / BENCH_GRID_CELL)), int(floor(bz / BENCH_GRID_CELL)))
-				if _bench_grid.has(gk):
-					continue
-				var bgk := Vector2i(int(floor(bx / BRIDGE_GRID_CELL)), int(floor(bz / BRIDGE_GRID_CELL)))
-				if _bridge_grid.has(bgk):
-					continue
-				if not _in_boundary(bx, bz):
+				if not _in_boundary(bx, bz) or _is_on_path(bx, bz):
 					continue
 				var by := _terrain_y(bx, bz)
-				var r  := rng.randf_range(1.0, 2.5)
-				var h  := rng.randf_range(0.6, 1.8)
+				# Bush_Common is ~1.6m tall, scale 0.5-1.2 for variety
+				var s := rng.randf_range(0.5, 1.2)
 				var rot := rng.randf() * TAU
-				var basis := Basis(
-					Vector3(cos(rot) * r, 0.0, sin(rot) * r),
-					Vector3(0.0, h, 0.0),
-					Vector3(-sin(rot) * r, 0.0, cos(rot) * r))
-				xforms.append(Transform3D(basis, Vector3(bx, by + h * 0.3, bz)))
+				var basis := Basis(Vector3.UP, rot) * Basis().scaled(Vector3(s, s, s))
+				var mesh: Mesh = bush_meshes[rng.randi() % bush_meshes.size()]
+				_add.call(mesh, Transform3D(basis, Vector3(bx, by, bz)))
 
-	print("ParkLoader: undergrowth bushes = ", xforms.size())
-	_spawn_multimesh(bush_mesh, bush_mat, xforms, "Undergrowth")
+	# ===== FERNS: near ~25% of trees, 2-8m radius =====
+	if not fern_meshes.is_empty():
+		for i in trees.size():
+			rng.seed = i * 667788 + 112233
+			if i % 4 != 0:
+				continue
+			if rng.randf() > 0.60:
+				continue
+			var pt: Array = _tree_pos(trees[i])
+			var tx := float(pt[0]); var tz := float(pt[2])
+			var n_ferns := rng.randi_range(2, 4)
+			for _fi in n_ferns:
+				var angle := rng.randf() * TAU
+				var dist := rng.randf_range(2.0, 8.0)
+				var fx := tx + cos(angle) * dist
+				var fz := tz + sin(angle) * dist
+				if not _in_boundary(fx, fz) or _is_on_path(fx, fz):
+					continue
+				var fy := _terrain_y(fx, fz)
+				# Fern_1 AABB after load is ~2.8×0.8m — scale 0.5-1.2 for realistic fern
+				var s := rng.randf_range(0.5, 1.2)
+				var rot := rng.randf() * TAU
+				var basis := Basis(Vector3.UP, rot) * Basis().scaled(Vector3(s, s, s))
+				_add.call(fern_meshes[0], Transform3D(basis, Vector3(fx, fy, fz)))
+
+	# ===== WILDFLOWERS: meadow patches via FBM noise =====
+	if not flower_meshes.is_empty():
+		rng.seed = 112233
+		# Scan on a 20m grid, place clusters where noise > threshold
+		for gx in range(-80, 80):
+			for gz in range(-130, 130):
+				var wx := float(gx) * 20.0
+				var wz := float(gz) * 20.0
+				if not _in_boundary(wx, wz):
+					continue
+				# Simple hash-based pseudo noise for meadow patches
+				rng.seed = (gx * 73856093) ^ (gz * 19349663)
+				if rng.randf() > 0.08:  # ~8% of grid cells get flowers
+					continue
+				if _is_on_path(wx, wz):
+					continue
+				var n_flowers := rng.randi_range(3, 8)
+				for _fi in n_flowers:
+					var fx := wx + rng.randf_range(-8.0, 8.0)
+					var fz := wz + rng.randf_range(-8.0, 8.0)
+					if _is_on_path(fx, fz):
+						continue
+					var fy := _terrain_y(fx, fz)
+					# Flowers are 1.5-2.5m tall raw — scale 0.3-0.6 for wildflowers
+					var s := rng.randf_range(0.3, 0.6)
+					var rot := rng.randf() * TAU
+					var basis := Basis(Vector3.UP, rot) * Basis().scaled(Vector3(s, s, s))
+					var mesh: Mesh = flower_meshes[rng.randi() % flower_meshes.size()]
+					_add.call(mesh, Transform3D(basis, Vector3(fx, fy, fz)))
+
+	# ===== GRASS CLUMPS: near paths and in meadow areas =====
+	if not grass_meshes.is_empty():
+		rng.seed = 445566
+		for path in paths:
+			var hw: String = str(path.get("highway", "path"))
+			if hw != "footway" and hw != "path":
+				continue
+			if bool(path.get("bridge", false)) or bool(path.get("tunnel", false)):
+				continue
+			var pts: Array = path["points"]
+			if pts.size() < 2:
+				continue
+			var half_w := _hw_width(hw) * 0.5
+			var cum := 0.0
+			var next_at := rng.randf_range(2.0, 5.0)
+			for pi in range(1, pts.size()):
+				var dx := float(pts[pi][0]) - float(pts[pi-1][0])
+				var dz := float(pts[pi][2]) - float(pts[pi-1][2])
+				cum += sqrt(dx * dx + dz * dz)
+				if cum >= next_at:
+					cum = 0.0
+					next_at = rng.randf_range(2.0, 5.0)
+					var px := float(pts[pi][0]); var pz := float(pts[pi][2])
+					var side := 1.0 if rng.randf() > 0.5 else -1.0
+					var tlen := sqrt(dx * dx + dz * dz)
+					if tlen < 0.01:
+						continue
+					var nx := -dz / tlen * side; var nz := dx / tlen * side
+					var off := half_w + rng.randf_range(0.3, 2.0)
+					var gx := px + nx * off; var gz := pz + nz * off
+					if not _in_boundary(gx, gz):
+						continue
+					var gy := _terrain_y(gx, gz)
+					# Grass models are ~1-1.9m tall, scale 0.3-0.6
+					var s := rng.randf_range(0.3, 0.6)
+					var rot := rng.randf() * TAU
+					var basis := Basis(Vector3.UP, rot) * Basis().scaled(Vector3(s, s, s))
+					var mesh: Mesh = grass_meshes[rng.randi() % grass_meshes.size()]
+					_add.call(mesh, Transform3D(basis, Vector3(gx, gy, gz)))
+
+	# ===== GROUND COVER: clover/plants near ~15% of trees =====
+	if not cover_meshes.is_empty():
+		for i in trees.size():
+			rng.seed = i * 889900 + 556677
+			if rng.randf() > 0.15:
+				continue
+			var pt: Array = _tree_pos(trees[i])
+			var tx := float(pt[0]); var tz := float(pt[2])
+			var n_cover := rng.randi_range(2, 5)
+			for _ci in n_cover:
+				var angle := rng.randf() * TAU
+				var dist := rng.randf_range(1.5, 6.0)
+				var cx := tx + cos(angle) * dist
+				var cz := tz + sin(angle) * dist
+				if not _in_boundary(cx, cz) or _is_on_path(cx, cz):
+					continue
+				var cy := _terrain_y(cx, cz)
+				# Clover/plants are ~0.8-1.4m, scale 0.3-0.7
+				var s := rng.randf_range(0.3, 0.7)
+				var rot := rng.randf() * TAU
+				var basis := Basis(Vector3.UP, rot) * Basis().scaled(Vector3(s, s, s))
+				var mesh: Mesh = cover_meshes[rng.randi() % cover_meshes.size()]
+				_add.call(mesh, Transform3D(basis, Vector3(cx, cy, cz)))
+
+	# Spawn with spatial chunking — 100m grid cells, centroid positioning.
+	# visibility_range measures from camera to MMI position, so each chunk
+	# must be positioned at its centroid for correct distance culling.
+	const VEG_CHUNK := 100.0
+	const VEG_VIS_END := 120.0
+	var total := 0
+	var n_chunks := 0
+	for mesh: Mesh in xf_by_mesh:
+		var xf_list: Array = xf_by_mesh[mesh]
+		if xf_list.is_empty():
+			continue
+		# Bucket by spatial chunk
+		var chunks: Dictionary = {}  # "cx|cz" -> Array[Transform3D]
+		for tf: Transform3D in xf_list:
+			var cx := int(floorf(tf.origin.x / VEG_CHUNK))
+			var cz := int(floorf(tf.origin.z / VEG_CHUNK))
+			var ck := "%d|%d" % [cx, cz]
+			if not chunks.has(ck):
+				chunks[ck] = []
+			chunks[ck].append(tf)
+		# Spawn one MMI per chunk
+		for ck in chunks:
+			var chunk_xf: Array = chunks[ck]
+			var sx := 0.0; var sy := 0.0; var sz := 0.0
+			for tf: Transform3D in chunk_xf:
+				sx += tf.origin.x; sy += tf.origin.y; sz += tf.origin.z
+			var n := float(chunk_xf.size())
+			var centroid := Vector3(sx / n, sy / n, sz / n)
+			var mm := MultiMesh.new()
+			mm.transform_format = MultiMesh.TRANSFORM_3D
+			mm.mesh = mesh
+			mm.instance_count = chunk_xf.size()
+			for i in chunk_xf.size():
+				var tf: Transform3D = chunk_xf[i]
+				mm.set_instance_transform(i, Transform3D(tf.basis, tf.origin - centroid))
+			var mmi := MultiMeshInstance3D.new()
+			mmi.multimesh = mm
+			mmi.position = centroid
+			mmi.name = "Veg_%d" % n_chunks
+			mmi.visibility_range_end = VEG_VIS_END
+			mmi.visibility_range_fade_mode = GeometryInstance3D.VISIBILITY_RANGE_FADE_SELF
+			add_child(mmi)
+			n_chunks += 1
+			total += chunk_xf.size()
+
+	print("ParkLoader: vegetation = %d instances, %d chunks" % [total, n_chunks])
 
 
 # ---------------------------------------------------------------------------
@@ -6616,6 +6914,110 @@ func _build_statues(statues: Array) -> void:
 
 
 # ---------------------------------------------------------------------------
+# Amenities — drinking water, toilets, theatres (inside park only)
+# ---------------------------------------------------------------------------
+func _build_amenities(amenities: Array) -> void:
+	if amenities.is_empty():
+		return
+
+	var count := 0
+	for am in amenities:
+		var pos: Array = am.get("position", [])
+		if pos.size() < 3:
+			continue
+		var x: float = pos[0]
+		var y: float = pos[1]
+		var z: float = pos[2]
+		if not _in_boundary(x, z):
+			continue
+
+		var am_type: String = am.get("type", "")
+		var am_name: String = am.get("name", "")
+
+		# Skip restaurants/cafes — they're mostly outside the park
+		if am_type == "restaurant" or am_type == "cafe":
+			if am_name.is_empty():
+				continue
+
+		var ty := _terrain_y(x, z)
+		y = maxf(y, ty)
+
+		# Named amenities get Label3D
+		if not am_name.is_empty():
+			var label := Label3D.new()
+			label.text = am_name
+			label.font_size = 28
+			label.position = Vector3(x, y + 2.5, z)
+			label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+			label.modulate = Color(0.9, 0.85, 0.7, 0.85)
+			label.outline_modulate = Color(0.1, 0.1, 0.1, 0.6)
+			label.outline_size = 4
+			label.no_depth_test = false
+			label.pixel_size = 0.01
+			add_child(label)
+
+		# Drinking water: small blue post marker
+		if am_type == "drinking_water":
+			var post := _make_cylinder(0.06, 0.8, 8)
+			var mi := MeshInstance3D.new()
+			mi.mesh = post
+			var mat := StandardMaterial3D.new()
+			mat.albedo_color = Color(0.3, 0.5, 0.8)
+			mat.roughness = 0.6
+			mi.material_override = mat
+			mi.position = Vector3(x, y + 0.4, z)
+			add_child(mi)
+
+		# Toilets: small brown marker
+		elif am_type == "toilets":
+			var post := _make_cylinder(0.1, 1.0, 8)
+			var mi := MeshInstance3D.new()
+			mi.mesh = post
+			var mat := StandardMaterial3D.new()
+			mat.albedo_color = Color(0.45, 0.35, 0.25)
+			mat.roughness = 0.7
+			mi.material_override = mat
+			mi.position = Vector3(x, y + 0.5, z)
+			add_child(mi)
+
+		count += 1
+
+	print("  Amenities: %d placed (inside park)" % count)
+
+
+func _make_cylinder(radius: float, height: float, segments: int) -> ArrayMesh:
+	var verts := PackedVector3Array()
+	var normals := PackedVector3Array()
+	for i in range(segments):
+		var a0 := TAU * float(i) / float(segments)
+		var a1 := TAU * float(i + 1) / float(segments)
+		var x0 := cos(a0) * radius
+		var z0 := sin(a0) * radius
+		var x1 := cos(a1) * radius
+		var z1 := sin(a1) * radius
+		var hh := height * 0.5
+		# Side quad (2 tris)
+		var n0 := Vector3(cos(a0), 0, sin(a0)).normalized()
+		var n1 := Vector3(cos(a1), 0, sin(a1)).normalized()
+		verts.append(Vector3(x0, -hh, z0)); normals.append(n0)
+		verts.append(Vector3(x1, -hh, z1)); normals.append(n1)
+		verts.append(Vector3(x1, hh, z1)); normals.append(n1)
+		verts.append(Vector3(x0, -hh, z0)); normals.append(n0)
+		verts.append(Vector3(x1, hh, z1)); normals.append(n1)
+		verts.append(Vector3(x0, hh, z0)); normals.append(n0)
+		# Top cap tri
+		verts.append(Vector3(0, hh, 0)); normals.append(Vector3.UP)
+		verts.append(Vector3(x0, hh, z0)); normals.append(Vector3.UP)
+		verts.append(Vector3(x1, hh, z1)); normals.append(Vector3.UP)
+	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts
+	arrays[Mesh.ARRAY_NORMAL] = normals
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	return mesh
+
+
+# ---------------------------------------------------------------------------
 # Boundary walls – invisible collision boxes along the park perimeter
 # ---------------------------------------------------------------------------
 func _build_boundary(boundary: Array) -> void:
@@ -6826,33 +7228,34 @@ func _build_boundary_facades() -> void:
 	# East side (Fifth Avenue): cream limestone co-ops, 12-18 stories
 	# Z coords: 59th=1967, 70th=1145, 72nd=996, 80th=398, 84th=99, 88th=-199, 110th=-1842
 	var east_lm := [
-		[1890.0, 1970.0, 77.0,  3],  # Plaza Hotel — 18 stories, white/buff brick
-		[1100.0, 1200.0, 15.0,  0],  # Frick Collection — 3-story limestone mansion
+		[1890.0, 1970.0, 77.0,  3],  # Plaza Hotel — 18 stories, white/buff brick (76m)
+		[1100.0, 1200.0, 15.0,  0],  # Frick Collection — 3-story limestone mansion (14m)
 		[99.0,   398.0,  28.0,  0],  # Metropolitan Museum — wide, low, limestone/granite
-		[-275.0, -199.0, 28.0,  0],  # Guggenheim Museum — white concrete spiral
+		[-275.0, -199.0, 28.0,  0],  # Guggenheim Museum — white concrete spiral (28m)
 		[-1320.0,-946.0, 50.0,  1],  # Mount Sinai Hospital — institutional glass/brick
 	]
 	# West side (Central Park West): Art Deco twin-towers + buff brick
 	var west_lm := [
-		[1890.0, 1970.0, 200.0, 1],  # Deutsche Bank Center (Time Warner) — 55-story glass
-		[1750.0, 1830.0, 115.0, 0],  # 15 CPW — modern limestone, 35 stories
-		[1670.0, 1750.0, 91.0,  3],  # The Century — Art Deco twin tower, 30 stories
-		[996.0,  1071.0, 106.0, 3],  # The Majestic — Art Deco twin tower, 30 stories
-		[920.0,  996.0,  30.0,  3],  # The Dakota — Victorian Gothic, 9 stories, yellow brick
-		[772.0,  920.0,  122.0, 3],  # The San Remo — twin tower, 27 stories, most iconic
-		[324.0,  622.0,  25.0,  0],  # Am. Museum of Natural History — wide low limestone
-		[250.0,  324.0,  70.0,  3],  # The Beresford — triple tower, 22 stories
-		[-424.0, -349.0, 119.0, 3],  # The El Dorado — Art Deco twin tower, 29 stories
+		[1890.0, 1970.0, 229.0, 1],  # Deutsche Bank Center (Time Warner) — 55-story glass (229m)
+		[1750.0, 1830.0, 199.0, 0],  # 15 CPW — modern limestone, 43 stories (199m)
+		[1670.0, 1750.0, 100.0, 3],  # The Century — Art Deco twin tower, 30 stories (100m)
+		[996.0,  1071.0, 96.0,  3],  # The Majestic — Art Deco twin tower, 29 stories (96m)
+		[920.0,  996.0,  29.0,  3],  # The Dakota — Victorian Gothic, 9 stories (29m)
+		[772.0,  920.0,  126.0, 3],  # The San Remo — twin tower, 27 stories (126m)
+		[324.0,  622.0,  23.0,  0],  # Am. Museum of Natural History — wide low limestone
+		[250.0,  324.0,  87.0,  3],  # The Beresford — triple tower, 23 stories (87m)
+		[-424.0, -349.0, 96.0,  3],  # The El Dorado — Art Deco twin tower, 29 stories (96m)
 	]
 	# South side (59th St / CPS): Art Deco hotels + supertall backdrop
 	# Uses X coordinate instead of Z
 	var south_lm := [
-		[800.0,  1020.0, 77.0,  3],  # Plaza Hotel (east end)
-		[500.0,  650.0,  220.0, 0],  # 432 Park Avenue vicinity — white concrete grid
-		[-150.0, -50.0,  150.0, 3],  # Essex House — 44-story Art Deco, cream brick
-		[-300.0, -200.0, 120.0, 3],  # Hampshire House — white brick Art Deco
-		[-500.0, -350.0, 250.0, 1],  # Central Park Tower vicinity — 98-story glass
-		[-150.0, 0.0,    200.0, 1],  # One57 / Steinway Tower vicinity — glass
+		[800.0,  1020.0, 77.0,  3],  # Plaza Hotel (east end) (76m)
+		[500.0,  650.0,  426.0, 0],  # 432 Park Avenue — white concrete grid (426m)
+		[-150.0, -50.0,  152.0, 3],  # Essex House — 44-story Art Deco, cream brick (152m)
+		[-300.0, -200.0, 120.0, 3],  # Hampshire House — white brick Art Deco (120m)
+		[-500.0, -350.0, 472.0, 1],  # Central Park Tower — 98-story glass (472m)
+		[-250.0, -100.0, 435.0, 1],  # Steinway Tower (111 W 57th) — slender glass (435m)
+		[-100.0, 50.0,   306.0, 1],  # One57 — glass curtain wall (306m)
 	]
 
 	var n := boundary_polygon.size()
@@ -7100,6 +7503,84 @@ func _build_boundary_facades() -> void:
 
 	print("ParkLoader: boundary facades = %d segments" % total_quads)
 
+	# Add name labels for park-facing buildings from OSM data
+	_label_boundary_buildings()
+
+
+func _label_boundary_buildings() -> void:
+	## Add Label3D name tags to named buildings near the park boundary.
+	## Only shows buildings that are outside the park but close to it.
+	var fh := FileAccess.open("res://park_data.json", FileAccess.READ)
+	if not fh:
+		return
+	var data: Dictionary = JSON.parse_string(fh.get_as_text())
+	fh.close()
+	var buildings: Array = data.get("buildings", [])
+	var count := 0
+	for b in buildings:
+		var bname: String = str(b.get("name", ""))
+		if bname.is_empty():
+			continue
+		var pts: Array = b.get("points", [])
+		if pts.size() < 3:
+			continue
+
+		# Compute centroid
+		var cx := 0.0
+		var cz := 0.0
+		for pt in pts:
+			cx += float(pt[0])
+			cz += float(pt[1])
+		cx /= float(pts.size())
+		cz /= float(pts.size())
+
+		# Skip buildings inside the park — we only want perimeter buildings
+		if _in_boundary(cx, cz):
+			continue
+
+		# Must be close to park boundary (within 200m)
+		var min_dist := 999999.0
+		for bp in boundary_polygon:
+			var d := Vector2(cx - bp.x, cz - bp.y).length()
+			if d < min_dist:
+				min_dist = d
+		if min_dist > 200.0:
+			continue
+
+		# Estimate building height from footprint area
+		var min_x := INF; var max_x := -INF
+		var min_z := INF; var max_z := -INF
+		for pt in pts:
+			var px := float(pt[0]); var pz := float(pt[1])
+			if px < min_x: min_x = px
+			if px > max_x: max_x = px
+			if pz < min_z: min_z = pz
+			if pz > max_z: max_z = pz
+		var footprint_w := max_x - min_x
+		var footprint_d := max_z - min_z
+		var diag := sqrt(footprint_w * footprint_w + footprint_d * footprint_d)
+		# Estimate height: small building=15m, large=60m+
+		var est_h := clampf(diag * 0.8, 15.0, 200.0)
+
+		var ty := _terrain_y(cx, cz)
+		var label_y := ty + est_h * 0.6  # place label at ~60% building height
+
+		var lbl := Label3D.new()
+		lbl.text = bname
+		lbl.font_size = 48
+		lbl.pixel_size = 0.012
+		lbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+		lbl.modulate = Color(0.85, 0.82, 0.78, 0.75)
+		lbl.outline_size = 6
+		lbl.outline_modulate = Color(0.08, 0.08, 0.08, 0.55)
+		lbl.no_depth_test = false
+		lbl.position = Vector3(cx, label_y, cz)
+		add_child(lbl)
+		count += 1
+
+	if count > 0:
+		print("ParkLoader: building labels = %d" % count)
+
 
 # ---------------------------------------------------------------------------
 # Lampposts & Benches – procedural furniture along paths
@@ -7185,19 +7666,19 @@ func _build_furniture(bench_data: Array, lamppost_data: Array, paths: Array) -> 
 	bench_mat.albedo_color = Color(0.40, 0.26, 0.14)
 	bench_mat.roughness    = 0.72
 
-	# --- Place lampposts from OSM data, with procedural fallback ---
+	# --- Place lampposts: OSM positions + procedural supplement ---
 	var lamp_xf: Array = []
-	if not lamppost_data.is_empty():
-		# Use real-world OSM positions
-		for lp in lamppost_data:
-			var lx := float(lp[0])
-			var lz := float(lp[2])
-			if not _in_boundary(lx, lz):
-				continue
-			var ly := _terrain_y(lx, lz)
-			lamp_xf.append(Transform3D(Basis.IDENTITY, Vector3(lx, ly, lz)))
-	else:
-		# Procedural fallback: place along paths
+	# Always place OSM lampposts first
+	for lp in lamppost_data:
+		var lx := float(lp[0])
+		var lz := float(lp[2])
+		if not _in_boundary(lx, lz):
+			continue
+		var ly := _terrain_y(lx, lz)
+		lamp_xf.append(Transform3D(Basis.IDENTITY, Vector3(lx, ly, lz)))
+	var osm_lamp_count := lamp_xf.size()
+	# Supplement with procedural placement along paths
+	if true:
 		var rng := RandomNumberGenerator.new()
 		rng.seed = 88888
 		for path in paths:
@@ -7233,23 +7714,22 @@ func _build_furniture(bench_data: Array, lamppost_data: Array, paths: Array) -> 
 						var ly := _terrain_y(lx, lz)
 						lamp_xf.append(Transform3D(Basis.IDENTITY, Vector3(lx, ly, lz)))
 
-	# --- Place benches from OSM data, with procedural fallback ---
+	# --- Place benches: OSM positions + procedural supplement ---
 	var bench_xf: Array = []
-	if not bench_data.is_empty():
-		# Use real-world OSM positions; direction from tag (degrees clockwise from north)
-		for b in bench_data:
-			var bx := float(b[0])
-			var bz := float(b[2])
-			if not _in_boundary(bx, bz):
-				continue
-			var by := _terrain_y(bx, bz)
-			# OSM direction: degrees clockwise from north. Convert to Godot Y rotation.
-			var dir_deg := float(b[3]) if b.size() > 3 else 0.0
-			var angle := deg_to_rad(-dir_deg)  # clockwise → counter-clockwise
-			var basis := Basis(Vector3.UP, angle)
-			bench_xf.append(Transform3D(basis, Vector3(bx, by, bz)))
-	else:
-		# Procedural fallback: place along paths
+	# Always place OSM benches first
+	for b in bench_data:
+		var bx := float(b[0])
+		var bz := float(b[2])
+		if not _in_boundary(bx, bz):
+			continue
+		var by := _terrain_y(bx, bz)
+		var dir_deg := float(b[3]) if b.size() > 3 else 0.0
+		var angle := deg_to_rad(-dir_deg)
+		var basis := Basis(Vector3.UP, angle)
+		bench_xf.append(Transform3D(basis, Vector3(bx, by, bz)))
+	var osm_bench_count := bench_xf.size()
+	# Supplement with procedural placement along paths
+	if true:
 		var rng := RandomNumberGenerator.new()
 		rng.seed = 88889
 		for path in paths:
@@ -7296,9 +7776,9 @@ func _build_furniture(bench_data: Array, lamppost_data: Array, paths: Array) -> 
 			var key := Vector2i(int(floor(px / BENCH_GRID_CELL)), int(floor(pz / BENCH_GRID_CELL)))
 			_bench_grid[key] = true
 
-	print("ParkLoader: lampposts = %d  benches = %d (from %s)" % [
-		lamp_xf.size(), bench_xf.size(),
-		"OSM" if not bench_data.is_empty() else "procedural"])
+	print("ParkLoader: lampposts = %d (%d OSM + %d procedural)  benches = %d (%d OSM + %d procedural)" % [
+		lamp_xf.size(), osm_lamp_count, lamp_xf.size() - osm_lamp_count,
+		bench_xf.size(), osm_bench_count, bench_xf.size() - osm_bench_count])
 	if not lamp_xf.is_empty():
 		_spawn_multimesh(lamp_mesh, lamp_mat_override, lamp_xf, "Lampposts")
 	# Distribute benches across variants for visual variety
@@ -7354,17 +7834,17 @@ func _build_trash_cans(trash_data: Array, paths: Array) -> void:
 	trash_mat.metallic = 0.10
 	var mat: Material = trash_mat
 
-	# Place from OSM data or procedural fallback
+	# Place from OSM data + procedural supplement
 	var xforms: Array = []
-	if not trash_data.is_empty():
-		for tc in trash_data:
-			var tx := float(tc[0])
-			var tz := float(tc[2])
-			if not _in_boundary(tx, tz):
-				continue
-			var ty := _terrain_y(tx, tz)
-			xforms.append(Transform3D(Basis.IDENTITY, Vector3(tx, ty, tz)))
-	else:
+	for tc in trash_data:
+		var tx := float(tc[0])
+		var tz := float(tc[2])
+		if not _in_boundary(tx, tz):
+			continue
+		var ty := _terrain_y(tx, tz)
+		xforms.append(Transform3D(Basis.IDENTITY, Vector3(tx, ty, tz)))
+	var osm_trash_count := xforms.size()
+	if true:
 		var rng := RandomNumberGenerator.new()
 		rng.seed = 77711
 		for path in paths:
@@ -7418,7 +7898,7 @@ func _build_tree_dirt(trees: Array) -> void:
 
 	var dirt_mesh := _make_dirt_circle_mesh()
 	var dirt_mat  := StandardMaterial3D.new()
-	dirt_mat.albedo_color    = Color(0.15, 0.12, 0.07, 0.5)
+	dirt_mat.albedo_color    = Color(0.18, 0.14, 0.08, 0.45)  # warm earth, subtle
 	dirt_mat.roughness       = 0.92
 	dirt_mat.transparency    = BaseMaterial3D.TRANSPARENCY_ALPHA
 	dirt_mat.render_priority = -1
@@ -8150,7 +8630,7 @@ func _build_ground_cover(trees: Array, water: Array, buildings: Array) -> void:
 	fern_mat.shader = _get_shader("flower", _flower_shader_code())
 	if opac_tex:
 		fern_mat.set_shader_parameter("petal_opacity", opac_tex)
-	fern_mat.set_shader_parameter("flower_tint", Vector3(0.38, 0.32, 0.10))
+	fern_mat.set_shader_parameter("flower_tint", Vector3(0.30, 0.40, 0.18))  # dark forest green
 
 	var fern_mesh := _make_fern_mesh()
 	var fern_xf: Array = []

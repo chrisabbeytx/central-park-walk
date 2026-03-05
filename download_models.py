@@ -99,6 +99,65 @@ def download_tree_models():
 
 
 # ---------------------------------------------------------------------------
+# Quaternius Stylized Nature MegaKit (CC0) — vegetation models
+# ---------------------------------------------------------------------------
+
+NATURE_MEGAKIT_URL = "https://opengameart.org/sites/default/files/stylized_nature_megakitstandard.zip"
+NATURE_MEGAKIT_MODELS = [
+    "Bush_Common", "Bush_Common_Flowers",
+    "Fern_1",
+    "Flower_3_Group", "Flower_3_Single", "Flower_4_Group", "Flower_4_Single",
+    "Grass_Common_Short", "Grass_Common_Tall", "Grass_Wispy_Short", "Grass_Wispy_Tall",
+    "Clover_1", "Clover_2",
+    "Plant_1", "Plant_1_Big", "Plant_7", "Plant_7_Big",
+    "Mushroom_Common", "Mushroom_Laetiporus",
+    "Rock_Medium_1", "Rock_Medium_2", "Rock_Medium_3",
+]
+NATURE_MEGAKIT_TEXTURES = [
+    "Flowers.png", "Grass.png", "Leaves.png", "Leaves_NormalTree_C.png",
+    "Leaves_TwistedTree_C.png", "Mushrooms.png", "Rocks_Diffuse.png",
+]
+
+
+def download_vegetation():
+    out_dir = os.path.join(MODELS_DIR, "vegetation")
+    # Check if already extracted
+    marker = os.path.join(out_dir, "Bush_Common.gltf")
+    if os.path.exists(marker):
+        print("Vegetation models already downloaded, skipping.")
+        return
+
+    print("\nDownloading Quaternius Stylized Nature MegaKit (CC0) …")
+    data = _get(NATURE_MEGAKIT_URL, "Stylized Nature MegaKit (104 MB)", timeout=300)
+    if not data:
+        return
+
+    os.makedirs(out_dir, exist_ok=True)
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            names = z.namelist()
+            extracted = 0
+            for name in names:
+                if not name.startswith("glTF/"):
+                    continue
+                basename = name[5:]
+                if not basename:
+                    continue
+                stem = basename.rsplit(".", 1)[0]
+                is_model = any(basename.startswith(m + ".") for m in NATURE_MEGAKIT_MODELS)
+                is_texture = basename in NATURE_MEGAKIT_TEXTURES
+                if is_model or is_texture:
+                    dest = os.path.join(out_dir, basename)
+                    with z.open(name) as src:
+                        _save(dest, src.read())
+                    extracted += 1
+            print(f"  Extracted {extracted} files → {out_dir}/")
+    except zipfile.BadZipFile:
+        print("  ERROR: bad zip", file=sys.stderr)
+    print("Vegetation models done.")
+
+
+# ---------------------------------------------------------------------------
 # Polyhaven shrub models (CC0) — multi-file glTF download
 # ---------------------------------------------------------------------------
 
@@ -264,6 +323,16 @@ All third-party assets used in this project are free and openly licensed.
                Dead Trees
 
 -----------------------------------------------------------------------------
+3D Vegetation — Quaternius Stylized Nature MegaKit (CC0 1.0)
+-----------------------------------------------------------------------------
+
+"Stylized Nature MegaKit" — bushes, ferns, flowers, grass, clover, mushrooms, rocks
+  Author: Quaternius (https://quaternius.com)
+  Source: https://quaternius.com/packs/stylizednaturemegakit.html
+  Also: https://opengameart.org/content/stylized-nature-megakit
+  License: CC0 1.0 (Public Domain)
+
+-----------------------------------------------------------------------------
 3D Shrub Models — Polyhaven (CC0 1.0)
 -----------------------------------------------------------------------------
 
@@ -333,12 +402,13 @@ if __name__ == "__main__":
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
     # Create directory structure
-    for d in ["models/trees", "models/shrubs", "models/furniture"]:
+    for d in ["models/trees", "models/shrubs", "models/furniture", "models/vegetation"]:
         os.makedirs(d, exist_ok=True)
 
     write_credits()
     download_polyhaven_textures()
     download_tree_models()
+    download_vegetation()
     download_polyhaven_models()
     download_furniture()
     print("\nAll done.")

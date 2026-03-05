@@ -78,14 +78,16 @@ func _ready() -> void:
 			_apply_gpu_path_textures()
 		if _park_loader and _park_loader.boundary_polygon.size() > 2:
 			_apply_boundary_mask(_park_loader.boundary_polygon)
+		if _park_loader and not _park_loader.landuse_zones.is_empty():
+			_apply_landuse_map(_park_loader.landuse_zones)
 	_player = _setup_player()
 	_setup_hud()
 	_setup_color_grade()
 	if not _terrain_only:
 		_setup_lamp_lights()
-		#_setup_falling_leaves()  # Disabled — not ready yet
+		_setup_falling_leaves()
 		#_setup_pigeons()         # Disabled — not ready yet
-		#_setup_audio()  # Disabled — not ready yet
+		#_setup_audio()  # Disabled — needs audio files
 	_apply_time_of_day()
 	# Check for --tour CLI arg
 	for arg in OS.get_cmdline_user_args():
@@ -1060,7 +1062,25 @@ func _setup_ground() -> void:
 			_terrain_mat.set_shader_parameter("meadow_normal", m_nrm)
 			_terrain_mat.set_shader_parameter("meadow_rough",  m_rgh)
 			_terrain_mat.set_shader_parameter("meadow_tile_m", 4.0)
-		print("Ground: textured grass shader + meadow blend")
+		# Rock texture for steep slopes
+		var r_alb := _load_img_tex("res://textures/rock_wall_diff.jpg")
+		var r_nrm := _load_img_tex("res://textures/rock_wall_nrm.jpg")
+		var r_rgh := _load_img_tex("res://textures/rock_wall_rgh.jpg")
+		if r_alb:
+			_terrain_mat.set_shader_parameter("rock_albedo", r_alb)
+			_terrain_mat.set_shader_parameter("rock_normal", r_nrm)
+			_terrain_mat.set_shader_parameter("rock_rough",  r_rgh)
+			_terrain_mat.set_shader_parameter("rock_tile_m", 3.0)
+		# Dirt texture for playgrounds, dog parks, tracks
+		var d_alb := _load_img_tex("res://textures/park_dirt_Color.jpg")
+		var d_nrm := _load_img_tex("res://textures/park_dirt_NormalGL.jpg")
+		var d_rgh := _load_img_tex("res://textures/park_dirt_Roughness.jpg")
+		if d_alb:
+			_terrain_mat.set_shader_parameter("dirt_albedo", d_alb)
+			_terrain_mat.set_shader_parameter("dirt_normal", d_nrm)
+			_terrain_mat.set_shader_parameter("dirt_rough",  d_rgh)
+			_terrain_mat.set_shader_parameter("dirt_tile_m", 2.0)
+		print("Ground: textured grass shader + meadow blend + rock slopes + dirt zones")
 
 	if _hm_data.is_empty():
 		# Flat fallback
@@ -1193,6 +1213,18 @@ uniform sampler2D meadow_normal : hint_normal,        filter_linear_mipmap_aniso
 uniform sampler2D meadow_rough  : hint_default_white, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform float meadow_tile_m = 2.5;
 
+// Rock texture for steep slopes (Manhattan schist outcrops)
+uniform sampler2D rock_albedo : source_color,      filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D rock_normal : hint_normal,        filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D rock_rough  : hint_default_white, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform float rock_tile_m = 3.0;
+
+// Dirt texture for playgrounds, dog parks, tracks
+uniform sampler2D dirt_albedo : source_color,      filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D dirt_normal : hint_normal,        filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D dirt_rough  : hint_default_white, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform float dirt_tile_m = 2.0;
+
 // Anti-tiling noise texture (256x256 white noise)
 uniform sampler2D tile_noise : filter_linear_mipmap, repeat_enable;
 
@@ -1218,6 +1250,11 @@ uniform int list_tex_w = 512;
 
 // Park boundary mask: white = inside park, black = outside
 uniform sampler2D park_mask : filter_linear, repeat_disable;
+
+// Landuse zone map: encodes zone type per pixel
+// 0=unzoned (default mowed lawn), 1=garden, 2=grass, 3=pitch, 4=playground,
+// 5=nature_reserve, 6=dog_park, 7=sports, 8=pool, 9=track, 10=wood, 11=forest
+uniform sampler2D landuse_map : filter_nearest, repeat_disable;
 
 varying vec3 world_pos;
 
@@ -1399,10 +1436,14 @@ void fragment() {
 	// --- Grass shading (textureNoTile — Inigo Quilez anti-tiling) ---
 	vec2 uv  = world_pos.xz / tile_m;
 	vec3 grass_alb = textureNoTile_c(grass_albedo, uv);
+	// Boost green channel slightly to keep grass looking lively under filmic tonemap
+	grass_alb.g *= 1.12;
+	grass_alb.r *= 0.92;
 	vec3 grass_nrm = textureNoTile_n(grass_normal, uv);
 	float grass_rgh = clamp(textureNoTile_r(grass_rough, uv) * 0.20 + 0.65, 0.0, 1.0);
 
-	// Meadow/wild grass blend — large-scale FBM patches for biome variety
+	// Meadow/wild grass blend — driven by landuse zones from OSM
+	// Unzoned areas (0) = woodland/meadow, zoned (garden/grass/pitch) = mowed lawn
 	vec2 muv = world_pos.xz / meadow_tile_m;
 	float s60 = 0.866; float c60 = 0.5;
 	vec2 muv_rot = vec2(muv.x * c60 + muv.y * s60, -muv.x * s60 + muv.y * c60);
@@ -1413,12 +1454,48 @@ void fragment() {
 		-(m_nrm_raw.r - 0.5) * s60 + (m_nrm_raw.g - 0.5) * c60 + 0.5,
 		m_nrm_raw.b);
 	float m_rgh = clamp(texture(meadow_rough, muv).r * 0.20 + 0.65, 0.0, 1.0);
-	float meadow_noise = fbm(world_pos.xz * 0.003, 3) * 0.6
-	                    + fbm(world_pos.xz * 0.018, 2) * 0.4;
-	float meadow_blend = smoothstep(0.42, 0.58, meadow_noise);
+
+	// Landuse lookup: woodland zones get meadow texture, everything else is mowed lawn
+	// Most of Central Park is maintained lawn — only marked woodland areas get wild texture
+	float zone_val = texture(landuse_map, splat_uv).r * 255.0;
+	int zone_id = int(zone_val + 0.5);
+	// Woodland zones: nature_reserve(5), wood(10), forest(11) → meadow texture
+	bool is_woodland = (zone_id == 5 || zone_id == 10 || zone_id == 11);
+	float meadow_base = is_woodland ? 1.0 : 0.0;
+	// Add FBM edge softening so zone boundaries don't look razor-sharp
+	float edge_noise = fbm(world_pos.xz * 0.012, 2) * 0.15;
+	float meadow_blend = clamp(meadow_base + edge_noise - 0.07, 0.0, 1.0);
 	grass_alb = mix(grass_alb, m_alb, meadow_blend);
 	grass_nrm = mix(grass_nrm, m_nrm, meadow_blend);
 	grass_rgh = mix(grass_rgh, m_rgh, meadow_blend);
+
+	// Dirt/mulch for playgrounds(4), dog_parks(6), tracks(9)
+	bool is_dirt = (zone_id == 4 || zone_id == 6 || zone_id == 9);
+	if (is_dirt) {
+		vec2 duv = world_pos.xz / dirt_tile_m;
+		vec3 d_alb = textureNoTile_c(dirt_albedo, duv);
+		vec3 d_nrm = textureNoTile_n(dirt_normal, duv);
+		float d_rgh = clamp(textureNoTile_r(dirt_rough, duv) * 0.15 + 0.80, 0.0, 1.0);
+		float dirt_blend = clamp(0.85 + edge_noise, 0.0, 1.0);
+		grass_alb = mix(grass_alb, d_alb, dirt_blend);
+		grass_nrm = mix(grass_nrm, d_nrm, dirt_blend);
+		grass_rgh = mix(grass_rgh, d_rgh, dirt_blend);
+	}
+
+	// Rock on steep slopes — Manhattan schist outcrops
+	// LiDAR at 2.4m/cell smooths real slopes significantly, so use low thresholds.
+	float slope = 1.0 - terrain_n.y;  // 0=flat, 1=vertical
+	float rock_noise = fbm(world_pos.xz * 0.05, 2) * 0.06;
+	float rock_blend = smoothstep(0.10, 0.25, slope + rock_noise);
+	if (rock_blend > 0.01) {
+		vec2 ruv = world_pos.xz / rock_tile_m;
+		vec3 r_alb = textureNoTile_c(rock_albedo, ruv);
+		vec3 r_nrm = textureNoTile_n(rock_normal, ruv);
+		float r_rgh = clamp(textureNoTile_r(rock_rough, ruv) * 0.15 + 0.75, 0.0, 1.0);
+		grass_alb = mix(grass_alb, r_alb, rock_blend);
+		grass_nrm = mix(grass_nrm, r_nrm, rock_blend);
+		grass_rgh = mix(grass_rgh, r_rgh, rock_blend);
+	}
 
 	if (mat_idx > 0 && path_weight > 0.5) {
 		// --- Path shading — winner-takes-all, no blending ---
@@ -1631,6 +1708,75 @@ func _apply_boundary_mask(poly: PackedVector2Array) -> void:
 	print("Terrain: boundary mask applied (%dx%d)" % [sz, sz])
 
 
+func _apply_landuse_map(zones: Array) -> void:
+	## Rasterize landuse zone polygons into a texture for the terrain shader.
+	## Zone encoding: 0=unzoned (woodland/meadow), 1=garden, 2=grass, 3=pitch,
+	## 4=playground, 5=nature_reserve, 6=dog_park, 7=sports, 8=pool, 9=track
+	var sz := 1024
+	var img := Image.create(sz, sz, false, Image.FORMAT_R8)
+	img.fill(Color(0, 0, 0))  # 0 = unzoned (meadow/woodland)
+	var half := _hm_world_size * 0.5
+
+	var type_to_id: Dictionary = {
+		"garden": 1, "grass": 2, "pitch": 3, "playground": 4,
+		"nature_reserve": 5, "dog_park": 6, "sports": 7, "pool": 8, "track": 9,
+		"wood": 10, "forest": 11,
+	}
+
+	var filled := 0
+	for zone in zones:
+		var zone_type: String = zone.get("type", "")
+		var zone_id: int = type_to_id.get(zone_type, 0)
+		if zone_id == 0:
+			continue
+		var pts: Array = zone.get("points", [])
+		if pts.size() < 3:
+			continue
+
+		# Convert world coords to pixel coords for bounding box
+		var min_row := sz
+		var max_row := 0
+		var poly_x := PackedFloat64Array()
+		var poly_z := PackedFloat64Array()
+		for pt in pts:
+			var wx: float = pt[0]
+			var wz: float = pt[1]
+			poly_x.append(wx)
+			poly_z.append(wz)
+			var row := int((wz + half) / _hm_world_size * float(sz))
+			min_row = min(min_row, row)
+			max_row = max(max_row, row)
+
+		min_row = clampi(min_row - 1, 0, sz - 1)
+		max_row = clampi(max_row + 1, 0, sz - 1)
+		var n := poly_x.size()
+		var zone_color := Color(float(zone_id) / 255.0, 0, 0)
+
+		# Scanline fill for this polygon
+		for y in range(min_row, max_row + 1):
+			var wz := (float(y) / float(sz)) * _hm_world_size - half
+			var crossings := PackedFloat64Array()
+			for i in range(n):
+				var j := (i + 1) % n
+				var zi := poly_z[i]
+				var zj := poly_z[j]
+				if (zi > wz) != (zj > wz):
+					var t := (wz - zi) / (zj - zi)
+					crossings.append(poly_x[i] + t * (poly_x[j] - poly_x[i]))
+			var arr: Array = Array(crossings)
+			arr.sort()
+			for k in range(0, arr.size() - 1, 2):
+				var px0 := int(clampf((float(arr[k]) + half) / _hm_world_size * float(sz), 0.0, float(sz - 1)))
+				var px1 := int(clampf((float(arr[k + 1]) + half) / _hm_world_size * float(sz), 0.0, float(sz - 1)))
+				for px in range(px0, px1 + 1):
+					img.set_pixel(px, y, zone_color)
+		filled += 1
+
+	var tex := ImageTexture.create_from_image(img)
+	_terrain_mat.set_shader_parameter("landuse_map", tex)
+	print("Terrain: landuse map applied (%d zones rasterized into %dx%d)" % [filled, sz, sz])
+
+
 # ---------------------------------------------------------------------------
 # Player
 # ---------------------------------------------------------------------------
@@ -1644,7 +1790,7 @@ func _setup_player() -> CharacterBody3D:
 		p.rotation_degrees.y = 0.0
 		p.set_physics_process(false)
 	else:
-		p.position = Vector3(-600.0, _terrain_height(-600.0, 1420.0) + 1.5, 1420.0)  # Literary Walk
+		p.position = Vector3(-600.0, _terrain_height(-600.0, 1420.0) + 1.5, 1420.0)
 	p.rotation_degrees.y = 30.0
 	add_child(p)
 	if _terrain_only and p.head:
