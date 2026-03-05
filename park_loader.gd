@@ -51,6 +51,7 @@ const BENCH_MAX_SLOPE := 0.27  # tan(~15°) — skip benches on steeper terrain
 
 # Exposed for day/night cycle (main.gd writes emission at runtime)
 var lamppost_material: StandardMaterial3D
+var facade_materials: Array = []  # ShaderMaterial list for night window emission
 
 # Splat map: 4096×4096 RG8 — R=material index, G=coverage alpha (smooth edges)
 const SPLAT_RES := 2048
@@ -4427,6 +4428,7 @@ func _build_buildings(buildings: Array) -> void:
 		_make_facade_buff_brick(),
 		_make_facade_dark_stone(),
 	]
+	facade_materials = style_mats.duplicate()
 	for s in range(5):
 		if sv[s].is_empty():
 			continue
@@ -4510,6 +4512,7 @@ uniform float win_h = 2.0;
 uniform float gap_x = 0.6;
 uniform float gap_y = 0.8;
 uniform float ground_h = 3.5;
+uniform float night_factor = 0.0;
 
 uniform sampler2D facade_color : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D facade_normal : hint_normal, filter_linear_mipmap_anisotropic, repeat_enable;
@@ -4592,6 +4595,7 @@ void fragment() {
 	float metal;
 	vec3 norm = vec3(0.5, 0.5, 1.0);
 	float norm_depth = 0.8;
+	vec3 emission = vec3(0.0);
 
 	if (in_win) {
 		if (gnd_win) {
@@ -4609,6 +4613,32 @@ void fragment() {
 		}
 		norm = vec3(0.5, 0.5, 1.0);
 		norm_depth = 0.0;
+
+		// Night window emission
+		if (night_factor > 0.01 && !in_reveal) {
+			// ~65% of windows lit, warm interior tones
+			bool is_lit = wrand < 0.65;
+			if (gnd_win) {
+				is_lit = wrand < 0.80;  // storefronts more likely lit
+			}
+			if (is_lit) {
+				// Warm white with per-window color variation
+				float warmth = fract(wrand * 7.3);
+				vec3 warm_light = mix(vec3(1.0, 0.82, 0.50), vec3(1.0, 0.92, 0.76), warmth);
+				// ~10% of lit windows have blue-ish TV glow
+				if (fract(wrand * 13.7) < 0.10) {
+					warm_light = vec3(0.60, 0.72, 0.95);
+				}
+				float em_strength = gnd_win ? 2.5 : 1.8;
+				// Slight brightness variation per window
+				em_strength *= (0.7 + wrand * 0.6);
+				emission = warm_light * em_strength * night_factor;
+				// Lit windows look brighter — override albedo to warm interior
+				col = warm_light * 0.15;
+				rough = 0.9;
+				metal = 0.0;
+			}
+		}
 	} else {
 		// Sample Facade011 textures for wall surface detail
 		vec3 fac_col = texture(facade_color, fac_uv).rgb;
@@ -4644,12 +4674,15 @@ void fragment() {
 	METALLIC  = metal;
 	NORMAL_MAP = norm;
 	NORMAL_MAP_DEPTH = norm_depth;
+	EMISSION = emission;
 
 	// Atmospheric distance fade — buildings dissolve into haze
 	float bldg_dist = length(world_pos.xyz - INV_VIEW_MATRIX[3].xyz);
 	float atm_fade = smoothstep(80.0, 250.0, bldg_dist);
 	ALBEDO = mix(ALBEDO, vec3(0.42, 0.40, 0.38), atm_fade * 0.5);
 	ROUGHNESS = mix(ROUGHNESS, 0.95, atm_fade * 0.3);
+	// Fade emission with distance too (don't overlight distant buildings)
+	EMISSION *= (1.0 - atm_fade * 0.7);
 }
 """
 
@@ -4672,6 +4705,7 @@ uniform float win_h = 1.8;
 uniform float gap_x = 0.7;
 uniform float gap_y = 1.0;
 uniform float ground_h = 3.0;
+uniform float night_factor = 0.0;
 
 varying vec3 world_pos;
 
@@ -4740,21 +4774,43 @@ void fragment() {
 	float wrand = hash2(bld * 0.5 + cell_idx * 0.13);
 
 	vec2 tex_uv = UV * tex_scale;
+	vec3 emission = vec3(0.0);
 
 	if (in_win) {
+		vec3 win_col;
 		if (gnd_win) {
-			ALBEDO = mix(glass_a * 0.7, glass_b * 0.6, wrand * 0.4);
+			win_col = mix(glass_a * 0.7, glass_b * 0.6, wrand * 0.4);
 		} else {
-			ALBEDO = mix(glass_a, glass_b, wrand);
+			win_col = mix(glass_a, glass_b, wrand);
 		}
 		ROUGHNESS = glass_rough;
 		METALLIC  = glass_metal;
 		if (in_reveal) {
-			ALBEDO *= 0.35;
+			win_col *= 0.35;
 			ROUGHNESS = 0.6;
 			METALLIC = 0.0;
 		}
 		NORMAL_MAP = vec3(0.5, 0.5, 1.0);
+
+		// Night window emission
+		if (night_factor > 0.01 && !in_reveal) {
+			bool is_lit = wrand < 0.65;
+			if (gnd_win) { is_lit = wrand < 0.80; }
+			if (is_lit) {
+				float warmth = fract(wrand * 7.3);
+				vec3 warm_light = mix(vec3(1.0, 0.82, 0.50), vec3(1.0, 0.92, 0.76), warmth);
+				if (fract(wrand * 13.7) < 0.10) {
+					warm_light = vec3(0.60, 0.72, 0.95);
+				}
+				float em_strength = gnd_win ? 2.5 : 1.8;
+				em_strength *= (0.7 + wrand * 0.6);
+				emission = warm_light * em_strength * night_factor;
+				win_col = warm_light * 0.15;
+				ROUGHNESS = 0.9;
+				METALLIC = 0.0;
+			}
+		}
+		ALBEDO = win_col;
 	} else {
 		vec3 brick_col = texture(brick_alb, tex_uv).rgb * COLOR.rgb;
 		if (is_cornice) {
@@ -4777,11 +4833,14 @@ void fragment() {
 		NORMAL_MAP_DEPTH = is_ledge ? 1.2 : 1.0;
 	}
 
+	EMISSION = emission;
+
 	// Atmospheric distance fade — buildings dissolve into haze
 	float bldg_dist = length(world_pos.xyz - INV_VIEW_MATRIX[3].xyz);
 	float atm_fade = smoothstep(80.0, 250.0, bldg_dist);
 	ALBEDO = mix(ALBEDO, vec3(0.42, 0.40, 0.38), atm_fade * 0.5);
 	ROUGHNESS = mix(ROUGHNESS, 0.95, atm_fade * 0.3);
+	EMISSION *= (1.0 - atm_fade * 0.7);
 }
 """
 
@@ -7464,6 +7523,7 @@ func _build_boundary_facades() -> void:
 		_make_facade_buff_brick(),
 		_make_facade_dark_stone(),
 	]
+	facade_materials.append_array(style_mats)
 	var total_quads := 0
 	for s in range(5):
 		if sv[s].is_empty():

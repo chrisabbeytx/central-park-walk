@@ -97,6 +97,7 @@ func _ready() -> void:
 			_tour_state = 0  # WAIT_LOAD
 			_tour_timer = 0.0
 			_tour_idx = 0
+			_player.set_physics_process(false)  # disable gravity/collision during tour
 			DirAccess.make_dir_recursive_absolute("/tmp/tour")
 			print("Tour mode: %d shots queued" % _tour_shots.size())
 			break
@@ -114,7 +115,7 @@ var _tour_idx := 0  # index into _tour_shots array
 var _tour_shots: Array = []  # populated in _build_tour_shots()
 
 const TOUR_VIEWPOINTS: Array = [
-	{"name": "bethesda_fountain", "x": -458.0, "z": 949.0, "yaw": 45.0},
+	{"name": "bethesda_fountain", "x": -480.0, "z": 1020.0, "yaw": 350.0},
 	{"name": "literary_walk", "x": -600.0, "z": 1420.0, "yaw": 30.0},
 	{"name": "great_lawn", "x": -200.0, "z": 0.0, "yaw": 0.0},
 	{"name": "conservatory_water", "x": -152.0, "z": 958.0, "yaw": 270.0},
@@ -124,6 +125,10 @@ const TOUR_VIEWPOINTS: Array = [
 	{"name": "cherry_hill", "x": -616.0, "z": 907.0, "yaw": 90.0},
 	{"name": "cleopatras_needle", "x": 0.0, "z": 360.0, "yaw": 180.0},
 	{"name": "ramble", "x": -400.0, "z": 600.0, "yaw": 225.0},
+	{"name": "cpw_skyline", "x": -600.0, "z": 1420.0, "yaw": 90.0},
+	{"name": "fifth_ave_skyline", "x": 100.0, "z": 200.0, "yaw": 270.0},
+	{"name": "north_woods", "x": 600.0, "z": -1315.0, "yaw": 180.0},
+	{"name": "reservoir_south", "x": -200.0, "z": -300.0, "yaw": 0.0},
 ]
 
 const TOUR_ANGLES: Array = [
@@ -215,7 +220,7 @@ func _process(delta: float) -> void:
 		_tour_timer += delta
 		match _tour_state:
 			0:  # WAIT_LOAD — let scene fully build
-				if _tour_timer >= 50.0:
+				if _tour_timer >= 8.0:
 					_tour_state = 1
 					_tour_timer = 0.0
 					_tour_teleport(_tour_idx)
@@ -244,6 +249,7 @@ func _process(delta: float) -> void:
 			3:  # DONE
 				pass
 		_apply_time_of_day()
+		_update_hud()
 		return
 
 	# Auto-screenshot for dev review (non-tour mode)
@@ -282,24 +288,19 @@ func _process(delta: float) -> void:
 		_last_applied_tod = _time_of_day
 		_apply_time_of_day()
 
+	_update_hud()
+
+
+func _update_hud() -> void:
 	if not _player or not _coord_label:
 		return
-
 	var pos := _player.position
-
-	# Local-metre coordinates
 	_coord_label.text = "X: %7.1f      Z: %7.1f" % [pos.x, pos.z]
-
-	# Compass bearing (0° = North = −Z, increases clockwise)
 	var bearing := fmod(fmod(-_player.rotation_degrees.y, 360.0) + 360.0, 360.0)
 	_heading_label.text = "Heading: %5.1f°  %s" % [bearing, _compass_label(bearing)]
-
-	# Real-world lat / lon
 	var lat :=  REF_LAT + (-pos.z / METRES_PER_DEG_LAT)
 	var lon :=  REF_LON + ( pos.x / METRES_PER_DEG_LON)
 	_latlon_label.text  = "%.6f° N    %.6f° W" % [lat, absf(lon)]
-
-	# Time of day display
 	if _time_label:
 		var h12: int = int(_time_of_day) % 12
 		if h12 == 0:
@@ -491,7 +492,7 @@ func _setup_environment() -> void:
 	_env.ambient_light_sky_contribution = 0.3
 	_env.tonemap_mode          = Environment.TONE_MAPPER_FILMIC
 	_env.tonemap_white         = 6.0
-	_env.glow_enabled          = false  # disabled until asset materials are tuned
+	_env.glow_enabled          = true
 	_env.glow_blend_mode       = Environment.GLOW_BLEND_MODE_ADDITIVE
 	_env.ssao_enabled          = true
 	_env.ssao_detail           = 0.5
@@ -565,11 +566,11 @@ func _build_keyframes() -> void:
 		"ambient_energy": 0.15,
 		"exposure":       0.75,
 		"white":          5.0,
-		"glow_intensity": 0.7,
-		"glow_bloom":     0.20,
-		"glow_strength":  2.5,
-		"glow_threshold": 0.10,
-		"glow_cap":       3.0,
+		"glow_intensity": 0.6,
+		"glow_bloom":     0.08,
+		"glow_strength":  0.8,
+		"glow_threshold": 0.80,
+		"glow_cap":       5.0,
 		"ssao_radius":    2.0,
 		"ssao_intensity": 2.8,
 		"ssao_power":     2.0,
@@ -611,11 +612,11 @@ func _build_keyframes() -> void:
 		"ambient_energy": 0.60,
 		"exposure":       0.80,
 		"white":          5.0,
-		"glow_intensity": 0.75,
-		"glow_bloom":     0.20,
-		"glow_strength":  1.0,
-		"glow_threshold": 0.55,
-		"glow_cap":       5.0,
+		"glow_intensity": 0.5,
+		"glow_bloom":     0.06,
+		"glow_strength":  0.6,
+		"glow_threshold": 0.85,
+		"glow_cap":       8.0,
 		"ssao_radius":    1.5,
 		"ssao_intensity": 2.5,
 		"ssao_power":     1.8,
@@ -657,11 +658,11 @@ func _build_keyframes() -> void:
 		"ambient_energy": 0.75,
 		"exposure":       0.80,
 		"white":          6.0,
-		"glow_intensity": 0.50,
-		"glow_bloom":     0.15,
-		"glow_strength":  0.70,
-		"glow_threshold": 0.60,
-		"glow_cap":       8.0,
+		"glow_intensity": 0.4,
+		"glow_bloom":     0.05,
+		"glow_strength":  0.5,
+		"glow_threshold": 0.90,
+		"glow_cap":       10.0,
 		"ssao_radius":    2.0,
 		"ssao_intensity": 2.5,
 		"ssao_power":     2.0,
@@ -703,10 +704,10 @@ func _build_keyframes() -> void:
 		"ambient_energy": 0.55,
 		"exposure":       0.80,
 		"white":          5.0,
-		"glow_intensity": 0.85,
-		"glow_bloom":     0.25,
-		"glow_strength":  1.2,
-		"glow_threshold": 0.48,
+		"glow_intensity": 0.5,
+		"glow_bloom":     0.06,
+		"glow_strength":  0.6,
+		"glow_threshold": 0.80,
 		"glow_cap":       5.0,
 		"ssao_radius":    2.0,
 		"ssao_intensity": 2.5,
@@ -749,11 +750,11 @@ func _build_keyframes() -> void:
 		"ambient_energy": 0.15,
 		"exposure":       0.75,
 		"white":          5.0,
-		"glow_intensity": 0.7,
-		"glow_bloom":     0.25,
-		"glow_strength":  2.5,
-		"glow_threshold": 0.10,
-		"glow_cap":       3.0,
+		"glow_intensity": 0.6,
+		"glow_bloom":     0.08,
+		"glow_strength":  0.8,
+		"glow_threshold": 0.80,
+		"glow_cap":       5.0,
 		"ssao_radius":    2.0,
 		"ssao_intensity": 3.0,
 		"ssao_power":     2.0,
@@ -902,6 +903,20 @@ func _apply_time_of_day() -> void:
 			_lamp_mat.emission = Color(0.0, 0.0, 0.0)
 		else:
 			_lamp_mat.emission = Color(1.0, 0.45, 0.08) * em
+
+	# Building window emission — smooth night_factor curve
+	# 0.0 during day (7h-18h), ramps to 1.0 at night (21h-5h)
+	var nf: float = 0.0
+	if _time_of_day >= 18.0 and _time_of_day < 21.0:
+		nf = (_time_of_day - 18.0) / 3.0  # sunset ramp
+	elif _time_of_day >= 21.0 or _time_of_day < 5.0:
+		nf = 1.0  # full night
+	elif _time_of_day >= 5.0 and _time_of_day < 7.0:
+		nf = 1.0 - (_time_of_day - 5.0) / 2.0  # dawn ramp
+	if _park_loader:
+		for fm in _park_loader.facade_materials:
+			if fm is ShaderMaterial:
+				fm.set_shader_parameter("night_factor", nf)
 
 	# Day/night audio modulation — disabled (audio not ready yet)
 	#if _audio_birds and _audio_birds.stream:
