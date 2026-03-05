@@ -1200,7 +1200,7 @@ uniform sampler2D tile_noise : filter_linear_mipmap, repeat_enable;
 uniform sampler2D heightmap_tex : filter_linear, repeat_disable;
 
 // Splat map + path texture arrays
-uniform sampler2D splat_map : filter_linear_mipmap, repeat_disable;
+uniform sampler2D splat_map : filter_linear, repeat_disable;
 uniform sampler2DArray path_alb_arr : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2DArray path_nrm_arr : hint_normal, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2DArray path_rgh_arr : hint_default_white, filter_linear_mipmap_anisotropic, repeat_enable;
@@ -1285,8 +1285,8 @@ float point_segment_dist(vec2 p, vec2 a, vec2 b) {
 vec4 mat_lookup(int idx) {
 	// tex_set: 0=Asphalt, 1=Concrete, 2=PavingStones, 3=Gravel, 4=Wood
 	if (idx == 1)  return vec4(0.0, 0.48, 0.46, 0.42);   // asphalt (aged, lighter)
-	if (idx == 2)  return vec4(1.0, 0.90, 0.86, 0.78);   // concrete
-	if (idx == 3)  return vec4(1.0, 0.75, 0.74, 0.70);   // concrete:plates
+	if (idx == 2)  return vec4(1.0, 0.72, 0.70, 0.64);   // concrete
+	if (idx == 3)  return vec4(1.0, 0.65, 0.64, 0.60);   // concrete:plates
 	if (idx == 4)  return vec4(2.0, 0.85, 0.80, 0.70);   // paving_stones
 	if (idx == 5)  return vec4(2.0, 0.65, 0.62, 0.56);   // sett
 	if (idx == 6)  return vec4(2.0, 0.62, 0.60, 0.54);   // unhewn_cobblestone
@@ -1307,9 +1307,9 @@ vec4 mat_lookup(int idx) {
 	if (idx == 21) return vec4(3.0, 0.54, 0.40, 0.22);   // woodchips
 	if (idx == 22) return vec4(3.0, 0.48, 0.36, 0.20);   // mulch
 	if (idx == 23) return vec4(3.0, 0.82, 0.76, 0.58);   // sand
-	if (idx == 24) return vec4(1.0, 0.92, 0.88, 0.82);   // hw:footway → concrete sidewalk
+	if (idx == 24) return vec4(0.0, 0.52, 0.50, 0.46);   // hw:footway → asphalt sidewalk
 	if (idx == 25) return vec4(0.0, 0.42, 0.42, 0.44);   // hw:cycleway
-	if (idx == 26) return vec4(1.0, 0.94, 0.90, 0.84);   // hw:pedestrian → concrete plaza
+	if (idx == 26) return vec4(0.0, 0.50, 0.48, 0.44);   // hw:pedestrian → asphalt plaza
 	if (idx == 27) return vec4(3.0, 0.62, 0.52, 0.38);   // hw:path
 	if (idx == 28) return vec4(1.0, 0.82, 0.78, 0.68);   // hw:steps
 	if (idx == 29) return vec4(3.0, 0.56, 0.48, 0.34);   // hw:track
@@ -1363,7 +1363,8 @@ void fragment() {
 	int gcount = min(int(gd.g), 48);
 
 	float best_cov = 0.0;
-	int best_mat = 0;
+	float best_hw  = 0.0;
+	int   best_mat = 0;
 
 	for (int gi = 0; gi < gcount; gi++) {
 		int li = gstart + gi;
@@ -1379,19 +1380,21 @@ void fragment() {
 		float hw = pr.x;
 		float cov = 1.0 - smoothstep(hw - feather * 0.3, hw + feather, d);
 
-		if (cov > best_cov) {
+		// When two segments overlap (both high coverage), prefer the wider
+		// path. This prevents narrow cross-paths from cutting material seams
+		// through wide walkways like the Literary Walk.
+		if (cov > best_cov + 0.05 || (cov > 0.3 && cov > best_cov - 0.05 && hw > best_hw)) {
 			best_cov = cov;
+			best_hw  = hw;
 			best_mat = int(pr.y);
 		}
 	}
 
-	// Raster fallback for closed polygons + dense areas exceeding loop cap
-	float raster_cov = texture(splat_map, splat_uv).g;
-	int raster_mat = int(texture(splat_map, splat_uv).r * 255.0 + 0.5);
-
-	// Combine: analytical wins where it has coverage, raster fills polygons
-	float path_weight = max(best_cov, raster_cov);
-	int mat_idx = best_cov > raster_cov ? best_mat : raster_mat;
+	// Single path system: analytical GPU only. The raster splat map was a
+	// redundant fallback that created material conflicts (different systems
+	// picking different materials for the same pixel = visible seams).
+	float path_weight = best_cov;
+	int mat_idx = best_mat;
 
 	// --- Grass shading (textureNoTile — Inigo Quilez anti-tiling) ---
 	vec2 uv  = world_pos.xz / tile_m;
