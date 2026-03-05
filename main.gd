@@ -1341,9 +1341,9 @@ void fragment() {
 	float park_inside = texture(park_mask, mask_uv).r;
 	if (park_inside < 0.1) {
 		// Outside park — city sidewalk / street
-		float street_noise = hash2(floor(world_pos.xz * 0.3)) * 0.06;
-		ALBEDO    = vec3(0.25 + street_noise, 0.23 + street_noise, 0.21 + street_noise);
-		ROUGHNESS = 0.92;
+		float street_noise = hash2(floor(world_pos.xz * 0.3)) * 0.04;
+		ALBEDO    = vec3(0.18 + street_noise, 0.17 + street_noise, 0.16 + street_noise);
+		ROUGHNESS = 0.95;
 		SPECULAR  = 0.0;
 		METALLIC  = 0.0;
 		NORMAL = normalize((VIEW_MATRIX * vec4(terrain_n, 0.0)).xyz);
@@ -1519,8 +1519,8 @@ void fragment() {
 		vec3 p_nrm = texture(path_nrm_arr, vec3(path_uv, tex_set)).rgb;
 		float p_rgh = clamp(texture(path_rgh_arr, vec3(path_uv, tex_set)).r + 0.10, 0.0, 1.0);
 
-		// Smooth path-grass transition — tight crisp edge
-		float soft_weight = smoothstep(0.05, 0.65, path_weight);
+		// Path-grass transition — tighter edge to avoid muddy blending
+		float soft_weight = smoothstep(0.15, 0.45, path_weight);
 
 		ALBEDO          = mix(grass_alb, p_alb, soft_weight);
 		vec3 _cn = mix(grass_nrm, p_nrm, soft_weight) * 2.0 - 1.0;
