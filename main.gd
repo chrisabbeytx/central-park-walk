@@ -237,24 +237,15 @@ func _process(delta: float) -> void:
 	# Auto-screenshot for dev review (non-tour mode)
 	if not _screenshot_done:
 		_screenshot_timer += delta
-		# Hold player frozen at aerial position every frame until screenshot
-		var sx := -200.0; var sz := 100.0
 		_player.set_physics_process(false)
 		_player.velocity = Vector3.ZERO
-		_player.global_position = Vector3(sx, _terrain_height(sx, sz) + 30.0, sz)
-		_player.rotation_degrees.y = 90.0
-		var head_node: Node3D = _player.get_node("Head")
-		if head_node:
-			head_node.rotation_degrees.x = -55.0
-		_time_of_day = 12.0
-		_time_speed = 0.0
-		_apply_time_of_day()
 		if _screenshot_timer >= 4.0:
 			_screenshot_done = true
 			var img := get_viewport().get_texture().get_image()
 			if img:
 				img.save_png("/tmp/godot_screenshot.png")
 				print("Screenshot saved to /tmp/godot_screenshot.png")
+			_player.set_physics_process(true)
 	# Update lamp lights every 0.5s
 	_lamp_light_timer += delta
 	if _lamp_light_timer >= LAMP_LIGHT_UPDATE_INTERVAL:
@@ -1050,9 +1041,9 @@ func _setup_ground() -> void:
 		if noise_tex:
 			_terrain_mat.set_shader_parameter("tile_noise", noise_tex)
 		# Meadow/wild grass blend
-		var m_alb := _load_img_tex("res://textures/Ground037_2K-JPG_Color.jpg")
-		var m_nrm := _load_img_tex("res://textures/Ground037_2K-JPG_NormalGL.jpg")
-		var m_rgh := _load_img_tex("res://textures/Ground037_2K-JPG_Roughness.jpg")
+		var m_alb := _load_img_tex("res://textures/forrest_ground_01_Color.jpg")
+		var m_nrm := _load_img_tex("res://textures/forrest_ground_01_NormalGL.jpg")
+		var m_rgh := _load_img_tex("res://textures/forrest_ground_01_Roughness.jpg")
 		if m_alb:
 			_terrain_mat.set_shader_parameter("meadow_albedo", m_alb)
 			_terrain_mat.set_shader_parameter("meadow_normal", m_nrm)
@@ -1734,7 +1725,7 @@ func _apply_boundary_mask(poly: PackedVector2Array) -> void:
 func _setup_player() -> CharacterBody3D:
 	var p: CharacterBody3D = load("res://player.gd").new()
 	p.name       = "Player"
-	p.position = Vector3(-600.0, _terrain_height(-600.0, 1420.0) + 2.0, 1420.0)  # Literary Walk
+	p.position = Vector3(-400.0, _terrain_height(-400.0, 600.0) + 2.0, 600.0)  # Ramble
 	p.rotation_degrees.y = 30.0
 	add_child(p)
 	return p

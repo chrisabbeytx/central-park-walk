@@ -1,0 +1,29 @@
+# Godot editor cache
+.godot/
+
+# Downloaded binary assets (re-download via scripts)
+models/
+textures/*.jpg
+textures/*.hdr
+textures/*.png
+textures/*.blend
+textures/*.mtlx
+textures/*.usdc
+textures/*.tres
+textures/*.import
+sounds/*.ogg
+
+# Terrain tiles (re-download via download_terrain.py)
+terrain_tiles/
+
+# Large data files (re-generate via download_osm.py + convert_to_godot.py)
+*.json
+!project.godot
+
+# Presentations and reference images
+*.odp
+*.png
+example pics/
+
+# Reference docs
+reference-photos.md

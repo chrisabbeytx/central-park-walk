@@ -4769,60 +4769,82 @@ func _make_facade_dark_stone() -> ShaderMaterial:
 # ---------------------------------------------------------------------------
 # Trees – crossed billboard planes, separate broadleaf/conifer MultiMeshes
 # ---------------------------------------------------------------------------
+func _collect_meshes(node: Node, out: Array, _depth: int = 0) -> void:
+	if node is MeshInstance3D:
+		out.append(node.mesh)
+	for child in node.get_children():
+		_collect_meshes(child, out, _depth + 1)
+
+
 func _build_trees(trees: Array) -> void:
 	if trees.is_empty():
 		return
 
 	var rng := RandomNumberGenerator.new()
 
-	# [trunk_h_min, trunk_h_max, trunk_r_min, trunk_r_max, canopy_sx, canopy_sy]
-	var ap_table := [
-		[15.0, 24.0, 0.28, 0.50, 1.55, 0.85],   # 0 oak
-		[12.0, 18.0, 0.20, 0.36, 1.05, 1.05],   # 1 maple
-		[20.0, 28.0, 0.18, 0.30, 0.70, 1.40],   # 2 elm
-		[1.0,   3.5, 0.05, 0.12, 2.10, 0.45],   # 3 shrub
-		[18.0, 32.0, 0.16, 0.26, 0.40, 2.30],   # 4 conifer
+	# --- Load GLB tree models (Quaternius CC0) via GLTFDocument ---
+	# Each GLB has 5 tree variants as separate MeshInstance3D children.
+	# Models use centimetre scale (node scale=100 in GLB) and Z-up orientation.
+	# We load at runtime via GLTFDocument since the project has no editor import cache.
+	var species_meshes: Dictionary = {}  # species_name -> Array[Mesh]
+	var species_heights: Dictionary = {} # species_name -> float (mesh height in raw units)
+	for species in ["maple", "birch", "deciduous", "pine"]:
+		var abs_path := ProjectSettings.globalize_path("res://models/trees/%s.glb" % species)
+		if not FileAccess.file_exists(abs_path):
+			print("WARNING: tree model not found: %s" % abs_path)
+			continue
+		var gltf_doc := GLTFDocument.new()
+		var gltf_state := GLTFState.new()
+		var err := gltf_doc.append_from_file(abs_path, gltf_state)
+		if err != OK:
+			print("WARNING: failed to load GLB %s (error %d)" % [abs_path, err])
+			continue
+		var root: Node = gltf_doc.generate_scene(gltf_state)
+		if root == null:
+			print("WARNING: generate_scene returned null for %s" % species)
+			continue
+		var meshes: Array = []
+		var max_h := 0.0
+		_collect_meshes(root, meshes, max_h)
+		# max_h was passed by value — recompute
+		max_h = 0.0
+		for m: Mesh in meshes:
+			var ab: AABB = m.get_aabb()
+			var h := maxf(ab.size.x, maxf(ab.size.y, ab.size.z))
+			max_h = maxf(max_h, h)
+		root.queue_free()
+		if meshes.is_empty():
+			print("WARNING: no meshes found in %s" % species)
+			continue
+		species_meshes[species] = meshes
+		species_heights[species] = max_h
+		print("Trees: loaded %s — %d variants, mesh height %.4f" % [species, meshes.size(), max_h])
+
+	if species_meshes.is_empty():
+		print("WARNING: no tree GLB models loaded, falling back skipped")
+		return
+
+	# Archetype mapping: 0=oak, 1=maple, 2=elm, 3=shrub, 4=conifer
+	# Oak and elm use different GLB species for visual variety
+	var arch_to_species := [
+		"deciduous",  # 0 oak -> generic deciduous
+		"maple",      # 1 maple
+		"birch",      # 2 elm -> birch (different silhouette)
+		"maple",      # 3 shrub -> maple at small scale
+		"pine",       # 4 conifer
+	]
+	# Desired height ranges per archetype (metres)
+	var height_ranges := [
+		[15.0, 24.0],  # 0 oak
+		[12.0, 18.0],  # 1 maple
+		[20.0, 28.0],  # 2 elm
+		[1.5,   3.5],  # 3 shrub
+		[18.0, 32.0],  # 4 conifer
 	]
 
-	# Bark textures
-	var bark_alb  := _load_tex("res://textures/Bark007_2K-JPG_Color.jpg")
-	var bark_nrm  := _load_tex("res://textures/Bark007_2K-JPG_NormalGL.jpg")
-	var bark_rgh  := _load_tex("res://textures/Bark007_2K-JPG_Roughness.jpg")
-	var bark_ao   := _load_tex("res://textures/Bark007_2K-JPG_AmbientOcclusion.jpg")
-
-	# Leaf card meshes (broadleaf dome / conifer cone)
-	var broad_leaf_mesh := _make_leaf_card_mesh(false)
-	var conif_leaf_mesh := _make_leaf_card_mesh(true)
-
-	# Per-species leaf materials: oak=LeafSet003, maple+shrub=LeafSet005, elm=LeafSet009, conifer=LeafSet019
-	var oak_mat   := _make_leaf_mat(true, "LeafSet003")   # broader, rounder
-	var maple_mat := _make_leaf_mat(true, "LeafSet005")   # existing
-	var elm_mat   := _make_leaf_mat(true, "LeafSet009")   # smaller, denser
-	var conif_mat := _make_leaf_mat(false)                 # LeafSet019
-
-	# 8 trunk mesh variants with randomized branches for visual variety
-	const N_TRUNK_VARIANTS := 8
-	var trunk_meshes: Array = []
-	for vi in N_TRUNK_VARIANTS:
-		trunk_meshes.append(_make_trunk_with_branches_mesh(vi))
-
-	var trunk_mat   := ShaderMaterial.new()
-	trunk_mat.shader = _get_shader("trunk", _trunk_shader_code())
-	if bark_alb:
-		trunk_mat.set_shader_parameter("bark_albedo", bark_alb)
-		trunk_mat.set_shader_parameter("bark_normal",  bark_nrm)
-		trunk_mat.set_shader_parameter("bark_rough",   bark_rgh)
-		trunk_mat.set_shader_parameter("bark_ao",      bark_ao)
-
-	# Collect transforms per group: oak / maple+shrub / elm / conifer
-	var oak_xf:   Array = []
-	var maple_xf: Array = []
-	var elm_xf:   Array = []
-	var conif_xf: Array = []
-	# Per-variant trunk transform arrays
-	var trunk_xf_by_variant: Array = []
-	for _vi in N_TRUNK_VARIANTS:
-		trunk_xf_by_variant.append([])
+	# Collect transforms per species-variant for MultiMesh batching
+	# Key: "species_variantIdx" -> Array[Transform3D]
+	var xf_by_key: Dictionary = {}
 	var all_trunk_xf: Array = []  # for collision
 
 	for i in trees.size():
@@ -4833,6 +4855,7 @@ func _build_trees(trees: Array) -> void:
 		var ty := _terrain_y(tx, tz)
 		rng.seed = i * 1234567891 + 987654321
 
+		# Assign archetype (same distribution as before)
 		var rv := rng.randf()
 		var arch := 0
 		if   rv < 0.35: arch = 0
@@ -4841,48 +4864,62 @@ func _build_trees(trees: Array) -> void:
 		elif rv < 0.97: arch = 3
 		else:           arch = 4
 
-		var ap     : Array = ap_table[arch]
-		var trunk_h := rng.randf_range(float(ap[0]), float(ap[1]))
-		var trunk_r := rng.randf_range(float(ap[2]), float(ap[3]))
-		var sx      := float(ap[4])
-		var sy      := float(ap[5])
-		var canopy_r := trunk_h * rng.randf_range(0.32, 0.56)
+		var species: String = arch_to_species[arch]
+		if not species_meshes.has(species):
+			continue
+		var variants: Array = species_meshes[species]
+		var n_variants := variants.size()
+		if n_variants == 0:
+			continue
 
-		# Per-tree random Y rotation for variety
+		# Pick variant based on tree index
+		var variant_idx := i % n_variants
+
+		# Desired height
+		var h_range: Array = height_ranges[arch]
+		var desired_h := rng.randf_range(float(h_range[0]), float(h_range[1]))
+
+		# Scale factor: desired_height / mesh_height_in_raw_units
+		var mesh_h: float = species_heights[species]
+		if mesh_h < 0.001:
+			mesh_h = 0.06
+		var s := desired_h / mesh_h
+
+		# Random Y rotation for variety
 		var y_rot := rng.randf() * TAU
-		var rot_basis := Basis(Vector3.UP, y_rot)
 
-		var cbasis := Basis(
-			Vector3(canopy_r * sx, 0.0,           0.0),
-			Vector3(0.0,           canopy_r * sy, 0.0),
-			Vector3(0.0,           0.0,           canopy_r * sx))
-		cbasis = rot_basis * cbasis
-		var canopy_tf := Transform3D(cbasis, Vector3(tx, ty + trunk_h, tz))
-		match arch:
-			0: oak_xf.append(canopy_tf)
-			1, 3: maple_xf.append(canopy_tf)
-			2: elm_xf.append(canopy_tf)
-			4: conif_xf.append(canopy_tf)
+		# Build transform: Y rotation × Z-up fix (rotate -90° around X) × uniform scale
+		# The GLB meshes grow along +Z (Blender convention). We need +Y up.
+		var basis := Basis(Vector3.UP, y_rot) * Basis(Vector3.RIGHT, -PI * 0.5) * Basis().scaled(Vector3(s, s, s))
+		var tf := Transform3D(basis, Vector3(tx, ty, tz))
 
-		var tbasis := Basis(
-			Vector3(trunk_r, 0.0,     0.0),
-			Vector3(0.0,     trunk_h, 0.0),
-			Vector3(0.0,     0.0,     trunk_r))
-		tbasis = rot_basis * tbasis
-		var tf := Transform3D(tbasis, Vector3(tx, ty + trunk_h * 0.5, tz))
-		# Assign to variant based on tree index
-		var variant_idx := i % N_TRUNK_VARIANTS
-		trunk_xf_by_variant[variant_idx].append(tf)
-		all_trunk_xf.append(tf)
+		var key := "%s_%d" % [species, variant_idx]
+		if not xf_by_key.has(key):
+			xf_by_key[key] = []
+		xf_by_key[key].append(tf)
 
-	_spawn_multimesh(broad_leaf_mesh, oak_mat,   oak_xf,   "TreeCanopies_Oak")
-	_spawn_multimesh(broad_leaf_mesh, maple_mat, maple_xf, "TreeCanopies_Maple")
-	_spawn_multimesh(broad_leaf_mesh, elm_mat,   elm_xf,   "TreeCanopies_Elm")
-	_spawn_multimesh(conif_leaf_mesh, conif_mat, conif_xf, "TreeCanopies_Conifer")
-	for vi in N_TRUNK_VARIANTS:
-		_spawn_multimesh(trunk_meshes[vi], trunk_mat, trunk_xf_by_variant[vi],
-			"TreeTrunks_%d" % vi)
+		# Collision: simplified cylinder at trunk position
+		var trunk_r := desired_h * 0.02
+		var col_basis := Basis(
+			Vector3(trunk_r, 0.0,      0.0),
+			Vector3(0.0,     desired_h, 0.0),
+			Vector3(0.0,     0.0,      trunk_r))
+		all_trunk_xf.append(Transform3D(col_basis, Vector3(tx, ty + desired_h * 0.5, tz)))
+
+	# Spawn MultiMeshes — one per species-variant combo
+	for key in xf_by_key:
+		var parts: PackedStringArray = key.split("_")
+		var species: String = parts[0]
+		var vi: int = int(parts[1])
+		var xf_list: Array = xf_by_key[key]
+		if xf_list.is_empty():
+			continue
+		var mesh: Mesh = species_meshes[species][vi]
+		# Pass null material — GLB models have their own embedded materials
+		_spawn_multimesh(mesh, null, xf_list, "Trees_%s" % key)
+
 	_build_tree_collision(all_trunk_xf)
+	print("Trees: %d placed via GLB models" % all_trunk_xf.size())
 
 
 func _build_tree_collision(trunk_xf: Array) -> void:
