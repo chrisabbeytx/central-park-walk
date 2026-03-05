@@ -1284,53 +1284,42 @@ float point_segment_dist(vec2 p, vec2 a, vec2 b) {
 // Returns vec4(tex_set_index, tint_r, tint_g, tint_b) for material indices 1-30
 vec4 mat_lookup(int idx) {
 	// tex_set: 0=Asphalt, 1=Concrete, 2=PavingStones, 3=Gravel, 4=Wood
-	if (idx == 1)  return vec4(0.0, 0.32, 0.30, 0.26);   // asphalt
-	if (idx == 2)  return vec4(1.0, 0.85, 0.80, 0.72);   // concrete
-	if (idx == 3)  return vec4(1.0, 0.65, 0.65, 0.63);   // concrete:plates
-	if (idx == 4)  return vec4(2.0, 0.80, 0.74, 0.62);   // paving_stones
-	if (idx == 5)  return vec4(2.0, 0.54, 0.52, 0.48);   // sett
-	if (idx == 6)  return vec4(2.0, 0.52, 0.50, 0.44);   // unhewn_cobblestone
-	if (idx == 7)  return vec4(3.0, 0.60, 0.57, 0.50);   // pebblestone
-	if (idx == 8)  return vec4(2.0, 0.60, 0.58, 0.54);   // stone
-	if (idx == 9)  return vec4(2.0, 0.56, 0.54, 0.50);   // rock
-	if (idx == 10) return vec4(2.0, 0.68, 0.38, 0.26);   // brick
-	if (idx == 11) return vec4(1.0, 0.62, 0.63, 0.66);   // metal
-	if (idx == 12) return vec4(4.0, 0.50, 0.34, 0.16);   // wood
-	if (idx == 13) return vec4(1.0, 0.64, 0.60, 0.52);   // paved
-	if (idx == 14) return vec4(3.0, 0.52, 0.42, 0.28);   // compacted
-	if (idx == 15) return vec4(3.0, 0.64, 0.57, 0.44);   // fine_gravel
-	if (idx == 16) return vec4(3.0, 0.60, 0.53, 0.40);   // gravel
-	if (idx == 17) return vec4(3.0, 0.54, 0.43, 0.28);   // unpaved
-	if (idx == 18) return vec4(3.0, 0.50, 0.38, 0.22);   // dirt
-	if (idx == 19) return vec4(3.0, 0.46, 0.38, 0.26);   // ground
-	if (idx == 20) return vec4(3.0, 0.28, 0.52, 0.18);   // grass
-	if (idx == 21) return vec4(3.0, 0.46, 0.32, 0.14);   // woodchips
-	if (idx == 22) return vec4(3.0, 0.40, 0.28, 0.12);   // mulch
-	if (idx == 23) return vec4(3.0, 0.76, 0.70, 0.52);   // sand
-	if (idx == 24) return vec4(1.0, 0.90, 0.86, 0.80);   // hw:footway → concrete sidewalk
-	if (idx == 25) return vec4(0.0, 0.30, 0.30, 0.32);   // hw:cycleway
-	if (idx == 26) return vec4(1.0, 0.92, 0.88, 0.82);   // hw:pedestrian → concrete plaza
-	if (idx == 27) return vec4(3.0, 0.54, 0.44, 0.30);   // hw:path
-	if (idx == 28) return vec4(1.0, 0.78, 0.72, 0.62);   // hw:steps
-	if (idx == 29) return vec4(3.0, 0.48, 0.40, 0.26);   // hw:track
-	return vec4(3.0, 0.65, 0.60, 0.48);                   // catchall (30)
+	if (idx == 1)  return vec4(0.0, 0.48, 0.46, 0.42);   // asphalt (aged, lighter)
+	if (idx == 2)  return vec4(1.0, 0.90, 0.86, 0.78);   // concrete
+	if (idx == 3)  return vec4(1.0, 0.75, 0.74, 0.70);   // concrete:plates
+	if (idx == 4)  return vec4(2.0, 0.85, 0.80, 0.70);   // paving_stones
+	if (idx == 5)  return vec4(2.0, 0.65, 0.62, 0.56);   // sett
+	if (idx == 6)  return vec4(2.0, 0.62, 0.60, 0.54);   // unhewn_cobblestone
+	if (idx == 7)  return vec4(3.0, 0.70, 0.66, 0.58);   // pebblestone
+	if (idx == 8)  return vec4(2.0, 0.70, 0.68, 0.62);   // stone
+	if (idx == 9)  return vec4(2.0, 0.65, 0.62, 0.56);   // rock
+	if (idx == 10) return vec4(2.0, 0.72, 0.45, 0.32);   // brick
+	if (idx == 11) return vec4(1.0, 0.70, 0.70, 0.72);   // metal
+	if (idx == 12) return vec4(4.0, 0.58, 0.42, 0.22);   // wood
+	if (idx == 13) return vec4(1.0, 0.72, 0.68, 0.60);   // paved
+	if (idx == 14) return vec4(3.0, 0.62, 0.52, 0.36);   // compacted
+	if (idx == 15) return vec4(3.0, 0.72, 0.65, 0.52);   // fine_gravel
+	if (idx == 16) return vec4(3.0, 0.68, 0.62, 0.48);   // gravel
+	if (idx == 17) return vec4(3.0, 0.62, 0.52, 0.36);   // unpaved
+	if (idx == 18) return vec4(3.0, 0.58, 0.46, 0.30);   // dirt
+	if (idx == 19) return vec4(3.0, 0.55, 0.46, 0.34);   // ground
+	if (idx == 20) return vec4(3.0, 0.35, 0.58, 0.24);   // grass
+	if (idx == 21) return vec4(3.0, 0.54, 0.40, 0.22);   // woodchips
+	if (idx == 22) return vec4(3.0, 0.48, 0.36, 0.20);   // mulch
+	if (idx == 23) return vec4(3.0, 0.82, 0.76, 0.58);   // sand
+	if (idx == 24) return vec4(1.0, 0.92, 0.88, 0.82);   // hw:footway → concrete sidewalk
+	if (idx == 25) return vec4(0.0, 0.42, 0.42, 0.44);   // hw:cycleway
+	if (idx == 26) return vec4(1.0, 0.94, 0.90, 0.84);   // hw:pedestrian → concrete plaza
+	if (idx == 27) return vec4(3.0, 0.62, 0.52, 0.38);   // hw:path
+	if (idx == 28) return vec4(1.0, 0.82, 0.78, 0.68);   // hw:steps
+	if (idx == 29) return vec4(3.0, 0.56, 0.48, 0.34);   // hw:track
+	return vec4(3.0, 0.72, 0.66, 0.54);                   // catchall (30)
 }
 
 void vertex() {
 	world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
-	float half_ws = world_size * 0.5;
-	float cell = world_size / float(textureSize(heightmap_tex, 0).x - 1);
-	vec2 grid_pos = (world_pos.xz + half_ws) / cell;
-	vec2 frac_pos = fract(grid_pos);
-	float envelope = sin(frac_pos.x * 3.14159) * sin(frac_pos.y * 3.14159);
-	float n = vnoise(world_pos.xz * 0.8 + vec2(17.3, 41.7)) * 0.65
-	        + vnoise(world_pos.xz * 2.3 + vec2(93.1, 27.5)) * 0.35;
-	vec2 splat_uv_v = (world_pos.xz + half_ws) / world_size;
-	float path_mask = texture(splat_map, splat_uv_v).g;
-	float suppress = 1.0 - smoothstep(0.0, 0.15, path_mask);
-	float disp = (n - 0.3) * envelope * 0.18 * suppress;
-	VERTEX.y += max(disp, 0.0);
-	world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+	// No vertex displacement — LiDAR heightmap provides natural terrain variation.
+	// Previous noise displacement created visible grid-square artifacts at 2.4m cell size.
 }
 
 void fragment() {
