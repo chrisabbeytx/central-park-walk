@@ -1740,7 +1740,7 @@ func _setup_lamp_lights() -> void:
 	for child in _park_loader.get_children():
 		if not (child is MultiMeshInstance3D):
 			continue
-		if not child.name.begins_with("Lampposts_"):
+		if not child.name.begins_with("Lampposts"):
 			continue
 		var mmi: MultiMeshInstance3D = child as MultiMeshInstance3D
 		var mm: MultiMesh = mmi.multimesh

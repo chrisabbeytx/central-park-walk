@@ -19,6 +19,9 @@ var _hm_texture:    ImageTexture  # GPU-side heightmap for vertex shader snappin
 var _hm_min_h:      float   = 0.0
 var _hm_max_h:      float   = 1.0
 
+# Cached furniture GLB meshes — loaded once, shared by _build_furniture + _build_trash_cans
+var _furn_glb_meshes: Dictionary = {}
+
 # Spatial hash of bench positions — used to keep undergrowth clear in front
 var _bench_grid:    Dictionary = {}  # Vector2i → true
 const BENCH_GRID_CELL := 4.0
@@ -517,8 +520,8 @@ func _ready() -> void:
 	_build_shore_vegetation(data.get("water", []))
 	_build_labels(data.get("water", []))
 	_build_trees(data.get("trees", []))
-	_build_furniture(data.get("paths", []))
-	_build_trash_cans(data.get("paths", []))
+	_build_furniture(data.get("benches", []), data.get("lampposts", []), data.get("paths", []))
+	_build_trash_cans(data.get("trash_cans", []), data.get("paths", []))
 	_build_undergrowth(data.get("trees", []), data.get("paths", []))
 	_build_rocks(data.get("trees", []), data.get("water", []))
 	_build_barriers(data.get("barriers", []))
@@ -4776,6 +4779,33 @@ func _collect_meshes(node: Node, out: Array, _depth: int = 0) -> void:
 		_collect_meshes(child, out, _depth + 1)
 
 
+## Load a GLB file at runtime via GLTFDocument, return dict of {mesh_name: Mesh}.
+func _load_glb_meshes(abs_path: String) -> Dictionary:
+	var result: Dictionary = {}
+	if not FileAccess.file_exists(abs_path):
+		print("WARNING: GLB not found: %s" % abs_path)
+		return result
+	var gltf_doc := GLTFDocument.new()
+	var gltf_state := GLTFState.new()
+	var err := gltf_doc.append_from_file(abs_path, gltf_state)
+	if err != OK:
+		print("WARNING: failed to load GLB %s (error %d)" % [abs_path, err])
+		return result
+	var root: Node = gltf_doc.generate_scene(gltf_state)
+	if root == null:
+		return result
+	_collect_named_meshes(root, result)
+	root.queue_free()
+	return result
+
+
+func _collect_named_meshes(node: Node, out: Dictionary) -> void:
+	if node is MeshInstance3D and node.mesh != null:
+		out[node.name] = node.mesh
+	for child in node.get_children():
+		_collect_named_meshes(child, out)
+
+
 func _build_trees(trees: Array) -> void:
 	if trees.is_empty():
 		return
@@ -7184,23 +7214,41 @@ func _make_bench_mesh_c() -> ArrayMesh:
 	return _make_worlds_fair_bench(0.60)
 
 
-func _build_furniture(paths: Array) -> void:
-	if paths.is_empty():
-		return
+func _build_furniture(bench_data: Array, lamppost_data: Array, paths: Array) -> void:
+	# --- Load GLB furniture models (cache for reuse by _build_trash_cans) ---
+	if _furn_glb_meshes.is_empty():
+		var furn_path := ProjectSettings.globalize_path("res://models/furniture/park_furniture/glb/parkfurnitures.glb")
+		_furn_glb_meshes = _load_glb_meshes(furn_path)
+	var furn_meshes: Dictionary = _furn_glb_meshes
+	var use_glb := not furn_meshes.is_empty()
+	if use_glb:
+		print("Furniture: loaded %d meshes from GLB" % furn_meshes.size())
 
-	var rng := RandomNumberGenerator.new()
-	rng.seed = 88888
-
-	var lamp_meshes: Array = [_make_lamppost_mesh_a(), _make_lamppost_mesh_b(), _make_lamppost_mesh_c()]
-	var bench_meshes: Array = [_make_bench_mesh_a(), _make_bench_mesh_b(), _make_bench_mesh_c()]
-
-	# Post material — dark green iron (Henry Bacon authentic)
-	var lamp_post_mat := StandardMaterial3D.new()
-	lamp_post_mat.albedo_color = Color(0.08, 0.14, 0.06)
-	lamp_post_mat.roughness    = 0.50
-	lamp_post_mat.metallic     = 0.15
-
-	# Lantern material — frosted glass with emission (controlled by day/night cycle)
+	# --- Lamp mesh + material ---
+	var lamp_mesh: Mesh
+	var lamp_mat_override: Material = null
+	if use_glb and furn_meshes.has("ParkFurn_Lamp_C"):
+		lamp_mesh = furn_meshes["ParkFurn_Lamp_C"]
+		var lamp_post_mat := StandardMaterial3D.new()
+		lamp_post_mat.albedo_color = Color(0.08, 0.14, 0.06)
+		lamp_post_mat.roughness    = 0.50
+		lamp_post_mat.metallic     = 0.15
+		lamp_mat_override = lamp_post_mat
+	else:
+		lamp_mesh = _make_lamppost_mesh_a()
+		var lamp_post_mat := StandardMaterial3D.new()
+		lamp_post_mat.albedo_color = Color(0.08, 0.14, 0.06)
+		lamp_post_mat.roughness    = 0.50
+		lamp_post_mat.metallic     = 0.15
+		var lamp_lantern_mat := StandardMaterial3D.new()
+		lamp_lantern_mat.albedo_color = Color(0.95, 0.92, 0.82)
+		lamp_lantern_mat.roughness    = 0.25
+		lamp_lantern_mat.emission_enabled = true
+		lamp_lantern_mat.emission         = Color(1.0, 0.45, 0.08)
+		lamp_lantern_mat.emission_energy_multiplier = 2.0
+		lamp_mesh.surface_set_material(0, lamp_post_mat)
+		lamp_mesh.surface_set_material(1, lamp_lantern_mat)
+	# Day/night emission material (stored for main.gd to modulate)
 	var lamp_lantern_mat := StandardMaterial3D.new()
 	lamp_lantern_mat.albedo_color = Color(0.95, 0.92, 0.82)
 	lamp_lantern_mat.roughness    = 0.25
@@ -7209,118 +7257,145 @@ func _build_furniture(paths: Array) -> void:
 	lamp_lantern_mat.emission_energy_multiplier = 2.0
 	lamppost_material = lamp_lantern_mat
 
-	# Set per-surface materials on each lamp mesh
-	for lm in lamp_meshes:
-		lm.surface_set_material(0, lamp_post_mat)
-		lm.surface_set_material(1, lamp_lantern_mat)
+	# --- Bench mesh + material ---
+	var bench_mesh: Mesh
+	var bench_mat_override: Material = null
+	if use_glb and furn_meshes.has("ParkFurn_Bench_A"):
+		bench_mesh = furn_meshes["ParkFurn_Bench_A"]
+		var bench_wood_mat := StandardMaterial3D.new()
+		bench_wood_mat.albedo_color = Color(0.40, 0.26, 0.14)
+		bench_wood_mat.roughness    = 0.72
+		bench_mat_override = bench_wood_mat
+	else:
+		bench_mesh = _make_bench_mesh_a()
+		var bench_iron_mat := StandardMaterial3D.new()
+		bench_iron_mat.albedo_color = Color(0.12, 0.22, 0.10)
+		bench_iron_mat.roughness    = 0.55
+		bench_iron_mat.metallic     = 0.15
+		var bench_wood_mat := StandardMaterial3D.new()
+		bench_wood_mat.albedo_color = Color(0.40, 0.26, 0.14)
+		bench_wood_mat.roughness    = 0.72
+		bench_mesh.surface_set_material(0, bench_iron_mat)
+		bench_mesh.surface_set_material(1, bench_wood_mat)
 
-	# Bench materials — 2-surface: S0=deep evergreen iron, S1=warm wood
-	var bench_iron_mat := StandardMaterial3D.new()
-	bench_iron_mat.albedo_color = Color(0.12, 0.22, 0.10)
-	bench_iron_mat.roughness    = 0.55
-	bench_iron_mat.metallic     = 0.15
-	var bench_wood_mat := StandardMaterial3D.new()
-	bench_wood_mat.albedo_color = Color(0.40, 0.26, 0.14)
-	bench_wood_mat.roughness    = 0.72
-	for bm in bench_meshes:
-		bm.surface_set_material(0, bench_iron_mat)
-		bm.surface_set_material(1, bench_wood_mat)
-
-	var lamp_xf:  Array = [[], [], []]
-	var bench_xf: Array = [[], [], []]
-
-	for path in paths:
-		var hw: String = str(path.get("highway", "path"))
-		if hw == "cycleway" or hw == "track" or hw == "steps":
-			continue
-		if bool(path.get("bridge", false)) or bool(path.get("tunnel", false)):
-			continue
-		var raw_fpts: Array = path["points"]
-		var pts: Array = _smooth_path_catmull_rom(raw_fpts) if raw_fpts.size() >= 3 and hw != "steps" else raw_fpts
-		if pts.size() < 2:
-			continue
-
-		var half_w := _hw_width(hw) * 0.5  # path half-width
-		var lamp_cum  := 0.0
-		var bench_cum := 0.0
-		var next_lamp  := rng.randf_range(25.0, 45.0)
-		var next_bench := rng.randf_range(18.0, 32.0)
-		# Lamps on one side, benches on the other (fixed per path)
-		var lamp_side  := 1.0 if rng.randf() > 0.5 else -1.0
-		var bench_side := -lamp_side
-
-		for pi in range(1, pts.size()):
-			var x0 := float(pts[pi-1][0]); var z0 := float(pts[pi-1][2])
-			var x1 := float(pts[pi][0]);   var z1 := float(pts[pi][2])
-			var dx := x1 - x0; var dz := z1 - z0
-			var seg_len := sqrt(dx * dx + dz * dz)
-			if seg_len < 0.01:
+	# --- Place lampposts from OSM data, with procedural fallback ---
+	var lamp_xf: Array = []
+	if not lamppost_data.is_empty():
+		# Use real-world OSM positions
+		for lp in lamppost_data:
+			var lx := float(lp[0])
+			var lz := float(lp[2])
+			if not _in_boundary(lx, lz):
 				continue
-			var nx := -dz / seg_len; var nz := dx / seg_len
-			lamp_cum  += seg_len
-			bench_cum += seg_len
-
-			# Skip placement near bridges
-			var bgk := Vector2i(int(floor(x1 / BRIDGE_GRID_CELL)), int(floor(z1 / BRIDGE_GRID_CELL)))
-			var near_bridge := _bridge_grid.has(bgk)
-
-			if lamp_cum >= next_lamp:
-				lamp_cum = 0.0
-				next_lamp = rng.randf_range(28.0, 40.0)
-				if not near_bridge:
+			var ly := _terrain_y(lx, lz)
+			lamp_xf.append(Transform3D(Basis.IDENTITY, Vector3(lx, ly, lz)))
+	else:
+		# Procedural fallback: place along paths
+		var rng := RandomNumberGenerator.new()
+		rng.seed = 88888
+		for path in paths:
+			var hw: String = str(path.get("highway", "path"))
+			if hw == "cycleway" or hw == "track" or hw == "steps":
+				continue
+			if bool(path.get("bridge", false)) or bool(path.get("tunnel", false)):
+				continue
+			var raw_fpts: Array = path["points"]
+			var pts: Array = _smooth_path_catmull_rom(raw_fpts) if raw_fpts.size() >= 3 and hw != "steps" else raw_fpts
+			if pts.size() < 2:
+				continue
+			var half_w := _hw_width(hw) * 0.5
+			var cum := 0.0
+			var next := rng.randf_range(25.0, 45.0)
+			var side := 1.0 if rng.randf() > 0.5 else -1.0
+			for pi in range(1, pts.size()):
+				var x0 := float(pts[pi-1][0]); var z0 := float(pts[pi-1][2])
+				var x1 := float(pts[pi][0]);   var z1 := float(pts[pi][2])
+				var dx := x1 - x0; var dz := z1 - z0
+				var seg_len := sqrt(dx * dx + dz * dz)
+				if seg_len < 0.01:
+					continue
+				cum += seg_len
+				if cum >= next:
+					cum = 0.0
+					next = rng.randf_range(28.0, 40.0)
+					var nx := -dz / seg_len; var nz := dx / seg_len
 					var off := half_w + 0.8
-					var lx := x1 + nx * off * lamp_side
-					var lz := z1 + nz * off * lamp_side
-					var lbk := Vector2i(int(floor(lx / BUILDING_GRID_CELL)), int(floor(lz / BUILDING_GRID_CELL)))
-					if not _building_grid.has(lbk):
-						if _terrain_slope(lx, lz) > 0.35:
-							continue
-						if not _in_boundary(lx, lz):
-							continue
+					var lx := x1 + nx * off * side
+					var lz := z1 + nz * off * side
+					if _in_boundary(lx, lz) and _terrain_slope(lx, lz) <= 0.35:
 						var ly := _terrain_y(lx, lz)
-						var lv := int(abs(lx * 7.3 + lz * 13.1)) % 3
-						lamp_xf[lv].append(Transform3D(Basis.IDENTITY, Vector3(lx, ly, lz)))
+						lamp_xf.append(Transform3D(Basis.IDENTITY, Vector3(lx, ly, lz)))
 
-			if bench_cum >= next_bench:
-				bench_cum = 0.0
-				next_bench = rng.randf_range(20.0, 30.0)
-				if not near_bridge:
+	# --- Place benches from OSM data, with procedural fallback ---
+	var bench_xf: Array = []
+	if not bench_data.is_empty():
+		# Use real-world OSM positions; direction from tag (degrees clockwise from north)
+		for b in bench_data:
+			var bx := float(b[0])
+			var bz := float(b[2])
+			if not _in_boundary(bx, bz):
+				continue
+			var by := _terrain_y(bx, bz)
+			# OSM direction: degrees clockwise from north. Convert to Godot Y rotation.
+			var dir_deg := float(b[3]) if b.size() > 3 else 0.0
+			var angle := deg_to_rad(-dir_deg)  # clockwise → counter-clockwise
+			var basis := Basis(Vector3.UP, angle)
+			bench_xf.append(Transform3D(basis, Vector3(bx, by, bz)))
+	else:
+		# Procedural fallback: place along paths
+		var rng := RandomNumberGenerator.new()
+		rng.seed = 88889
+		for path in paths:
+			var hw: String = str(path.get("highway", "path"))
+			if hw == "cycleway" or hw == "track" or hw == "steps":
+				continue
+			if bool(path.get("bridge", false)) or bool(path.get("tunnel", false)):
+				continue
+			var raw_fpts: Array = path["points"]
+			var pts: Array = _smooth_path_catmull_rom(raw_fpts) if raw_fpts.size() >= 3 and hw != "steps" else raw_fpts
+			if pts.size() < 2:
+				continue
+			var half_w := _hw_width(hw) * 0.5
+			var cum := 0.0
+			var next := rng.randf_range(18.0, 32.0)
+			var side := 1.0 if rng.randf() > 0.5 else -1.0
+			for pi in range(1, pts.size()):
+				var x0 := float(pts[pi-1][0]); var z0 := float(pts[pi-1][2])
+				var x1 := float(pts[pi][0]);   var z1 := float(pts[pi][2])
+				var dx := x1 - x0; var dz := z1 - z0
+				var seg_len := sqrt(dx * dx + dz * dz)
+				if seg_len < 0.01:
+					continue
+				cum += seg_len
+				if cum >= next:
+					cum = 0.0
+					next = rng.randf_range(20.0, 30.0)
+					var nx := -dz / seg_len; var nz := dx / seg_len
 					var off := half_w + 1.2
-					var bx := x1 + nx * off * bench_side
-					var bz := z1 + nz * off * bench_side
-					var bbk := Vector2i(int(floor(bx / BUILDING_GRID_CELL)), int(floor(bz / BUILDING_GRID_CELL)))
-					if not _building_grid.has(bbk):
-						if _terrain_slope(bx, bz) > BENCH_MAX_SLOPE:
-							continue
-						if not _in_boundary(bx, bz):
-							continue
+					var bx := x1 + nx * off * side
+					var bz := z1 + nz * off * side
+					if _in_boundary(bx, bz) and _terrain_slope(bx, bz) <= BENCH_MAX_SLOPE:
 						var by := _terrain_y(bx, bz)
-						# Face bench toward the path (opposite of offset direction)
-						var angle := atan2(-nx * bench_side, -nz * bench_side)
-						var basis := Basis(Vector3.UP, angle)
-						var bv := int(abs(bx * 11.7 + bz * 5.3)) % 3
-						bench_xf[bv].append(Transform3D(basis, Vector3(bx, by, bz)))
+						var angle := atan2(-nx * side, -nz * side)
+						bench_xf.append(Transform3D(Basis(Vector3.UP, angle), Vector3(bx, by, bz)))
 
-	# Build spatial hash of bench front zones (bench pos + area toward path)
-	for variant_xf in bench_xf:
-		for xf in variant_xf:
-			var pos: Vector3 = xf.origin
-			var fwd: Vector3 = xf.basis.z  # bench faces +Z local = toward path
-			# Mark cells at bench and 3m in front of it
-			for step in 4:  # 0, 1, 2, 3m in front
-				var px := pos.x + fwd.x * float(step)
-				var pz := pos.z + fwd.z * float(step)
-				var key := Vector2i(int(floor(px / BENCH_GRID_CELL)), int(floor(pz / BENCH_GRID_CELL)))
-				_bench_grid[key] = true
+	# Build spatial hash of bench positions (used by undergrowth to keep clear)
+	for xf in bench_xf:
+		var pos: Vector3 = xf.origin
+		var fwd: Vector3 = xf.basis.z
+		for step in 4:
+			var px := pos.x + fwd.x * float(step)
+			var pz := pos.z + fwd.z * float(step)
+			var key := Vector2i(int(floor(px / BENCH_GRID_CELL)), int(floor(pz / BENCH_GRID_CELL)))
+			_bench_grid[key] = true
 
-	var total_lamps: int = lamp_xf[0].size() + lamp_xf[1].size() + lamp_xf[2].size()
-	var total_bench: int = bench_xf[0].size() + bench_xf[1].size() + bench_xf[2].size()
-	print("ParkLoader: lampposts = ", total_lamps, "  benches = ", total_bench)
-	for vi in 3:
-		if not lamp_xf[vi].is_empty():
-			_spawn_multimesh(lamp_meshes[vi], null, lamp_xf[vi], "Lampposts_%d" % vi)
-		if not bench_xf[vi].is_empty():
-			_spawn_multimesh(bench_meshes[vi], null, bench_xf[vi], "Benches_%d" % vi)
+	print("ParkLoader: lampposts = %d  benches = %d (from %s)" % [
+		lamp_xf.size(), bench_xf.size(),
+		"OSM" if not bench_data.is_empty() else "procedural"])
+	if not lamp_xf.is_empty():
+		_spawn_multimesh(lamp_mesh, lamp_mat_override, lamp_xf, "Lampposts")
+	if not bench_xf.is_empty():
+		_spawn_multimesh(bench_mesh, bench_mat_override, bench_xf, "Benches")
 
 
 # ---------------------------------------------------------------------------
@@ -7351,79 +7426,96 @@ func _make_dirt_circle_mesh() -> ArrayMesh:
 	return mesh
 
 
-func _build_trash_cans(paths: Array) -> void:
-	## Dark green cylindrical trash receptacles (~every 60m along paths).
-	if paths.is_empty():
-		return
-	var rng := RandomNumberGenerator.new()
-	rng.seed = 77711
-	# Mesh: cylinder 0.35m radius × 0.9m tall + domed lid
-	var v := PackedVector3Array(); var n := PackedVector3Array(); var idx := PackedInt32Array()
-	var segs := 8
-	_add_cylinder_verts(v, n, idx, 0.0, 0.0, 0.0, 0.35, 0.85, segs)
-	# Domed lid (tapers to 0.20 over 0.10m)
-	_add_cylinder_verts(v, n, idx, 0.0, 0.85, 0.0, 0.36, 0.10, segs, 0.20)
-	# Top cap
-	var base := v.size()
-	for i in segs:
-		var a0 := TAU * float(i) / float(segs)
-		var a1 := TAU * float(i + 1) / float(segs)
-		v.append(Vector3(0.0, 0.95, 0.0))
-		v.append(Vector3(cos(a0) * 0.20, 0.95, sin(a0) * 0.20))
-		v.append(Vector3(cos(a1) * 0.20, 0.95, sin(a1) * 0.20))
-		for _j in 3: n.append(Vector3.UP)
-		var b2 := base + i * 3
-		idx.append_array(PackedInt32Array([b2, b2+1, b2+2]))
-	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
-	arrays[Mesh.ARRAY_VERTEX] = v; arrays[Mesh.ARRAY_NORMAL] = n; arrays[Mesh.ARRAY_INDEX] = idx
-	var mesh := ArrayMesh.new()
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(0.08, 0.14, 0.06)
-	mat.roughness = 0.60
-	mat.metallic = 0.10
+func _build_trash_cans(trash_data: Array, paths: Array) -> void:
+	## Trash receptacles from OSM data, with procedural fallback.
+	# Mesh
+	var mesh: Mesh
+	var mat: Material
+	if _furn_glb_meshes.has("ParkFurn_TrashCan_A"):
+		mesh = _furn_glb_meshes["ParkFurn_TrashCan_A"]
+		var trash_mat := StandardMaterial3D.new()
+		trash_mat.albedo_color = Color(0.08, 0.14, 0.06)
+		trash_mat.roughness = 0.60
+		trash_mat.metallic = 0.10
+		mat = trash_mat
+	else:
+		var v := PackedVector3Array(); var n := PackedVector3Array(); var idx := PackedInt32Array()
+		var segs := 8
+		_add_cylinder_verts(v, n, idx, 0.0, 0.0, 0.0, 0.35, 0.85, segs)
+		_add_cylinder_verts(v, n, idx, 0.0, 0.85, 0.0, 0.36, 0.10, segs, 0.20)
+		var base := v.size()
+		for i in segs:
+			var a0 := TAU * float(i) / float(segs)
+			var a1 := TAU * float(i + 1) / float(segs)
+			v.append(Vector3(0.0, 0.95, 0.0))
+			v.append(Vector3(cos(a0) * 0.20, 0.95, sin(a0) * 0.20))
+			v.append(Vector3(cos(a1) * 0.20, 0.95, sin(a1) * 0.20))
+			for _j in 3: n.append(Vector3.UP)
+			var b2 := base + i * 3
+			idx.append_array(PackedInt32Array([b2, b2+1, b2+2]))
+		var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
+		arrays[Mesh.ARRAY_VERTEX] = v; arrays[Mesh.ARRAY_NORMAL] = n; arrays[Mesh.ARRAY_INDEX] = idx
+		mesh = ArrayMesh.new()
+		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+		var trash_mat := StandardMaterial3D.new()
+		trash_mat.albedo_color = Color(0.08, 0.14, 0.06)
+		trash_mat.roughness = 0.60
+		trash_mat.metallic = 0.10
+		mat = trash_mat
+
+	# Place from OSM data or procedural fallback
 	var xforms: Array = []
-	for path in paths:
-		var hw: String = str(path.get("highway", "path"))
-		if hw == "cycleway" or hw == "track" or hw == "steps":
-			continue
-		if bool(path.get("bridge", false)) or bool(path.get("tunnel", false)):
-			continue
-		var pts: Array = path["points"]
-		if pts.size() < 2:
-			continue
-		var half_w := _hw_width(hw) * 0.5
-		var cum := 0.0
-		var next := rng.randf_range(45.0, 75.0)
-		var side := 1.0 if rng.randf() > 0.5 else -1.0
-		for pi in range(1, pts.size()):
-			var x0 := float(pts[pi-1][0]); var z0 := float(pts[pi-1][2])
-			var x1 := float(pts[pi][0]);   var z1 := float(pts[pi][2])
-			var dx := x1 - x0; var dz := z1 - z0
-			var seg_len := sqrt(dx * dx + dz * dz)
-			if seg_len < 0.01:
+	if not trash_data.is_empty():
+		for tc in trash_data:
+			var tx := float(tc[0])
+			var tz := float(tc[2])
+			if not _in_boundary(tx, tz):
 				continue
-			cum += seg_len
-			if cum >= next:
-				cum = 0.0
-				next = rng.randf_range(50.0, 70.0)
-				side = -side
-				var nx := -dz / seg_len; var nz := dx / seg_len
-				var tx := x1 + nx * (half_w + 0.6) * side
-				var tz := z1 + nz * (half_w + 0.6) * side
-				if not _in_boundary(tx, tz):
+			var ty := _terrain_y(tx, tz)
+			xforms.append(Transform3D(Basis.IDENTITY, Vector3(tx, ty, tz)))
+	else:
+		var rng := RandomNumberGenerator.new()
+		rng.seed = 77711
+		for path in paths:
+			var hw: String = str(path.get("highway", "path"))
+			if hw == "cycleway" or hw == "track" or hw == "steps":
+				continue
+			if bool(path.get("bridge", false)) or bool(path.get("tunnel", false)):
+				continue
+			var pts: Array = path["points"]
+			if pts.size() < 2:
+				continue
+			var half_w := _hw_width(hw) * 0.5
+			var cum := 0.0
+			var next := rng.randf_range(45.0, 75.0)
+			var side := 1.0 if rng.randf() > 0.5 else -1.0
+			for pi in range(1, pts.size()):
+				var x0 := float(pts[pi-1][0]); var z0 := float(pts[pi-1][2])
+				var x1 := float(pts[pi][0]);   var z1 := float(pts[pi][2])
+				var dx := x1 - x0; var dz := z1 - z0
+				var seg_len := sqrt(dx * dx + dz * dz)
+				if seg_len < 0.01:
 					continue
-				var bgk := Vector2i(int(floor(tx / BRIDGE_GRID_CELL)), int(floor(tz / BRIDGE_GRID_CELL)))
-				if _bridge_grid.has(bgk):
-					continue
-				var bbk := Vector2i(int(floor(tx / BUILDING_GRID_CELL)), int(floor(tz / BUILDING_GRID_CELL)))
-				if _building_grid.has(bbk):
-					continue
-				var ty := _terrain_y(tx, tz)
-				xforms.append(Transform3D(Basis.IDENTITY, Vector3(tx, ty, tz)))
+				cum += seg_len
+				if cum >= next:
+					cum = 0.0
+					next = rng.randf_range(50.0, 70.0)
+					side = -side
+					var nx := -dz / seg_len; var nz := dx / seg_len
+					var tx := x1 + nx * (half_w + 0.6) * side
+					var tz := z1 + nz * (half_w + 0.6) * side
+					if not _in_boundary(tx, tz):
+						continue
+					var bgk := Vector2i(int(floor(tx / BRIDGE_GRID_CELL)), int(floor(tz / BRIDGE_GRID_CELL)))
+					if _bridge_grid.has(bgk):
+						continue
+					var ty := _terrain_y(tx, tz)
+					xforms.append(Transform3D(Basis.IDENTITY, Vector3(tx, ty, tz)))
+
 	if not xforms.is_empty():
 		_spawn_multimesh(mesh, mat, xforms, "TrashCans")
-	print("ParkLoader: trash cans = ", xforms.size())
+	print("ParkLoader: trash cans = %d (from %s)" % [
+		xforms.size(), "OSM" if not trash_data.is_empty() else "procedural"])
 
 
 func _build_tree_dirt(trees: Array) -> void:
