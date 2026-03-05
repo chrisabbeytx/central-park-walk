@@ -70,6 +70,8 @@ var gpu_path_list_tex_w: int = 512
 var tunnel_depressions: Array = []  # stairwell depressions for terrain carving
 var boundary_polygon: PackedVector2Array  # XZ boundary for player clamping
 var landuse_zones: Array = []             # from park_data.json: type, name, points
+var _bridge_outlines: Array = []          # bridge outline polygons for deck shapes
+var _tunnel_outlines: Array = []          # tunnel outline polygons for labels
 
 
 # ---------------------------------------------------------------------------
@@ -577,6 +579,8 @@ func _ready() -> void:
 	var trash_cans: Array = data.get("trash_cans", [])
 	var boundary: Array = data.get("boundary", [])
 	landuse_zones = data.get("landuse", [])
+	_bridge_outlines = data.get("bridge_outlines", [])
+	_tunnel_outlines = data.get("tunnel_outlines", [])
 	var streams: Array = data.get("streams", [])
 	var amenities: Array = data.get("amenities", [])
 
@@ -609,6 +613,7 @@ func _ready() -> void:
 	_build_meadow_grass(trees)
 	_build_leaf_litter(trees)
 	_build_squirrels(trees)
+	_build_field_markings()
 	# Remaining vegetation disabled:
 	#_build_rocks(trees, water)
 	#_build_grass_blades(trees)
@@ -1028,6 +1033,40 @@ func _build_paths(paths: Array) -> void:
 		if not near_bridge:
 			_build_tunnel(tp)
 
+	# Add labels for named bridge/tunnel outlines not already labelled by bridge paths
+	var _labelled_names: Dictionary = {}
+	for bp in bridge_paths:
+		var bn: String = str(bp.get("bridge_name", ""))
+		if not bn.is_empty():
+			_labelled_names[bn] = true
+	for outlines in [_bridge_outlines, _tunnel_outlines]:
+		for bo in outlines:
+			var bname: String = bo.get("name", "")
+			if bname.is_empty() or _labelled_names.has(bname):
+				continue
+			var bpts: Array = bo.get("points", [])
+			if bpts.size() < 3:
+				continue
+			var lx := 0.0; var lz := 0.0
+			for pt in bpts:
+				lx += float(pt[0]); lz += float(pt[2])
+			lx /= bpts.size(); lz /= bpts.size()
+			if not _in_boundary(lx, lz):
+				continue
+			var ly := _terrain_y(lx, lz) + 4.0
+			var lbl := Label3D.new()
+			lbl.text = bname
+			lbl.font_size = 48
+			lbl.pixel_size = 0.01
+			lbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+			lbl.modulate = Color(0.95, 0.90, 0.80)
+			lbl.outline_modulate = Color(0.1, 0.1, 0.1, 0.8)
+			lbl.outline_size = 8
+			lbl.position = Vector3(lx, ly, lz)
+			lbl.name = "Arch_Label"
+			add_child(lbl)
+			_labelled_names[bname] = true
+
 
 func _make_path_mesh(paths: Array, hw: String, surface: String) -> MeshInstance3D:
 	var verts   := PackedVector3Array()
@@ -1380,6 +1419,115 @@ func _smooth_path_catmull_rom(pts: Array, subdiv: int = 4) -> Array:
 	return out
 
 
+func _find_bridge_outline(cx: float, cz: float, bridge_name: String) -> Array:
+	## Find a matching bridge outline polygon by name or proximity.
+	## Returns the outline points array (3D: [x, y, z]) or empty array.
+	# First try name match
+	if not bridge_name.is_empty():
+		for bo in _bridge_outlines:
+			if bo.get("name", "") == bridge_name:
+				return bo.get("points", [])
+	# Fall back to proximity match (within 15m)
+	var best_dist := 15.0
+	var best_pts: Array = []
+	for bo in _bridge_outlines:
+		var pts: Array = bo.get("points", [])
+		if pts.size() < 4:
+			continue
+		var ox := 0.0; var oz := 0.0
+		for pt in pts:
+			ox += float(pt[0]); oz += float(pt[2])
+		ox /= pts.size(); oz /= pts.size()
+		var d := sqrt((cx - ox) * (cx - ox) + (cz - oz) * (cz - oz))
+		if d < best_dist:
+			best_dist = d
+			best_pts = pts
+	return best_pts
+
+
+func _triangulate_polygon_2d(poly: PackedVector2Array) -> PackedInt32Array:
+	## Ear-clipping triangulation for a simple polygon in 2D.
+	## Returns index triplets into the original polygon.
+	var indices := PackedInt32Array()
+	var n := poly.size()
+	if n < 3:
+		return indices
+	# Build index list
+	var idx: Array[int] = []
+	# Determine winding order (CCW = positive area)
+	var area := 0.0
+	for i in range(n):
+		var j := (i + 1) % n
+		area += poly[i].x * poly[j].y - poly[j].x * poly[i].y
+	if area > 0.0:
+		for i in range(n): idx.append(i)
+	else:
+		for i in range(n): idx.append(n - 1 - i)
+
+	var remaining := idx.size()
+	var fail_count := 0
+	while remaining > 2 and fail_count < remaining * 2:
+		for ei in range(remaining):
+			if remaining <= 2:
+				break
+			var i0 := idx[(ei - 1 + remaining) % remaining]
+			var i1 := idx[ei]
+			var i2 := idx[(ei + 1) % remaining]
+			var v0 := poly[i0]; var v1 := poly[i1]; var v2 := poly[i2]
+			# Check if ear (convex vertex)
+			var cross := (v1.x - v0.x) * (v2.y - v0.y) - (v1.y - v0.y) * (v2.x - v0.x)
+			if cross <= 0.0:
+				fail_count += 1
+				continue
+			# Check no other vertex inside this triangle
+			var ear_ok := true
+			for ci in range(remaining):
+				var ci_idx := idx[ci]
+				if ci_idx == i0 or ci_idx == i1 or ci_idx == i2:
+					continue
+				var p := poly[ci_idx]
+				# Point-in-triangle test
+				var d0 := (v1.x - v0.x) * (p.y - v0.y) - (v1.y - v0.y) * (p.x - v0.x)
+				var d1 := (v2.x - v1.x) * (p.y - v1.y) - (v2.y - v1.y) * (p.x - v1.x)
+				var d2 := (v0.x - v2.x) * (p.y - v2.y) - (v0.y - v2.y) * (p.x - v2.x)
+				if d0 >= 0.0 and d1 >= 0.0 and d2 >= 0.0:
+					ear_ok = false
+					break
+			if ear_ok:
+				indices.append(i0)
+				indices.append(i1)
+				indices.append(i2)
+				idx.remove_at(ei)
+				remaining -= 1
+				fail_count = 0
+				break
+			else:
+				fail_count += 1
+	return indices
+
+
+func _project_onto_polyline(px: float, pz: float, pts: Array,
+		cum_len: PackedFloat32Array) -> float:
+	## Project a point onto a polyline and return the arc-length distance.
+	var best_d := INF
+	var best_t := 0.0
+	for i in range(pts.size() - 1):
+		var ax := float(pts[i][0]); var az := float(pts[i][2])
+		var bx := float(pts[i+1][0]); var bz := float(pts[i+1][2])
+		var dx := bx - ax; var dz := bz - az
+		var seg_sq := dx * dx + dz * dz
+		if seg_sq < 0.0001:
+			continue
+		var t := clampf(((px - ax) * dx + (pz - az) * dz) / seg_sq, 0.0, 1.0)
+		var cx := ax + t * dx - px
+		var cz := az + t * dz - pz
+		var dist := cx * cx + cz * cz
+		if dist < best_d:
+			best_d = dist
+			best_t = cum_len[i] + t * (cum_len[i + 1] - cum_len[i])
+	return best_t
+
+
 func _build_bridge(path: Dictionary) -> void:
 	var hw:   String = str(path.get("highway", "path"))
 	var surf: String = str(path.get("surface", ""))
@@ -1525,38 +1673,98 @@ func _build_bridge(path: Dictionary) -> void:
 		pt_y[i] = y
 
 	# ----------------------------------------------------------------
-	# Deck ribbon (UV-mapped along path)
+	# Deck — use outline polygon if available, otherwise ribbon
 	# ----------------------------------------------------------------
+	var path_cx := (float(pts[0][0]) + float(pts[n_pts-1][0])) * 0.5
+	var path_cz := (float(pts[0][2]) + float(pts[n_pts-1][2])) * 0.5
+	var outline_pts: Array = _find_bridge_outline(path_cx, path_cz, bridge_name)
+
 	var verts   := PackedVector3Array()
 	var normals := PackedVector3Array()
 	var uvs     := PackedVector2Array()
-	var u := 0.0
 
-	for i in range(n_pts - 1):
-		var p1 := Vector3(float(pts[i][0]),     pt_y[i],     float(pts[i][2]))
-		var p2 := Vector3(float(pts[i+1][0]),   pt_y[i+1],   float(pts[i+1][2]))
-		var seg2 := Vector2(p2.x - p1.x, p2.z - p1.z)
-		if seg2.length_squared() < 0.0001:
-			continue
-		var seg_len := seg2.length()
-		var dv := seg2 / seg_len
-		var nv := Vector2(-dv.y, dv.x)
-		var a  := Vector3(p1.x + nv.x * hw2, p1.y, p1.z + nv.y * hw2)
-		var b  := Vector3(p1.x - nv.x * hw2, p1.y, p1.z - nv.y * hw2)
-		var c  := Vector3(p2.x + nv.x * hw2, p2.y, p2.z + nv.y * hw2)
-		var dd := Vector3(p2.x - nv.x * hw2, p2.y, p2.z - nv.y * hw2)
-		var u2 := u + seg_len / width
-		verts.append_array(PackedVector3Array([a, b, c, b, dd, c]))
-		var quad_n := (b - a).cross(c - a).normalized()
-		if quad_n.y < 0.0:
-			quad_n = -quad_n
-		for _i in range(6):
-			normals.append(quad_n)
-		uvs.append_array(PackedVector2Array([
-			Vector2(u, 0.0), Vector2(u, 1.0), Vector2(u2, 0.0),
-			Vector2(u, 1.0), Vector2(u2, 1.0), Vector2(u2, 0.0),
-		]))
-		u = u2
+	if outline_pts.size() >= 4:
+		# --- Outline polygon deck ---
+		# Remove closing duplicate
+		var op := outline_pts.duplicate()
+		if op.size() > 3:
+			var odx := float(op[0][0]) - float(op[-1][0])
+			var odz := float(op[0][2]) - float(op[-1][2])
+			if odx * odx + odz * odz < 4.0:
+				op = op.slice(0, -1)
+		# Build 2D polygon for triangulation
+		var poly2d := PackedVector2Array()
+		poly2d.resize(op.size())
+		for oi in range(op.size()):
+			poly2d[oi] = Vector2(float(op[oi][0]), float(op[oi][2]))
+		var tri_idx := _triangulate_polygon_2d(poly2d)
+		if tri_idx.size() >= 3:
+			# Compute Y for each outline vertex by projecting onto centerline
+			var oy := PackedFloat32Array()
+			oy.resize(op.size())
+			for oi in range(op.size()):
+				var arc := _project_onto_polyline(float(op[oi][0]), float(op[oi][2]),
+						pts, cum_len)
+				# Interpolate pt_y at this arc length
+				var yi := deck_y
+				for pi in range(n_pts - 1):
+					if cum_len[pi + 1] >= arc:
+						var seg_t := 0.0
+						var seg_d := cum_len[pi + 1] - cum_len[pi]
+						if seg_d > 0.001:
+							seg_t = (arc - cum_len[pi]) / seg_d
+						yi = lerpf(pt_y[pi], pt_y[pi + 1], seg_t)
+						break
+				oy[oi] = yi
+			# Compute centroid for UV mapping
+			var ucx := 0.0; var ucz := 0.0
+			for oi in range(op.size()):
+				ucx += poly2d[oi].x; ucz += poly2d[oi].y
+			ucx /= op.size(); ucz /= op.size()
+			# Build triangle verts
+			for ti in range(0, tri_idx.size(), 3):
+				var i0 := tri_idx[ti]; var i1 := tri_idx[ti+1]; var i2 := tri_idx[ti+2]
+				var v0 := Vector3(poly2d[i0].x, oy[i0], poly2d[i0].y)
+				var v1 := Vector3(poly2d[i1].x, oy[i1], poly2d[i1].y)
+				var v2 := Vector3(poly2d[i2].x, oy[i2], poly2d[i2].y)
+				verts.append_array(PackedVector3Array([v0, v1, v2]))
+				var tn := (v1 - v0).cross(v2 - v0).normalized()
+				if tn.y < 0.0: tn = -tn
+				for _j in 3: normals.append(tn)
+				uvs.append_array(PackedVector2Array([
+					Vector2((poly2d[i0].x - ucx) / width, (poly2d[i0].y - ucz) / width),
+					Vector2((poly2d[i1].x - ucx) / width, (poly2d[i1].y - ucz) / width),
+					Vector2((poly2d[i2].x - ucx) / width, (poly2d[i2].y - ucz) / width),
+				]))
+			print("    → outline deck: ", op.size(), " verts, ", tri_idx.size() / 3, " tris")
+	else:
+		# --- Ribbon deck (default) ---
+		var u := 0.0
+		for i in range(n_pts - 1):
+			var p1 := Vector3(float(pts[i][0]),     pt_y[i],     float(pts[i][2]))
+			var p2 := Vector3(float(pts[i+1][0]),   pt_y[i+1],   float(pts[i+1][2]))
+			var seg2 := Vector2(p2.x - p1.x, p2.z - p1.z)
+			if seg2.length_squared() < 0.0001:
+				continue
+			var seg_len := seg2.length()
+			var dv := seg2 / seg_len
+			var nv := Vector2(-dv.y, dv.x)
+			var a  := Vector3(p1.x + nv.x * hw2, p1.y, p1.z + nv.y * hw2)
+			var b  := Vector3(p1.x - nv.x * hw2, p1.y, p1.z - nv.y * hw2)
+			var c  := Vector3(p2.x + nv.x * hw2, p2.y, p2.z + nv.y * hw2)
+			var dd := Vector3(p2.x - nv.x * hw2, p2.y, p2.z - nv.y * hw2)
+			var u2 := u + seg_len / width
+			verts.append_array(PackedVector3Array([a, b, c, b, dd, c]))
+			var quad_n := (b - a).cross(c - a).normalized()
+			if quad_n.y < 0.0:
+				quad_n = -quad_n
+			for _i in range(6):
+				normals.append(quad_n)
+			uvs.append_array(PackedVector2Array([
+				Vector2(u, 0.0), Vector2(u, 1.0), Vector2(u2, 0.0),
+				Vector2(u, 1.0), Vector2(u2, 1.0), Vector2(u2, 0.0),
+			]))
+			u = u2
 
 	if not verts.is_empty():
 		var arrays: Array = []
@@ -9277,6 +9485,224 @@ func _build_squirrels(trees: Array) -> void:
 	if not xforms.is_empty():
 		_spawn_multimesh(sq_mesh, sq_mat, xforms, "Squirrels")
 	print("ParkLoader: squirrels = ", xforms.size())
+
+
+# ---------------------------------------------------------------------------
+# Baseball / softball field markings — dirt infield + foul lines + base paths
+# ---------------------------------------------------------------------------
+func _build_field_markings() -> void:
+	## Draws dirt infield and white line markings for named baseball/softball fields.
+	var fields: Array = []
+	for zone in landuse_zones:
+		var name: String = zone.get("name", "")
+		if name.is_empty():
+			continue
+		var nl := name.to_lower()
+		if not ("ball field" in nl or "baseball" in nl or "softball" in nl):
+			continue
+		var pts: Array = zone.get("points", [])
+		if pts.size() < 6:
+			continue
+		fields.append(zone)
+
+	if fields.is_empty():
+		return
+
+	# Materials
+	var dirt_mat := StandardMaterial3D.new()
+	dirt_mat.albedo_color = Color(0.55, 0.42, 0.30)  # baseball infield dirt
+	dirt_mat.roughness = 0.95
+	dirt_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+
+	var line_mat := StandardMaterial3D.new()
+	line_mat.albedo_color = Color(0.95, 0.95, 0.90)  # white chalk lines
+	line_mat.roughness = 0.85
+	line_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+
+	var count := 0
+	for zone in fields:
+		var name: String = zone["name"]
+		var pts: Array = zone["points"]
+		var is_softball := "softball" in name.to_lower()
+		var base_dist: float = 18.3 if is_softball else 27.4  # 60ft / 90ft
+
+		# Remove duplicate closing point
+		if pts.size() > 3:
+			var dx := float(pts[0][0]) - float(pts[-1][0])
+			var dz := float(pts[0][1]) - float(pts[-1][1])
+			if dx * dx + dz * dz < 4.0:
+				pts = pts.slice(0, -1)
+		var n := pts.size()
+		if n < 4:
+			continue
+
+		# Find home plate: vertex with sharpest interior angle (closest to 90°)
+		var best_i := 0
+		var best_diff := 999.0
+		for i in range(n):
+			var p0x := float(pts[(i - 1 + n) % n][0])
+			var p0z := float(pts[(i - 1 + n) % n][1])
+			var p1x := float(pts[i][0])
+			var p1z := float(pts[i][1])
+			var p2x := float(pts[(i + 1) % n][0])
+			var p2z := float(pts[(i + 1) % n][1])
+			var v1x := p0x - p1x; var v1z := p0z - p1z
+			var v2x := p2x - p1x; var v2z := p2z - p1z
+			var m1 := sqrt(v1x * v1x + v1z * v1z)
+			var m2 := sqrt(v2x * v2x + v2z * v2z)
+			if m1 < 0.1 or m2 < 0.1:
+				continue
+			var dot := (v1x * v2x + v1z * v2z) / (m1 * m2)
+			dot = clampf(dot, -1.0, 1.0)
+			var angle := acos(dot)
+			var diff := absf(angle - PI * 0.5)  # how close to 90°
+			if diff < best_diff:
+				best_diff = diff
+				best_i = i
+
+		var hp_x := float(pts[best_i][0])
+		var hp_z := float(pts[best_i][1])
+		var hp_y := _terrain_y(hp_x, hp_z) + 0.02
+
+		# Foul line directions: the two edges from home plate
+		var prev_i := (best_i - 1 + n) % n
+		var next_i := (best_i + 1) % n
+		var fl1_dx := float(pts[prev_i][0]) - hp_x
+		var fl1_dz := float(pts[prev_i][1]) - hp_z
+		var fl2_dx := float(pts[next_i][0]) - hp_x
+		var fl2_dz := float(pts[next_i][1]) - hp_z
+		var fl1_len := sqrt(fl1_dx * fl1_dx + fl1_dz * fl1_dz)
+		var fl2_len := sqrt(fl2_dx * fl2_dx + fl2_dz * fl2_dz)
+		if fl1_len < 1.0 or fl2_len < 1.0:
+			continue
+		fl1_dx /= fl1_len; fl1_dz /= fl1_len
+		fl2_dx /= fl2_len; fl2_dz /= fl2_len
+
+		# Bisector direction = toward second base (center field)
+		var bis_x := fl1_dx + fl2_dx
+		var bis_z := fl1_dz + fl2_dz
+		var bis_len := sqrt(bis_x * bis_x + bis_z * bis_z)
+		if bis_len < 0.01:
+			continue
+		bis_x /= bis_len; bis_z /= bis_len
+
+		# Base positions
+		var first_x := hp_x + fl2_dx * base_dist
+		var first_z := hp_z + fl2_dz * base_dist
+		var third_x := hp_x + fl1_dx * base_dist
+		var third_z := hp_z + fl1_dz * base_dist
+		var second_x := hp_x + bis_x * base_dist * 1.414
+		var second_z := hp_z + bis_z * base_dist * 1.414
+
+		# --- Dirt infield: fan-shaped area ---
+		var dirt_verts := PackedVector3Array()
+		var dirt_norms := PackedVector3Array()
+		var infield_r: float = base_dist * 1.1  # slightly beyond bases
+		var arc_segs := 24
+		# Fan from home plate covering the 90° arc between foul lines
+		for ai in range(arc_segs):
+			var t0 := float(ai) / float(arc_segs)
+			var t1 := float(ai + 1) / float(arc_segs)
+			# Interpolate direction between foul lines
+			var d0x := fl1_dx * (1.0 - t0) + fl2_dx * t0
+			var d0z := fl1_dz * (1.0 - t0) + fl2_dz * t0
+			var d1x := fl1_dx * (1.0 - t1) + fl2_dx * t1
+			var d1z := fl1_dz * (1.0 - t1) + fl2_dz * t1
+			var l0 := sqrt(d0x * d0x + d0z * d0z)
+			var l1 := sqrt(d1x * d1x + d1z * d1z)
+			if l0 > 0.01: d0x /= l0; d0z /= l0
+			if l1 > 0.01: d1x /= l1; d1z /= l1
+			var ex0 := hp_x + d0x * infield_r
+			var ez0 := hp_z + d0z * infield_r
+			var ex1 := hp_x + d1x * infield_r
+			var ez1 := hp_z + d1z * infield_r
+			var ey0 := _terrain_y(ex0, ez0) + 0.02
+			var ey1 := _terrain_y(ex1, ez1) + 0.02
+			dirt_verts.append(Vector3(hp_x, hp_y, hp_z))
+			dirt_verts.append(Vector3(ex0, ey0, ez0))
+			dirt_verts.append(Vector3(ex1, ey1, ez1))
+			for _j in 3:
+				dirt_norms.append(Vector3.UP)
+
+		if not dirt_verts.is_empty():
+			var da: Array = []; da.resize(Mesh.ARRAY_MAX)
+			da[Mesh.ARRAY_VERTEX] = dirt_verts
+			da[Mesh.ARRAY_NORMAL] = dirt_norms
+			var dm := ArrayMesh.new()
+			dm.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, da)
+			dm.surface_set_material(0, dirt_mat)
+			var dmi := MeshInstance3D.new()
+			dmi.mesh = dm
+			dmi.name = "Field_Dirt_" + name.replace(" ", "_")
+			add_child(dmi)
+
+		# --- Foul lines: thin white strips from home plate outward ---
+		var line_w := 0.08  # ~3 inches wide
+		var line_verts := PackedVector3Array()
+		var line_norms := PackedVector3Array()
+		var foul_len: float = base_dist * 1.6  # extend past bases
+		var _foul_dirs: Array[Vector2] = [Vector2(fl1_dx, fl1_dz), Vector2(fl2_dx, fl2_dz)]
+		for fl_dir in _foul_dirs:
+			var perp := Vector2(-fl_dir.y, fl_dir.x) * line_w * 0.5
+			var end_x: float = hp_x + fl_dir.x * foul_len
+			var end_z: float = hp_z + fl_dir.y * foul_len
+			var end_y := _terrain_y(end_x, end_z) + 0.03
+			var a := Vector3(hp_x + perp.x, hp_y + 0.01, hp_z + perp.y)
+			var b := Vector3(hp_x - perp.x, hp_y + 0.01, hp_z - perp.y)
+			var c := Vector3(end_x + perp.x, end_y, end_z + perp.y)
+			var d := Vector3(end_x - perp.x, end_y, end_z - perp.y)
+			line_verts.append_array(PackedVector3Array([a, b, c, b, d, c]))
+			for _j in 6:
+				line_norms.append(Vector3.UP)
+
+		# --- Base paths: diamond connecting HP → 1B → 2B → 3B → HP ---
+		var bases: Array[Vector3] = [
+			Vector3(hp_x, hp_y + 0.01, hp_z),
+			Vector3(first_x, _terrain_y(first_x, first_z) + 0.03, first_z),
+			Vector3(second_x, _terrain_y(second_x, second_z) + 0.03, second_z),
+			Vector3(third_x, _terrain_y(third_x, third_z) + 0.03, third_z),
+		]
+		for bi in range(4):
+			var ba: Vector3 = bases[bi]
+			var bb: Vector3 = bases[(bi + 1) % 4]
+			var seg := Vector2(bb.x - ba.x, bb.z - ba.z).normalized()
+			var perp := Vector2(-seg.y, seg.x) * line_w * 0.5
+			var la := Vector3(ba.x + perp.x, ba.y, ba.z + perp.y)
+			var lb := Vector3(ba.x - perp.x, ba.y, ba.z - perp.y)
+			var lc := Vector3(bb.x + perp.x, bb.y, bb.z + perp.y)
+			var ld := Vector3(bb.x - perp.x, bb.y, bb.z - perp.y)
+			line_verts.append_array(PackedVector3Array([la, lb, lc, lb, ld, lc]))
+			for _j in 6:
+				line_norms.append(Vector3.UP)
+
+		# --- Base markers: small white squares at each base position ---
+		var base_sz := 0.38  # 15 inches
+		for bi in range(4):
+			var bx: float = bases[bi].x; var by: float = bases[bi].y + 0.01; var bz: float = bases[bi].z
+			var h := base_sz * 0.5
+			line_verts.append_array(PackedVector3Array([
+				Vector3(bx - h, by, bz - h), Vector3(bx + h, by, bz - h),
+				Vector3(bx + h, by, bz + h), Vector3(bx - h, by, bz - h),
+				Vector3(bx + h, by, bz + h), Vector3(bx - h, by, bz + h),
+			]))
+			for _j in 6:
+				line_norms.append(Vector3.UP)
+
+		if not line_verts.is_empty():
+			var la: Array = []; la.resize(Mesh.ARRAY_MAX)
+			la[Mesh.ARRAY_VERTEX] = line_verts
+			la[Mesh.ARRAY_NORMAL] = line_norms
+			var lm := ArrayMesh.new()
+			lm.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, la)
+			lm.surface_set_material(0, line_mat)
+			var lmi := MeshInstance3D.new()
+			lmi.mesh = lm
+			lmi.name = "Field_Lines_" + name.replace(" ", "_")
+			add_child(lmi)
+
+		count += 1
+
+	print("ParkLoader: field markings = ", count)
 
 
 func _build_grass_blades(trees: Array) -> void:
