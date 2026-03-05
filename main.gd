@@ -83,9 +83,9 @@ func _ready() -> void:
 	_setup_color_grade()
 	if not _terrain_only:
 		_setup_lamp_lights()
-		_setup_falling_leaves()
-		_setup_pigeons()
-		_setup_audio()
+		#_setup_falling_leaves()  # Disabled — not ready yet
+		#_setup_pigeons()         # Disabled — not ready yet
+		#_setup_audio()  # Disabled — not ready yet
 	_apply_time_of_day()
 	# Check for --tour CLI arg
 	for arg in OS.get_cmdline_user_args():
@@ -264,12 +264,10 @@ func _process(delta: float) -> void:
 		_lamp_light_timer = 0.0
 		_update_lamp_lights()
 
-	# Move falling leaves to follow player
-	if _falling_leaves and _player:
-		_falling_leaves.global_position = _player.global_position + Vector3(0, 10, 0)
-
-	# Update audio
-	_update_audio(delta)
+	# Falling leaves + audio disabled — not ready yet
+	#if _falling_leaves and _player:
+	#	_falling_leaves.global_position = _player.global_position + Vector3(0, 10, 0)
+	#_update_audio(delta)
 
 	# Advance clock
 	_time_of_day += _time_speed * delta
@@ -903,23 +901,21 @@ func _apply_time_of_day() -> void:
 		else:
 			_lamp_mat.emission = Color(1.0, 0.45, 0.08) * em
 
-	# Day/night audio modulation
-	if _audio_birds and _audio_birds.stream:
-		# Birds: loud dawn/day, quiet night
-		var bird_energy := 1.0
-		if _time_of_day < 5.0 or _time_of_day > 21.0:
-			bird_energy = 0.1  # night — near silence
-		elif _time_of_day < 7.0:
-			bird_energy = lerpf(0.1, 1.2, (_time_of_day - 5.0) / 2.0)  # dawn chorus
-		elif _time_of_day > 19.0:
-			bird_energy = lerpf(1.0, 0.1, (_time_of_day - 19.0) / 2.0)
-		_audio_birds.volume_db = lerpf(-25.0, -6.0, bird_energy)
-	if _audio_wind and _audio_wind.stream:
-		# Wind: slightly stronger at dawn/dusk
-		var wind_vol := -14.0
-		if _time_of_day > 18.0 or _time_of_day < 6.0:
-			wind_vol = -10.0
-		_audio_wind.volume_db = wind_vol
+	# Day/night audio modulation — disabled (audio not ready yet)
+	#if _audio_birds and _audio_birds.stream:
+	#	var bird_energy := 1.0
+	#	if _time_of_day < 5.0 or _time_of_day > 21.0:
+	#		bird_energy = 0.1
+	#	elif _time_of_day < 7.0:
+	#		bird_energy = lerpf(0.1, 1.2, (_time_of_day - 5.0) / 2.0)
+	#	elif _time_of_day > 19.0:
+	#		bird_energy = lerpf(1.0, 0.1, (_time_of_day - 19.0) / 2.0)
+	#	_audio_birds.volume_db = lerpf(-25.0, -6.0, bird_energy)
+	#if _audio_wind and _audio_wind.stream:
+	#	var wind_vol := -14.0
+	#	if _time_of_day > 18.0 or _time_of_day < 6.0:
+	#		wind_vol = -10.0
+	#	_audio_wind.volume_db = wind_vol
 
 
 # ---------------------------------------------------------------------------
