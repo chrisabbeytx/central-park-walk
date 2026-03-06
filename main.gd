@@ -1906,7 +1906,7 @@ func _setup_player() -> CharacterBody3D:
 		p.rotation_degrees.y = 0.0
 		p.set_physics_process(false)
 	else:
-		p.position = Vector3(-400.0, _terrain_height(-400.0, 600.0) + 1.2, 600.0)
+		p.position = Vector3(-400.0, _terrain_height(-400.0, 600.0) + 1.8, 600.0)
 	p.rotation_degrees.y = 30.0
 	add_child(p)
 	if _terrain_only and p.head:
@@ -2206,7 +2206,7 @@ func _setup_fireflies() -> void:
 		var mi := MeshInstance3D.new()
 		var s: float = rng.randf_range(0.7, 1.4)
 		var imesh := QuadMesh.new()
-		imesh.size = Vector2(0.07 * s, 0.04 * s)
+		imesh.size = Vector2(0.04 * s, 0.02 * s)
 		mi.mesh = imesh
 		mi.material_override = mat.duplicate()
 		mi.visible = false
@@ -2382,8 +2382,8 @@ func _setup_lens_distortion() -> void:
 	lens_shader.code = """shader_type canvas_item;
 
 uniform sampler2D screen_tex : hint_screen_texture, filter_linear_mipmap;
-uniform float barrel_strength = 0.08;
-uniform float chroma_strength = 0.0015;
+uniform float barrel_strength = 0.025;
+uniform float chroma_strength = 0.0008;
 
 void fragment() {
 	vec2 uv = SCREEN_UV - 0.5;

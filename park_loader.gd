@@ -604,8 +604,8 @@ func _ready() -> void:
 	_build_staircases(paths)
 	_build_statues(statues)
 	_build_amenities(amenities)
-	_build_boats(water)
-	_build_waterfowl(water)
+	#_build_boats(water)      # disabled — billboard quads
+	#_build_waterfowl(water)  # disabled — billboard quads
 	# Disabled — not ready yet:
 	#_build_pedestrians(paths)
 	_build_boundary(boundary)
@@ -5246,18 +5246,32 @@ func _load_vegetation_meshes() -> void:
 		var meshes: Array = []
 		_collect_meshes(root, meshes)
 		if not meshes.is_empty():
-			# Tint foliage materials — summer: keep natural greens, soften flowers
+			# Impressionistic art nouveau palette — rich, warm, painterly
 			var m: Mesh = meshes[0]
 			var is_flower: bool = model_name.begins_with("Flower") or model_name == "Bush_Common_Flowers"
+			var is_rock: bool = model_name.begins_with("Rock_")
+			var is_mushroom: bool = model_name.begins_with("Mushroom")
 			for si in m.get_surface_count():
 				var smat: Material = m.surface_get_material(si)
 				if smat is StandardMaterial3D:
 					var sm: StandardMaterial3D = smat as StandardMaterial3D
-					if is_flower:
-						sm.albedo_color = Color(0.75, 0.70, 0.65, 1.0)
+					if is_rock:
+						sm.albedo_color = Color(0.58, 0.52, 0.44, 1.0)  # warm sandstone
+						sm.roughness = 0.92
+						sm.metallic = 0.0
+					elif is_mushroom:
+						sm.albedo_color = Color(0.75, 0.58, 0.38, 1.0)  # amber-ochre
+						sm.roughness = 0.88
+						sm.metallic = 0.0
+					elif is_flower:
+						sm.albedo_color = Color(0.80, 0.55, 0.52, 1.0)  # dusty rose
+						sm.roughness = 0.85
+						sm.metallic = 0.0
 					else:
-						sm.albedo_color = Color(0.90, 0.92, 0.88, 1.0)
-					sm.roughness = maxf(sm.roughness, 0.55)
+						# Lush painterly green — saturated but soft
+						sm.albedo_color = Color(0.72, 0.88, 0.62, 1.0)
+						sm.roughness = 0.88
+						sm.metallic = 0.0
 			_veg_meshes[model_name] = m
 		root.queue_free()
 	print("Vegetation: loaded %d meshes" % _veg_meshes.size())
@@ -5321,7 +5335,7 @@ func _build_trees(trees: Array) -> void:
 		if meshes.is_empty():
 			print("WARNING: no meshes found in %s" % species)
 			continue
-		# Tint materials — summer greens, coherent with terrain grass.
+		# Impressionistic art nouveau palette — rich, warm, painterly
 		if not meshes.is_empty():
 			var first_m: Mesh = meshes[0]
 			for si in first_m.get_surface_count():
@@ -5329,10 +5343,15 @@ func _build_trees(trees: Array) -> void:
 				if smat is StandardMaterial3D:
 					var sm: StandardMaterial3D = smat as StandardMaterial3D
 					if sm.transparency != BaseMaterial3D.TRANSPARENCY_DISABLED:
-						sm.albedo_color = Color(0.35, 0.55, 0.25, 1.0)  # summer green leaves
-						sm.roughness = maxf(sm.roughness, 0.65)
+						# Leaves — rich deep green, lush and saturated
+						sm.albedo_color = Color(0.28, 0.48, 0.18, 1.0)
+						sm.roughness = 0.88
+						sm.metallic = 0.0
 					else:
-						sm.albedo_color = Color(0.65, 0.60, 0.52, 1.0)  # neutral bark
+						# Bark — warm umber, like a Mucha illustration
+						sm.albedo_color = Color(0.48, 0.38, 0.28, 1.0)
+						sm.roughness = 0.90
+						sm.metallic = 0.0
 		species_meshes[species] = meshes
 		species_heights[species] = max_h
 		print("Trees: loaded %s — %d variants, raw=%.4f actual=%.1fm" % [species, meshes.size(), max_h, max_h * node_scale])
@@ -6019,24 +6038,24 @@ void fragment() {
 	float bright = mix(0.65 + h * 0.55, 0.45 + h * 0.30, understorey);
 	vec3 col = alb * bright;
 
-	// Summer palette: lush greens with natural variation
+	// Impressionist summer palette — rich layered greens with golden warmth
 	vec3 summer_tint;
-	if (h < 0.30) {
-		summer_tint = vec3(0.22, 0.48, 0.10);       // deep forest green
-	} else if (h < 0.55) {
-		summer_tint = vec3(0.28, 0.52, 0.14);       // rich mid green
-	} else if (h < 0.75) {
-		summer_tint = vec3(0.18, 0.42, 0.08);       // dark emerald
-	} else if (h < 0.90) {
-		summer_tint = vec3(0.32, 0.55, 0.18);       // bright lime-green
+	if (h < 0.25) {
+		summer_tint = vec3(0.18, 0.42, 0.08);       // deep viridian
+	} else if (h < 0.45) {
+		summer_tint = vec3(0.25, 0.50, 0.12);       // sap green
+	} else if (h < 0.65) {
+		summer_tint = vec3(0.15, 0.38, 0.06);       // dark emerald
+	} else if (h < 0.82) {
+		summer_tint = vec3(0.30, 0.52, 0.14);       // cadmium green
 	} else {
-		summer_tint = vec3(0.25, 0.45, 0.12);       // olive green
+		summer_tint = vec3(0.35, 0.48, 0.18);       // warm olive gold
 	}
-	col *= summer_tint * 2.2;
+	col *= summer_tint * 2.4;
 
-	// Fake subsurface scattering: warm green backlit leaves
-	float sss = pow(1.0 - max(dot(NORMAL, VIEW), 0.0), 2.5) * 0.35;
-	col += vec3(0.08, 0.14, 0.02) * sss;
+	// Warm subsurface scattering — golden light through leaves
+	float sss = pow(1.0 - max(dot(NORMAL, VIEW), 0.0), 2.2) * 0.40;
+	col += vec3(0.12, 0.15, 0.02) * sss;
 
 	ALBEDO     = clamp(col, 0.0, 1.0);
 	NORMAL_MAP = texture(leaf_normal, UV).rgb;
@@ -6930,12 +6949,12 @@ func _build_statues(statues: Array) -> void:
 	var rw_alb := _load_tex("res://textures/rock_wall_diff.jpg")
 	var rw_nrm := _load_tex("res://textures/rock_wall_nrm.jpg")
 	var rw_rgh := _load_tex("res://textures/rock_wall_rgh.jpg")
-	var stone_mat := _make_stone_material(rw_alb, rw_nrm, rw_rgh, Color(0.80, 0.78, 0.74))
+	var stone_mat := _make_stone_material(rw_alb, rw_nrm, rw_rgh, Color(0.78, 0.72, 0.62))
 
 	var bronze_mat := StandardMaterial3D.new()
-	bronze_mat.albedo_color = Color(0.30, 0.25, 0.18)
-	bronze_mat.roughness    = 0.55
-	bronze_mat.metallic     = 0.65
+	bronze_mat.albedo_color = Color(0.22, 0.24, 0.14)  # patinated bronze-green
+	bronze_mat.roughness    = 0.72
+	bronze_mat.metallic     = 0.50
 
 	# Load GLB statue models (3 variants for variety)
 	var statue_glb_meshes: Array[Mesh] = []
@@ -7797,9 +7816,9 @@ func _build_furniture(bench_data: Array, lamppost_data: Array, paths: Array) -> 
 		print("WARNING: ParkFurn_Lamp_C not found in GLB")
 		return
 	var lamp_post_mat := StandardMaterial3D.new()
-	lamp_post_mat.albedo_color = Color(0.08, 0.14, 0.06)
-	lamp_post_mat.roughness    = 0.50
-	lamp_post_mat.metallic     = 0.15
+	lamp_post_mat.albedo_color = Color(0.08, 0.08, 0.06)  # dark wrought iron
+	lamp_post_mat.roughness    = 0.78
+	lamp_post_mat.metallic     = 0.45
 	var lamp_mat_override: Material = lamp_post_mat
 	# Emissive bulb material (main.gd modulates emission for day/night)
 	var lamp_bulb_mat := StandardMaterial3D.new()
@@ -7819,8 +7838,9 @@ func _build_furniture(bench_data: Array, lamppost_data: Array, paths: Array) -> 
 		print("WARNING: no bench meshes found in GLB")
 		return
 	var bench_mat := StandardMaterial3D.new()
-	bench_mat.albedo_color = Color(0.40, 0.26, 0.14)
-	bench_mat.roughness    = 0.72
+	bench_mat.albedo_color = Color(0.45, 0.30, 0.15)  # warm honey wood
+	bench_mat.roughness    = 0.88
+	bench_mat.metallic     = 0.0
 
 	# --- Place lampposts: OSM positions + procedural supplement ---
 	var lamp_xf: Array = []
@@ -7997,9 +8017,9 @@ func _build_trash_cans(trash_data: Array, paths: Array) -> void:
 		return
 	var mesh: Mesh = _furn_glb_meshes["ParkFurn_TrashCan_A"]
 	var trash_mat := StandardMaterial3D.new()
-	trash_mat.albedo_color = Color(0.08, 0.14, 0.06)
-	trash_mat.roughness = 0.60
-	trash_mat.metallic = 0.10
+	trash_mat.albedo_color = Color(0.08, 0.08, 0.06)  # matches lamppost wrought iron
+	trash_mat.roughness = 0.78
+	trash_mat.metallic = 0.45
 	var mat: Material = trash_mat
 
 	# Place from OSM data + procedural supplement

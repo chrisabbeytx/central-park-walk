@@ -18,16 +18,16 @@ func _ready() -> void:
 	# Capsule collider
 	var col := CollisionShape3D.new()
 	var cap := CapsuleShape3D.new()
-	cap.radius = 0.25
-	cap.height = 1.0
+	cap.radius = 0.30
+	cap.height = 1.66
 	col.shape   = cap
-	col.position = Vector3(0.0, 0.5, 0.0)
+	col.position = Vector3(0.0, 0.83, 0.0)
 	add_child(col)
 
 	# Head node – only rotates on X (pitch)
 	head = Node3D.new()
 	head.name     = "Head"
-	head.position = Vector3(0.0, 0.95, 0.0)
+	head.position = Vector3(0.0, 1.58, 0.0)
 	add_child(head)
 
 	# Camera attached to head
@@ -62,7 +62,7 @@ func _physics_process(delta: float) -> void:
 	if absf(dy) > 0.08:  # sudden jump = stair step, not normal movement
 		_stair_offset += dy
 	_stair_offset = lerpf(_stair_offset, 0.0, clampf(10.0 * delta, 0.0, 1.0))
-	head.position.y = 0.95 - _stair_offset
+	head.position.y = 1.58 - _stair_offset
 
 
 func _unhandled_input(event: InputEvent) -> void:
