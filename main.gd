@@ -458,8 +458,10 @@ func _unhandled_input(event: InputEvent) -> void:
 	elif event.keycode == KEY_F11:
 		if DisplayServer.window_get_mode() == DisplayServer.WINDOW_MODE_FULLSCREEN:
 			DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_WINDOWED)
+			Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 		else:
 			DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN)
+			Input.mouse_mode = Input.MOUSE_MODE_HIDDEN
 	elif event.keycode == KEY_COMMA:
 		_user_gamma = clampf(_user_gamma - 0.05, 0.5, 2.0)
 		print("Gamma: %.2f" % _user_gamma)
@@ -508,25 +510,39 @@ uniform float cloud_speed = 0.004;
 uniform vec3 cloud_color_top = vec3(0.90, 0.90, 0.92);
 uniform vec3 cloud_color_bottom = vec3(0.45, 0.45, 0.50);
 
+// Scalar hash — used for stars (cell-based)
 float sky_hash(vec2 p) {
 	p = fract(p * vec2(127.1, 311.7));
 	p += dot(p, p + 43.21);
 	return fract(p.x * p.y);
 }
-float sky_vnoise(vec2 p) {
-	vec2 i = floor(p); vec2 f = fract(p);
-	vec2 u = f * f * (3.0 - 2.0 * f);
-	return mix(mix(sky_hash(i), sky_hash(i + vec2(1.0, 0.0)), u.x),
-	           mix(sky_hash(i + vec2(0.0, 1.0)), sky_hash(i + vec2(1.0, 1.0)), u.x), u.y);
+// Gradient hash — returns 2D direction per lattice point
+vec2 sky_grad(vec2 p) {
+	p = vec2(dot(p, vec2(127.1, 311.7)),
+	         dot(p, vec2(269.5, 183.3)));
+	return -1.0 + 2.0 * fract(sin(p) * 43758.5453);
 }
+// Gradient (Perlin-style) noise — no grid artifacts
+float sky_gnoise(vec2 p) {
+	vec2 i = floor(p);
+	vec2 f = fract(p);
+	// Quintic interpolation (C2 continuous — no second-derivative seams)
+	vec2 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+	return mix(mix(dot(sky_grad(i),                 f),
+	               dot(sky_grad(i + vec2(1.0, 0.0)), f - vec2(1.0, 0.0)), u.x),
+	           mix(dot(sky_grad(i + vec2(0.0, 1.0)), f - vec2(0.0, 1.0)),
+	               dot(sky_grad(i + vec2(1.0, 1.0)), f - vec2(1.0, 1.0)), u.x), u.y);
+}
+// FBM with per-octave rotation to break any residual grid alignment
 float sky_fbm(vec2 p, int oct) {
 	float v = 0.0, a = 0.5;
+	mat2 rot = mat2(vec2(0.80, 0.60), vec2(-0.60, 0.80)); // ~37 deg
 	for (int i = 0; i < oct; i++) {
-		v += a * sky_vnoise(p);
-		p *= 2.13;
-		a *= 0.47;
+		v += a * sky_gnoise(p);
+		p = rot * p * 2.0;
+		a *= 0.5;
 	}
-	return v;
+	return v * 0.5 + 0.5; // remap [-1,1] → [0,1]
 }
 
 void sky() {
@@ -717,8 +733,8 @@ func _build_keyframes() -> void:
 		"lamp_emission":  3.0,
 		"vol_fog_density":    0.0004,
 		"vol_fog_anisotropy": 0.45,
-		"cloud_coverage":     0.30,
-		"cloud_density":      0.55,
+		"cloud_coverage":     0.50,
+		"cloud_density":      0.60,
 		"cloud_color_top":    Color(0.42, 0.40, 0.44),
 		"cloud_color_bottom": Color(0.16, 0.14, 0.18),
 		"cloud_speed":        0.003,
@@ -763,8 +779,8 @@ func _build_keyframes() -> void:
 		"lamp_emission":  0.0,
 		"vol_fog_density":    0.0003,
 		"vol_fog_anisotropy": 0.85,
-		"cloud_coverage":     0.40,
-		"cloud_density":      0.55,
+		"cloud_coverage":     0.55,
+		"cloud_density":      0.60,
 		"cloud_color_top":    Color(0.92, 0.88, 0.78),
 		"cloud_color_bottom": Color(0.48, 0.40, 0.32),
 		"cloud_speed":        0.004,
@@ -809,8 +825,8 @@ func _build_keyframes() -> void:
 		"lamp_emission":  0.0,
 		"vol_fog_density":    0.0002,
 		"vol_fog_anisotropy": 0.50,
-		"cloud_coverage":     0.35,
-		"cloud_density":      0.50,
+		"cloud_coverage":     0.60,
+		"cloud_density":      0.55,
 		"cloud_color_top":    Color(0.95, 0.95, 0.93),
 		"cloud_color_bottom": Color(0.68, 0.68, 0.66),
 		"cloud_speed":        0.005,
@@ -855,8 +871,8 @@ func _build_keyframes() -> void:
 		"lamp_emission":  0.5,
 		"vol_fog_density":    0.0004,
 		"vol_fog_anisotropy": 0.88,
-		"cloud_coverage":     0.45,
-		"cloud_density":      0.55,
+		"cloud_coverage":     0.65,
+		"cloud_density":      0.60,
 		"cloud_color_top":    Color(0.78, 0.55, 0.42),
 		"cloud_color_bottom": Color(0.50, 0.28, 0.18),
 		"cloud_speed":        0.004,
@@ -901,8 +917,8 @@ func _build_keyframes() -> void:
 		"lamp_emission":  3.0,
 		"vol_fog_density":    0.0004,
 		"vol_fog_anisotropy": 0.35,
-		"cloud_coverage":     0.25,
-		"cloud_density":      0.50,
+		"cloud_coverage":     0.45,
+		"cloud_density":      0.55,
 		"cloud_color_top":    Color(0.12, 0.12, 0.18),
 		"cloud_color_bottom": Color(0.05, 0.05, 0.08),
 		"cloud_speed":        0.003,
@@ -1024,9 +1040,13 @@ func _apply_time_of_day() -> void:
 		if _env.volumetric_fog_enabled:
 			_env.volumetric_fog_density *= 8.0
 		_env.adjustment_saturation *= 0.7
+		_sky_mat.set_shader_parameter("cloud_coverage", 0.95)
+		_sky_mat.set_shader_parameter("cloud_density", 0.85)
 	elif _weather_mode == "snow":
 		_env.fog_density *= 2.0
 		_env.adjustment_saturation *= 0.75
+		_sky_mat.set_shader_parameter("cloud_coverage", 0.92)
+		_sky_mat.set_shader_parameter("cloud_density", 0.80)
 
 	# Sun / moon directional light
 	_sun.light_energy    = _lerp_kf("sun_energy", a, b, t)
