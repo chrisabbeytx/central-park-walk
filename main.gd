@@ -122,6 +122,8 @@ func _ready() -> void:
 		if _park_loader and not _park_loader.landuse_zones.is_empty():
 			_apply_landuse_map(_park_loader.landuse_zones)
 	_player = _setup_player()
+	if _park_loader and _park_loader.boundary_polygon.size() > 2:
+		_player.boundary_polygon = _park_loader.boundary_polygon
 	_setup_hud()
 	_setup_color_grade()
 	_setup_letterbox()
