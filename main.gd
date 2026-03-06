@@ -127,7 +127,7 @@ func _ready() -> void:
 	_setup_letterbox()
 	if not _terrain_only:
 		_setup_lamp_lights()
-		_setup_falling_leaves()
+		#_setup_falling_leaves()  # TODO: add wind-swept motion before re-enabling
 		#_setup_pigeons()         # Disabled — not ready yet
 		#_setup_audio()  # Disabled — needs audio files
 	_apply_time_of_day()
@@ -315,11 +315,13 @@ func _process(delta: float) -> void:
 		_lamp_light_timer = 0.0
 		_update_lamp_lights()
 
-	# Weather particles follow player
+	# Particles follow player
 	if _rain_particles and _player:
 		_rain_particles.global_position = _player.global_position + Vector3(0, 14, 0)
 	if _snow_particles and _player:
 		_snow_particles.global_position = _player.global_position + Vector3(0, 15, 0)
+	#if _falling_leaves and _player:
+	#	_falling_leaves.global_position = _player.global_position + Vector3(0, 12, 0)
 
 	# Advance clock
 	_time_of_day += _time_speed * delta
@@ -2252,9 +2254,9 @@ func _setup_falling_leaves() -> void:
 	mat.scale_max = 1.4
 	particles.process_material = mat
 
-	# Draw pass — small leaf quad
+	# Draw pass — leaf quad
 	var quad := QuadMesh.new()
-	quad.size = Vector2(0.08, 0.08)
+	quad.size = Vector2(0.4, 0.4)
 	var leaf_mat := StandardMaterial3D.new()
 	leaf_mat.albedo_color = Color(0.55, 0.35, 0.12, 0.8)
 	leaf_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA

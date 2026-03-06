@@ -608,10 +608,7 @@ func _ready() -> void:
 	_build_boundary_facades()
 	# Vegetation — Quaternius Stylized Nature MegaKit (CC0)
 	_build_undergrowth(trees, paths)
-	_build_blossoms(trees)
-	_build_wildflowers(trees, water)
-	_build_meadow_grass(trees)
-	_build_leaf_litter(trees)
+	#_build_meadow_grass(trees)  # disabled — billboard cards visible on paths
 	_build_squirrels(trees)
 	_build_field_markings()
 	# Remaining vegetation disabled:
@@ -5347,7 +5344,6 @@ func _build_trees(trees: Array) -> void:
 	# Key: "species_variantIdx" -> Array[Transform3D]
 	var xf_by_key: Dictionary = {}
 	var all_trunk_xf: Array = []  # for collision
-	var all_lod1_xf: Array = []   # billboard transforms (Y-up, no Z-up fix)
 
 	for i in trees.size():
 		var tree_entry = trees[i]
@@ -5409,10 +5405,6 @@ func _build_trees(trees: Array) -> void:
 			xf_by_key[key] = []
 		xf_by_key[key].append(tf)
 
-		# LOD1 billboard transform: Y-up (no Z-up fix), scaled to desired height
-		var lod1_basis := Basis(Vector3.UP, y_rot) * Basis().scaled(Vector3(desired_h * 0.5, desired_h, desired_h * 0.5))
-		all_lod1_xf.append(Transform3D(lod1_basis, Vector3(tx, ty, tz)))
-
 		# Collision: simplified cylinder at trunk position
 		var trunk_r := desired_h * 0.02
 		var col_basis := Basis(
@@ -5421,28 +5413,14 @@ func _build_trees(trees: Array) -> void:
 			Vector3(0.0,     0.0,      trunk_r))
 		all_trunk_xf.append(Transform3D(col_basis, Vector3(tx, ty + desired_h * 0.5, tz)))
 
-	# --- Two-tier LOD with spatial chunking ---
+	# --- Spatial chunking for LOD culling ---
 	# Each chunk's MMI is positioned at its spatial centre so that
 	# visibility_range works per-chunk (distance from camera to node).
-	# LOD0 (0-120m): Full GLB mesh — high detail
-	# LOD1 (100-400m): Simple billboard cross — very cheap
 	const CHUNK := 150.0
 	const LOD0_END := 150.0
-	const LOD1_BEGIN := 130.0
-	const LOD1_END := 400.0
 
-	# Build a simple crossed-billboard mesh for LOD1
-	var lod1_mesh := _make_tree_billboard_mesh()
-	var lod1_mat := StandardMaterial3D.new()
-	lod1_mat.vertex_color_use_as_albedo = true
-	lod1_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
-	lod1_mat.shading_mode = BaseMaterial3D.SHADING_MODE_PER_VERTEX
-
-	# Bucket transforms by spatial chunk
-	# LOD0: per-species-variant per-chunk (key: "meshkey|cx|cz")
-	# LOD1: per-chunk, species-independent (key: "cx|cz"), uses Y-up billboard xf
+	# Bucket transforms by spatial chunk per-species-variant
 	var lod0_chunks: Dictionary = {}
-	var lod1_chunks: Dictionary = {}
 
 	for key in xf_by_key:
 		for tf: Transform3D in xf_by_key[key]:
@@ -5452,16 +5430,6 @@ func _build_trees(trees: Array) -> void:
 			if not lod0_chunks.has(ck0):
 				lod0_chunks[ck0] = {"mesh_key": key, "cx": cx, "cz": cz, "xf": []}
 			lod0_chunks[ck0]["xf"].append(tf)
-
-	# Separate LOD1 chunking with billboard transforms
-	for idx in all_lod1_xf.size():
-		var tf: Transform3D = all_lod1_xf[idx]
-		var cx := int(floorf(tf.origin.x / CHUNK))
-		var cz := int(floorf(tf.origin.z / CHUNK))
-		var ck1 := "%d|%d" % [cx, cz]
-		if not lod1_chunks.has(ck1):
-			lod1_chunks[ck1] = {"cx": cx, "cz": cz, "xf": []}
-		lod1_chunks[ck1]["xf"].append(tf)
 
 	# Spawn LOD0 chunks — position MMI at instance centroid for accurate culling
 	for ckey in lod0_chunks:
@@ -5474,7 +5442,6 @@ func _build_trees(trees: Array) -> void:
 		var sp_name: String = parts[0]
 		var vi: int = int(parts[1])
 		var mesh: Mesh = species_meshes[sp_name][vi]
-		# Centroid of all instances in this chunk (more accurate than grid centre)
 		var cx_sum := 0.0
 		var cy_sum := 0.0
 		var cz_sum := 0.0
@@ -5490,7 +5457,6 @@ func _build_trees(trees: Array) -> void:
 		mm.instance_count = xf_list.size()
 		for i in xf_list.size():
 			var tf: Transform3D = xf_list[i]
-			# Make transform relative to chunk origin
 			var local_tf := Transform3D(tf.basis, tf.origin - chunk_origin)
 			mm.set_instance_transform(i, local_tf)
 		var mmi := MultiMeshInstance3D.new()
@@ -5501,102 +5467,8 @@ func _build_trees(trees: Array) -> void:
 		mmi.visibility_range_fade_mode = GeometryInstance3D.VISIBILITY_RANGE_FADE_SELF
 		add_child(mmi)
 
-	# Spawn LOD1 chunks — billboard crosses, long range (centroid positioning)
-	for ck1 in lod1_chunks:
-		var info: Dictionary = lod1_chunks[ck1]
-		var xf_list: Array = info["xf"]
-		if xf_list.is_empty():
-			continue
-		var cx_sum := 0.0
-		var cy_sum := 0.0
-		var cz_sum := 0.0
-		for tf: Transform3D in xf_list:
-			cx_sum += tf.origin.x
-			cy_sum += tf.origin.y
-			cz_sum += tf.origin.z
-		var nn := float(xf_list.size())
-		var chunk_origin := Vector3(cx_sum / nn, cy_sum / nn, cz_sum / nn)
-		var mm := MultiMesh.new()
-		mm.transform_format = MultiMesh.TRANSFORM_3D
-		mm.mesh = lod1_mesh
-		mm.instance_count = xf_list.size()
-		for i in xf_list.size():
-			var tf: Transform3D = xf_list[i]
-			var local_tf := Transform3D(tf.basis, tf.origin - chunk_origin)
-			mm.set_instance_transform(i, local_tf)
-		var mmi := MultiMeshInstance3D.new()
-		mmi.multimesh = mm
-		mmi.position = chunk_origin
-		mmi.name = "TrL1_%s" % ck1.replace("|", "_")
-		mmi.material_override = lod1_mat
-		mmi.visibility_range_begin = LOD1_BEGIN
-		mmi.visibility_range_end = LOD1_END
-		mmi.visibility_range_fade_mode = GeometryInstance3D.VISIBILITY_RANGE_FADE_SELF
-		add_child(mmi)
-
 	_build_tree_collision(all_trunk_xf)
-	print("Trees: %d placed, LOD0 chunks=%d, LOD1 chunks=%d" % [all_trunk_xf.size(), lod0_chunks.size(), lod1_chunks.size()])
-
-
-func _make_tree_billboard_mesh() -> ArrayMesh:
-	# Tree-shaped crossed billboard: 2 perpendicular planes, each shaped like
-	# a tree silhouette (narrow trunk at bottom, diamond canopy at top).
-	# Vertex colors: brown trunk, green canopy. 12 tris per plane = 24 total.
-	var verts   := PackedVector3Array()
-	var normals := PackedVector3Array()
-	var colors  := PackedColorArray()
-	var indices := PackedInt32Array()
-	var trunk_col := Color(0.25, 0.18, 0.10)
-	var canopy_col := Color(0.12, 0.22, 0.08)
-	var canopy_top := Color(0.15, 0.28, 0.10)
-
-	for rot_idx in 2:
-		var a := float(rot_idx) * PI * 0.5
-		var ca := cos(a)
-		var sa := sin(a)
-		var base := verts.size()
-		# Tree silhouette points (Y=0 at base, Y=1 at top):
-		# Trunk: narrow rectangle from Y=0 to Y=0.35
-		var tw := 0.06  # trunk half-width
-		# Canopy: diamond from Y=0.25 to Y=1.0, widest at Y=0.55
-		var cw := 0.35  # canopy half-width at widest
-		# Trunk bottom-left (0), bottom-right (1)
-		verts.append(Vector3(-tw * ca, 0.0,  -tw * sa))  # 0
-		verts.append(Vector3( tw * ca, 0.0,   tw * sa))  # 1
-		# Trunk top / canopy base: left (2), right (3)
-		verts.append(Vector3(-tw * ca, 0.30, -tw * sa))  # 2
-		verts.append(Vector3( tw * ca, 0.30,  tw * sa))  # 3
-		# Canopy widest: left (4), right (5)
-		verts.append(Vector3(-cw * ca, 0.55, -cw * sa))  # 4
-		verts.append(Vector3( cw * ca, 0.55,  cw * sa))  # 5
-		# Canopy top point (6)
-		verts.append(Vector3(0.0, 1.0, 0.0))             # 6
-		var n := Vector3(sa, 0.0, -ca).normalized()
-		for _i in 7:
-			normals.append(n)
-		# Vertex colors
-		colors.append(trunk_col); colors.append(trunk_col)   # 0,1
-		colors.append(trunk_col); colors.append(trunk_col)   # 2,3
-		colors.append(canopy_col); colors.append(canopy_col) # 4,5
-		colors.append(canopy_top)                             # 6
-		# Trunk quad: 0-1-3-2
-		indices.append(base+0); indices.append(base+1); indices.append(base+3)
-		indices.append(base+0); indices.append(base+3); indices.append(base+2)
-		# Canopy lower: 2-3-5-4
-		indices.append(base+2); indices.append(base+3); indices.append(base+5)
-		indices.append(base+2); indices.append(base+5); indices.append(base+4)
-		# Canopy upper: 4-5-6
-		indices.append(base+4); indices.append(base+5); indices.append(base+6)
-
-	var arr := []
-	arr.resize(Mesh.ARRAY_MAX)
-	arr[Mesh.ARRAY_VERTEX]  = verts
-	arr[Mesh.ARRAY_NORMAL]  = normals
-	arr[Mesh.ARRAY_COLOR]   = colors
-	arr[Mesh.ARRAY_INDEX]   = indices
-	var mesh := ArrayMesh.new()
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
-	return mesh
+	print("Trees: %d placed, LOD0 chunks=%d" % [all_trunk_xf.size(), lod0_chunks.size()])
 
 
 func _build_tree_collision(trunk_xf: Array) -> void:
