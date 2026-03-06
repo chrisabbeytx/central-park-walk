@@ -609,7 +609,7 @@ func _ready() -> void:
 	# Vegetation — Quaternius Stylized Nature MegaKit (CC0)
 	_build_undergrowth(trees, paths)
 	#_build_meadow_grass(trees)  # disabled — billboard cards visible on paths
-	_build_squirrels(trees)
+	#_build_squirrels(trees)  # disabled — billboard crossed quads
 	_build_field_markings()
 	# Remaining vegetation disabled:
 	#_build_rocks(trees, water)
