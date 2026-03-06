@@ -27,6 +27,7 @@ var _latlon_label:  Label
 # Day/night cycle
 # ---------------------------------------------------------------------------
 var _time_of_day: float = 16.0        # start at 4 PM
+var _user_gamma: float = 1.0          # user brightness: , = darker, . = brighter
 var _time_speed: float  = 0.001      # game-hours per real-second (~400 min full cycle)
 var _time_speed_idx: int = 0
 var _last_applied_tod: float = -999.0  # tracks last _apply_time_of_day() value
@@ -47,6 +48,7 @@ var _lamp_positions: PackedVector3Array = PackedVector3Array()
 
 # Cinematic letterbox overlay
 var _letterbox_canvas: CanvasLayer
+var _hud_canvas: CanvasLayer
 var _letterbox_top: ColorRect
 var _letterbox_bot: ColorRect
 var _letterbox_on: bool = false
@@ -423,6 +425,20 @@ func _unhandled_input(event: InputEvent) -> void:
 		print("Letterbox: ", "ON" if _letterbox_on else "OFF")
 	elif event.keycode == KEY_P:
 		_cycle_weather()
+	elif event.keycode == KEY_H:
+		if _hud_canvas:
+			_hud_canvas.visible = not _hud_canvas.visible
+	elif event.keycode == KEY_F11:
+		if DisplayServer.window_get_mode() == DisplayServer.WINDOW_MODE_FULLSCREEN:
+			DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_WINDOWED)
+		else:
+			DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN)
+	elif event.keycode == KEY_COMMA:
+		_user_gamma = clampf(_user_gamma - 0.05, 0.5, 2.0)
+		print("Gamma: %.2f" % _user_gamma)
+	elif event.keycode == KEY_PERIOD:
+		_user_gamma = clampf(_user_gamma + 0.05, 0.5, 2.0)
+		print("Gamma: %.2f" % _user_gamma)
 
 
 # ---------------------------------------------------------------------------
@@ -660,7 +676,7 @@ func _build_keyframes() -> void:
 		"shadow_dist":    180.0,
 		"lamp_emission":  3.0,
 		"vol_fog_density":    0.0004,
-		"vol_fog_anisotropy": 0.15,
+		"vol_fog_anisotropy": 0.45,
 		"cloud_coverage":     0.30,
 		"cloud_density":      0.55,
 		"cloud_color_top":    Color(0.42, 0.40, 0.44),
@@ -706,7 +722,7 @@ func _build_keyframes() -> void:
 		"shadow_dist":    250.0,
 		"lamp_emission":  0.0,
 		"vol_fog_density":    0.0003,
-		"vol_fog_anisotropy": 0.75,
+		"vol_fog_anisotropy": 0.85,
 		"cloud_coverage":     0.40,
 		"cloud_density":      0.55,
 		"cloud_color_top":    Color(0.92, 0.88, 0.78),
@@ -752,7 +768,7 @@ func _build_keyframes() -> void:
 		"shadow_dist":    300.0,
 		"lamp_emission":  0.0,
 		"vol_fog_density":    0.0002,
-		"vol_fog_anisotropy": 0.18,
+		"vol_fog_anisotropy": 0.50,
 		"cloud_coverage":     0.35,
 		"cloud_density":      0.50,
 		"cloud_color_top":    Color(0.95, 0.95, 0.93),
@@ -798,7 +814,7 @@ func _build_keyframes() -> void:
 		"shadow_dist":    220.0,
 		"lamp_emission":  0.5,
 		"vol_fog_density":    0.0004,
-		"vol_fog_anisotropy": 0.78,
+		"vol_fog_anisotropy": 0.88,
 		"cloud_coverage":     0.45,
 		"cloud_density":      0.55,
 		"cloud_color_top":    Color(0.78, 0.55, 0.42),
@@ -844,7 +860,7 @@ func _build_keyframes() -> void:
 		"shadow_dist":    200.0,
 		"lamp_emission":  3.0,
 		"vol_fog_density":    0.0004,
-		"vol_fog_anisotropy": 0.10,
+		"vol_fog_anisotropy": 0.35,
 		"cloud_coverage":     0.25,
 		"cloud_density":      0.50,
 		"cloud_color_top":    Color(0.12, 0.12, 0.18),
@@ -941,7 +957,7 @@ func _apply_time_of_day() -> void:
 	# Colour grading
 	_env.adjustment_saturation = _lerp_kf("saturation", a, b, t)
 	_env.adjustment_contrast   = _lerp_kf("contrast", a, b, t)
-	_env.adjustment_brightness = _lerp_kf("brightness", a, b, t)
+	_env.adjustment_brightness = _lerp_kf("brightness", a, b, t) * _user_gamma
 
 	# Fog
 	_env.fog_light_color       = _lerp_kf("fog_color", a, b, t)
@@ -1890,7 +1906,7 @@ func _setup_player() -> CharacterBody3D:
 		p.rotation_degrees.y = 0.0
 		p.set_physics_process(false)
 	else:
-		p.position = Vector3(-400.0, _terrain_height(-400.0, 600.0) + 1.5, 600.0)
+		p.position = Vector3(-400.0, _terrain_height(-400.0, 600.0) + 1.2, 600.0)
 	p.rotation_degrees.y = 30.0
 	add_child(p)
 	if _terrain_only and p.head:
@@ -1974,10 +1990,10 @@ uniform sampler2D SCREEN_TEXTURE : hint_screen_texture, filter_linear;
 void fragment() {
 	vec3 c = texture(SCREEN_TEXTURE, SCREEN_UV).rgb;
 
-	// Pull darks DOWN — deep, velvety blacks with warm floor
-	c = max(c, vec3(0.008, 0.005, 0.004));
-	// Crush the lower quarter — makes darks feel heavy
-	c = pow(c, vec3(1.15));
+	// Warm dark floor — keep some shadow detail
+	c = max(c, vec3(0.012, 0.009, 0.007));
+	// Gentle shadow shaping
+	c = pow(c, vec3(1.06));
 
 	float lum = dot(c, vec3(0.2126, 0.7152, 0.0722));
 
@@ -1998,8 +2014,8 @@ void fragment() {
 	c.r -= red_excess * 0.20;
 	c.g += red_excess * 0.05;
 
-	// Strong S-curve — luminous midtones, crushed shadows
-	c = c * c / (c * c + 0.08) * 1.08;
+	// Softer S-curve — luminous midtones, visible shadows
+	c = c * c / (c * c + 0.12) * 1.12;
 
 	// Saturate — colors glow against the dark background
 	float lum2 = dot(c, vec3(0.2126, 0.7152, 0.0722));
@@ -2420,6 +2436,7 @@ func _setup_letterbox() -> void:
 func _setup_hud() -> void:
 	var canvas := CanvasLayer.new()
 	canvas.name = "HUD"
+	_hud_canvas = canvas
 	add_child(canvas)
 
 	var style := StyleBoxFlat.new()
@@ -2467,7 +2484,7 @@ func _setup_hud() -> void:
 	vbox.add_child(_time_label)
 
 	var hint := Label.new()
-	hint.text = "Left stick: walk   Right stick: look   T: time speed   [/]: +/-1 hour"
+	hint.text = "Left stick: walk   Right stick: look   T: time speed   [/]: ±1h   ,/.: gamma   H: HUD   F11: fullscreen"
 	hint.add_theme_font_size_override("font_size", 15)
 	hint.add_theme_color_override("font_color", Color(0.55, 0.55, 0.55))
 	vbox.add_child(hint)
