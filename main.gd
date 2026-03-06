@@ -61,6 +61,10 @@ var _falling_leaves: GPUParticles3D
 # Weather particles
 var _rain_particles: GPUParticles3D
 var _snow_particles: GPUParticles3D
+var _firefly_nodes: Array = []       # Array of Dictionary {node, target, pulse_timer, pulse_on}
+var _firefly_tree_xz: PackedVector2Array  # tree XZ positions for firefly attraction
+const FIREFLY_COUNT := 35
+const FIREFLY_RANGE := 20.0          # spawn/despawn radius around player
 var _rain_overlay: CanvasLayer  # screen-space rain streaks
 var _lens_canvas: CanvasLayer   # barrel distortion overlay
 
@@ -134,6 +138,7 @@ func _ready() -> void:
 		#_setup_audio()  # Disabled — needs audio files
 	_apply_time_of_day()
 	_setup_weather()
+	_setup_fireflies()
 	# Check for --tour CLI arg
 	for arg in OS.get_cmdline_user_args():
 		if arg == "--tour":
@@ -322,8 +327,10 @@ func _process(delta: float) -> void:
 		_rain_particles.global_position = _player.global_position + Vector3(0, 14, 0)
 	if _snow_particles and _player:
 		_snow_particles.global_position = _player.global_position + Vector3(0, 15, 0)
-	#if _falling_leaves and _player:
-	#	_falling_leaves.global_position = _player.global_position + Vector3(0, 12, 0)
+	# Fireflies — scripted wander agents
+	if not _firefly_nodes.is_empty() and _player:
+		var ff_active: bool = _time_of_day >= 17.0 and _time_of_day <= 22.0 and _weather_mode != "rain" and _weather_mode != "snow"
+		_update_fireflies(delta, ff_active)
 
 	# Advance clock
 	_time_of_day += _time_speed * delta
@@ -1883,7 +1890,7 @@ func _setup_player() -> CharacterBody3D:
 		p.rotation_degrees.y = 0.0
 		p.set_physics_process(false)
 	else:
-		p.position = Vector3(-600.0, _terrain_height(-600.0, 1420.0) + 1.5, 1420.0)
+		p.position = Vector3(-400.0, _terrain_height(-400.0, 600.0) + 1.5, 600.0)
 	p.rotation_degrees.y = 30.0
 	add_child(p)
 	if _terrain_only and p.head:
@@ -1982,9 +1989,9 @@ void fragment() {
 	c *= mix(vec3(1.0), shadow_tint, shadow_blend * 0.45);
 	c *= mix(vec3(1.0), highlight_tint, highlight_blend * 0.40);
 
-	// Enrich greens toward deep emerald
-	c.g *= 1.0 + 0.10 * smoothstep(0.08, 0.4, c.g);
-	// Deepen blues
+	// Enrich greens — lush summer foliage
+	c.g *= 1.0 + 0.14 * smoothstep(0.08, 0.4, c.g);
+	// Deepen blues — rich sky and shadows
 	c.b *= 1.0 + 0.12 * smoothstep(0.06, 0.35, c.b);
 	// Soften reds toward warm brown
 	float red_excess = max(c.r - (c.g + c.b) * 0.5, 0.0);
@@ -2127,6 +2134,220 @@ func _setup_snow() -> void:
 	add_child(_snow_particles)
 
 	print("Snow: 3000 particles")
+
+
+func _setup_fireflies() -> void:
+	# Extract tree XZ positions for attraction targets
+	_firefly_tree_xz = PackedVector2Array()
+	if _park_loader:
+		for child in _park_loader.get_children():
+			if not (child is MultiMeshInstance3D):
+				continue
+			if not child.name.begins_with("TrL0_"):
+				continue
+			var mmi: MultiMeshInstance3D = child as MultiMeshInstance3D
+			var chunk_pos: Vector3 = mmi.position
+			var mm: MultiMesh = mmi.multimesh
+			for i in mm.instance_count:
+				var xf: Transform3D = mm.get_instance_transform(i)
+				var wx: float = xf.origin.x + chunk_pos.x
+				var wz: float = xf.origin.z + chunk_pos.z
+				_firefly_tree_xz.append(Vector2(wx, wz))
+
+	# Shared mesh + material for all fireflies — soft oval, warm gold
+	var mesh := QuadMesh.new()
+	mesh.size = Vector2(0.07, 0.04)  # small, consistent
+
+	# Generate soft oval alpha texture so they look round, not rectangular
+	var oval_img := Image.create(32, 32, false, Image.FORMAT_RGBA8)
+	for py in 32:
+		for px2 in 32:
+			var u: float = (float(px2) - 15.5) / 15.5  # -1..1
+			var v: float = (float(py) - 15.5) / 15.5
+			# Ellipse: wider than tall (1.0 x 0.7 aspect in UV)
+			var d: float = u * u + v * v * 2.0
+			var a: float = clampf(1.0 - d * 1.5, 0.0, 1.0)
+			a = a * a  # softer falloff
+			oval_img.set_pixel(px2, py, Color(1.0, 1.0, 1.0, a))
+	var oval_tex := ImageTexture.create_from_image(oval_img)
+
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(1.0, 0.82, 0.2, 1.0)
+	mat.albedo_texture = oval_tex
+	mat.emission_enabled = true
+	mat.emission = Color(1.0, 0.75, 0.08)
+	mat.emission_energy_multiplier = 6.0
+	mat.emission_texture = oval_tex
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.no_depth_test = true
+
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 42
+
+	for i in FIREFLY_COUNT:
+		var mi := MeshInstance3D.new()
+		var s: float = rng.randf_range(0.7, 1.4)
+		var imesh := QuadMesh.new()
+		imesh.size = Vector2(0.07 * s, 0.04 * s)
+		mi.mesh = imesh
+		mi.material_override = mat.duplicate()
+		mi.visible = false
+		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		add_child(mi)
+		_firefly_nodes.append({
+			"node": mi,
+			"target": Vector3.ZERO,
+			"vel": Vector3.ZERO,
+			"pulse_timer": rng.randf_range(0.0, 4.0),
+			"pulse_period": rng.randf_range(4.0, 5.5),
+			"pulse_on_frac": 0.0,  # computed from fixed glow duration
+			"spawned": false,
+		})
+
+	print("Fireflies: %d agents, %d tree attractors" % [FIREFLY_COUNT, _firefly_tree_xz.size()])
+
+
+func _find_near_tree(pos: Vector3) -> Vector3:
+	## Find a random tree within 25m, biased toward denser clusters.
+	var candidates: Array = []
+	var px := pos.x; var pz := pos.z
+	for t in _firefly_tree_xz:
+		var dx := t.x - px; var dz := t.y - pz
+		var d := dx * dx + dz * dz
+		if d < 625.0:  # 25m radius
+			candidates.append(t)
+			if candidates.size() >= 20:
+				break
+	if candidates.is_empty():
+		# No trees nearby — wander randomly near ground
+		return pos + Vector3(randf_range(-5, 5), randf_range(-0.3, 0.5), randf_range(-5, 5))
+	# Weight by local density: pick a tree, then bias toward ones with neighbors
+	var best_pick: Vector2 = candidates[0]
+	var best_score: float = 0.0
+	for c in candidates:
+		var score: float = 0.0
+		for c2 in candidates:
+			var dd: float = c.distance_squared_to(c2)
+			if dd < 100.0 and dd > 0.01:  # neighbors within 10m
+				score += 1.0
+		score += randf_range(0.0, 2.0)  # some randomness
+		if score > best_score:
+			best_score = score
+			best_pick = c
+	# Target: near tree base, low to ground
+	return Vector3(
+		best_pick.x + randf_range(-2.5, 2.5),
+		_terrain_height(best_pick.x, best_pick.y) + randf_range(0.3, 1.5),
+		best_pick.y + randf_range(-2.5, 2.5))
+
+
+func _update_fireflies(delta: float, active: bool) -> void:
+	var ppos := _player.global_position
+	for ff in _firefly_nodes:
+		var node: MeshInstance3D = ff["node"]
+		if not active:
+			node.visible = false
+			ff["spawned"] = false
+			continue
+
+		# Spawn / respawn — always cluster around player
+		var dist_to_player: float = node.global_position.distance_to(ppos)
+		if not ff["spawned"] or dist_to_player > FIREFLY_RANGE:
+			# Spawn in a ring around the player (2m–15m away)
+			var angle: float = randf() * TAU
+			var radius: float = randf_range(3.0, 15.0)
+			var sx: float = ppos.x + cos(angle) * radius
+			var sz: float = ppos.z + sin(angle) * radius
+			var sy: float = _terrain_height(sx, sz) + randf_range(0.4, 1.5)
+			node.global_position = Vector3(sx, sy, sz)
+			ff["target"] = _find_near_tree(node.global_position)
+			ff["vel"] = Vector3.ZERO
+			ff["spawned"] = true
+			node.visible = true
+
+		var pos: Vector3 = node.global_position
+
+		# Steer toward target — lazy, drifting flight
+		var tgt: Vector3 = ff["target"]
+		var to_target: Vector3 = tgt - pos
+		var dist_to_target: float = to_target.length()
+		if dist_to_target < 1.5:
+			# New target: wander near current player position
+			ff["target"] = _find_near_tree(ppos)
+		elif dist_to_target > 0.01:
+			var vel: Vector3 = ff["vel"]
+			ff["vel"] = vel + to_target.normalized() * 0.04 * delta
+
+		# Gentle pull toward player — follow them everywhere
+		var to_pp: Vector3 = ppos - pos
+		var pp_dist: float = to_pp.length()
+		if pp_dist > 5.0:
+			var vel2: Vector3 = ff["vel"]
+			ff["vel"] = vel2 + to_pp.normalized() * 0.03 * delta * clampf((pp_dist - 5.0) * 0.2, 0.0, 1.0)
+
+		# Keep height reasonable (1–5m above terrain)
+		var terrain_y: float = _terrain_height(pos.x, pos.z)
+		var above: float = pos.y - terrain_y
+		var cur_vel: Vector3 = ff["vel"]
+
+		# Repel from nearby lamps (check squared distance first)
+		var repel := Vector3.ZERO
+		for lp in _lamp_positions:
+			var dx: float = pos.x - lp.x
+			var dz: float = pos.z - lp.z
+			var d2: float = dx * dx + dz * dz
+			if d2 < 100.0 and d2 > 0.01:  # 10m radius
+				var to_lamp: Vector3 = pos - lp
+				var ld: float = sqrt(d2 + (pos.y - lp.y) * (pos.y - lp.y))
+				if ld > 0.1:
+					repel += to_lamp / ld * (1.0 / (ld * ld))
+		cur_vel += repel * delta
+
+		# Repel from player — hard 1m minimum distance
+		var to_player: Vector3 = pos - ppos
+		var player_d2: float = to_player.length_squared()
+		if player_d2 < 1.0 and player_d2 > 0.001:  # within 1m — push away hard
+			var pd: float = sqrt(player_d2)
+			cur_vel = to_player / pd * 0.15
+		elif player_d2 < 9.0 and player_d2 > 0.01:  # 1-3m — gentle drift away
+			var pd: float = sqrt(player_d2)
+			cur_vel += to_player / pd * (0.3 / (pd * pd)) * delta
+
+		if above < 0.3:
+			cur_vel.y += 0.3 * delta
+		elif above > 1.8:
+			cur_vel.y -= 0.5 * delta
+
+		# Heavy damping — barely drifting
+		cur_vel *= 0.85
+		# Clamp speed
+		var spd: float = cur_vel.length()
+		if spd > 0.05:
+			cur_vel = cur_vel / spd * 0.05
+
+		# Erratic jitter — more vertical bobbing, random direction changes
+		cur_vel += Vector3(randf_range(-0.04, 0.04), randf_range(-0.06, 0.06), randf_range(-0.04, 0.04)) * delta
+		ff["vel"] = cur_vel
+
+		node.global_position = pos + cur_vel
+
+		# Pulse glow — ~2s on, 2-3s off (realistic firefly flash)
+		var pt: float = float(ff["pulse_timer"]) + delta
+		ff["pulse_timer"] = pt
+		var period: float = ff["pulse_period"]
+		var cycle_t: float = fmod(pt, period)
+		var glow_dur := 1.8  # seconds of glow
+		var glow: float
+		if cycle_t < glow_dur:
+			var t: float = cycle_t / glow_dur
+			glow = sin(t * PI)  # smooth fade in/out over 1.8s
+		else:
+			glow = 0.0
+		var m: StandardMaterial3D = node.material_override
+		m.albedo_color.a = glow * 0.9
+		m.emission_energy_multiplier = glow * 6.0
 
 
 func _setup_fog_weather() -> void:
