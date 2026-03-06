@@ -5246,9 +5246,7 @@ func _load_vegetation_meshes() -> void:
 		var meshes: Array = []
 		_collect_meshes(root, meshes)
 		if not meshes.is_empty():
-			# Tint foliage materials for coherent look under our lighting.
-			# Flower/bush textures are very saturated — desaturate toward
-			# muted autumn tones so they blend with the environment.
+			# Tint foliage materials — summer: keep natural greens, soften flowers
 			var m: Mesh = meshes[0]
 			var is_flower: bool = model_name.begins_with("Flower") or model_name == "Bush_Common_Flowers"
 			for si in m.get_surface_count():
@@ -5256,10 +5254,9 @@ func _load_vegetation_meshes() -> void:
 				if smat is StandardMaterial3D:
 					var sm: StandardMaterial3D = smat as StandardMaterial3D
 					if is_flower:
-						# Desaturate flowers: pull toward warm gray
-						sm.albedo_color = Color(0.65, 0.60, 0.55, 1.0)
+						sm.albedo_color = Color(0.75, 0.70, 0.65, 1.0)
 					else:
-						sm.albedo_color = Color(0.85, 0.85, 0.85, 1.0)
+						sm.albedo_color = Color(0.90, 0.92, 0.88, 1.0)
 					sm.roughness = maxf(sm.roughness, 0.55)
 			_veg_meshes[model_name] = m
 		root.queue_free()
@@ -5324,8 +5321,7 @@ func _build_trees(trees: Array) -> void:
 		if meshes.is_empty():
 			print("WARNING: no meshes found in %s" % species)
 			continue
-		# Tint materials — warm autumn palette, coherent with terrain grass.
-		# Leaves: warm yellow-green tint. Bark: warm neutral.
+		# Tint materials — summer greens, coherent with terrain grass.
 		if not meshes.is_empty():
 			var first_m: Mesh = meshes[0]
 			for si in first_m.get_surface_count():
@@ -5333,10 +5329,10 @@ func _build_trees(trees: Array) -> void:
 				if smat is StandardMaterial3D:
 					var sm: StandardMaterial3D = smat as StandardMaterial3D
 					if sm.transparency != BaseMaterial3D.TRANSPARENCY_DISABLED:
-						sm.albedo_color = Color(0.55, 0.50, 0.30, 1.0)  # warm autumn leaves
+						sm.albedo_color = Color(0.35, 0.55, 0.25, 1.0)  # summer green leaves
 						sm.roughness = maxf(sm.roughness, 0.65)
 					else:
-						sm.albedo_color = Color(0.72, 0.68, 0.60, 1.0)  # warm bark
+						sm.albedo_color = Color(0.65, 0.60, 0.52, 1.0)  # neutral bark
 		species_meshes[species] = meshes
 		species_heights[species] = max_h
 		print("Trees: loaded %s — %d variants, raw=%.4f actual=%.1fm" % [species, meshes.size(), max_h, max_h * node_scale])
@@ -6014,33 +6010,33 @@ void fragment() {
 	float dist_fill = smoothstep(10.0, 40.0, cam_dist) * 0.25;
 	ALPHA = min(alpha + dist_fill, 1.0);
 
-	// Desaturate leaf texture — removes green dominance, preserves structural detail
+	// Keep some texture detail, mild desaturation
 	float grey = dot(alb, vec3(0.299, 0.587, 0.114));
-	alb = mix(vec3(grey), alb, 0.35);
+	alb = mix(vec3(grey), alb, 0.55);
 
-	// Per-tree autumn tone from hash
+	// Per-tree summer variation from hash
 	float h = hash21(floor(tree_origin.xz * 0.025));
 	float bright = mix(0.65 + h * 0.55, 0.45 + h * 0.30, understorey);
 	vec3 col = alb * bright;
 
-	// Autumn palette: gold/amber 30%, russet/burnt orange 25%, burgundy 20%, olive/green 15%, brown 10%
-	vec3 autumn_tint;
+	// Summer palette: lush greens with natural variation
+	vec3 summer_tint;
 	if (h < 0.30) {
-		autumn_tint = vec3(0.72, 0.55, 0.12);       // gold/amber
+		summer_tint = vec3(0.22, 0.48, 0.10);       // deep forest green
 	} else if (h < 0.55) {
-		autumn_tint = vec3(0.65, 0.30, 0.08);       // russet/burnt orange
+		summer_tint = vec3(0.28, 0.52, 0.14);       // rich mid green
 	} else if (h < 0.75) {
-		autumn_tint = vec3(0.48, 0.12, 0.10);       // burgundy
+		summer_tint = vec3(0.18, 0.42, 0.08);       // dark emerald
 	} else if (h < 0.90) {
-		autumn_tint = vec3(0.35, 0.38, 0.12);       // olive/still-green
+		summer_tint = vec3(0.32, 0.55, 0.18);       // bright lime-green
 	} else {
-		autumn_tint = vec3(0.40, 0.25, 0.10);       // brown
+		summer_tint = vec3(0.25, 0.45, 0.12);       // olive green
 	}
-	col *= autumn_tint * 1.8;
+	col *= summer_tint * 2.2;
 
-	// Fake subsurface scattering: warm amber backlit leaves
+	// Fake subsurface scattering: warm green backlit leaves
 	float sss = pow(1.0 - max(dot(NORMAL, VIEW), 0.0), 2.5) * 0.35;
-	col += vec3(0.18, 0.10, 0.02) * sss;
+	col += vec3(0.08, 0.14, 0.02) * sss;
 
 	ALBEDO     = clamp(col, 0.0, 1.0);
 	NORMAL_MAP = texture(leaf_normal, UV).rgb;
