@@ -579,19 +579,19 @@ func _setup_environment() -> void:
 	_env.volumetric_fog_length = 80.0
 	_env.volumetric_fog_detail_spread = 2.0
 	_env.volumetric_fog_ambient_inject = 0.25
-	_env.volumetric_fog_gi_inject = 0.0
+	_env.volumetric_fog_gi_inject = 0.3
 	_env.volumetric_fog_sky_affect = 0.30
 	_env.volumetric_fog_temporal_reprojection_enabled = true
 
 	# SDFGI — global illumination (green bounce under canopies, warm path reflections)
-	_env.sdfgi_enabled = false
+	_env.sdfgi_enabled = true
 	_env.sdfgi_use_occlusion = true
 	_env.sdfgi_read_sky_light = true
-	_env.sdfgi_bounce_feedback = 0.0
+	_env.sdfgi_bounce_feedback = 0.5
 	_env.sdfgi_cascades = 4
-	_env.sdfgi_min_cell_size = 0.2
+	_env.sdfgi_min_cell_size = 0.4
 	_env.sdfgi_y_scale = Environment.SDFGI_Y_SCALE_75_PERCENT
-	_env.sdfgi_energy = 0.6
+	_env.sdfgi_energy = 0.8
 	_env.sdfgi_normal_bias = 1.1
 	_env.sdfgi_probe_bias = 1.1
 
