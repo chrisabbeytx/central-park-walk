@@ -8,15 +8,7 @@ const STEP_HEIGHT   := 0.25  # max step-up height (> 0.17m stair rise)
 
 var head: Node3D    # pitch pivot at eye height
 var _stair_offset: float = 0.0  # camera smoothing for stair steps
-var boundary: PackedVector2Array  # XZ park boundary polygon
-
-# Hardcoded park rectangle (same as park_loader) — OSM polygon doesn't close properly
-var _park_rect: PackedVector2Array = PackedVector2Array([
-	Vector2(-1211.0, 1774.0),   # SW
-	Vector2(-74.6, 2159.4),     # SE
-	Vector2(1217.0, -1649.5),   # NE
-	Vector2(80.6, -2034.9),     # NW
-])
+var boundary_polygon: PackedVector2Array  # XZ park boundary (set by main.gd)
 
 
 func _ready() -> void:
@@ -62,7 +54,7 @@ func _physics_process(delta: float) -> void:
 	var pre_y := position.y
 	_handle_movement(delta)
 	# Clamp to park boundary
-	if not _point_in_polygon(position.x, position.z):
+	if boundary_polygon.size() > 2 and not _point_in_polygon(position.x, position.z):
 		position.x = pre_pos.x
 		position.z = pre_pos.z
 	# Smooth camera on stair step teleports
@@ -144,16 +136,16 @@ func _handle_movement(delta: float) -> void:
 
 
 func _point_in_polygon(px: float, pz: float) -> bool:
-	## Ray-casting algorithm on the hardcoded park rectangle.
+	## Ray-casting algorithm on the OSM park boundary polygon.
 	var inside := false
-	var n := _park_rect.size()
+	var n := boundary_polygon.size()
 	var j := n - 1
 	for i in range(n):
-		var zi := _park_rect[i].y
-		var zj := _park_rect[j].y
+		var zi := boundary_polygon[i].y
+		var zj := boundary_polygon[j].y
 		if (zi > pz) != (zj > pz):
-			var xi := _park_rect[i].x
-			var xj := _park_rect[j].x
+			var xi := boundary_polygon[i].x
+			var xj := boundary_polygon[j].x
 			var x_cross := xi + (pz - zi) / (zj - zi) * (xj - xi)
 			if px < x_cross:
 				inside = not inside

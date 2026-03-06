@@ -465,11 +465,6 @@ func _is_excluded(x: float, z: float) -> bool:
 	return false
 
 
-# Park boundary rectangle — 4 corners of Central Park's tilted rectangle.
-# The OSM boundary polygon doesn't form a proper closed ring (assembly gap),
-# so we use a hardcoded rectangle derived from the park's known geometry:
-#   South center (-642.8, 1966.7) to North center (648.8, -1842.2)
-#   Length 4022m, perpendicular half-width 600m (generous, facades hide overshoot).
 # Rasterized boundary bitmap — populated from OSM boundary_polygon in _ready().
 # Each bit in the grid = 1 if inside park, 0 if outside.
 var _bnd_bitmap: PackedByteArray
@@ -565,6 +560,16 @@ func _ready() -> void:
 		boundary_polygon.resize(raw_boundary.size())
 		for i in range(raw_boundary.size()):
 			boundary_polygon[i] = Vector2(float(raw_boundary[i][0]), float(raw_boundary[i][1]))
+		# Close gap if first/last points are far apart (OSM ring assembly gap)
+		var gap := boundary_polygon[0].distance_to(boundary_polygon[boundary_polygon.size() - 1])
+		if gap > 50.0:
+			var p0 := boundary_polygon[0]
+			var pN := boundary_polygon[boundary_polygon.size() - 1]
+			var steps := int(ceilf(gap / 20.0))
+			for s in range(1, steps):
+				var t := float(s) / float(steps)
+				boundary_polygon.append(pN.lerp(p0, t))
+			print("ParkLoader: closed boundary gap (%.0fm, %d points added)" % [gap, steps - 1])
 	_rasterize_boundary()
 
 	# Cache data arrays once — avoids repeated Dictionary.get() calls
@@ -4835,7 +4840,7 @@ void fragment() {
 				if (fract(wrand * 13.7) < 0.10) {
 					warm_light = vec3(0.35, 0.42, 0.58);
 				}
-				float em_strength = gnd_win ? 0.50 : 0.35;
+				float em_strength = gnd_win ? 0.30 : 0.20;
 				em_strength *= (0.6 + wrand * 0.5);
 				// Window gradient — bright center, dark edges
 				vec2 win_uv = gnd_win
@@ -5012,7 +5017,7 @@ void fragment() {
 				if (fract(wrand * 13.7) < 0.10) {
 					warm_light = vec3(0.35, 0.42, 0.58);
 				}
-				float em_strength = gnd_win ? 0.50 : 0.35;
+				float em_strength = gnd_win ? 0.30 : 0.20;
 				em_strength *= (0.6 + wrand * 0.5);
 				vec2 win_uv = gnd_win
 					? vec2(gnd_lx / 0.65, clamp((UV.y - 1.2) / (ground_h - 1.2), 0.0, 1.0))
@@ -5375,9 +5380,7 @@ func _build_trees(trees: Array) -> void:
 		else:
 			pt = tree_entry
 		var tx := float(pt[0]); var tz := float(pt[2])
-		# NYC census trees are already GPS-positioned in Central Park — skip boundary
-		# filter. Only reject trees that fall completely outside the world bounds.
-		if absf(tx) > 2400.0 or absf(tz) > 2400.0:
+		if not _in_boundary(tx, tz):
 			continue
 		if _is_on_path(tx, tz):
 			continue
