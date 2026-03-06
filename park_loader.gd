@@ -4718,6 +4718,7 @@ uniform float gap_x = 0.6;
 uniform float gap_y = 0.8;
 uniform float ground_h = 3.5;
 uniform float night_factor = 0.0;
+uniform sampler2D win_gradient : source_color, filter_linear_mipmap;
 
 uniform sampler2D facade_color : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D facade_normal : hint_normal, filter_linear_mipmap_anisotropic, repeat_enable;
@@ -4836,8 +4837,13 @@ void fragment() {
 				}
 				float em_strength = gnd_win ? 0.50 : 0.35;
 				em_strength *= (0.6 + wrand * 0.5);
-				emission = warm_light * em_strength * night_factor;
-				col = warm_light * 0.08;
+				// Window gradient — bright center, dark edges
+				vec2 win_uv = gnd_win
+					? vec2(gnd_lx / 0.65, clamp((UV.y - 1.2) / (ground_h - 1.2), 0.0, 1.0))
+					: vec2(lx / win_frac_x, ly / win_frac_y);
+				vec3 grad = texture(win_gradient, vec2(win_uv.x, 1.0 - win_uv.y)).rgb;
+				emission = warm_light * grad * em_strength * night_factor;
+				col = warm_light * grad * 0.08;
 				rough = 0.9;
 				metal = 0.0;
 			}
@@ -4909,6 +4915,7 @@ uniform float gap_x = 0.7;
 uniform float gap_y = 1.0;
 uniform float ground_h = 3.0;
 uniform float night_factor = 0.0;
+uniform sampler2D win_gradient : source_color, filter_linear_mipmap;
 
 varying vec3 world_pos;
 
@@ -5007,8 +5014,12 @@ void fragment() {
 				}
 				float em_strength = gnd_win ? 0.50 : 0.35;
 				em_strength *= (0.6 + wrand * 0.5);
-				emission = warm_light * em_strength * night_factor;
-				win_col = warm_light * 0.08;
+				vec2 win_uv = gnd_win
+					? vec2(gnd_lx / 0.65, clamp((UV.y - 1.2) / (ground_h - 1.2), 0.0, 1.0))
+					: vec2(lx / win_frac_x, ly / win_frac_y);
+				vec3 grad = texture(win_gradient, vec2(win_uv.x, 1.0 - win_uv.y)).rgb;
+				emission = warm_light * grad * em_strength * night_factor;
+				win_col = warm_light * grad * 0.08;
 				ROUGHNESS = 0.9;
 				METALLIC = 0.0;
 			}
@@ -5056,6 +5067,8 @@ func _set_facade_textures(mat: ShaderMaterial) -> void:
 	if fn: mat.set_shader_parameter("facade_normal", fn)
 	if fr: mat.set_shader_parameter("facade_rough", fr)
 	mat.set_shader_parameter("facade_tile", 2.0)
+	var wg := _load_tex("res://textures/window_night_gradient.png")
+	if wg: mat.set_shader_parameter("win_gradient", wg)
 
 
 func _make_facade_limestone() -> ShaderMaterial:
@@ -5112,6 +5125,8 @@ func _make_facade_red_brick() -> ShaderMaterial:
 	mat.set_shader_parameter("gap_x", 0.8)
 	mat.set_shader_parameter("gap_y", 1.0)
 	mat.set_shader_parameter("ground_h", 3.0)
+	var wg := _load_tex("res://textures/window_night_gradient.png")
+	if wg: mat.set_shader_parameter("win_gradient", wg)
 	return mat
 
 
@@ -5131,6 +5146,8 @@ func _make_facade_buff_brick() -> ShaderMaterial:
 	mat.set_shader_parameter("gap_x", 0.6)
 	mat.set_shader_parameter("gap_y", 0.8)
 	mat.set_shader_parameter("ground_h", 3.5)
+	var wg := _load_tex("res://textures/window_night_gradient.png")
+	if wg: mat.set_shader_parameter("win_gradient", wg)
 	return mat
 
 

@@ -1,7 +1,7 @@
 extends CharacterBody3D
 
 # Comfortable stroll: ~8 km/h ≈ 2.25 m/s — leisurely park pace.
-const WALK_SPEED    := 1.125  # m/s
+const WALK_SPEED    := 0.5625  # m/s
 const LOOK_SPEED    := 100.0  # degrees/second at full stick deflection
 const DEADZONE      := 0.15   # ignore stick values below this
 const STEP_HEIGHT   := 0.25  # max step-up height (> 0.17m stair rise)
@@ -42,13 +42,16 @@ func _ready() -> void:
 	var cam := Camera3D.new()
 	cam.name    = "Camera"
 	cam.current = true
-	cam.fov     = 120.0
-	# Depth of field — subtle far blur for atmospheric depth
+	cam.fov     = 100.0
+	# Depth of field — far blur for atmospheric depth
 	var cam_attr := CameraAttributesPractical.new()
 	cam_attr.dof_blur_far_enabled    = true
-	cam_attr.dof_blur_far_distance   = 80.0
-	cam_attr.dof_blur_far_transition = 40.0
-	cam_attr.dof_blur_amount         = 0.03
+	cam_attr.dof_blur_far_distance   = 20.0
+	cam_attr.dof_blur_far_transition = 120.0
+	cam_attr.dof_blur_amount         = 0.025
+	cam_attr.dof_blur_near_enabled   = true
+	cam_attr.dof_blur_near_distance  = 0.8
+	cam_attr.dof_blur_near_transition = 0.5
 	cam.attributes = cam_attr
 	head.add_child(cam)
 
