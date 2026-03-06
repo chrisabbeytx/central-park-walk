@@ -34,7 +34,7 @@ func _ready() -> void:
 	var cam := Camera3D.new()
 	cam.name    = "Camera"
 	cam.current = true
-	cam.fov     = 100.0
+	cam.fov     = 110.0
 	# Depth of field — far blur for atmospheric depth
 	var cam_attr := CameraAttributesPractical.new()
 	cam_attr.dof_blur_far_enabled    = true

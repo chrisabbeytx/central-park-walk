@@ -4840,15 +4840,15 @@ void fragment() {
 				if (fract(wrand * 13.7) < 0.10) {
 					warm_light = vec3(0.35, 0.42, 0.58);
 				}
-				float em_strength = gnd_win ? 0.30 : 0.20;
+				float em_strength = gnd_win ? 0.60 : 0.50;
 				em_strength *= (0.6 + wrand * 0.5);
-				// Window gradient — bright center, dark edges
+				// Window gradient — ceiling lamp glow, mostly dark
 				vec2 win_uv = gnd_win
 					? vec2(gnd_lx / 0.65, clamp((UV.y - 1.2) / (ground_h - 1.2), 0.0, 1.0))
 					: vec2(lx / win_frac_x, ly / win_frac_y);
 				vec3 grad = texture(win_gradient, vec2(win_uv.x, 1.0 - win_uv.y)).rgb;
 				emission = warm_light * grad * em_strength * night_factor;
-				col = warm_light * grad * 0.08;
+				col = warm_light * grad * 0.15;
 				rough = 0.9;
 				metal = 0.0;
 			}
@@ -5017,14 +5017,14 @@ void fragment() {
 				if (fract(wrand * 13.7) < 0.10) {
 					warm_light = vec3(0.35, 0.42, 0.58);
 				}
-				float em_strength = gnd_win ? 0.30 : 0.20;
+				float em_strength = gnd_win ? 0.60 : 0.50;
 				em_strength *= (0.6 + wrand * 0.5);
 				vec2 win_uv = gnd_win
 					? vec2(gnd_lx / 0.65, clamp((UV.y - 1.2) / (ground_h - 1.2), 0.0, 1.0))
 					: vec2(lx / win_frac_x, ly / win_frac_y);
 				vec3 grad = texture(win_gradient, vec2(win_uv.x, 1.0 - win_uv.y)).rgb;
 				emission = warm_light * grad * em_strength * night_factor;
-				win_col = warm_light * grad * 0.08;
+				win_col = warm_light * grad * 0.15;
 				ROUGHNESS = 0.9;
 				METALLIC = 0.0;
 			}

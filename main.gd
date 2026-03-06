@@ -601,6 +601,7 @@ func _setup_environment() -> void:
 
 	_sun = DirectionalLight3D.new()
 	_sun.shadow_enabled = true
+	_sun.light_angular_distance = 1.5  # soft penumbra — velvety shadows
 	_sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_4_SPLITS
 	_sun.directional_shadow_split_1      = 0.08
 	_sun.directional_shadow_max_distance = 200.0
@@ -625,20 +626,20 @@ func _build_keyframes() -> void:
 		"sun_curve":      0.01,
 		"ambient_color":  Color(0.10, 0.10, 0.18),
 		"ambient_energy": 0.15,
-		"exposure":       0.75,
-		"white":          5.0,
-		"glow_intensity": 0.5,
-		"glow_bloom":     0.06,
-		"glow_strength":  0.6,
-		"glow_threshold": 0.80,
+		"exposure":       0.65,
+		"white":          6.0,
+		"glow_intensity": 0.6,
+		"glow_bloom":     0.08,
+		"glow_strength":  0.7,
+		"glow_threshold": 0.65,
 		"glow_cap":       5.0,
 		"ssao_radius":    2.0,
 		"ssao_intensity": 2.8,
 		"ssao_power":     2.0,
 		"ssil_intensity": 0.5,
-		"saturation":     0.55,
-		"contrast":       1.08,
-		"brightness":     0.85,
+		"saturation":     0.70,
+		"contrast":       1.12,
+		"brightness":     0.78,
 		"fog_color":      Color(0.12, 0.10, 0.14),
 		"fog_energy":     0.15,
 		"fog_scatter":    0.05,
@@ -671,20 +672,20 @@ func _build_keyframes() -> void:
 		"sun_curve":      0.08,
 		"ambient_color":  Color(0.45, 0.35, 0.25),
 		"ambient_energy": 0.60,
-		"exposure":       0.80,
-		"white":          5.0,
-		"glow_intensity": 0.5,
-		"glow_bloom":     0.06,
-		"glow_strength":  0.6,
-		"glow_threshold": 0.85,
+		"exposure":       0.70,
+		"white":          6.0,
+		"glow_intensity": 0.7,
+		"glow_bloom":     0.10,
+		"glow_strength":  0.8,
+		"glow_threshold": 0.65,
 		"glow_cap":       8.0,
 		"ssao_radius":    1.5,
 		"ssao_intensity": 2.5,
 		"ssao_power":     1.8,
 		"ssil_intensity": 0.7,
-		"saturation":     0.94,
-		"contrast":       1.06,
-		"brightness":     1.0,
+		"saturation":     1.10,
+		"contrast":       1.10,
+		"brightness":     0.88,
 		"fog_color":      Color(0.55, 0.42, 0.34),
 		"fog_energy":     0.6,
 		"fog_scatter":    0.20,
@@ -717,20 +718,20 @@ func _build_keyframes() -> void:
 		"sun_curve":      0.15,
 		"ambient_color":  Color(0.50, 0.46, 0.38),
 		"ambient_energy": 0.75,
-		"exposure":       0.80,
+		"exposure":       0.68,
 		"white":          6.0,
-		"glow_intensity": 0.4,
-		"glow_bloom":     0.05,
-		"glow_strength":  0.5,
-		"glow_threshold": 0.90,
+		"glow_intensity": 0.5,
+		"glow_bloom":     0.06,
+		"glow_strength":  0.6,
+		"glow_threshold": 0.75,
 		"glow_cap":       10.0,
 		"ssao_radius":    2.0,
 		"ssao_intensity": 2.5,
 		"ssao_power":     2.0,
 		"ssil_intensity": 1.0,
-		"saturation":     0.95,
-		"contrast":       1.06,
-		"brightness":     1.00,
+		"saturation":     1.10,
+		"contrast":       1.10,
+		"brightness":     0.85,
 		"fog_color":      Color(0.55, 0.52, 0.48),
 		"fog_energy":     0.6,
 		"fog_scatter":    0.05,
@@ -763,20 +764,20 @@ func _build_keyframes() -> void:
 		"sun_curve":      0.08,
 		"ambient_color":  Color(0.42, 0.32, 0.22),
 		"ambient_energy": 0.55,
-		"exposure":       0.80,
-		"white":          5.0,
-		"glow_intensity": 0.5,
-		"glow_bloom":     0.06,
-		"glow_strength":  0.6,
-		"glow_threshold": 0.80,
+		"exposure":       0.70,
+		"white":          6.0,
+		"glow_intensity": 0.7,
+		"glow_bloom":     0.10,
+		"glow_strength":  0.8,
+		"glow_threshold": 0.65,
 		"glow_cap":       5.0,
 		"ssao_radius":    2.0,
 		"ssao_intensity": 2.5,
 		"ssao_power":     1.9,
 		"ssil_intensity": 0.6,
-		"saturation":     0.94,
-		"contrast":       1.05,
-		"brightness":     1.0,
+		"saturation":     1.10,
+		"contrast":       1.10,
+		"brightness":     0.88,
 		"fog_color":      Color(0.68, 0.52, 0.38),
 		"fog_energy":     0.6,
 		"fog_scatter":    0.25,
@@ -809,20 +810,20 @@ func _build_keyframes() -> void:
 		"sun_curve":      0.01,
 		"ambient_color":  Color(0.10, 0.10, 0.18),
 		"ambient_energy": 0.15,
-		"exposure":       0.75,
-		"white":          5.0,
-		"glow_intensity": 0.5,
-		"glow_bloom":     0.06,
-		"glow_strength":  0.6,
-		"glow_threshold": 0.80,
+		"exposure":       0.60,
+		"white":          6.0,
+		"glow_intensity": 0.6,
+		"glow_bloom":     0.08,
+		"glow_strength":  0.7,
+		"glow_threshold": 0.60,
 		"glow_cap":       5.0,
 		"ssao_radius":    2.0,
 		"ssao_intensity": 3.0,
 		"ssao_power":     2.0,
 		"ssil_intensity": 0.6,
-		"saturation":     0.55,
-		"contrast":       1.08,
-		"brightness":     0.85,
+		"saturation":     0.70,
+		"contrast":       1.14,
+		"brightness":     0.75,
 		"fog_color":      Color(0.08, 0.08, 0.12),
 		"fog_energy":     0.15,
 		"fog_scatter":    0.05,
@@ -1913,11 +1914,11 @@ func _setup_lamp_lights() -> void:
 	# Create light pool — SpotLight3D pointing downward (lamppost shade)
 	for i in LAMP_LIGHT_COUNT:
 		var light := SpotLight3D.new()
-		light.light_color = Color(1.0, 0.45, 0.08)  # deep sodium vapor
+		light.light_color = Color(1.0, 0.55, 0.18)  # warm sodium vapor, softened
 		light.light_energy = 0.0  # off until positioned
-		light.spot_range = 18.0
-		light.spot_angle = 70.0  # ~140° cone — wide pool below
-		light.spot_attenuation = 0.8
+		light.spot_range = 22.0
+		light.spot_angle = 75.0  # ~150° cone — wide soft pool below
+		light.spot_attenuation = 1.2  # softer falloff
 		light.shadow_enabled = false  # too expensive for 24 lights
 		light.light_bake_mode = Light3D.BAKE_DISABLED
 		light.rotation_degrees = Vector3(-90, 0, 0)  # point straight down
@@ -1957,7 +1958,7 @@ func _update_lamp_lights() -> void:
 # HUD: semi-transparent panel, top-left corner
 # ---------------------------------------------------------------------------
 func _setup_color_grade() -> void:
-	## Fullscreen post-process color grading — autumn tones, lifted blacks, warm highlights
+	## Fullscreen color grade — glowing in the dark: deep darks, luminous color
 	var grade_shader := Shader.new()
 	grade_shader.code = """shader_type canvas_item;
 
@@ -1966,24 +1967,43 @@ uniform sampler2D SCREEN_TEXTURE : hint_screen_texture, filter_linear;
 void fragment() {
 	vec3 c = texture(SCREEN_TEXTURE, SCREEN_UV).rgb;
 
-	// Lift blacks slightly (prevents crushing, adds atmosphere)
-	c = max(c, vec3(0.012, 0.010, 0.015));
+	// Pull darks DOWN — deep, velvety blacks with warm floor
+	c = max(c, vec3(0.008, 0.005, 0.004));
+	// Crush the lower quarter — makes darks feel heavy
+	c = pow(c, vec3(1.15));
 
-	// Split-tone: warm highlights, cool shadows
 	float lum = dot(c, vec3(0.2126, 0.7152, 0.0722));
-	vec3 shadow_tint = vec3(0.92, 0.95, 1.05);   // cool blue-ish shadows
-	vec3 highlight_tint = vec3(1.06, 1.02, 0.92); // warm golden highlights
-	float shadow_blend = 1.0 - smoothstep(0.0, 0.35, lum);
-	float highlight_blend = smoothstep(0.5, 0.85, lum);
-	c *= mix(vec3(1.0), shadow_tint, shadow_blend * 0.3);
-	c *= mix(vec3(1.0), highlight_tint, highlight_blend * 0.25);
 
-	// Subtle S-curve for contrast without crushing
-	c = c / (c + 0.15) * 1.15;
+	// Split-tone: deep teal-blue shadows, toasty amber highlights
+	vec3 shadow_tint = vec3(0.85, 0.92, 1.10);
+	vec3 highlight_tint = vec3(1.12, 1.04, 0.86);
+	float shadow_blend = 1.0 - smoothstep(0.0, 0.25, lum);
+	float highlight_blend = smoothstep(0.40, 0.75, lum);
+	c *= mix(vec3(1.0), shadow_tint, shadow_blend * 0.45);
+	c *= mix(vec3(1.0), highlight_tint, highlight_blend * 0.40);
 
-	// Very slight vignette — darken edges
+	// Enrich greens toward deep emerald
+	c.g *= 1.0 + 0.10 * smoothstep(0.08, 0.4, c.g);
+	// Deepen blues
+	c.b *= 1.0 + 0.12 * smoothstep(0.06, 0.35, c.b);
+	// Soften reds toward warm brown
+	float red_excess = max(c.r - (c.g + c.b) * 0.5, 0.0);
+	c.r -= red_excess * 0.20;
+	c.g += red_excess * 0.05;
+
+	// Strong S-curve — luminous midtones, crushed shadows
+	c = c * c / (c * c + 0.08) * 1.08;
+
+	// Saturate — colors glow against the dark background
+	float lum2 = dot(c, vec3(0.2126, 0.7152, 0.0722));
+	c = mix(vec3(lum2), c, 1.35);
+
+	// Warm amber cast
+	c *= vec3(1.05, 1.01, 0.92);
+
+	// Vignette — darker edges deepen the tunnel-vision glow
 	vec2 vig_uv = SCREEN_UV * 2.0 - 1.0;
-	float vig = 1.0 - dot(vig_uv, vig_uv) * 0.12;
+	float vig = 1.0 - dot(vig_uv, vig_uv) * 0.20;
 	c *= vig;
 
 	COLOR = vec4(c, 1.0);
