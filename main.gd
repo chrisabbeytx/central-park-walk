@@ -769,8 +769,8 @@ func _build_keyframes() -> void:
 		"gnd_horizon":    Color(0.42, 0.32, 0.20),
 		"sun_angle_max":  5.0,
 		"sun_curve":      0.08,
-		"ambient_color":  Color(0.42, 0.32, 0.22),
-		"ambient_energy": 0.55,
+		"ambient_color":  Color(0.48, 0.38, 0.26),
+		"ambient_energy": 0.80,
 		"exposure":       0.70,
 		"white":          6.0,
 		"glow_intensity": 0.7,
@@ -779,12 +779,12 @@ func _build_keyframes() -> void:
 		"glow_threshold": 0.65,
 		"glow_cap":       5.0,
 		"ssao_radius":    2.0,
-		"ssao_intensity": 2.5,
+		"ssao_intensity": 1.8,
 		"ssao_power":     1.9,
-		"ssil_intensity": 0.6,
+		"ssil_intensity": 0.8,
 		"saturation":     1.10,
-		"contrast":       1.10,
-		"brightness":     0.88,
+		"contrast":       1.08,
+		"brightness":     0.92,
 		"fog_color":      Color(0.68, 0.52, 0.38),
 		"fog_energy":     0.6,
 		"fog_scatter":    0.25,
@@ -2366,8 +2366,8 @@ func _setup_lens_distortion() -> void:
 	lens_shader.code = """shader_type canvas_item;
 
 uniform sampler2D screen_tex : hint_screen_texture, filter_linear_mipmap;
-uniform float barrel_strength = 0.25;
-uniform float chroma_strength = 0.004;
+uniform float barrel_strength = 0.08;
+uniform float chroma_strength = 0.0015;
 
 void fragment() {
 	vec2 uv = SCREEN_UV - 0.5;
