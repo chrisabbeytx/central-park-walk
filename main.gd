@@ -58,6 +58,12 @@ const LAMP_LIGHT_UPDATE_INTERVAL := 0.5  # seconds between position updates
 # Falling leaf particles
 var _falling_leaves: GPUParticles3D
 
+# Weather particles
+var _rain_particles: GPUParticles3D
+var _snow_particles: GPUParticles3D
+var _rain_overlay: CanvasLayer  # screen-space rain streaks
+var _lens_canvas: CanvasLayer   # barrel distortion overlay
+
 # 5 keyframes defining the full day/night cycle
 # Night (21→5) wraps seamlessly; 8 hours of steady darkness.
 var _keyframes: Array = []
@@ -65,12 +71,40 @@ const _KF_HOURS: Array = [5.0, 6.5, 12.0, 19.0, 21.0]
 
 
 var _terrain_only := false
+var _weather_mode := "clear"  # clear, rain, snow, fog, lens
+
+# --time name-to-hour mapping
+const TIME_PRESETS: Dictionary = {
+	"dawn": 5.5, "morning": 8.0, "noon": 12.0,
+	"golden_hour": 17.5, "dusk": 19.5, "night": 22.0,
+}
 
 func _ready() -> void:
 	# Check for CLI args early
-	for arg in OS.get_cmdline_user_args():
+	var cli_time := ""
+	for i in OS.get_cmdline_user_args().size():
+		var arg: String = OS.get_cmdline_user_args()[i]
 		if arg == "--terrain-only":
 			_terrain_only = true
+		elif arg == "--time" and i + 1 < OS.get_cmdline_user_args().size():
+			cli_time = OS.get_cmdline_user_args()[i + 1]
+		elif arg == "--weather" and i + 1 < OS.get_cmdline_user_args().size():
+			_weather_mode = OS.get_cmdline_user_args()[i + 1]
+	if cli_time != "":
+		if TIME_PRESETS.has(cli_time):
+			_time_of_day = TIME_PRESETS[cli_time]
+			_time_speed = 0.0  # freeze clock
+			_time_speed_idx = 3  # "Paused"
+			print("Time locked: %s (%.1fh)" % [cli_time, _time_of_day])
+		elif cli_time.is_valid_float():
+			_time_of_day = clampf(float(cli_time), 0.0, 23.99)
+			_time_speed = 0.0
+			_time_speed_idx = 3
+			print("Time locked: %.1fh" % _time_of_day)
+		else:
+			print("Unknown --time '%s'. Options: dawn morning noon golden_hour dusk night (or 0-24)" % cli_time)
+	if _weather_mode != "clear":
+		print("Weather: %s" % _weather_mode)
 	_build_keyframes()
 	_load_heightmap()
 	_setup_environment()
@@ -97,6 +131,7 @@ func _ready() -> void:
 		#_setup_pigeons()         # Disabled — not ready yet
 		#_setup_audio()  # Disabled — needs audio files
 	_apply_time_of_day()
+	_setup_weather()
 	# Check for --tour CLI arg
 	for arg in OS.get_cmdline_user_args():
 		if arg == "--tour":
@@ -280,10 +315,11 @@ func _process(delta: float) -> void:
 		_lamp_light_timer = 0.0
 		_update_lamp_lights()
 
-	# Falling leaves + audio disabled — not ready yet
-	#if _falling_leaves and _player:
-	#	_falling_leaves.global_position = _player.global_position + Vector3(0, 10, 0)
-	#_update_audio(delta)
+	# Weather particles follow player
+	if _rain_particles and _player:
+		_rain_particles.global_position = _player.global_position + Vector3(0, 14, 0)
+	if _snow_particles and _player:
+		_snow_particles.global_position = _player.global_position + Vector3(0, 15, 0)
 
 	# Advance clock
 	_time_of_day += _time_speed * delta
@@ -374,6 +410,8 @@ func _unhandled_input(event: InputEvent) -> void:
 		_letterbox_on = not _letterbox_on
 		_letterbox_canvas.visible = _letterbox_on
 		print("Letterbox: ", "ON" if _letterbox_on else "OFF")
+	elif event.keycode == KEY_P:
+		_cycle_weather()
 
 
 # ---------------------------------------------------------------------------
@@ -904,6 +942,23 @@ func _apply_time_of_day() -> void:
 	# Volumetric fog
 	_env.volumetric_fog_density    = _lerp_kf("vol_fog_density", a, b, t)
 	_env.volumetric_fog_anisotropy = _lerp_kf("vol_fog_anisotropy", a, b, t)
+
+	# Weather overrides — applied after keyframe interpolation so they stick
+	if _weather_mode == "fog":
+		_env.fog_density *= 30.0
+		_env.fog_light_energy *= 0.5
+		if _env.volumetric_fog_enabled:
+			_env.volumetric_fog_density *= 20.0
+		_env.adjustment_saturation *= 0.6
+	elif _weather_mode == "rain":
+		_env.fog_density *= 12.0
+		_env.fog_light_energy *= 0.7
+		if _env.volumetric_fog_enabled:
+			_env.volumetric_fog_density *= 8.0
+		_env.adjustment_saturation *= 0.7
+	elif _weather_mode == "snow":
+		_env.fog_density *= 2.0
+		_env.adjustment_saturation *= 0.75
 
 	# Sun / moon directional light
 	_sun.light_energy    = _lerp_kf("sun_energy", a, b, t)
@@ -1942,6 +1997,152 @@ void fragment() {
 	grade_canvas.add_child(rect)
 	add_child(grade_canvas)
 	print("Post-process: color grade shader applied")
+
+
+const WEATHER_MODES: Array = ["clear", "rain", "snow", "fog"]
+
+func _cycle_weather() -> void:
+	# Tear down current weather effects
+	if _rain_particles:
+		_rain_particles.queue_free()
+		_rain_particles = null
+	if _snow_particles:
+		_snow_particles.queue_free()
+		_snow_particles = null
+	if _rain_overlay:
+		_rain_overlay.queue_free()
+		_rain_overlay = null
+	# Advance to next mode
+	var idx := WEATHER_MODES.find(_weather_mode)
+	if idx < 0:
+		idx = 0
+	_weather_mode = WEATHER_MODES[(idx + 1) % WEATHER_MODES.size()]
+	_setup_weather()
+	print("Weather: %s" % _weather_mode)
+
+
+func _setup_weather() -> void:
+	if _weather_mode == "rain":
+		_setup_rain()
+	elif _weather_mode == "snow":
+		_setup_snow()
+	elif _weather_mode == "fog":
+		_setup_fog_weather()
+	elif _weather_mode == "lens":
+		_setup_lens_distortion()
+
+
+func _setup_rain() -> void:
+	# Rain particles — follow player from above
+	_rain_particles = GPUParticles3D.new()
+	_rain_particles.amount = 20000
+	_rain_particles.lifetime = 3.0
+	_rain_particles.visibility_aabb = AABB(Vector3(-25, -15, -25), Vector3(50, 30, 50))
+
+	var pm := ParticleProcessMaterial.new()
+	pm.direction = Vector3(0, -1, 0)
+	pm.spread = 5.0
+	pm.initial_velocity_min = 2.5
+	pm.initial_velocity_max = 3.5
+	pm.gravity = Vector3(0, -1.5, 0)
+	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
+	pm.emission_box_extents = Vector3(25.0, 0.5, 25.0)
+	_rain_particles.process_material = pm
+
+	# Rain drop mesh — thin elongated quad
+	var mesh := QuadMesh.new()
+	mesh.size = Vector2(0.008, 0.15)
+	_rain_particles.draw_pass_1 = mesh
+
+	# Unshaded + emissive so drops are visible at all times of day
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(0.7, 0.75, 0.85, 0.35)
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.billboard_mode = BaseMaterial3D.BILLBOARD_PARTICLES
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.no_depth_test = true
+	mat.emission_enabled = true
+	mat.emission = Color(0.4, 0.45, 0.55)
+	mat.emission_energy_multiplier = 0.3
+	_rain_particles.material_override = mat
+
+	add_child(_rain_particles)
+	print("Rain: 8000 particles + screen overlay")
+
+
+func _setup_snow() -> void:
+	_snow_particles = GPUParticles3D.new()
+	_snow_particles.amount = 3000
+	_snow_particles.lifetime = 4.0
+	_snow_particles.visibility_aabb = AABB(Vector3(-25, -20, -25), Vector3(50, 40, 50))
+
+	var pm := ParticleProcessMaterial.new()
+	pm.direction = Vector3(0, -1, 0)
+	pm.spread = 15.0
+	pm.initial_velocity_min = 1.0
+	pm.initial_velocity_max = 2.5
+	pm.gravity = Vector3(0, -1.5, 0)
+	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
+	pm.emission_box_extents = Vector3(25.0, 0.5, 25.0)
+	# Gentle drift
+	pm.orbit_velocity_min = 0.1
+	pm.orbit_velocity_max = 0.3
+	_snow_particles.process_material = pm
+
+	var mesh := QuadMesh.new()
+	mesh.size = Vector2(0.04, 0.04)
+	_snow_particles.draw_pass_1 = mesh
+
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(0.95, 0.95, 1.0, 0.8)
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	_snow_particles.material_override = mat
+
+	add_child(_snow_particles)
+
+	print("Snow: 3000 particles")
+
+
+func _setup_fog_weather() -> void:
+	# Fog multipliers are applied per-frame in the day/night cycle update
+	print("Fog: heavy atmospheric fog")
+
+
+func _setup_lens_distortion() -> void:
+	# Barrel distortion + chromatic aberration
+	_lens_canvas = CanvasLayer.new()
+	_lens_canvas.layer = 98  # below color grade
+	var lens_rect := ColorRect.new()
+	lens_rect.set_anchors_preset(Control.PRESET_FULL_RECT)
+	lens_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var lens_shader := Shader.new()
+	lens_shader.code = """shader_type canvas_item;
+
+uniform sampler2D screen_tex : hint_screen_texture, filter_linear_mipmap;
+uniform float barrel_strength = 0.25;
+uniform float chroma_strength = 0.004;
+
+void fragment() {
+	vec2 uv = SCREEN_UV - 0.5;
+	float dist2 = dot(uv, uv);
+	vec2 warped = uv * (1.0 + barrel_strength * dist2);
+	vec2 uv_r = warped * (1.0 + chroma_strength) + 0.5;
+	vec2 uv_g = warped + 0.5;
+	vec2 uv_b = warped * (1.0 - chroma_strength) + 0.5;
+	float r = texture(screen_tex, uv_r).r;
+	float g = texture(screen_tex, uv_g).g;
+	float b = texture(screen_tex, uv_b).b;
+	COLOR = vec4(r, g, b, 1.0);
+}
+"""
+	var lens_mat := ShaderMaterial.new()
+	lens_mat.shader = lens_shader
+	lens_rect.material = lens_mat
+	_lens_canvas.add_child(lens_rect)
+	add_child(_lens_canvas)
+	print("Lens: barrel distortion + chromatic aberration")
 
 
 func _setup_letterbox() -> void:
