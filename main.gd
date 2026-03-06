@@ -79,6 +79,14 @@ const _KF_HOURS: Array = [5.0, 6.5, 12.0, 19.0, 21.0]
 var _terrain_only := false
 var _weather_mode := "clear"  # clear, rain, snow, fog, lens
 
+# Wind system — layered crossing breezes
+var _wind_vec := Vector2.ZERO   # current wind XZ direction+strength
+var _wind_time := 0.0           # accumulated wind time (independent of game clock)
+var _wind_override := -1.0      # <0 = auto, 0-1 = manual strength multiplier
+
+# Snow accumulation
+var _snow_cover := 0.0          # 0-1, ramps up during snow weather
+
 # --time name-to-hour mapping
 const TIME_PRESETS: Dictionary = {
 	"dawn": 5.5, "morning": 8.0, "noon": 12.0,
@@ -135,9 +143,12 @@ func _ready() -> void:
 	_setup_letterbox()
 	if not _terrain_only:
 		_setup_lamp_lights()
-		#_setup_falling_leaves()  # TODO: add wind-swept motion before re-enabling
-		#_setup_pigeons()         # Disabled — not ready yet
+		#_setup_falling_leaves()  # disabled — spring/summer season
+		#_setup_pigeons()  # disabled — animal life
 		#_setup_audio()  # Disabled — needs audio files
+	# Register global wind uniform so all vegetation shaders can read it
+	RenderingServer.global_shader_parameter_add("wind_vec", RenderingServer.GLOBAL_VAR_TYPE_VEC2, Vector2.ZERO)
+	RenderingServer.global_shader_parameter_add("snow_cover", RenderingServer.GLOBAL_VAR_TYPE_FLOAT, 0.0)
 	_apply_time_of_day()
 	_setup_weather()
 	_setup_fireflies()
@@ -324,11 +335,27 @@ func _process(delta: float) -> void:
 		_lamp_light_timer = 0.0
 		_update_lamp_lights()
 
-	# Particles follow player
+	# Wind
+	_update_wind(delta)
+
+	# Snow accumulation — ramps up during snow, melts otherwise
+	if _weather_mode == "snow":
+		_snow_cover = minf(_snow_cover + delta * 0.02, 1.0)  # ~50s to full cover
+	else:
+		_snow_cover = maxf(_snow_cover - delta * 0.05, 0.0)  # ~20s to melt
+	if _terrain_mat:
+		_terrain_mat.set_shader_parameter("snow_cover", _snow_cover)
+	RenderingServer.global_shader_parameter_set("snow_cover", _snow_cover)
+
+	# Particles follow player — wind deflects rain/snow
 	if _rain_particles and _player:
 		_rain_particles.global_position = _player.global_position + Vector3(0, 14, 0)
+		var rpm: ParticleProcessMaterial = _rain_particles.process_material
+		rpm.gravity = Vector3(_wind_vec.x * 5.0, -1.5, _wind_vec.y * 5.0)
 	if _snow_particles and _player:
 		_snow_particles.global_position = _player.global_position + Vector3(0, 15, 0)
+		var spm: ParticleProcessMaterial = _snow_particles.process_material
+		spm.gravity = Vector3(_wind_vec.x * 3.0, -1.5, _wind_vec.y * 3.0)
 	# Fireflies — scripted wander agents
 	if not _firefly_nodes.is_empty() and _player:
 		var ff_active: bool = _time_of_day >= 17.0 and _time_of_day <= 22.0 and _weather_mode != "rain" and _weather_mode != "snow"
@@ -439,6 +466,19 @@ func _unhandled_input(event: InputEvent) -> void:
 	elif event.keycode == KEY_PERIOD:
 		_user_gamma = clampf(_user_gamma + 0.05, 0.5, 2.0)
 		print("Gamma: %.2f" % _user_gamma)
+	elif event.keycode == KEY_MINUS:
+		if _wind_override < 0.0:
+			_wind_override = 1.0
+		_wind_override = clampf(_wind_override - 0.1, 0.0, 3.0)
+		print("Wind: %.0f%%" % (_wind_override * 100.0))
+	elif event.keycode == KEY_EQUAL:
+		if _wind_override < 0.0:
+			_wind_override = 1.0
+		_wind_override = clampf(_wind_override + 0.1, 0.0, 3.0)
+		print("Wind: %.0f%%" % (_wind_override * 100.0))
+	elif event.keycode == KEY_0:
+		_wind_override = -1.0
+		print("Wind: auto")
 
 
 # ---------------------------------------------------------------------------
@@ -1367,6 +1407,9 @@ uniform int list_tex_w = 512;
 // Park boundary mask: white = inside park, black = outside
 uniform sampler2D park_mask : filter_linear, repeat_disable;
 
+// Snow accumulation
+uniform float snow_cover : hint_range(0.0, 1.0) = 0.0;
+
 // Landuse zone map: encodes zone type per pixel
 // 0=unzoned (default mowed lawn), 1=garden, 2=grass, 3=pitch, 4=playground,
 // 5=nature_reserve, 6=dog_park, 7=sports, 8=pool, 9=track, 10=wood, 11=forest
@@ -1640,6 +1683,17 @@ void fragment() {
 		ROUGHNESS       = grass_rgh;
 		SPECULAR        = 0.15;
 		METALLIC        = 0.0;
+	}
+
+	// --- Snow accumulation on flat surfaces ---
+	if (snow_cover > 0.01) {
+		float flatness = terrain_n.y;  // 1.0=flat, 0.0=vertical
+		float snow_noise = fbm(world_pos.xz * 0.08, 2) * 0.25;
+		float snow_amt = smoothstep(0.3, 0.7, flatness + snow_noise - 0.2) * snow_cover;
+		vec3 snow_col = vec3(0.92, 0.93, 0.96);
+		ALBEDO = mix(ALBEDO, snow_col, snow_amt);
+		ROUGHNESS = mix(ROUGHNESS, 0.90, snow_amt);
+		SPECULAR = mix(SPECULAR, 0.3, snow_amt);
 	}
 
 	} // end park_inside else
@@ -2044,6 +2098,56 @@ void fragment() {
 	grade_canvas.add_child(rect)
 	add_child(grade_canvas)
 	print("Post-process: color grade shader applied")
+
+
+# ---------------------------------------------------------------------------
+# Wind — layered crossing breezes that vary with time of day and weather
+# ---------------------------------------------------------------------------
+
+func _update_wind(delta: float) -> void:
+	_wind_time += delta
+	var t := _wind_time
+
+	# Time-of-day strength: calm 17-22h so fireflies aren't blown away
+	var tod_mult := 1.0
+	if _time_of_day >= 17.0 and _time_of_day < 18.0:
+		tod_mult = lerpf(1.0, 0.12, (_time_of_day - 17.0))
+	elif _time_of_day >= 18.0 and _time_of_day < 21.0:
+		tod_mult = 0.12
+	elif _time_of_day >= 21.0 and _time_of_day < 22.0:
+		tod_mult = lerpf(0.12, 1.0, (_time_of_day - 21.0))
+
+	# Weather multiplier
+	var wx := 1.0
+	if _weather_mode == "rain":
+		wx = 1.8
+	elif _weather_mode == "snow":
+		wx = 0.5
+	elif _weather_mode == "fog":
+		wx = 0.3
+
+	# Layer 1: slow broad wind — base direction rotates over ~3.5 min
+	var a1 := t * 0.03
+	var s1 := sin(t * 0.21) * 0.25 + 0.30
+	var w1 := Vector2(cos(a1), sin(a1)) * s1
+
+	# Layer 2: crossing gust from a different angle (~18s period)
+	var a2 := t * 0.03 + 2.1 + sin(t * 0.07) * 0.8
+	var s2 := sin(t * 0.35 + 1.7) * 0.20
+	var w2 := Vector2(cos(a2), sin(a2)) * s2
+
+	# Layer 3: quick turbulence (~4s puffs, smaller amplitude)
+	var s3 := sin(t * 1.3 + 3.1) * 0.10
+	var w3 := Vector2(sin(t * 1.7 + 0.5), cos(t * 2.1 + 1.3)) * s3
+
+	_wind_vec = (w1 + w2 + w3) * tod_mult * wx
+
+	# Manual override (- / = keys)
+	if _wind_override >= 0.0:
+		_wind_vec = (w1 + w2 + w3).normalized() * _wind_override * 0.55
+
+	# Push to global shader uniform
+	RenderingServer.global_shader_parameter_set("wind_vec", _wind_vec)
 
 
 const WEATHER_MODES: Array = ["clear", "rain", "snow", "fog"]
@@ -2484,7 +2588,7 @@ func _setup_hud() -> void:
 	vbox.add_child(_time_label)
 
 	var hint := Label.new()
-	hint.text = "Left stick: walk   Right stick: look   T: time speed   [/]: ±1h   ,/.: gamma   H: HUD   F11: fullscreen"
+	hint.text = "Left stick: walk   Right stick: look   T: time speed   [/]: ±1h   -/=: wind   0: wind auto   P: weather   H: HUD"
 	hint.add_theme_font_size_override("font_size", 15)
 	hint.add_theme_color_override("font_color", Color(0.55, 0.55, 0.55))
 	vbox.add_child(hint)

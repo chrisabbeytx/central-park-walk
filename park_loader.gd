@@ -604,21 +604,18 @@ func _ready() -> void:
 	_build_staircases(paths)
 	_build_statues(statues)
 	_build_amenities(amenities)
-	#_build_boats(water)      # disabled — billboard quads
-	#_build_waterfowl(water)  # disabled — billboard quads
-	# Disabled — not ready yet:
-	#_build_pedestrians(paths)
+	_build_boats(water)
+	#_build_waterfowl(water)  # disabled — animal life
+	#_build_pedestrians(paths)  # disabled
 	_build_boundary(boundary)
 	_build_perimeter_wall(boundary)
 	_build_boundary_facades()
-	# Vegetation — Quaternius Stylized Nature MegaKit (CC0)
 	_build_undergrowth(trees, paths)
-	#_build_meadow_grass(trees)  # disabled — billboard cards visible on paths
-	#_build_squirrels(trees)  # disabled — billboard crossed quads
+	_build_meadow_grass(trees)
+	#_build_squirrels(trees)  # disabled — animal life
 	_build_field_markings()
-	# Remaining vegetation disabled:
-	#_build_rocks(trees, water)
-	#_build_grass_blades(trees)
+	_build_rocks(trees, water)
+	_build_grass_blades(trees)
 	print("ParkLoader: done")
 
 
@@ -5994,6 +5991,8 @@ uniform sampler2D leaf_rough   : hint_default_white, filter_linear_mipmap_anisot
 uniform sampler2D leaf_opacity : hint_default_white, filter_linear_mipmap_anisotropic;
 uniform float understorey : hint_range(0.0, 1.0) = 0.0;
 
+global uniform vec2 wind_vec;
+global uniform float snow_cover;
 varying vec3 tree_origin;
 
 float hash21(vec2 p) {
@@ -6005,13 +6004,20 @@ float hash21(vec2 p) {
 void vertex() {
 	tree_origin = (MODEL_MATRIX * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
 
-	// Wind sway: phase from tree world position, weight by local height
 	float sway = max(VERTEX.y, 0.0);
-	VERTEX.x += sin(TIME * 0.7 + tree_origin.x * 0.04 + tree_origin.z * 0.06) * 0.09 * sway;
-	VERTEX.z += sin(TIME * 1.1 + tree_origin.z * 0.05) * 0.05 * sway;
+	float wind_str = length(wind_vec);
+	float rustle = 0.3 + wind_str * 0.7;
 
-	// Leaf flutter: small high-frequency jitter per-card
-	float flutter = sin(TIME * 3.5 + VERTEX.x * 11.0 + VERTEX.z * 7.0) * 0.012;
+	// Per-tree oscillation — natural rustling, amplitude scales with wind
+	VERTEX.x += sin(TIME * 0.7 + tree_origin.x * 0.04 + tree_origin.z * 0.06) * 0.09 * sway * rustle;
+	VERTEX.z += sin(TIME * 1.1 + tree_origin.z * 0.05) * 0.05 * sway * rustle;
+
+	// Directional wind push — trees lean in wind direction
+	VERTEX.x += wind_vec.x * sway * 0.18;
+	VERTEX.z += wind_vec.y * sway * 0.18;
+
+	// Leaf flutter — high-frequency jitter
+	float flutter = sin(TIME * 3.5 + VERTEX.x * 11.0 + VERTEX.z * 7.0) * 0.012 * rustle;
 	VERTEX.y += flutter * sway;
 }
 
@@ -6056,6 +6062,15 @@ void fragment() {
 	// Warm subsurface scattering — golden light through leaves
 	float sss = pow(1.0 - max(dot(NORMAL, VIEW), 0.0), 2.2) * 0.40;
 	col += vec3(0.12, 0.15, 0.02) * sss;
+
+	// Snow accumulation on upward-facing canopy surfaces
+	if (snow_cover > 0.01) {
+		float upward = max(NORMAL.y, 0.0);
+		float snow_noise = sin(tree_origin.x * 0.3 + tree_origin.z * 0.4) * 0.15;
+		float snow_amt = smoothstep(0.25, 0.65, upward + snow_noise) * snow_cover;
+		col = mix(col, vec3(0.92, 0.93, 0.96), snow_amt);
+		rgh = mix(rgh, 0.90, snow_amt);
+	}
 
 	ALBEDO     = clamp(col, 0.0, 1.0);
 	NORMAL_MAP = texture(leaf_normal, UV).rgb;
@@ -8154,13 +8169,18 @@ render_mode cull_disabled, depth_prepass_alpha;
 uniform sampler2D petal_opacity : hint_default_white, filter_linear_mipmap_anisotropic;
 uniform vec3 flower_tint : source_color = vec3(0.95, 0.92, 0.75);
 
+global uniform vec2 wind_vec;
 varying vec3 origin;
 
 void vertex() {
 	origin = (MODEL_MATRIX * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
 	float sway = max(VERTEX.y, 0.0);
-	VERTEX.x += sin(TIME * 1.2 + origin.x * 0.08 + origin.z * 0.1) * 0.04 * sway;
-	VERTEX.z += sin(TIME * 1.6 + origin.z * 0.09) * 0.03 * sway;
+	float wind_str = length(wind_vec);
+	float rustle = 0.4 + wind_str * 0.6;
+	VERTEX.x += sin(TIME * 1.2 + origin.x * 0.08 + origin.z * 0.1) * 0.04 * sway * rustle;
+	VERTEX.z += sin(TIME * 1.6 + origin.z * 0.09) * 0.03 * sway * rustle;
+	VERTEX.x += wind_vec.x * sway * 0.12;
+	VERTEX.z += wind_vec.y * sway * 0.12;
 }
 
 void fragment() {
@@ -8186,13 +8206,18 @@ render_mode cull_disabled, depth_prepass_alpha;
 uniform sampler2D petal_opacity : hint_default_white, filter_linear_mipmap_anisotropic;
 uniform vec3 flower_tint : source_color = vec3(0.25, 0.35, 0.75);
 
+global uniform vec2 wind_vec;
 varying vec3 origin;
 
 void vertex() {
 	origin = (MODEL_MATRIX * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
 	float sway = max(VERTEX.y, 0.0);
-	VERTEX.x += sin(TIME * 1.2 + origin.x * 0.08 + origin.z * 0.1) * 0.03 * sway;
-	VERTEX.z += sin(TIME * 1.6 + origin.z * 0.09) * 0.02 * sway;
+	float wind_str = length(wind_vec);
+	float rustle = 0.4 + wind_str * 0.6;
+	VERTEX.x += sin(TIME * 1.2 + origin.x * 0.08 + origin.z * 0.1) * 0.03 * sway * rustle;
+	VERTEX.z += sin(TIME * 1.6 + origin.z * 0.09) * 0.02 * sway * rustle;
+	VERTEX.x += wind_vec.x * sway * 0.10;
+	VERTEX.z += wind_vec.y * sway * 0.10;
 }
 
 void fragment() {
@@ -8611,6 +8636,8 @@ render_mode cull_disabled, depth_prepass_alpha;
 uniform sampler2D leaf_opacity : hint_default_white, filter_linear_mipmap_anisotropic;
 uniform vec3 blossom_tint : source_color = vec3(0.95, 0.72, 0.80);
 
+global uniform vec2 wind_vec;
+global uniform float snow_cover;
 varying vec3 tree_origin;
 
 float hash21(vec2 p) {
@@ -8622,9 +8649,13 @@ float hash21(vec2 p) {
 void vertex() {
 	tree_origin = (MODEL_MATRIX * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
 	float sway = max(VERTEX.y, 0.0);
-	VERTEX.x += sin(TIME * 0.7 + tree_origin.x * 0.04 + tree_origin.z * 0.06) * 0.09 * sway;
-	VERTEX.z += sin(TIME * 1.1 + tree_origin.z * 0.05) * 0.05 * sway;
-	float flutter = sin(TIME * 3.5 + VERTEX.x * 11.0 + VERTEX.z * 7.0) * 0.012;
+	float wind_str = length(wind_vec);
+	float rustle = 0.3 + wind_str * 0.7;
+	VERTEX.x += sin(TIME * 0.7 + tree_origin.x * 0.04 + tree_origin.z * 0.06) * 0.09 * sway * rustle;
+	VERTEX.z += sin(TIME * 1.1 + tree_origin.z * 0.05) * 0.05 * sway * rustle;
+	VERTEX.x += wind_vec.x * sway * 0.18;
+	VERTEX.z += wind_vec.y * sway * 0.18;
+	float flutter = sin(TIME * 3.5 + VERTEX.x * 11.0 + VERTEX.z * 7.0) * 0.012 * rustle;
 	VERTEX.y += flutter * sway;
 }
 
@@ -8645,9 +8676,17 @@ void fragment() {
 	float rim = pow(1.0 - max(dot(NORMAL, VIEW), 0.0), 2.0) * 0.15;
 	col += vec3(rim);
 
+	// Snow accumulation on upward-facing blossom surfaces
+	if (snow_cover > 0.01) {
+		float upward = max(NORMAL.y, 0.0);
+		float snow_noise = sin(tree_origin.x * 0.3 + tree_origin.z * 0.4) * 0.15;
+		float snow_amt = smoothstep(0.25, 0.65, upward + snow_noise) * snow_cover;
+		col = mix(col, vec3(0.92, 0.93, 0.96), snow_amt);
+	}
+
 	ALPHA = alpha;
 	ALBEDO = clamp(col, 0.0, 1.0);
-	ROUGHNESS = 0.60;
+	ROUGHNESS = mix(0.60, 0.90, snow_cover * max(NORMAL.y, 0.0));
 	SPECULAR = 0.25;
 	METALLIC = 0.0;
 	BACKLIGHT = vec3(0.30, 0.15, 0.05);
@@ -9025,14 +9064,19 @@ func _grass_blade_shader_code() -> String:
 	return """shader_type spatial;
 render_mode cull_disabled;
 
+global uniform vec2 wind_vec;
 varying vec3 origin;
 
 void vertex() {
 	origin = (MODEL_MATRIX * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
 	float sway = max(VERTEX.y, 0.0);
 	float hash = fract(sin(origin.x * 12.9898 + origin.z * 78.233) * 43758.5453);
-	VERTEX.x += sin(TIME * 1.5 + hash * 6.28 + origin.x * 0.1) * 0.06 * sway;
-	VERTEX.z += sin(TIME * 1.8 + hash * 3.14 + origin.z * 0.12) * 0.04 * sway;
+	float wind_str = length(wind_vec);
+	float rustle = 0.3 + wind_str * 0.7;
+	VERTEX.x += sin(TIME * 1.5 + hash * 6.28 + origin.x * 0.1) * 0.06 * sway * rustle;
+	VERTEX.z += sin(TIME * 1.8 + hash * 3.14 + origin.z * 0.12) * 0.04 * sway * rustle;
+	VERTEX.x += wind_vec.x * sway * 0.20;
+	VERTEX.z += wind_vec.y * sway * 0.20;
 }
 
 void fragment() {
