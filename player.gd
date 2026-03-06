@@ -1,7 +1,7 @@
 extends CharacterBody3D
 
 # Comfortable stroll: ~8 km/h ≈ 2.25 m/s — leisurely park pace.
-const WALK_SPEED    := 0.28  # m/s
+const WALK_SPEED    := 0.35  # m/s
 const LOOK_SPEED    := 100.0  # degrees/second at full stick deflection
 const DEADZONE      := 0.15   # ignore stick values below this
 const STEP_HEIGHT   := 0.25  # max step-up height (> 0.17m stair rise)

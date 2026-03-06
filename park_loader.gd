@@ -5333,17 +5333,22 @@ func _build_trees(trees: Array) -> void:
 			print("WARNING: no meshes found in %s" % species)
 			continue
 		# Impressionistic art nouveau palette — rich, warm, painterly
-		if not meshes.is_empty():
-			var first_m: Mesh = meshes[0]
-			for si in first_m.get_surface_count():
-				var smat: Material = first_m.surface_get_material(si)
+		# Replace leaf surfaces with custom shader (snow + wind), keep bark as Standard
+		var leaf_shader: Shader = _get_shader("tree_leaf_glb", _tree_glb_leaf_shader_code())
+		for m: Mesh in meshes:
+			for si in m.get_surface_count():
+				var smat: Material = m.surface_get_material(si)
 				if smat is StandardMaterial3D:
 					var sm: StandardMaterial3D = smat as StandardMaterial3D
 					if sm.transparency != BaseMaterial3D.TRANSPARENCY_DISABLED:
-						# Leaves — rich deep green, lush and saturated
-						sm.albedo_color = Color(0.28, 0.48, 0.18, 1.0)
-						sm.roughness = 0.88
-						sm.metallic = 0.0
+						# Leaves — replace with snow-aware shader
+						var leaf_mat := ShaderMaterial.new()
+						leaf_mat.shader = leaf_shader
+						leaf_mat.set_shader_parameter("albedo_tint", Vector3(0.28, 0.48, 0.18))
+						if sm.albedo_texture:
+							leaf_mat.set_shader_parameter("albedo_tex", sm.albedo_texture)
+						leaf_mat.set_shader_parameter("alpha_scissor", sm.alpha_scissor_threshold if sm.alpha_scissor_threshold > 0.0 else 0.5)
+						m.surface_set_material(si, leaf_mat)
 					else:
 						# Bark — warm umber, like a Mucha illustration
 						sm.albedo_color = Color(0.48, 0.38, 0.28, 1.0)
@@ -5981,6 +5986,55 @@ func _spawn_multimesh(mesh: Mesh, mat: Material,
 	add_child(mmi)
 
 
+func _tree_glb_leaf_shader_code() -> String:
+	return """shader_type spatial;
+render_mode cull_disabled, depth_prepass_alpha;
+
+uniform vec3 albedo_tint = vec3(0.28, 0.48, 0.18);
+uniform sampler2D albedo_tex : source_color, filter_linear_mipmap_anisotropic;
+uniform float alpha_scissor : hint_range(0.0, 1.0) = 0.5;
+
+global uniform vec2 wind_vec;
+global uniform float snow_cover;
+
+void vertex() {
+	vec3 tree_origin = (MODEL_MATRIX * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+	float sway = max(VERTEX.y, 0.0);
+	float wind_str = length(wind_vec);
+	float rustle = 0.3 + wind_str * 0.7;
+	VERTEX.x += sin(TIME * 0.7 + tree_origin.x * 0.04 + tree_origin.z * 0.06) * 0.09 * sway * rustle;
+	VERTEX.z += sin(TIME * 1.1 + tree_origin.z * 0.05) * 0.05 * sway * rustle;
+	VERTEX.x += wind_vec.x * sway * 0.18;
+	VERTEX.z += wind_vec.y * sway * 0.18;
+	float flutter = sin(TIME * 3.5 + VERTEX.x * 11.0 + VERTEX.z * 7.0) * 0.012 * rustle;
+	VERTEX.y += flutter * sway;
+}
+
+void fragment() {
+	vec4 tex = texture(albedo_tex, UV);
+	vec3 col = tex.rgb * albedo_tint;
+	float alpha = tex.a;
+	if (alpha < alpha_scissor) discard;
+
+	// Snow accumulation — world-space normal
+	if (snow_cover > 0.01) {
+		vec3 world_n = mat3(INV_VIEW_MATRIX) * NORMAL;
+		float upward = max(world_n.y, 0.0);
+		vec3 tree_pos = (MODEL_MATRIX * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+		float noise = sin(tree_pos.x * 0.3 + tree_pos.z * 0.4) * 0.15;
+		float snow_amt = clamp((0.3 + upward * 0.7 + noise) * snow_cover, 0.0, 1.0);
+		col = mix(col, vec3(0.92, 0.93, 0.96), snow_amt * 0.65);
+	}
+
+	ALBEDO = col;
+	ROUGHNESS = 0.88;
+	SPECULAR = 0.08;
+	METALLIC = 0.0;
+	BACKLIGHT = vec3(0.15, 0.08, 0.02);
+}
+"""
+
+
 func _leaf_shader_code() -> String:
 	return """shader_type spatial;
 render_mode cull_disabled, depth_prepass_alpha;
@@ -6063,12 +6117,14 @@ void fragment() {
 	float sss = pow(1.0 - max(dot(NORMAL, VIEW), 0.0), 2.2) * 0.40;
 	col += vec3(0.12, 0.15, 0.02) * sss;
 
-	// Snow accumulation on upward-facing canopy surfaces
+	// Snow accumulation on canopy — world-space normal for upward detection
 	if (snow_cover > 0.01) {
-		float upward = max(NORMAL.y, 0.0);
+		vec3 world_n = mat3(INV_VIEW_MATRIX) * NORMAL;
+		float upward = max(world_n.y, 0.0);
 		float snow_noise = sin(tree_origin.x * 0.3 + tree_origin.z * 0.4) * 0.15;
-		float snow_amt = smoothstep(0.25, 0.65, upward + snow_noise) * snow_cover;
-		col = mix(col, vec3(0.92, 0.93, 0.96), snow_amt);
+		// Base coverage on all canopy + extra on upward-facing cards
+		float snow_amt = clamp((0.3 + upward * 0.7 + snow_noise) * snow_cover, 0.0, 1.0);
+		col = mix(col, vec3(0.92, 0.93, 0.96), snow_amt * 0.65);
 		rgh = mix(rgh, 0.90, snow_amt);
 	}
 
@@ -8676,17 +8732,18 @@ void fragment() {
 	float rim = pow(1.0 - max(dot(NORMAL, VIEW), 0.0), 2.0) * 0.15;
 	col += vec3(rim);
 
-	// Snow accumulation on upward-facing blossom surfaces
+	// Snow accumulation on blossom canopy — world-space normal
 	if (snow_cover > 0.01) {
-		float upward = max(NORMAL.y, 0.0);
+		vec3 world_n = mat3(INV_VIEW_MATRIX) * NORMAL;
+		float upward = max(world_n.y, 0.0);
 		float snow_noise = sin(tree_origin.x * 0.3 + tree_origin.z * 0.4) * 0.15;
-		float snow_amt = smoothstep(0.25, 0.65, upward + snow_noise) * snow_cover;
-		col = mix(col, vec3(0.92, 0.93, 0.96), snow_amt);
+		float snow_amt = clamp((0.3 + upward * 0.7 + snow_noise) * snow_cover, 0.0, 1.0);
+		col = mix(col, vec3(0.92, 0.93, 0.96), snow_amt * 0.65);
 	}
 
 	ALPHA = alpha;
 	ALBEDO = clamp(col, 0.0, 1.0);
-	ROUGHNESS = mix(0.60, 0.90, snow_cover * max(NORMAL.y, 0.0));
+	ROUGHNESS = mix(0.60, 0.90, snow_cover * 0.5);
 	SPECULAR = 0.25;
 	METALLIC = 0.0;
 	BACKLIGHT = vec3(0.30, 0.15, 0.05);
