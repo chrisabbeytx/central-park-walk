@@ -525,6 +525,15 @@ const PARK_AREAS: Array = [
 	[100, 500, -900, -600, "Tennis Center"],
 	[-200, 200, -1200, -800, "Conservatory Garden"],
 	[-600, -350, 600, 750, "Bow Bridge"],
+	[-900, -650, 1100, 1350, "Strawberry Fields"],
+	[-700, -400, 1900, 2100, "The Pond"],
+	[-800, -500, 2050, 2200, "Wollman Rink"],
+	[700, 1100, -2100, -1800, "Lasker Pool"],
+	[-300, 0, 500, 700, "Shakespeare Garden"],
+	[300, 700, -1100, -700, "The Pool"],
+	[400, 800, -1400, -1100, "The Loch"],
+	[-200, 200, -400, -200, "The Obelisk"],
+	[-1100, -800, 1400, 1800, "Tavern on the Green"],
 ]
 
 func _nearest_area(x: float, z: float) -> String:
