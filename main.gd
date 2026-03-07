@@ -166,6 +166,7 @@ func _ready() -> void:
 			_apply_boundary_mask(_park_loader.boundary_polygon)
 		if _park_loader and not _park_loader.landuse_zones.is_empty():
 			_apply_landuse_map(_park_loader.landuse_zones, _park_loader.water_bodies)
+		_apply_structure_mask()
 	_player = _setup_player()
 	if _park_loader and _park_loader.boundary_polygon.size() > 2:
 		_player.boundary_polygon = _park_loader.boundary_polygon
@@ -514,6 +515,7 @@ func _compass_label(deg: float) -> String:
 
 # Central Park named areas — [x_min, x_max, z_min, z_max, name]
 const PARK_AREAS: Array = [
+	# ── Landmarks and major areas ──
 	[-700, -400, 1300, 1500, "Literary Walk"],
 	[-550, -380, 1050, 1300, "The Mall"],
 	[-530, -390, 900, 1050, "Bethesda Terrace"],
@@ -528,7 +530,6 @@ const PARK_AREAS: Array = [
 	[400, 900, -1600, -1000, "North Woods"],
 	[-100, 500, -200, 200, "Turtle Pond"],
 	[600, 1200, -2200, -1700, "Harlem Meer"],
-	[-600, -300, 1800, 2050, "Heckscher Playground"],
 	[-100, 200, 600, 900, "Belvedere Castle"],
 	[-350, 0, 200, 500, "Delacorte Theater"],
 	[0, 300, 300, 500, "Cleopatra's Needle"],
@@ -546,6 +547,47 @@ const PARK_AREAS: Array = [
 	[400, 800, -1400, -1100, "The Loch"],
 	[-200, 200, -400, -200, "The Obelisk"],
 	[-1100, -800, 1400, 1800, "Tavern on the Green"],
+	# ── Additional areas from Conservancy maps ──
+	[-500, -200, -1950, -1700, "The Ravine"],
+	[-300, 100, -350, -100, "Summit Rock"],
+	[-700, -500, 450, 650, "Ladies Pavilion"],
+	[100, 400, 150, 400, "Cedar Hill"],
+	[-650, -350, 1100, 1250, "The Dene"],
+	[-400, -100, 1600, 1800, "Heckscher Ballfields"],
+	[200, 600, -1050, -750, "East Meadow"],
+	[-100, 200, -1800, -1500, "Great Hill"],
+	[300, 600, -1600, -1350, "Conservatory Garden East"],
+	[-800, -500, 1050, 1250, "Mineral Springs"],
+	[-500, -200, 750, 950, "Wagner Cove"],
+	[-300, 0, 50, 300, "Arthur Ross Pinetum"],
+	# ── Playgrounds (from Conservancy Playground Map) ──
+	[-700, -550, -1850, -1750, "Yoseoff Playground"],
+	[-700, -500, -1100, -1000, "Tarr Family Playground"],
+	[-750, -600, -800, -700, "Rudin Family Playground"],
+	[-750, -600, -575, -475, "Wild West Playground"],
+	[-750, -600, -425, -325, "Safari Playground"],
+	[-750, -600, 25, 125, "West 85th St Playground"],
+	[-700, -550, 100, 200, "Toll Family Playground"],
+	[-750, -600, 325, 425, "Diana Ross Playground"],
+	[-750, -600, 1300, 1400, "Tarr-Coyne Tots Playground"],
+	[-750, -600, 1375, 1475, "Adventure Playground"],
+	[-500, -300, 1675, 1800, "Heckscher Playground"],
+	[250, 450, -1850, -1750, "East 110th St Playground"],
+	[250, 450, -1700, -1600, "Bernard Family Playground"],
+	[250, 450, -1100, -1000, "Bendheim Playground"],
+	[250, 450, -800, -700, "Kempner Playground"],
+	[200, 400, 25, 125, "Ancient Playground"],
+	[200, 400, 475, 575, "Smadbeck Playground"],
+	[200, 400, 625, 725, "Levin Playground"],
+	[200, 400, 1000, 1100, "East 72nd St Playground"],
+	[200, 400, 1375, 1475, "Billy Johnson Playground"],
+	# ── Facilities ──
+	[300, 500, -1850, -1750, "Dana Discovery Center"],
+	[-600, -400, 1375, 1475, "Dairy Visitor Center"],
+	[-550, -400, 1450, 1550, "Chess & Checkers House"],
+	[100, 350, 1525, 1625, "Central Park Zoo"],
+	[-400, -200, 1150, 1250, "SummerStage"],
+	[-300, -100, 550, 700, "Swedish Cottage"],
 ]
 
 func _nearest_area(x: float, z: float) -> String:
@@ -1594,6 +1636,9 @@ uniform float snow_cover : hint_range(0.0, 1.0) = 0.0;
 // 5=nature_reserve, 6=dog_park, 7=sports, 8=pool, 9=track, 10=wood, 11=forest
 uniform sampler2D landuse_map : filter_nearest, repeat_disable;
 
+// Structure mask from LiDAR (HH - BE difference): 0=ground, 1-254=height in half-feet
+uniform sampler2D structure_mask : filter_linear, repeat_disable;
+
 varying vec3 world_pos;
 
 float hash2(vec2 p) {
@@ -1839,18 +1884,74 @@ void fragment() {
 	}
 
 	// Rock on steep slopes — Manhattan schist outcrops
+	// Schist: gray base + mica sparkle (slight specular) + rusty weathering patches
 	// LiDAR at 2.4m/cell smooths real slopes significantly, so use low thresholds.
 	float slope = 1.0 - terrain_n.y;  // 0=flat, 1=vertical
 	float rock_noise = fbm(world_pos.xz * 0.05, 2) * 0.06;
 	float rock_blend = smoothstep(0.10, 0.25, slope + rock_noise);
+	float rock_specular = 0.0;
 	if (rock_blend > 0.01) {
 		vec2 ruv = world_pos.xz / rock_tile_m;
 		vec3 r_alb = textureNoTile_c(rock_albedo, ruv);
+		// Add rusty weathering patches to match Manhattan schist appearance
+		float rust_noise = fbm(world_pos.xz * 0.08, 2);
+		vec3 rust_tint = mix(r_alb, r_alb * vec3(1.15, 0.85, 0.70), smoothstep(0.5, 0.7, rust_noise) * 0.3);
+		r_alb = rust_tint;
 		vec3 r_nrm = textureNoTile_n(rock_normal, ruv);
-		float r_rgh = clamp(textureNoTile_r(rock_rough, ruv) * 0.15 + 0.75, 0.0, 1.0);
+		float r_rgh = clamp(textureNoTile_r(rock_rough, ruv) * 0.15 + 0.70, 0.0, 1.0);
 		grass_alb = mix(grass_alb, r_alb, rock_blend);
 		grass_nrm = mix(grass_nrm, r_nrm, rock_blend);
 		grass_rgh = mix(grass_rgh, r_rgh, rock_blend);
+		// Mica sparkle: slight specular on rock surfaces
+		rock_specular = rock_blend * 0.25;
+	}
+
+	// --- Structure mask: LiDAR-detected built features get stone/concrete texture ---
+	float struct_val = texture(structure_mask, splat_uv).r * 254.0;
+	if (struct_val > 0.5) {
+		vec2 stuv = world_pos.xz / path_tile_m;
+		float struct_h = struct_val;  // half-feet (val 2 = 1ft, val 20 = 10ft)
+		// Use terrain slope to pick material: steep = wall stone, flat = pavement/deck
+		float struct_slope = 1.0 - terrain_n.y;  // 0=flat, 1=vertical
+		// Large-scale warm/cool variation — some areas sandstone-warm, others schist-gray
+		float warmth = fbm(world_pos.xz * 0.004, 2);
+		vec3 s_tint;
+		float tex_layer;
+		if (struct_slope > 0.35) {
+			// Steep face: stone walls
+			tex_layer = 2.0;  // PavingStones as base
+			float weather = fbm(world_pos.xz * 0.15, 2);
+			vec3 cool_base = mix(vec3(0.42, 0.40, 0.38),  // gray schist
+			                     vec3(0.48, 0.36, 0.28),   // rusty weathering
+			                     smoothstep(0.35, 0.65, weather));
+			vec3 warm_base = mix(vec3(0.52, 0.47, 0.35),  // New Brunswick sandstone
+			                     vec3(0.56, 0.44, 0.30),   // weathered sandstone
+			                     smoothstep(0.35, 0.65, weather));
+			s_tint = mix(cool_base, warm_base, smoothstep(0.4, 0.6, warmth));
+		} else if (struct_slope > 0.08) {
+			// Moderate slope: dressed stone / granite steps
+			tex_layer = 2.0;  // PavingStones
+			vec3 cool_step = vec3(0.58, 0.56, 0.52);  // gray granite
+			vec3 warm_step = vec3(0.62, 0.56, 0.46);  // warm granite
+			s_tint = mix(cool_step, warm_step, smoothstep(0.4, 0.6, warmth));
+		} else {
+			// Flat top: road deck, plaza, terrace top
+			if (struct_h > 16.0) {
+				tex_layer = 0.0;  // Asphalt for road decks
+				s_tint = vec3(0.44, 0.42, 0.40);
+			} else {
+				tex_layer = 1.0;  // Concrete for plazas/platforms
+				s_tint = vec3(0.66, 0.63, 0.58);  // warm gray granite
+			}
+		}
+		vec3 s_alb = texture(path_alb_arr, vec3(stuv, tex_layer)).rgb * s_tint;
+		vec3 s_nrm = texture(path_nrm_arr, vec3(stuv, tex_layer)).rgb;
+		float s_rgh = clamp(texture(path_rgh_arr, vec3(stuv, tex_layer)).r + 0.08, 0.0, 1.0);
+		// Hard blend — structures should look solid
+		float s_blend = smoothstep(0.5, 2.0, struct_val);
+		grass_alb = mix(grass_alb, s_alb, s_blend);
+		grass_nrm = mix(grass_nrm, s_nrm, s_blend);
+		grass_rgh = mix(grass_rgh, s_rgh, s_blend);
 	}
 
 	if (mat_idx > 0 && path_weight > 0.5) {
@@ -1878,7 +1979,8 @@ void fragment() {
 		vec3 _gfn = normalize(terr_T * _gn.x + terr_B * _gn.y + terrain_n * _gn.z);
 		NORMAL = normalize((VIEW_MATRIX * vec4(_gfn, 0.0)).xyz);
 		ROUGHNESS       = grass_rgh;
-		SPECULAR        = 0.15;
+		// Rock surfaces get mica sparkle (higher specular), grass stays subtle
+		SPECULAR        = max(0.15, rock_specular);
 		METALLIC        = 0.0;
 	}
 
@@ -2174,6 +2276,25 @@ func _apply_landuse_map(zones: Array, water: Array = []) -> void:
 	var tex := ImageTexture.create_from_image(img)
 	_terrain_mat.set_shader_parameter("landuse_map", tex)
 	print("Terrain: landuse map applied (%d zones + %d water bodies into %dx%d)" % [filled, water_count, sz, sz])
+
+
+func _apply_structure_mask() -> void:
+	## Load the LiDAR structure mask (HH-BE difference) and apply it to the terrain shader.
+	## Structure pixels get stone/concrete textures instead of grass.
+	var mask_path := "res://lidar_data/structure_mask.png"
+	var global_path := ProjectSettings.globalize_path(mask_path)
+	if not FileAccess.file_exists(mask_path) and not FileAccess.file_exists(global_path):
+		print("Terrain: no structure mask found at %s" % mask_path)
+		return
+	var img := Image.load_from_file(mask_path)
+	if not img:
+		img = Image.load_from_file(global_path)
+	if not img:
+		print("Terrain: failed to load structure mask")
+		return
+	var tex := ImageTexture.create_from_image(img)
+	_terrain_mat.set_shader_parameter("structure_mask", tex)
+	print("Terrain: structure mask applied (%dx%d)" % [img.get_width(), img.get_height()])
 
 
 # ---------------------------------------------------------------------------
