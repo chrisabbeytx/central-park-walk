@@ -175,7 +175,7 @@ func _ready() -> void:
 	if not _terrain_only:
 		_setup_lamp_lights()
 		#_setup_falling_leaves()  # disabled — spring/summer season
-		_setup_pigeons()
+		#_setup_pigeons()  # disabled — no animals for now
 		_setup_audio()
 	# Register global wind uniform so all vegetation shaders can read it
 	RenderingServer.global_shader_parameter_add("wind_vec", RenderingServer.GLOBAL_VAR_TYPE_VEC2, Vector2.ZERO)

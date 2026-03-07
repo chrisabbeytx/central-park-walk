@@ -693,14 +693,15 @@ func _ready() -> void:
 	_build_statues(statues)
 	_build_amenities(amenities)
 	_build_boats(water)
-	_build_waterfowl(water)
-	_build_pedestrians(paths)
+	#_build_waterfowl(water)   # disabled — no animals for now
+	#_build_pedestrians(paths)  # disabled — no pedestrians for now
 	_build_boundary(boundary)
 	_build_perimeter_wall(boundary, paths)
 	_build_boundary_facades()
 	_build_undergrowth(trees, paths)
 	_build_meadow_grass(trees)
-	_build_squirrels(trees)
+	_build_wildflowers(trees, water)
+	#_build_squirrels(trees)    # disabled — no animals for now
 	_build_field_markings()
 	_build_rocks(trees, water)
 	_build_tree_dirt(trees)
