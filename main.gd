@@ -87,6 +87,21 @@ var _wind_override := -1.0      # <0 = auto, 0-1 = manual strength multiplier
 # Snow accumulation
 var _snow_cover := 0.0          # 0-1, ramps up during snow weather
 
+# Weather audio
+var _rain_audio_player: AudioStreamPlayer
+var _wind_audio_player: AudioStreamPlayer
+var _thunder_audio_player: AudioStreamPlayer
+var _audio_rng := RandomNumberGenerator.new()
+var _rain_b0 := 0.0   # pink noise filter state
+var _rain_b1 := 0.0
+var _rain_b2 := 0.0
+var _wind_lp_state := 0.0
+var _lightning_flash := 0.0
+var _lightning_timer := 0.0
+var _thunder_queue: Array = []   # [{time: float, vol: float}]
+var _thunder_wavs: Array = []    # pre-generated AudioStreamWAV
+const AUDIO_RATE := 22050
+
 # --time name-to-hour mapping
 const TIME_PRESETS: Dictionary = {
 	"dawn": 5.5, "morning": 8.0, "noon": 12.0,
@@ -149,6 +164,7 @@ func _ready() -> void:
 	# Register global wind uniform so all vegetation shaders can read it
 	RenderingServer.global_shader_parameter_add("wind_vec", RenderingServer.GLOBAL_VAR_TYPE_VEC2, Vector2.ZERO)
 	RenderingServer.global_shader_parameter_add("snow_cover", RenderingServer.GLOBAL_VAR_TYPE_FLOAT, 0.0)
+	_setup_weather_audio()
 	_apply_time_of_day()
 	_setup_weather()
 	_setup_fireflies()
@@ -358,7 +374,7 @@ func _process(delta: float) -> void:
 		spm.gravity = Vector3(_wind_vec.x * 3.0, -1.5, _wind_vec.y * 3.0)
 	# Fireflies — scripted wander agents
 	if not _firefly_nodes.is_empty() and _player:
-		var ff_active: bool = _time_of_day >= 17.0 and _time_of_day <= 22.0 and _weather_mode != "rain" and _weather_mode != "snow"
+		var ff_active: bool = _time_of_day >= 17.0 and _time_of_day <= 22.0 and _weather_mode != "rain" and _weather_mode != "thunderstorm" and _weather_mode != "snow"
 		_update_fireflies(delta, ff_active)
 
 	# Advance clock
@@ -368,9 +384,22 @@ func _process(delta: float) -> void:
 	elif _time_of_day < 0.0:
 		_time_of_day += 24.0
 	# Only update sky/env/lighting when time actually changes (saves ~50 ops/frame when paused)
-	if absf(_time_of_day - _last_applied_tod) > 0.0005:
+	if absf(_time_of_day - _last_applied_tod) > 0.0005 or _lightning_flash > 0.01:
 		_last_applied_tod = _time_of_day
 		_apply_time_of_day()
+
+	# Lightning flash decay — applied after tod sets clean brightness
+	if _lightning_flash > 0.01:
+		_lightning_flash *= exp(-delta * 6.0)
+		if _env:
+			_env.adjustment_brightness += _lightning_flash * 4.0
+		if _sun:
+			_sun.light_energy += _lightning_flash * 8.0
+	else:
+		_lightning_flash = 0.0
+
+	# Weather audio (rain, wind, thunder)
+	_update_weather_audio(delta)
 
 	# Letterbox bar sizing (adapts to viewport resize)
 	if _letterbox_on and _letterbox_top:
@@ -1042,6 +1071,15 @@ func _apply_time_of_day() -> void:
 		_env.adjustment_saturation *= 0.7
 		_sky_mat.set_shader_parameter("cloud_coverage", 0.95)
 		_sky_mat.set_shader_parameter("cloud_density", 0.85)
+	elif _weather_mode == "thunderstorm":
+		_env.fog_density *= 18.0
+		_env.fog_light_energy *= 0.5
+		if _env.volumetric_fog_enabled:
+			_env.volumetric_fog_density *= 12.0
+		_env.adjustment_saturation *= 0.55
+		_env.adjustment_brightness *= 0.85
+		_sky_mat.set_shader_parameter("cloud_coverage", 0.98)
+		_sky_mat.set_shader_parameter("cloud_density", 0.92)
 	elif _weather_mode == "snow":
 		_env.fog_density *= 2.0
 		_env.adjustment_saturation *= 0.75
@@ -2141,6 +2179,8 @@ func _update_wind(delta: float) -> void:
 	var wx := 1.0
 	if _weather_mode == "rain":
 		wx = 1.8
+	elif _weather_mode == "thunderstorm":
+		wx = 2.8
 	elif _weather_mode == "snow":
 		wx = 0.5
 	elif _weather_mode == "fog":
@@ -2170,7 +2210,7 @@ func _update_wind(delta: float) -> void:
 	RenderingServer.global_shader_parameter_set("wind_vec", _wind_vec)
 
 
-const WEATHER_MODES: Array = ["clear", "rain", "snow", "fog"]
+const WEATHER_MODES: Array = ["clear", "rain", "thunderstorm", "snow", "fog"]
 
 func _cycle_weather() -> void:
 	# Tear down current weather effects
@@ -2183,6 +2223,9 @@ func _cycle_weather() -> void:
 	if _rain_overlay:
 		_rain_overlay.queue_free()
 		_rain_overlay = null
+	_lightning_flash = 0.0
+	_lightning_timer = 0.0
+	_thunder_queue.clear()
 	# Advance to next mode
 	var idx := WEATHER_MODES.find(_weather_mode)
 	if idx < 0:
@@ -2195,6 +2238,8 @@ func _cycle_weather() -> void:
 func _setup_weather() -> void:
 	if _weather_mode == "rain":
 		_setup_rain()
+	elif _weather_mode == "thunderstorm":
+		_setup_thunderstorm()
 	elif _weather_mode == "snow":
 		_setup_snow()
 	elif _weather_mode == "fog":
@@ -2204,41 +2249,76 @@ func _setup_weather() -> void:
 
 
 func _setup_rain() -> void:
-	# Rain particles — follow player from above
+	# Gentle rain — soft, slow, soothing
 	_rain_particles = GPUParticles3D.new()
-	_rain_particles.amount = 20000
-	_rain_particles.lifetime = 3.0
+	_rain_particles.amount = 6000
+	_rain_particles.lifetime = 4.0
 	_rain_particles.visibility_aabb = AABB(Vector3(-25, -15, -25), Vector3(50, 30, 50))
 
 	var pm := ParticleProcessMaterial.new()
 	pm.direction = Vector3(0, -1, 0)
-	pm.spread = 5.0
-	pm.initial_velocity_min = 2.5
-	pm.initial_velocity_max = 3.5
-	pm.gravity = Vector3(0, -1.5, 0)
+	pm.spread = 8.0
+	pm.initial_velocity_min = 1.5
+	pm.initial_velocity_max = 2.2
+	pm.gravity = Vector3(0, -1.0, 0)
 	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
 	pm.emission_box_extents = Vector3(25.0, 0.5, 25.0)
 	_rain_particles.process_material = pm
 
-	# Rain drop mesh — thin elongated quad
 	var mesh := QuadMesh.new()
-	mesh.size = Vector2(0.008, 0.15)
+	mesh.size = Vector2(0.006, 0.10)
 	_rain_particles.draw_pass_1 = mesh
 
-	# Unshaded + emissive so drops are visible at all times of day
 	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(0.7, 0.75, 0.85, 0.35)
+	mat.albedo_color = Color(0.7, 0.75, 0.85, 0.25)
 	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	mat.billboard_mode = BaseMaterial3D.BILLBOARD_PARTICLES
 	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	mat.no_depth_test = true
 	mat.emission_enabled = true
 	mat.emission = Color(0.4, 0.45, 0.55)
-	mat.emission_energy_multiplier = 0.3
+	mat.emission_energy_multiplier = 0.2
 	_rain_particles.material_override = mat
 
 	add_child(_rain_particles)
-	print("Rain: 8000 particles + screen overlay")
+	print("Rain: 6000 gentle particles")
+
+
+func _setup_thunderstorm() -> void:
+	# Heavy downpour — dense, fast, thick drops
+	_rain_particles = GPUParticles3D.new()
+	_rain_particles.amount = 30000
+	_rain_particles.lifetime = 2.5
+	_rain_particles.visibility_aabb = AABB(Vector3(-25, -15, -25), Vector3(50, 30, 50))
+
+	var pm := ParticleProcessMaterial.new()
+	pm.direction = Vector3(0, -1, 0)
+	pm.spread = 12.0
+	pm.initial_velocity_min = 5.0
+	pm.initial_velocity_max = 7.5
+	pm.gravity = Vector3(0, -3.0, 0)
+	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
+	pm.emission_box_extents = Vector3(25.0, 0.5, 25.0)
+	_rain_particles.process_material = pm
+
+	var mesh := QuadMesh.new()
+	mesh.size = Vector2(0.012, 0.22)
+	_rain_particles.draw_pass_1 = mesh
+
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(0.6, 0.65, 0.75, 0.4)
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.billboard_mode = BaseMaterial3D.BILLBOARD_PARTICLES
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.no_depth_test = true
+	mat.emission_enabled = true
+	mat.emission = Color(0.35, 0.40, 0.50)
+	mat.emission_energy_multiplier = 0.25
+	_rain_particles.material_override = mat
+
+	add_child(_rain_particles)
+	_lightning_timer = randf_range(3.0, 8.0)  # first strike soon
+	print("Thunderstorm: 30000 heavy rain + lightning")
 
 
 func _setup_snow() -> void:
@@ -2493,6 +2573,183 @@ func _update_fireflies(delta: float, active: bool) -> void:
 func _setup_fog_weather() -> void:
 	# Fog multipliers are applied per-frame in the day/night cycle update
 	print("Fog: heavy atmospheric fog")
+
+
+# ---------------------------------------------------------------------------
+# Weather audio — procedural rain, wind, and thunder
+# ---------------------------------------------------------------------------
+
+func _setup_weather_audio() -> void:
+	_audio_rng.seed = 42
+
+	# Rain — procedural pink noise, always running (volume controlled per-weather)
+	_rain_audio_player = AudioStreamPlayer.new()
+	var rain_gen := AudioStreamGenerator.new()
+	rain_gen.mix_rate = AUDIO_RATE
+	rain_gen.buffer_length = 0.5
+	_rain_audio_player.stream = rain_gen
+	_rain_audio_player.volume_db = -80.0
+	_rain_audio_player.name = "RainAudio"
+	add_child(_rain_audio_player)
+	_rain_audio_player.play()
+
+	# Wind — procedural filtered noise, always running
+	_wind_audio_player = AudioStreamPlayer.new()
+	var wind_gen := AudioStreamGenerator.new()
+	wind_gen.mix_rate = AUDIO_RATE
+	wind_gen.buffer_length = 0.5
+	_wind_audio_player.stream = wind_gen
+	_wind_audio_player.volume_db = -80.0
+	_wind_audio_player.name = "WindAudio"
+	add_child(_wind_audio_player)
+	_wind_audio_player.play()
+
+	# Thunder — one-shot player, pre-generated WAVs
+	_thunder_audio_player = AudioStreamPlayer.new()
+	_thunder_audio_player.volume_db = -4.0
+	_thunder_audio_player.name = "ThunderAudio"
+	add_child(_thunder_audio_player)
+	_generate_thunder_wavs()
+
+
+func _generate_thunder_wavs() -> void:
+	for i in 4:
+		_thunder_wavs.append(_make_thunder_wav(i * 7919 + 12345))
+
+
+func _make_thunder_wav(seed_val: int) -> AudioStreamWAV:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = seed_val
+	var dur := 4.0
+	var samples := int(AUDIO_RATE * dur)
+	var data := PackedByteArray()
+	data.resize(samples * 2)
+	var lp := 0.0
+	var lp2 := 0.0
+	for i in samples:
+		var t := float(i) / float(AUDIO_RATE)
+		var white := rng.randf() * 2.0 - 1.0
+		# Envelope: sharp initial crack + long rumbling decay
+		var env := exp(-t * 1.2) * (1.0 + 0.3 * sin(t * 2.5 + rng.randf() * 0.01))
+		if t < 0.06:
+			env += (1.0 - t / 0.06) * 2.5  # sharp crack
+		# Two-stage lowpass for deep rumble
+		lp += 0.04 * (white * env - lp)
+		lp2 += 0.07 * (lp - lp2)
+		var s := clampf(lp2 * 2.8, -1.0, 1.0)
+		var s16 := int(s * 32767.0)
+		data[i * 2] = s16 & 0xFF
+		data[i * 2 + 1] = (s16 >> 8) & 0xFF
+	var wav := AudioStreamWAV.new()
+	wav.data = data
+	wav.format = AudioStreamWAV.FORMAT_16_BITS
+	wav.mix_rate = AUDIO_RATE
+	wav.stereo = false
+	wav.loop_mode = AudioStreamWAV.LOOP_DISABLED
+	return wav
+
+
+func _update_weather_audio(delta: float) -> void:
+	# --- Target volumes ---
+	var rain_target_db := -80.0
+	var wind_target_db := -80.0
+	var wind_str := _wind_vec.length()
+
+	if _weather_mode == "rain":
+		rain_target_db = -18.0  # soft, soothing
+	elif _weather_mode == "thunderstorm":
+		rain_target_db = -8.0   # heavy downpour
+
+	# Wind always audible when blowing, louder in storms
+	if wind_str > 0.02:
+		wind_target_db = lerpf(-40.0, -10.0, clampf(wind_str * 2.5, 0.0, 1.0))
+
+	# Smooth volume transitions
+	if _rain_audio_player:
+		_rain_audio_player.volume_db = lerpf(_rain_audio_player.volume_db, rain_target_db, clampf(delta * 2.0, 0.0, 1.0))
+	if _wind_audio_player:
+		_wind_audio_player.volume_db = lerpf(_wind_audio_player.volume_db, wind_target_db, clampf(delta * 3.0, 0.0, 1.0))
+
+	# Push audio frames
+	_push_rain_frames()
+	_push_wind_frames()
+
+	# --- Lightning / thunder ---
+	if _weather_mode == "thunderstorm":
+		_lightning_timer -= delta
+		if _lightning_timer <= 0.0:
+			_lightning_flash = 1.0
+			var delay := randf_range(0.8, 4.0)
+			var vol := randf_range(0.5, 1.0)
+			_thunder_queue.append({"time": delay, "vol": vol})
+			_lightning_timer = randf_range(8.0, 25.0)
+
+	# Process thunder queue
+	var i := 0
+	while i < _thunder_queue.size():
+		_thunder_queue[i]["time"] -= delta
+		if float(_thunder_queue[i]["time"]) <= 0.0:
+			if not _thunder_wavs.is_empty():
+				_thunder_audio_player.stream = _thunder_wavs[randi() % _thunder_wavs.size()]
+				_thunder_audio_player.volume_db = linear_to_db(float(_thunder_queue[i]["vol"]))
+				_thunder_audio_player.play()
+			_thunder_queue.remove_at(i)
+		else:
+			i += 1
+
+
+func _push_rain_frames() -> void:
+	if not _rain_audio_player or not _rain_audio_player.playing:
+		return
+	if _rain_audio_player.volume_db < -60.0:
+		return
+	var playback = _rain_audio_player.get_stream_playback()
+	if playback == null:
+		return
+	var frames: int = playback.get_frames_available()
+	if frames <= 0:
+		return
+
+	# Pink noise — warm, soothing patter
+	for fi in frames:
+		var white := _audio_rng.randf() * 2.0 - 1.0
+		_rain_b0 = 0.99765 * _rain_b0 + white * 0.0990460
+		_rain_b1 = 0.96300 * _rain_b1 + white * 0.2965164
+		_rain_b2 = 0.57000 * _rain_b2 + white * 1.0526913
+		var pink := (_rain_b0 + _rain_b1 + _rain_b2 + white * 0.1848) * 0.11
+		pink *= 0.7
+		playback.push_frame(Vector2(pink, pink))
+
+
+func _push_wind_frames() -> void:
+	if not _wind_audio_player or not _wind_audio_player.playing:
+		return
+	if _wind_audio_player.volume_db < -60.0:
+		return
+	var playback = _wind_audio_player.get_stream_playback()
+	if playback == null:
+		return
+	var frames: int = playback.get_frames_available()
+	if frames <= 0:
+		return
+
+	var wind_str := _wind_vec.length()
+	# Character: low wind = airy whisper, high wind = deep rushing howl
+	var howl := clampf((wind_str - 0.05) * 3.0, 0.0, 1.0)
+	var cutoff := lerpf(3000.0, 400.0, howl)
+	var alpha := 1.0 - exp(-TAU * cutoff / float(AUDIO_RATE))
+	# Slow gusting modulation
+	var gust := sin(_wind_time * 0.4) * 0.15 + 0.85
+
+	for fi in frames:
+		var white := _audio_rng.randf() * 2.0 - 1.0
+		# Lowpass — shifts from bright whisper to deep howl
+		_wind_lp_state += alpha * (white - _wind_lp_state)
+		# Blend: whisper (raw high-freq) + howl (filtered low-freq)
+		var whisper := white * 0.25 * (1.0 - howl * 0.7)
+		var deep := _wind_lp_state * 0.55 * howl
+		var sample := (whisper + deep) * gust
+		playback.push_frame(Vector2(sample, sample))
 
 
 func _setup_lens_distortion() -> void:
