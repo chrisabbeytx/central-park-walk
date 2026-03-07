@@ -650,15 +650,15 @@ def main() -> None:
     trash_cans_out = []
 
     # -------------------------------------------------------------------
-    # Trees — woodland polygons + NYC census (outside woodlands) + OSM
+    # Trees — NYC census (authoritative) + woodland fill + OSM
     #
     # Strategy:
-    #   1. Build woodland polygons from OSM natural=wood
-    #   2. Fill woodland polygons with trees at ~4m spacing
-    #   3. Add NYC census trees that are OUTSIDE woodland polygons
+    #   1. Load NYC census trees FIRST (real positions, species, DBH)
+    #   2. Build woodland polygons from OSM natural=wood
+    #   3. Fill woodland polygons with trees at ~4m spacing, SKIPPING
+    #      cells near existing census trees (dedup)
     #   4. Add OSM individual tree nodes outside woodlands
-    #   This avoids double-counting: woodland areas get dense fill,
-    #   non-woodland areas get real census positions.
+    #   Census trees take priority — they have accurate species and positions.
     # -------------------------------------------------------------------
     import random as _random
     _rng_wood = _random.Random(42)
@@ -776,10 +776,32 @@ def main() -> None:
     wood_area = sum(_poly_area(p) for p in wood_polys if _poly_area(p) >= 10.0)
     print(f"  Woodland polygons: {len(wood_polys)} ({wood_area:.0f} m²)")
 
-    # --- Step 2: Fill woodland polygons with trees ---
-    DEDUP_DIST = 5.0
+    DEDUP_DIST = 3.0  # metres — avoid exact overlaps with census, keep woodland dense
     CELL = 10.0
     tree_hash: dict = {}
+
+    # --- Step 2: NYC census trees FIRST (authoritative positions & species) ---
+    NYC_TREES = "lidar_data/central_park_trees.json"
+    nyc_count = 0
+    if os.path.exists(NYC_TREES):
+        with open(NYC_TREES) as fh:
+            nyc_trees = json.load(fh)
+        for t in nyc_trees:
+            x, z = project(t["lat"], t["lon"])
+            h = round(terrain(x, z), 2)
+            sp_raw = t.get("species", "").lower()
+            genus = sp_raw.split()[0] if sp_raw else ""
+            archetype = SPECIES_MAP.get(genus, "deciduous")
+            dbh = t.get("dbh", 0)
+            trees_out.append({"pos": [round(x, 2), h, round(z, 2)], "species": archetype, "dbh": dbh})
+            ck = (int(x // CELL), int(z // CELL))
+            if ck not in tree_hash:
+                tree_hash[ck] = []
+            tree_hash[ck].append((x, z))
+            nyc_count += 1
+        print(f"  Trees: {nyc_count} from NYC census (all included)")
+
+    # --- Step 3: Fill woodland polygons, skipping near census trees ---
     WOOD_SPACING = 4.0
     WOOD_JITTER = 1.5
     wood_added = 0
@@ -798,44 +820,33 @@ def main() -> None:
                 tx = gx + _rng_wood.uniform(-WOOD_JITTER, WOOD_JITTER)
                 tz = gz + _rng_wood.uniform(-WOOD_JITTER, WOOD_JITTER)
                 if _point_in_poly(tx, tz, poly):
+                    # Skip if too close to an existing census tree
+                    ck = (int(tx // CELL), int(tz // CELL))
+                    too_close = False
+                    for dx in range(-1, 2):
+                        for dz in range(-1, 2):
+                            for (ex, ez) in tree_hash.get((ck[0] + dx, ck[1] + dz), []):
+                                if abs(ex - tx) < DEDUP_DIST and abs(ez - tz) < DEDUP_DIST:
+                                    too_close = True
+                                    break
+                            if too_close:
+                                break
+                        if too_close:
+                            break
+                    if too_close:
+                        gz += WOOD_SPACING
+                        continue
                     h = round(terrain(tx, tz), 2)
                     sp = _rng_wood.choice(["oak", "maple", "elm", "deciduous", "deciduous", "deciduous", "deciduous", "conifer"])
                     dbh = _rng_wood.randint(8, 24)
                     trees_out.append({"pos": [round(tx, 2), h, round(tz, 2)], "species": sp, "dbh": dbh})
-                    ck = (int(tx // CELL), int(tz // CELL))
                     if ck not in tree_hash:
                         tree_hash[ck] = []
                     tree_hash[ck].append((tx, tz))
                     wood_added += 1
                 gz += WOOD_SPACING
             gx += WOOD_SPACING
-    print(f"  Trees: {wood_added} from woodland polygons (natural=wood)")
-
-    # --- Step 3: NYC census trees OUTSIDE woodlands ---
-    NYC_TREES = "lidar_data/central_park_trees.json"
-    nyc_count = 0
-    nyc_skipped = 0
-    if os.path.exists(NYC_TREES):
-        with open(NYC_TREES) as fh:
-            nyc_trees = json.load(fh)
-        for t in nyc_trees:
-            x, z = project(t["lat"], t["lon"])
-            # Skip trees in woodland areas — those areas are already filled
-            if _in_any_wood(x, z, wood_polys):
-                nyc_skipped += 1
-                continue
-            h = round(terrain(x, z), 2)
-            sp_raw = t.get("species", "").lower()
-            genus = sp_raw.split()[0] if sp_raw else ""
-            archetype = SPECIES_MAP.get(genus, "deciduous")
-            dbh = t.get("dbh", 0)
-            trees_out.append({"pos": [x, h, z], "species": archetype, "dbh": dbh})
-            ck = (int(x // CELL), int(z // CELL))
-            if ck not in tree_hash:
-                tree_hash[ck] = []
-            tree_hash[ck].append((x, z))
-            nyc_count += 1
-        print(f"  Trees: +{nyc_count} from NYC census (outside woodlands, {nyc_skipped} skipped)")
+    print(f"  Trees: +{wood_added} from woodland polygons (natural=wood)")
 
     # --- Step 4: OSM individual tree nodes outside woodlands ---
     osm_added = 0
