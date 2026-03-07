@@ -4,7 +4,10 @@
 # Downloaded binary assets (re-download via scripts)
 models/
 !models/furniture/cp_bench.glb
-!scripts/make_bench.py
+!models/furniture/cp_lamppost.glb
+!models/furniture/cp_trash_can.glb
+!models/furniture/cp_drinking_fountain.glb
+!models/furniture/cp_rocks.glb
 textures/*.jpg
 textures/*.hdr
 textures/*.png
