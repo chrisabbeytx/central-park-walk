@@ -73,6 +73,7 @@ var landuse_zones: Array = []             # from park_data.json: type, name, poi
 var _bridge_outlines: Array = []          # bridge outline polygons for deck shapes
 var _tunnel_outlines: Array = []          # tunnel outline polygons for labels
 var _perimeter_heights: Array = []        # NYC real building heights [x, z, h_m, ?name]
+var water_bodies: Array = []              # water body polygons for shore blending
 
 
 # ---------------------------------------------------------------------------
@@ -669,6 +670,7 @@ func _ready() -> void:
 	# Cache data arrays once — avoids repeated Dictionary.get() calls
 	var paths: Array = data.get("paths", [])
 	var water: Array = data.get("water", [])
+	water_bodies = water
 	var trees: Array = data.get("trees", [])
 	var buildings: Array = data.get("buildings", [])
 	var barriers: Array = data.get("barriers", [])

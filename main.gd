@@ -165,7 +165,7 @@ func _ready() -> void:
 		if _park_loader and _park_loader.boundary_polygon.size() > 2:
 			_apply_boundary_mask(_park_loader.boundary_polygon)
 		if _park_loader and not _park_loader.landuse_zones.is_empty():
-			_apply_landuse_map(_park_loader.landuse_zones)
+			_apply_landuse_map(_park_loader.landuse_zones, _park_loader.water_bodies)
 	_player = _setup_player()
 	if _park_loader and _park_loader.boundary_polygon.size() > 2:
 		_player.boundary_polygon = _park_loader.boundary_polygon
@@ -1348,9 +1348,15 @@ func _perturb_heightmap() -> void:
 # Falls back to a flat plane when heightmap.json is absent.
 # ---------------------------------------------------------------------------
 func _setup_ground() -> void:
-	var tex_alb := _load_img_tex("res://textures/grass_albedo.jpg")
-	var tex_nrm := _load_img_tex("res://textures/grass_normal.jpg")
-	var tex_rgh := _load_img_tex("res://textures/grass_rough.jpg")
+	var tex_alb := _load_img_tex("res://textures/lawn_grass_Color.jpg")
+	if tex_alb == null:
+		tex_alb = _load_img_tex("res://textures/grass_albedo.jpg")
+	var tex_nrm := _load_img_tex("res://textures/lawn_grass_NormalGL.jpg")
+	if tex_nrm == null:
+		tex_nrm = _load_img_tex("res://textures/grass_normal.jpg")
+	var tex_rgh := _load_img_tex("res://textures/lawn_grass_Roughness.jpg")
+	if tex_rgh == null:
+		tex_rgh = _load_img_tex("res://textures/grass_rough.jpg")
 	var shader  := Shader.new()
 	shader.code  = _terrain_shader_textured() if tex_alb != null else _terrain_shader_code()
 	_terrain_mat = ShaderMaterial.new()
@@ -1365,18 +1371,30 @@ func _setup_ground() -> void:
 		if noise_tex:
 			_terrain_mat.set_shader_parameter("tile_noise", noise_tex)
 		# Meadow/wild grass blend
-		var m_alb := _load_img_tex("res://textures/forrest_ground_01_Color.jpg")
-		var m_nrm := _load_img_tex("res://textures/forrest_ground_01_NormalGL.jpg")
-		var m_rgh := _load_img_tex("res://textures/forrest_ground_01_Roughness.jpg")
+		var m_alb := _load_img_tex("res://textures/leaf_litter_Color.jpg")
+		if m_alb == null:
+			m_alb = _load_img_tex("res://textures/forrest_ground_01_Color.jpg")
+		var m_nrm := _load_img_tex("res://textures/leaf_litter_NormalGL.jpg")
+		if m_nrm == null:
+			m_nrm = _load_img_tex("res://textures/forrest_ground_01_NormalGL.jpg")
+		var m_rgh := _load_img_tex("res://textures/leaf_litter_Roughness.jpg")
+		if m_rgh == null:
+			m_rgh = _load_img_tex("res://textures/forrest_ground_01_Roughness.jpg")
 		if m_alb:
 			_terrain_mat.set_shader_parameter("meadow_albedo", m_alb)
 			_terrain_mat.set_shader_parameter("meadow_normal", m_nrm)
 			_terrain_mat.set_shader_parameter("meadow_rough",  m_rgh)
 			_terrain_mat.set_shader_parameter("meadow_tile_m", 4.0)
 		# Rock texture for steep slopes
-		var r_alb := _load_img_tex("res://textures/rock_wall_diff.jpg")
-		var r_nrm := _load_img_tex("res://textures/rock_wall_nrm.jpg")
-		var r_rgh := _load_img_tex("res://textures/rock_wall_rgh.jpg")
+		var r_alb := _load_img_tex("res://textures/schist_rock_Color.jpg")
+		if r_alb == null:
+			r_alb = _load_img_tex("res://textures/rock_wall_diff.jpg")
+		var r_nrm := _load_img_tex("res://textures/schist_rock_NormalGL.jpg")
+		if r_nrm == null:
+			r_nrm = _load_img_tex("res://textures/rock_wall_nrm.jpg")
+		var r_rgh := _load_img_tex("res://textures/schist_rock_Roughness.jpg")
+		if r_rgh == null:
+			r_rgh = _load_img_tex("res://textures/rock_wall_rgh.jpg")
 		if r_alb:
 			_terrain_mat.set_shader_parameter("rock_albedo", r_alb)
 			_terrain_mat.set_shader_parameter("rock_normal", r_nrm)
@@ -1391,7 +1409,16 @@ func _setup_ground() -> void:
 			_terrain_mat.set_shader_parameter("dirt_normal", d_nrm)
 			_terrain_mat.set_shader_parameter("dirt_rough",  d_rgh)
 			_terrain_mat.set_shader_parameter("dirt_tile_m", 2.0)
-		print("Ground: textured grass shader + meadow blend + rock slopes + dirt zones")
+		# Shore/mud texture for water edges
+		var s_alb := _load_img_tex("res://textures/shore_mud_Color.jpg")
+		var s_nrm := _load_img_tex("res://textures/shore_mud_NormalGL.jpg")
+		var s_rgh := _load_img_tex("res://textures/shore_mud_Roughness.jpg")
+		if s_alb:
+			_terrain_mat.set_shader_parameter("shore_albedo", s_alb)
+			_terrain_mat.set_shader_parameter("shore_normal", s_nrm)
+			_terrain_mat.set_shader_parameter("shore_rough",  s_rgh)
+			_terrain_mat.set_shader_parameter("shore_tile_m", 3.0)
+		print("Ground: textured grass shader + meadow blend + rock slopes + dirt zones + shore")
 
 	if _hm_data.is_empty():
 		# Flat fallback
@@ -1526,6 +1553,12 @@ uniform sampler2D dirt_albedo : source_color,      filter_linear_mipmap_anisotro
 uniform sampler2D dirt_normal : hint_normal,        filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D dirt_rough  : hint_default_white, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform float dirt_tile_m = 2.0;
+
+// Shore/mud texture for water body edges
+uniform sampler2D shore_albedo : source_color,      filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D shore_normal : hint_normal,        filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D shore_rough  : hint_default_white, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform float shore_tile_m = 3.0;
 
 // Anti-tiling noise texture (256x256 white noise)
 uniform sampler2D tile_noise : filter_linear_mipmap, repeat_enable;
@@ -1787,6 +1820,24 @@ void fragment() {
 		grass_rgh = mix(grass_rgh, d_rgh, dirt_blend);
 	}
 
+	// Shore zone (13) — muddy/sandy edges near water bodies
+	if (zone_id == 13) {
+		vec2 suv = world_pos.xz / shore_tile_m;
+		vec3 sh_alb = textureNoTile_c(shore_albedo, suv);
+		vec3 sh_nrm = textureNoTile_n(shore_normal, suv);
+		float sh_rgh = clamp(textureNoTile_r(shore_rough, suv) * 0.15 + 0.80, 0.0, 1.0);
+		float shore_blend = clamp(0.80 + edge_noise, 0.0, 1.0);
+		grass_alb = mix(grass_alb, sh_alb, shore_blend);
+		grass_nrm = mix(grass_nrm, sh_nrm, shore_blend);
+		grass_rgh = mix(grass_rgh, sh_rgh, shore_blend);
+	}
+
+	// Water zone (12) — dark muddy ground under water surface
+	if (zone_id == 12) {
+		grass_alb = vec3(0.12, 0.11, 0.08);
+		grass_rgh = 0.95;
+	}
+
 	// Rock on steep slopes — Manhattan schist outcrops
 	// LiDAR at 2.4m/cell smooths real slopes significantly, so use low thresholds.
 	float slope = 1.0 - terrain_n.y;  // 0=flat, 1=vertical
@@ -2024,10 +2075,11 @@ func _apply_boundary_mask(poly: PackedVector2Array) -> void:
 	print("Terrain: boundary mask applied (%dx%d)" % [sz, sz])
 
 
-func _apply_landuse_map(zones: Array) -> void:
-	## Rasterize landuse zone polygons into a texture for the terrain shader.
+func _apply_landuse_map(zones: Array, water: Array = []) -> void:
+	## Rasterize landuse zone polygons + water bodies into a texture for the terrain shader.
 	## Zone encoding: 0=unzoned (woodland/meadow), 1=garden, 2=grass, 3=pitch,
-	## 4=playground, 5=nature_reserve, 6=dog_park, 7=sports, 8=pool, 9=track
+	## 4=playground, 5=nature_reserve, 6=dog_park, 7=sports, 8=pool, 9=track,
+	## 10=wood, 11=forest, 12=water, 13=shore
 	var sz := 1024
 	var img := Image.create(sz, sz, false, Image.FORMAT_R8)
 	img.fill(Color(0, 0, 0))  # 0 = unzoned (meadow/woodland)
@@ -2039,36 +2091,22 @@ func _apply_landuse_map(zones: Array) -> void:
 		"wood": 10, "forest": 11,
 	}
 
-	var filled := 0
-	for zone in zones:
-		var zone_type: String = zone.get("type", "")
-		var zone_id: int = type_to_id.get(zone_type, 0)
-		if zone_id == 0:
-			continue
-		var pts: Array = zone.get("points", [])
-		if pts.size() < 3:
-			continue
-
-		# Convert world coords to pixel coords for bounding box
+	# Helper: scanline-fill polygon into image
+	var _scanline_fill := func(pts: Array, zone_id: int) -> void:
 		var min_row := sz
 		var max_row := 0
 		var poly_x := PackedFloat64Array()
 		var poly_z := PackedFloat64Array()
 		for pt in pts:
-			var wx: float = pt[0]
-			var wz: float = pt[1]
-			poly_x.append(wx)
-			poly_z.append(wz)
-			var row := int((wz + half) / _hm_world_size * float(sz))
+			poly_x.append(float(pt[0]))
+			poly_z.append(float(pt[1]))
+			var row := int((float(pt[1]) + half) / _hm_world_size * float(sz))
 			min_row = min(min_row, row)
 			max_row = max(max_row, row)
-
 		min_row = clampi(min_row - 1, 0, sz - 1)
 		max_row = clampi(max_row + 1, 0, sz - 1)
 		var n := poly_x.size()
 		var zone_color := Color(float(zone_id) / 255.0, 0, 0)
-
-		# Scanline fill for this polygon
 		for y in range(min_row, max_row + 1):
 			var wz := (float(y) / float(sz)) * _hm_world_size - half
 			var crossings := PackedFloat64Array()
@@ -2086,11 +2124,56 @@ func _apply_landuse_map(zones: Array) -> void:
 				var px1 := int(clampf((float(arr[k + 1]) + half) / _hm_world_size * float(sz), 0.0, float(sz - 1)))
 				for px in range(px0, px1 + 1):
 					img.set_pixel(px, y, zone_color)
+
+	# Rasterize landuse zones
+	var filled := 0
+	for zone in zones:
+		var zone_type: String = zone.get("type", "")
+		var zone_id: int = type_to_id.get(zone_type, 0)
+		if zone_id == 0:
+			continue
+		var pts: Array = zone.get("points", [])
+		if pts.size() < 3:
+			continue
+		_scanline_fill.call(pts, zone_id)
 		filled += 1
+
+	# Rasterize water bodies (zone 12)
+	var water_count := 0
+	for body in water:
+		var pts: Array = body.get("points", [])
+		if pts.size() < 3:
+			continue
+		_scanline_fill.call(pts, 12)
+		water_count += 1
+
+	# Dilate water pixels to create shore zone (13) — 3-pixel radius (~15m)
+	if water_count > 0:
+		var shore_pixels := PackedVector2Array()
+		var SHORE_R := 3
+		for y in range(sz):
+			for x in range(sz):
+				var v := int(img.get_pixel(x, y).r * 255.0 + 0.5)
+				if v == 12:  # water pixel
+					for dy in range(-SHORE_R, SHORE_R + 1):
+						for dx in range(-SHORE_R, SHORE_R + 1):
+							if dx * dx + dy * dy > SHORE_R * SHORE_R:
+								continue
+							var nx := x + dx
+							var ny := y + dy
+							if nx < 0 or nx >= sz or ny < 0 or ny >= sz:
+								continue
+							var nv := int(img.get_pixel(nx, ny).r * 255.0 + 0.5)
+							if nv != 12 and nv != 13:  # not water or shore
+								shore_pixels.append(Vector2(nx, ny))
+		var shore_color := Color(13.0 / 255.0, 0, 0)
+		for sp in shore_pixels:
+			img.set_pixel(int(sp.x), int(sp.y), shore_color)
+		print("Terrain: water shore zones — %d water bodies, %d shore pixels" % [water_count, shore_pixels.size()])
 
 	var tex := ImageTexture.create_from_image(img)
 	_terrain_mat.set_shader_parameter("landuse_map", tex)
-	print("Terrain: landuse map applied (%d zones rasterized into %dx%d)" % [filled, sz, sz])
+	print("Terrain: landuse map applied (%d zones + %d water bodies into %dx%d)" % [filled, water_count, sz, sz])
 
 
 # ---------------------------------------------------------------------------
