@@ -683,6 +683,7 @@ func _ready() -> void:
 	_build_water(water)
 	_build_streams(streams)
 	_populate_water_grid(water)
+	_build_shore_vegetation(water)
 	_build_labels(water)
 	_build_trees(trees)
 	_build_furniture(benches, lampposts, paths)
