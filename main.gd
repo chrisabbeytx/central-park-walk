@@ -2004,6 +2004,13 @@ void fragment() {
 		float struct_slope = 1.0 - terrain_n.y;  // 0=flat, 1=vertical
 		// Large-scale warm/cool variation — some areas sandstone-warm, others schist-gray
 		float warmth = fbm(world_pos.xz * 0.004, 2);
+		// Named structure overrides — force warmth for known materials
+		// Bethesda Terrace: New Brunswick sandstone (warm mustard-olive)
+		float d_beth_s = length(world_pos.xz - vec2(-458.0, 949.0));
+		if (d_beth_s < 60.0) warmth = 0.85;
+		// Belvedere Castle: Manhattan schist (cool gray)
+		float d_belv = length(world_pos.xz - vec2(-215.0, 372.0));
+		if (d_belv < 40.0) warmth = 0.15;
 		vec3 s_tint;
 		float tex_layer;
 		if (struct_slope > 0.35) {
