@@ -4299,6 +4299,10 @@ func _build_water(water: Array) -> void:
 			_build_fountain(body)
 			continue
 
+		# Conservatory Water: add Atlantic Blue granite curb ring
+		if bname.to_lower().contains("conservatory"):
+			_build_water_curb(pts, Color(0.36, 0.42, 0.48))  # Atlantic Blue granite
+
 		# Water level = minimum terrain height along the shore + small offset.
 		var wy := INF
 		for pt in pts:
@@ -4382,6 +4386,53 @@ func _build_water(water: Array) -> void:
 	mi.mesh = mesh
 	mi.name = "WaterBodies"
 	add_child(mi)
+
+
+func _build_water_curb(pts: Array, tint: Color) -> void:
+	## Build a raised stone curb ring around a water body (e.g. Conservatory Water).
+	var rw_alb := _load_tex("res://textures/rock_wall_diff.jpg")
+	var rw_nrm := _load_tex("res://textures/rock_wall_nrm.jpg")
+	var rw_rgh := _load_tex("res://textures/rock_wall_rgh.jpg")
+	var mat := _make_stone_material(rw_alb, rw_nrm, rw_rgh, tint)
+	var curb_h := 0.35   # curb height above water
+	var curb_w := 0.30   # curb width
+	var verts := PackedVector3Array()
+	var normals := PackedVector3Array()
+	for i in pts.size():
+		var x0 := float(pts[i][0]); var z0 := float(pts[i][1])
+		var ni := (i + 1) % pts.size()
+		var x1 := float(pts[ni][0]); var z1 := float(pts[ni][1])
+		var dx := x1 - x0; var dz := z1 - z0
+		var seg_len := sqrt(dx * dx + dz * dz)
+		if seg_len < 0.1:
+			continue
+		var nx := -dz / seg_len; var nz := dx / seg_len  # outward normal
+		var y0 := _terrain_y(x0, z0); var y1 := _terrain_y(x1, z1)
+		# Inner edge (water side)
+		var ix0 := x0; var iz0 := z0; var ix1 := x1; var iz1 := z1
+		# Outer edge
+		var ox0 := x0 + nx * curb_w; var oz0 := z0 + nz * curb_w
+		var ox1 := x1 + nx * curb_w; var oz1 := z1 + nz * curb_w
+		# Top face
+		var iy0 := y0 + curb_h; var iy1 := y1 + curb_h
+		verts.append(Vector3(ix0, iy0, iz0)); verts.append(Vector3(ox0, iy0, oz0)); verts.append(Vector3(ox1, iy1, oz1))
+		verts.append(Vector3(ix0, iy0, iz0)); verts.append(Vector3(ox1, iy1, oz1)); verts.append(Vector3(ix1, iy1, iz1))
+		for _j in 6: normals.append(Vector3.UP)
+		# Outer face
+		verts.append(Vector3(ox0, y0, oz0)); verts.append(Vector3(ox1, y1, oz1)); verts.append(Vector3(ox1, iy1, oz1))
+		verts.append(Vector3(ox0, y0, oz0)); verts.append(Vector3(ox1, iy1, oz1)); verts.append(Vector3(ox0, iy0, oz0))
+		var fn := Vector3(nx, 0.0, nz)
+		for _j in 6: normals.append(fn)
+	if verts.is_empty():
+		return
+	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts; arrays[Mesh.ARRAY_NORMAL] = normals
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	mesh.surface_set_material(0, mat)
+	var mi := MeshInstance3D.new(); mi.mesh = mesh; mi.name = "WaterCurb_Conservatory"
+	add_child(mi)
+	print("ParkLoader: Conservatory Water curb (%d segments)" % pts.size())
 
 
 func _build_streams(streams: Array) -> void:
