@@ -34,11 +34,11 @@ METRES_PER_DEG_LAT = 110_540.0
 METRES_PER_DEG_LON = 111_320.0 * math.cos(math.radians(REF_LAT))   # ≈ 84 264 m/°
 
 HIGHWAY_WIDTH = {
-    "pedestrian": 6.0,
-    "footway":    3.0,
+    "pedestrian": 12.0,   # Mall / Literary Walk ~40ft wide
+    "footway":    3.5,
     "cycleway":   3.5,
     "path":       2.5,
-    "steps":      2.5,
+    "steps":      3.0,
     "track":      3.0,
     "service":    8.0,    # Park loop drives (East/West/Center Drive)
     "secondary":  10.0,   # Major transverse roads

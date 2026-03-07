@@ -95,15 +95,29 @@ func _is_on_path(wx: float, wz: float) -> bool:
 # ---------------------------------------------------------------------------
 func _hw_width(hw: String) -> float:
 	match hw:
-		"pedestrian": return 6.0
-		"footway":    return 3.0
+		"pedestrian": return 12.0  # Mall / Literary Walk ~40ft
+		"footway":    return 3.5
 		"cycleway":   return 3.5
-		"steps":      return 2.5
+		"steps":      return 3.0
 		"track":      return 3.0
 		"service":    return 8.0   # Park loop drives
 		"secondary":  return 10.0  # Transverse roads
 		"bridleway":  return 3.5   # Bridle paths
 		_:            return 2.5   # "path" and unknowns
+
+
+func _path_width(path: Dictionary) -> float:
+	## Returns path width using: explicit OSM width > named overrides > highway default.
+	var w = path.get("width", 0)
+	if w is float and w > 0.0:
+		return w
+	if w is int and w > 0:
+		return float(w)
+	if w is String and w != "":
+		var wf := float(w)
+		if wf > 0.0:
+			return wf
+	return _hw_width(str(path.get("highway", "path")))
 
 
 func _hw_y_priority(hw: String) -> float:
@@ -157,13 +171,14 @@ func _path_color(hw: String, surface: String) -> Color:
 		"sand":               return Color(0.76, 0.70, 0.52)   # sand
 	# Fallback to highway type
 	match hw:
-		"footway":    return Color(0.70, 0.64, 0.52)   # warm tan / gravel
-		"cycleway":   return Color(0.30, 0.30, 0.32)   # asphalt (cycleways are almost always asphalt)
-		"pedestrian": return Color(0.78, 0.74, 0.65)   # pale cream stone
-		"path":       return Color(0.54, 0.44, 0.30)   # earthy dirt
+		"footway":    return Color(0.72, 0.68, 0.58)   # buff paving stone
+		"cycleway":   return Color(0.30, 0.30, 0.32)   # asphalt
+		"pedestrian": return Color(0.78, 0.74, 0.65)   # pale cream stone (Mall)
+		"path":       return Color(0.60, 0.53, 0.40)   # gravel trail
 		"steps":      return Color(0.60, 0.58, 0.54)   # grey stone
 		"track":      return Color(0.48, 0.40, 0.26)   # brown dirt track
-		_:            return Color(0.65, 0.60, 0.48)
+		"bridleway":  return Color(0.52, 0.42, 0.28)   # compacted earth
+		_:            return Color(0.60, 0.53, 0.40)   # gravel
 
 
 # ---------------------------------------------------------------------------
@@ -604,7 +619,20 @@ func _ready() -> void:
 		for i in range(raw_boundary.size()):
 			raw_poly[i] = Vector2(float(raw_boundary[i][0]), float(raw_boundary[i][1]))
 		boundary_polygon = _convex_hull(raw_poly)
-		print("ParkLoader: boundary convex hull %d -> %d points" % [raw_poly.size(), boundary_polygon.size()])
+		# Subdivide long segments so facades/walls get dense building blocks
+		var subdiv := PackedVector2Array()
+		var max_seg := 15.0  # metres — matches facade 30m block logic
+		for i in range(boundary_polygon.size()):
+			var p1 := boundary_polygon[i]
+			var p2 := boundary_polygon[(i + 1) % boundary_polygon.size()]
+			subdiv.append(p1)
+			var d := p1.distance_to(p2)
+			if d > max_seg:
+				var steps := int(ceilf(d / max_seg))
+				for s in range(1, steps):
+					subdiv.append(p1.lerp(p2, float(s) / float(steps)))
+		boundary_polygon = subdiv
+		print("ParkLoader: boundary convex hull %d -> %d points (subdivided)" % [raw_poly.size(), boundary_polygon.size()])
 	_rasterize_boundary()
 
 	# Cache data arrays once — avoids repeated Dictionary.get() calls
@@ -617,7 +645,7 @@ func _ready() -> void:
 	var benches: Array = data.get("benches", [])
 	var lampposts: Array = data.get("lampposts", [])
 	var trash_cans: Array = data.get("trash_cans", [])
-	# Build boundary array from convex hull for walls/perimeter
+	# Build boundary array from subdivided hull for walls/perimeter
 	var boundary: Array = []
 	for p in boundary_polygon:
 		boundary.append([p.x, p.y])
@@ -688,13 +716,14 @@ func _splat_mat_idx(hw: String, surface: String) -> int:
 		"mulch":              return 22
 		"sand":               return 23
 	match hw:
-		"footway":    return 1   # asphalt (same as explicit surface=asphalt)
-		"cycleway":   return 25
-		"pedestrian": return 1   # asphalt (prevents overlapping path material conflicts)
-		"path":       return 27
+		"footway":    return 4   # paving_stones (most CP footways are paved stone)
+		"cycleway":   return 1   # asphalt
+		"pedestrian": return 4   # paving_stones (Mall, plazas)
+		"path":       return 16  # gravel (Ramble trails, natural paths)
 		"steps":      return 28
 		"track":      return 29
-		_:            return 30
+		"bridleway":  return 14  # compacted (bridle paths are packed earth)
+		_:            return 16  # gravel
 
 
 func _raster_thick_line(data: PackedByteArray, x0: float, z0: float, x1: float, z1: float, hw2: float, mat_idx: int) -> void:
@@ -787,7 +816,8 @@ func _generate_splat_map(paths: Array, bridge_centroids: Array) -> ImageTexture:
 			"points": path["points"],
 			"hw": hw,
 			"surface": surf,
-			"priority": _hw_y_priority(hw)
+			"priority": _hw_y_priority(hw),
+			"pw": _path_width(path)
 		})
 
 	ground_segs.sort_custom(func(a, b): return a["priority"] < b["priority"])
@@ -796,7 +826,7 @@ func _generate_splat_map(paths: Array, bridge_centroids: Array) -> ImageTexture:
 		var hw: String = seg["hw"]
 		var surf: String = seg["surface"]
 		var mat_idx := _splat_mat_idx(hw, surf)
-		var hw2 := _hw_width(hw) * 0.5
+		var hw2: float = seg["pw"] * 0.5
 		var raw: Array = seg["points"]
 		var is_poly := _is_closed_polygon(raw)
 		if is_poly:
@@ -859,7 +889,7 @@ func _build_path_gpu_textures(paths: Array, bridge_centroids: Array) -> void:
 		# Skip closed polygons — handled by raster
 		if _is_closed_polygon(raw):
 			continue
-		var hw2 := _hw_width(hw) * 0.5
+		var hw2 := _path_width(path) * 0.5
 		var mat_idx := _splat_mat_idx(hw, surf)
 		var smoothed: Array = _smooth_path_catmull_rom(raw) if raw.size() >= 3 else raw
 		for si in range(smoothed.size() - 1):
@@ -1110,11 +1140,11 @@ func _make_path_mesh(paths: Array, hw: String, surface: String) -> MeshInstance3
 	var normals := PackedVector3Array()
 	var uvs     := PackedVector2Array()
 	var colors  := PackedColorArray()
-	var width   := _hw_width(hw)
-	var hw2     := width * 0.5
 	var skirt   := 0.18  # metres below terrain for edge skirts
 
 	for path in paths:
+		var width: float = _path_width(path)
+		var hw2: float = width * 0.5
 		# Per-path tint variation: hash first point for subtle color shift
 		var p0: Array = path["points"][0]
 		var ph := fmod(abs(float(p0[0]) * 127.1 + float(p0[2]) * 311.7), 1000.0) / 1000.0
@@ -1581,7 +1611,7 @@ func _build_bridge(path: Dictionary) -> void:
 		pts[i] = [pts[i][0], _terrain_y(float(pts[i][0]), float(pts[i][2])), pts[i][2]]
 	var n_pts := pts.size()
 
-	var width := _hw_width(hw)
+	var width := _path_width(path)
 	var hw2   := width * 0.5
 
 	# CC0 rock wall texture for parapets / abutments
@@ -2832,7 +2862,7 @@ func _build_tunnel(path: Dictionary) -> void:
 	for i in range(pts.size()):
 		pts[i] = [pts[i][0], _terrain_y(float(pts[i][0]), float(pts[i][2])), pts[i][2]]
 
-	var width := _hw_width(hw)
+	var width := _path_width(path)
 	var hw2   := width * 0.5
 	var hw2_ext := hw2 + 3.0  # floor/ceiling extend beyond walls to cover depression
 
