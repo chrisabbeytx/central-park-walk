@@ -417,6 +417,22 @@ func _terrain_y(x: float, z: float) -> float:
 		return h00 + (h11 - h01) * fx + (h01 - h00) * fz
 
 
+func _lamp_zone(x: float, z: float) -> int:
+	## Returns lamp zone: 0=formal, 1=standard, 2=simple/recreational.
+	## Based on Central Park's real zone design.
+	# Formal areas: Mall/Literary Walk, Bethesda Terrace, Conservatory Garden
+	if x > -680.0 and x < -400.0 and z > 900.0 and z < 1700.0:
+		return 0  # Mall / Literary Walk / Bethesda corridor
+	if x > 300.0 and x < 700.0 and z > -700.0 and z < -400.0:
+		return 0  # Conservatory Garden area (NE)
+	# Recreational/open areas: Great Lawn, Sheep Meadow, fields
+	if x > -400.0 and x < 200.0 and z > -200.0 and z < 400.0:
+		return 2  # Great Lawn
+	if x > -800.0 and x < -300.0 and z > 1700.0 and z < 2100.0:
+		return 2  # Sheep Meadow area
+	return 1  # Default: standard
+
+
 func _terrain_slope(x: float, z: float) -> float:
 	## Returns terrain slope magnitude at (x, z) by sampling a 1m cross.
 	var d := 0.5
@@ -8047,11 +8063,30 @@ func _build_furniture(bench_data: Array, lamppost_data: Array, paths: Array) -> 
 		return
 	print("Furniture: loaded %d meshes from GLB" % furn_meshes.size())
 
-	# --- Lamp mesh + material ---
-	var lamp_mesh: Mesh = furn_meshes.get("ParkFurn_Lamp_C", null)
-	if lamp_mesh == null:
-		print("WARNING: ParkFurn_Lamp_C not found in GLB")
+	# --- Lamp meshes by zone style ---
+	# A/B = ornate (formal areas: Mall, Bethesda, Conservatory Garden)
+	# C = standard single-globe (most common, default)
+	# D/E = simpler/utilitarian (recreational: Great Lawn, fields)
+	var lamp_meshes_formal: Array[Mesh] = []
+	var lamp_meshes_standard: Array[Mesh] = []
+	var lamp_meshes_simple: Array[Mesh] = []
+	for lname in ["ParkFurn_Lamp_A", "ParkFurn_Lamp_B"]:
+		if furn_meshes.has(lname):
+			lamp_meshes_formal.append(furn_meshes[lname] as Mesh)
+	for lname in ["ParkFurn_Lamp_C"]:
+		if furn_meshes.has(lname):
+			lamp_meshes_standard.append(furn_meshes[lname] as Mesh)
+	for lname in ["ParkFurn_Lamp_D", "ParkFurn_Lamp_E"]:
+		if furn_meshes.has(lname):
+			lamp_meshes_simple.append(furn_meshes[lname] as Mesh)
+	if lamp_meshes_standard.is_empty():
+		print("WARNING: no lamp meshes found in GLB")
 		return
+	# Fallback: if a style has no meshes, use standard
+	if lamp_meshes_formal.is_empty():
+		lamp_meshes_formal = lamp_meshes_standard
+	if lamp_meshes_simple.is_empty():
+		lamp_meshes_simple = lamp_meshes_standard
 	var lamp_post_mat := StandardMaterial3D.new()
 	lamp_post_mat.albedo_color = Color(0.08, 0.08, 0.06)  # dark wrought iron
 	lamp_post_mat.roughness    = 0.78
@@ -8080,16 +8115,29 @@ func _build_furniture(bench_data: Array, lamppost_data: Array, paths: Array) -> 
 	bench_mat.metallic     = 0.0
 
 	# --- Place lampposts: OSM positions + procedural supplement ---
-	var lamp_xf: Array = []
-	# Always place OSM lampposts first
+	# Zone classification: formal areas get ornate lamps, naturalistic get standard,
+	# recreational get simple utilitarian lamps
+	# Formal: Mall/Literary Walk, Bethesda, Conservatory Garden
+	# Simple/recreational: Great Lawn, fields, perimeter paths
+	var lamp_xf_formal: Array = []
+	var lamp_xf_standard: Array = []
+	var lamp_xf_simple: Array = []
+	# Always place OSM lampposts first (standard style)
 	for lp in lamppost_data:
 		var lx := float(lp[0])
 		var lz := float(lp[2])
 		if not _in_boundary(lx, lz):
 			continue
 		var ly := _terrain_y(lx, lz)
-		lamp_xf.append(Transform3D(Basis.IDENTITY, Vector3(lx, ly, lz)))
-	var osm_lamp_count := lamp_xf.size()
+		var tf := Transform3D(Basis.IDENTITY, Vector3(lx, ly, lz))
+		var zone := _lamp_zone(lx, lz)
+		if zone == 0:
+			lamp_xf_formal.append(tf)
+		elif zone == 2:
+			lamp_xf_simple.append(tf)
+		else:
+			lamp_xf_standard.append(tf)
+	var osm_lamp_count := lamp_xf_formal.size() + lamp_xf_standard.size() + lamp_xf_simple.size()
 	# Supplement with procedural placement along paths
 	if true:
 		var rng := RandomNumberGenerator.new()
@@ -8125,7 +8173,15 @@ func _build_furniture(bench_data: Array, lamppost_data: Array, paths: Array) -> 
 					var lz := z1 + nz * off * side
 					if _in_boundary(lx, lz) and _terrain_slope(lx, lz) <= 0.35:
 						var ly := _terrain_y(lx, lz)
-						lamp_xf.append(Transform3D(Basis.IDENTITY, Vector3(lx, ly, lz)))
+						var tf := Transform3D(Basis.IDENTITY, Vector3(lx, ly, lz))
+						var zone := _lamp_zone(lx, lz)
+						if zone == 0:
+							lamp_xf_formal.append(tf)
+						elif zone == 2:
+							lamp_xf_simple.append(tf)
+						else:
+							lamp_xf_standard.append(tf)
+	var lamp_xf: Array = lamp_xf_formal + lamp_xf_standard + lamp_xf_simple
 
 	# --- Place benches: OSM positions + procedural supplement ---
 	var bench_xf: Array = []
@@ -8192,20 +8248,42 @@ func _build_furniture(bench_data: Array, lamppost_data: Array, paths: Array) -> 
 	print("ParkLoader: lampposts = %d (%d OSM + %d procedural)  benches = %d (%d OSM + %d procedural)" % [
 		lamp_xf.size(), osm_lamp_count, lamp_xf.size() - osm_lamp_count,
 		bench_xf.size(), osm_bench_count, bench_xf.size() - osm_bench_count])
-	if not lamp_xf.is_empty():
-		_spawn_multimesh(lamp_mesh, lamp_mat_override, lamp_xf, "Lampposts")
-		# Emissive bulb sphere at dome cap (confirmed by debug: NORMAL.y<-0.7 faces)
-		var bulb_mesh := SphereMesh.new()
-		bulb_mesh.radius = 0.07
-		bulb_mesh.height = 0.14
-		bulb_mesh.radial_segments = 8
-		bulb_mesh.rings = 4
-		var bulb_xf: Array = []
-		for xf in lamp_xf:
+	print("  Lamp zones: formal=%d, standard=%d, simple=%d" % [lamp_xf_formal.size(), lamp_xf_standard.size(), lamp_xf_simple.size()])
+	# Spawn lamps per zone with appropriate mesh variants
+	var bulb_mesh := SphereMesh.new()
+	bulb_mesh.radius = 0.07
+	bulb_mesh.height = 0.14
+	bulb_mesh.radial_segments = 8
+	bulb_mesh.rings = 4
+	var all_bulb_xf: Array = []
+	var zone_data: Array = [
+		[lamp_xf_formal, lamp_meshes_formal, "Lampposts_Formal"],
+		[lamp_xf_standard, lamp_meshes_standard, "Lampposts_Standard"],
+		[lamp_xf_simple, lamp_meshes_simple, "Lampposts_Simple"],
+	]
+	for zd in zone_data:
+		var xf_list: Array = zd[0]
+		var meshes: Array = zd[1]
+		var label: String = zd[2]
+		if xf_list.is_empty() or meshes.is_empty():
+			continue
+		# Distribute across mesh variants
+		var n_vars := meshes.size()
+		var var_xf: Array = []
+		for _v in n_vars:
+			var_xf.append([])
+		for i in xf_list.size():
+			var_xf[i % n_vars].append(xf_list[i])
+		for vi in n_vars:
+			if not var_xf[vi].is_empty():
+				_spawn_multimesh(meshes[vi], lamp_mat_override, var_xf[vi], "%s_%d" % [label, vi])
+		# Bulb positions for all lamps in this zone
+		for xf in xf_list:
 			var bxf: Transform3D = xf
 			bxf.origin += Vector3(0.012, 2.79, 0.475)
-			bulb_xf.append(bxf)
-		_spawn_multimesh(bulb_mesh, lamp_bulb_mat, bulb_xf, "LampBulbs")
+			all_bulb_xf.append(bxf)
+	if not all_bulb_xf.is_empty():
+		_spawn_multimesh(bulb_mesh, lamp_bulb_mat, all_bulb_xf, "LampBulbs")
 	# Distribute benches across variants for visual variety
 	if not bench_xf.is_empty():
 		var n_variants := bench_variants.size()
