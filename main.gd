@@ -165,7 +165,7 @@ func _ready() -> void:
 		_setup_lamp_lights()
 		#_setup_falling_leaves()  # disabled — spring/summer season
 		#_setup_pigeons()  # disabled — animal life
-		#_setup_audio()  # Disabled — needs audio files
+		_setup_audio()
 	# Register global wind uniform so all vegetation shaders can read it
 	RenderingServer.global_shader_parameter_add("wind_vec", RenderingServer.GLOBAL_VAR_TYPE_VEC2, Vector2.ZERO)
 	RenderingServer.global_shader_parameter_add("snow_cover", RenderingServer.GLOBAL_VAR_TYPE_FLOAT, 0.0)
@@ -428,6 +428,8 @@ func _process(delta: float) -> void:
 	else:
 		_lightning_flash = 0.0
 
+	# Ambient audio (birds, wind, city, water)
+	_update_audio(delta)
 	# Weather audio (rain, wind, thunder)
 	_update_weather_audio(delta)
 
