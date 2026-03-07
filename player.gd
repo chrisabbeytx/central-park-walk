@@ -1,11 +1,14 @@
 extends CharacterBody3D
 
 # Comfortable stroll: ~8 km/h ≈ 2.25 m/s — leisurely park pace.
-const WALK_SPEED    := 0.35  # m/s
 const LOOK_SPEED    := 100.0  # degrees/second at full stick deflection
 const DEADZONE      := 0.15   # ignore stick values below this
 const STEP_HEIGHT   := 0.25  # max step-up height (> 0.17m stair rise)
+const SPEED_STEPS: Array = [0.35, 1.0, 3.0, 10.0, 30.0, 100.0]
+const SPEED_NAMES: Array = ["Stroll", "Walk", "Jog", "Bike", "Drive", "Fly"]
 
+var walk_speed: float = 0.35
+var _speed_idx: int = 0
 var head: Node3D    # pitch pivot at eye height
 var _stair_offset: float = 0.0  # camera smoothing for stair steps
 var boundary_polygon: PackedVector2Array  # XZ park boundary (set by main.gd)
@@ -70,6 +73,22 @@ func _unhandled_input(event: InputEvent) -> void:
 		rotation_degrees.y      -= event.relative.x * 0.15
 		head.rotation_degrees.x -= event.relative.y * 0.15
 		head.rotation_degrees.x  = clampf(head.rotation_degrees.x, -80.0, 80.0)
+	if event is InputEventMouseButton and event.pressed:
+		if event.button_index == MOUSE_BUTTON_WHEEL_UP:
+			_change_speed(1)
+		elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
+			_change_speed(-1)
+	if event is InputEventKey and event.pressed:
+		if event.keycode == KEY_EQUAL or event.keycode == KEY_KP_ADD:
+			_change_speed(1)
+		elif event.keycode == KEY_MINUS or event.keycode == KEY_KP_SUBTRACT:
+			_change_speed(-1)
+
+
+func _change_speed(dir: int) -> void:
+	_speed_idx = clampi(_speed_idx + dir, 0, SPEED_STEPS.size() - 1)
+	walk_speed = SPEED_STEPS[_speed_idx]
+	print("Speed: %s (%.1f m/s)" % [SPEED_NAMES[_speed_idx], walk_speed])
 
 
 func _handle_look(delta: float) -> void:
@@ -104,7 +123,7 @@ func _handle_movement(delta: float) -> void:
 	# Right trigger: fly mode (5x–20x), bypasses collision
 	var rt := clampf(Input.get_joy_axis(0, JOY_AXIS_TRIGGER_RIGHT), 0.0, 1.0)
 	if rt > 0.1:
-		var speed := WALK_SPEED * lerpf(5.0, 20.0, rt)
+		var speed := walk_speed * lerpf(5.0, 20.0, rt)
 		# Move in camera look direction (head pitch + body yaw)
 		var cam_basis := head.global_transform.basis
 		var fly_dir := cam_basis * wish
@@ -116,8 +135,8 @@ func _handle_movement(delta: float) -> void:
 			velocity.y -= 9.8 * delta
 		wish = transform.basis * wish
 		wish.y = 0.0
-		velocity.x = wish.x * WALK_SPEED
-		velocity.z = wish.z * WALK_SPEED
+		velocity.x = wish.x * walk_speed
+		velocity.z = wish.z * walk_speed
 
 		# Stair stepping: if blocked horizontally on floor, try stepping up
 		if is_on_floor() and wish.length_squared() > 0.001:

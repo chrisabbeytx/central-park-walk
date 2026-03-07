@@ -44,6 +44,7 @@ var _lamp_mat: StandardMaterial3D
 var _lamp_emission: float = 0.0  # cached for SpotLight3D pool
 var _terrain_mat: ShaderMaterial
 var _time_label: Label
+var _speed_label: Label
 
 # Dynamic lamppost lighting — pool of SpotLight3D nodes that follow player
 var _lamp_lights: Array = []  # Array of SpotLight3D
@@ -255,9 +256,6 @@ func _load_heightmap() -> void:
 		# Mesh built at half resolution if heightmap > 2048
 		_mesh_width = _hm_width
 		_mesh_depth = _hm_depth
-		while _mesh_width > 2048:
-			_mesh_width /= 2
-			_mesh_depth /= 2
 		print("Heightmap loaded (bin): %d×%d  mesh=%d×%d  origin_y=%.1f m" % [
 			_hm_width, _hm_depth, _mesh_width, _mesh_depth, _hm_origin_height])
 		return
@@ -456,6 +454,8 @@ func _update_hud() -> void:
 		var mins: int = int(fmod(_time_of_day, 1.0) * 60.0)
 		var ampm: String = "AM" if _time_of_day < 12.0 else "PM"
 		_time_label.text = "%d:%02d %s  [%s]" % [h12, mins, ampm, TIME_SPEED_NAMES[_time_speed_idx]]
+	if _speed_label and _player:
+		_speed_label.text = "%s (%.1f m/s)" % [_player.SPEED_NAMES[_player._speed_idx], _player.walk_speed]
 
 
 func _tour_teleport(idx: int) -> void:
@@ -2899,8 +2899,14 @@ func _setup_hud() -> void:
 	_time_label.add_theme_color_override("font_color", Color(1.0, 0.88, 0.55))
 	vbox.add_child(_time_label)
 
+	_speed_label = Label.new()
+	_speed_label.text = "Stroll (0.4 m/s)"
+	_speed_label.add_theme_font_size_override("font_size", 22)
+	_speed_label.add_theme_color_override("font_color", Color(0.75, 0.90, 1.0))
+	vbox.add_child(_speed_label)
+
 	var hint := Label.new()
-	hint.text = "Left stick: walk   Right stick: look   T: time speed   [/]: ±1h   -/=: wind   0: wind auto   P: weather   H: HUD"
+	hint.text = "WASD: move   Mouse+RMB: look   Scroll/+/-: speed   T: time   [/]: ±1h   P: weather   H: HUD"
 	hint.add_theme_font_size_override("font_size", 15)
 	hint.add_theme_color_override("font_color", Color(0.55, 0.55, 0.55))
 	vbox.add_child(hint)
