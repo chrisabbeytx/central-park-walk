@@ -691,7 +691,7 @@ func _ready() -> void:
 	_build_statues(statues)
 	_build_amenities(amenities)
 	_build_boats(water)
-	#_build_waterfowl(water)  # disabled — animal life
+	_build_waterfowl(water)
 	_build_pedestrians(paths)
 	_build_boundary(boundary)
 	_build_perimeter_wall(boundary)
