@@ -9839,10 +9839,13 @@ func _build_field_markings() -> void:
 		if name.is_empty():
 			continue
 		var nl := name.to_lower()
-		if not ("ball field" in nl or "baseball" in nl or "softball" in nl):
+		if not ("ballfield" in nl or "ball field" in nl or "baseball" in nl or "softball" in nl):
 			continue
 		var pts: Array = zone.get("points", [])
 		if pts.size() < 6:
+			continue
+		# Skip aggregate zones (e.g. "Heckscher Ballfields" enclosing polygon)
+		if pts.size() > 60:
 			continue
 		fields.append(zone)
 
