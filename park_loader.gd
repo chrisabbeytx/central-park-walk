@@ -1748,6 +1748,9 @@ func _build_bridge(path: Dictionary) -> void:
 	var pt_y := PackedFloat32Array()
 	pt_y.resize(n_pts)
 	var ramp_sink := 0.15
+	# Bow Bridge: gentle longitudinal arch (1.2m rise at center)
+	var is_bow := bridge_name == "Bow Bridge"
+	var bow_rise := 1.2 if is_bow else 0.0
 	for i in range(n_pts):
 		var d := cum_len[i]
 		var t: float
@@ -1762,6 +1765,10 @@ func _build_bridge(path: Dictionary) -> void:
 			y = lerpf(y_end + PATH_Y - ramp_sink, deck_y, t)
 		else:
 			y = deck_y
+		# Add gentle bow arch to mid-span
+		if bow_rise > 0.0:
+			var frac := d / total_len
+			y += bow_rise * sin(frac * PI)
 		pt_y[i] = y
 
 	# ----------------------------------------------------------------
@@ -2698,13 +2705,46 @@ func _build_bow_bridge_railings(pts: Array, pt_y: PackedFloat32Array,
 		_add_cylinder_verts(urn_verts, urn_normals, urn_indices, ucx, uby + 0.15, ucz, 0.14, 0.22, 8, 0.18)
 		_add_cylinder_verts(urn_verts, urn_normals, urn_indices, ucx, uby + 0.37, ucz, 0.18, 0.04, 8, 0.20)
 
+	# Baluster posts — evenly spaced along bridge between railing sections
+	var post_verts := PackedVector3Array()
+	var post_normals := PackedVector3Array()
+	var post_indices := PackedInt32Array()
+	var post_spacing := 2.5  # metres between posts
+	var pd := ramp_start
+	while pd <= ramp_end:
+		var pidx := 0
+		for k in range(n_pts - 1):
+			if cum_len[k + 1] >= pd:
+				pidx = k
+				break
+		var seg_d := cum_len[pidx + 1] - cum_len[pidx]
+		var t_val := (pd - cum_len[pidx]) / seg_d if seg_d > 0.001 else 0.0
+		var ppx := lerpf(float(pts[pidx][0]), float(pts[pidx + 1][0]), t_val)
+		var ppz := lerpf(float(pts[pidx][2]), float(pts[pidx + 1][2]), t_val)
+		var ppy := lerpf(pt_y[pidx], pt_y[pidx + 1], t_val)
+		var seg2 := Vector2(float(pts[pidx+1][0]) - float(pts[pidx][0]),
+							float(pts[pidx+1][2]) - float(pts[pidx][2]))
+		if seg2.length_squared() > 0.001:
+			var pnv := Vector2(-seg2.normalized().y, seg2.normalized().x)
+			for side in [-1.0, 1.0]:
+				var s := float(side)
+				var pcx := ppx + pnv.x * ohw * s
+				var pcz := ppz + pnv.y * ohw * s
+				# Square post from deck to above parapet
+				_add_box_verts(post_verts, post_normals, post_indices,
+					pcx, ppy + PARAPET_H * 0.5 + 0.02, pcz, 0.05, PARAPET_H * 0.5 + 0.02, 0.05)
+				# Finial ball on top
+				_add_cylinder_verts(post_verts, post_normals, post_indices,
+					pcx, ppy + PARAPET_H + 0.06, pcz, 0.04, 0.06, 6, 0.04)
+		pd += post_spacing
+
 	if rail_verts.is_empty():
 		return
-	# Iron material
+	# Bow Bridge: warm cream cast iron (distinctive light color)
 	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(0.12, 0.12, 0.14)
-	mat.metallic = 0.6
-	mat.roughness = 0.35
+	mat.albedo_color = Color(0.62, 0.58, 0.52)
+	mat.metallic = 0.45
+	mat.roughness = 0.40
 	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
 	# Build railing mesh
 	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
@@ -2718,12 +2758,12 @@ func _build_bow_bridge_railings(pts: Array, pt_y: PackedFloat32Array,
 	mi.name = "BowBridge_Railings"
 	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(mi)
-	# Urn mesh (stone/bronze)
+	# Urn mesh (patinated bronze on warm stone)
 	if not urn_verts.is_empty():
 		var urn_mat := StandardMaterial3D.new()
-		urn_mat.albedo_color = Color(0.25, 0.22, 0.18)
-		urn_mat.roughness = 0.65
-		urn_mat.metallic = 0.2
+		urn_mat.albedo_color = Color(0.30, 0.32, 0.22)
+		urn_mat.roughness = 0.60
+		urn_mat.metallic = 0.35
 		var ua: Array = []; ua.resize(Mesh.ARRAY_MAX)
 		ua[Mesh.ARRAY_VERTEX] = urn_verts; ua[Mesh.ARRAY_NORMAL] = urn_normals; ua[Mesh.ARRAY_INDEX] = urn_indices
 		var urn_mesh := ArrayMesh.new()
@@ -2733,6 +2773,19 @@ func _build_bow_bridge_railings(pts: Array, pt_y: PackedFloat32Array,
 		umi.mesh = urn_mesh
 		umi.name = "BowBridge_Urns"
 		add_child(umi)
+	# Baluster post mesh (same warm cream material)
+	if not post_verts.is_empty():
+		var pa: Array = []; pa.resize(Mesh.ARRAY_MAX)
+		pa[Mesh.ARRAY_VERTEX] = post_verts
+		pa[Mesh.ARRAY_NORMAL] = post_normals
+		pa[Mesh.ARRAY_INDEX] = post_indices
+		var post_mesh := ArrayMesh.new()
+		post_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, pa)
+		post_mesh.surface_set_material(0, mat)
+		var pmi := MeshInstance3D.new()
+		pmi.mesh = post_mesh
+		pmi.name = "BowBridge_Posts"
+		add_child(pmi)
 
 
 func _build_wood_railings(pts: Array, pt_y: PackedFloat32Array,

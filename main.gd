@@ -199,14 +199,14 @@ var _tour_idx := 0  # index into _tour_shots array
 var _tour_shots: Array = []  # populated in _build_tour_shots()
 
 const TOUR_VIEWPOINTS: Array = [
-	{"name": "bethesda_fountain", "x": -430.0, "z": 920.0, "yaw": 330.0},
+	{"name": "bethesda_fountain", "x": -480.0, "z": 1020.0, "yaw": 180.0},
 	{"name": "literary_walk", "x": -600.0, "z": 1420.0, "yaw": 30.0},
 	{"name": "great_lawn", "x": -200.0, "z": 0.0, "yaw": 0.0},
 	{"name": "conservatory_water", "x": -152.0, "z": 958.0, "yaw": 270.0},
 	{"name": "alice_wonderland", "x": -96.0, "z": 869.0, "yaw": 315.0},
 	{"name": "balto_south", "x": -473.0, "z": 1430.0, "yaw": 60.0},
-	{"name": "the_lake", "x": -522.0, "z": 694.0, "yaw": 0.0},
-	{"name": "cherry_hill", "x": -616.0, "z": 907.0, "yaw": 90.0},
+	{"name": "the_lake", "x": -560.0, "z": 780.0, "yaw": 60.0},
+	{"name": "cherry_hill", "x": -630.0, "z": 880.0, "yaw": 90.0},
 	{"name": "cleopatras_needle", "x": 0.0, "z": 360.0, "yaw": 180.0},
 	{"name": "ramble", "x": -400.0, "z": 600.0, "yaw": 225.0},
 	{"name": "cpw_skyline", "x": -600.0, "z": 1420.0, "yaw": 90.0},
