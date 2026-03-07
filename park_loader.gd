@@ -8354,8 +8354,9 @@ func _build_furniture(bench_data: Array, lamppost_data: Array, paths: Array) -> 
 		else:
 			lamp_xf_standard.append(tf)
 	var osm_lamp_count := lamp_xf_formal.size() + lamp_xf_standard.size() + lamp_xf_simple.size()
-	# Supplement with procedural placement along paths
-	if true:
+	# Procedural supplementation disabled — OSM only has 201 of ~1600 real lampposts
+	# No public dataset covers Central Park's internal lamppost positions
+	if false:
 		var rng := RandomNumberGenerator.new()
 		rng.seed = 88888
 		for path in paths:
@@ -8407,14 +8408,15 @@ func _build_furniture(bench_data: Array, lamppost_data: Array, paths: Array) -> 
 		var bz := float(b[2])
 		if not _in_boundary(bx, bz):
 			continue
-		var by := _terrain_y(bx, bz)
+		var by := _terrain_y(bx, bz) + 0.42  # bench mesh origin is at center, lift to sit on terrain
 		var dir_deg := float(b[3]) if b.size() > 3 else 0.0
 		var angle := deg_to_rad(-dir_deg)
 		var basis := Basis(Vector3.UP, angle)
 		bench_xf.append(Transform3D(basis, Vector3(bx, by, bz)))
 	var osm_bench_count := bench_xf.size()
-	# Supplement with procedural placement along paths
-	if true:
+	# Procedural supplementation disabled — OSM only has 610 of ~9000 real benches
+	# No public dataset covers Central Park's internal bench positions
+	if false:
 		var rng := RandomNumberGenerator.new()
 		rng.seed = 88889
 		for path in paths:
@@ -8447,7 +8449,7 @@ func _build_furniture(bench_data: Array, lamppost_data: Array, paths: Array) -> 
 					var bx := x1 + nx * off * side
 					var bz := z1 + nz * off * side
 					if _in_boundary(bx, bz) and _terrain_slope(bx, bz) <= BENCH_MAX_SLOPE:
-						var by := _terrain_y(bx, bz)
+						var by := _terrain_y(bx, bz) + 0.42
 						var angle := atan2(-nx * side, -nz * side)
 						bench_xf.append(Transform3D(Basis(Vector3.UP, angle), Vector3(bx, by, bz)))
 
