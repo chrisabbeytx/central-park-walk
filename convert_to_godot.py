@@ -47,9 +47,9 @@ HIGHWAY_WIDTH = {
 
 TERRAIN_Z   = 15           # zoom level matching download_terrain.py
 TERRAIN_DIR = "terrain_tiles"
-LIDAR_DEM   = "lidar_data/central_park_dem_4k.tif"  # LiDAR DEM 4096x4096 (~1.2 m/cell)
-GRID_W      = 4096         # heightmap output resolution (~1.2 m/cell)
-GRID_H      = 4096
+LIDAR_DEM   = "lidar_data/central_park_dem_8k.tif"  # LiDAR DEM 8192x8192 (~0.6 m/cell)
+GRID_W      = 8192         # heightmap output resolution (~0.6 m/cell)
+GRID_H      = 8192
 WORLD_SIZE  = 5000.0       # metres – must match main.gd ground plane size
 FT_TO_M     = 0.3048006096  # US Survey Foot → metres
 
@@ -132,12 +132,11 @@ def build_height_grid_lidar() -> tuple[list, float, float] | tuple[None, float, 
         img = img.resize((GRID_W, GRID_H), Image.BILINEAR)
         elev_m = np.array(img, dtype=np.float64)
 
-    # Light Gaussian smooth (2 passes) via scipy — reduces quantization artifacts
+    # Light smooth (1 pass, size=2) — preserve fine features like stairs/walls
     try:
         from scipy.ndimage import uniform_filter
-        for _ in range(2):
-            elev_m = uniform_filter(elev_m, size=3)
-        print(f"  Applied 2-pass Gaussian smooth (scipy)")
+        elev_m = uniform_filter(elev_m, size=2)
+        print(f"  Applied 1-pass light smooth (scipy, size=2)")
     except ImportError:
         print(f"  scipy not available, skipping smooth")
 
@@ -513,6 +512,56 @@ def main() -> None:
             boundary_pts.pop()
     else:
         print("  WARNING: No boundary relation found – park walls will be skipped.")
+
+    # -------------------------------------------------------------------
+    # Perimeter building heights from NYC Building Footprints
+    # -------------------------------------------------------------------
+    NYC_HEIGHTS_FILE = "lidar_data/nyc_building_heights.geojson"
+    perimeter_heights = []
+    if os.path.exists(NYC_HEIGHTS_FILE) and boundary_pts:
+        import numpy as np
+        with open(NYC_HEIGHTS_FILE) as fh:
+            nyc_bldgs = json.load(fh)
+        # Compute centroid of each NYC building in world coords
+        nyc_pts = []  # (x, z, height_m, name)
+        for feat in nyc_bldgs["features"]:
+            props = feat["properties"]
+            h_ft = props.get("height_roof")
+            if not h_ft or float(h_ft) <= 0:
+                continue
+            h_m = float(h_ft) * FT_TO_M
+            geom = feat["geometry"]
+            # Compute centroid from first ring of first polygon
+            coords = geom["coordinates"][0][0]  # MultiPolygon → first polygon → outer ring
+            clat = sum(c[1] for c in coords) / len(coords)
+            clon = sum(c[0] for c in coords) / len(coords)
+            wx, wz = project(clat, clon)
+            name = props.get("name") or ""
+            nyc_pts.append((wx, wz, round(h_m, 1), name))
+
+        # Build boundary polygon for proximity filtering
+        bnd_arr = np.array(boundary_pts)  # Nx2
+        # Expand search to 80m outside boundary
+        nyc_arr = np.array([(p[0], p[1]) for p in nyc_pts])
+        # For each NYC building, find min distance to any boundary point
+        # Use vectorized distance computation in chunks to avoid memory issues
+        CHUNK = 2000
+        keep = []
+        for i in range(0, len(nyc_pts), CHUNK):
+            chunk = nyc_arr[i:i+CHUNK]  # Mx2
+            # Broadcast: chunk[:,None,:] - bnd_arr[None,:,:] → MxNx2
+            diffs = chunk[:, None, :] - bnd_arr[None, :, :]
+            dists = np.sqrt((diffs ** 2).sum(axis=2)).min(axis=1)  # M
+            for j, d in enumerate(dists):
+                if d < 300.0:  # perimeter buildings are 100-300m from boundary
+                    wx, wz, h_m, name = nyc_pts[i + j]
+                    entry = [round(wx, 1), round(wz, 1), h_m]
+                    if name:
+                        entry.append(name)
+                    keep.append(entry)
+        perimeter_heights = keep
+        print(f"  Perimeter building heights: {len(perimeter_heights)} "
+              f"(from {len(nyc_pts)} NYC buildings)")
 
     # -------------------------------------------------------------------
     # Water bodies  – points stay [x, z]; body gains "water_y"
@@ -1210,6 +1259,7 @@ def main() -> None:
         "tunnel_outlines":    tunnel_outlines,
         "rocks":              rocks_out,
         "amenities":          amenities_out,
+        "perimeter_heights":  perimeter_heights,
     }
 
     with open("park_data.json", "w") as fh:
