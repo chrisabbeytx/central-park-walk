@@ -10002,7 +10002,241 @@ func _build_field_markings() -> void:
 
 		count += 1
 
-	print("ParkLoader: field markings = ", count)
+	print("ParkLoader: baseball field markings = ", count)
+
+	# --- Soccer field markings ---
+	var soccer_count := 0
+	for zone in landuse_zones:
+		var name2: String = zone.get("name", "")
+		if name2.is_empty():
+			continue
+		var nl2 := name2.to_lower()
+		if "soccer" not in nl2:
+			continue
+		var spts: Array = zone.get("points", [])
+		if spts.size() < 4:
+			continue
+		# 4-corner polygon — compute center and axes
+		var cx := 0.0; var cz := 0.0
+		for sp in spts:
+			cx += float(sp[0]); cz += float(sp[1])
+		cx /= spts.size(); cz /= spts.size()
+		# Long axis: direction from midpoint of one side to opposite
+		var ax := float(spts[1][0]) - float(spts[0][0])
+		var az := float(spts[1][1]) - float(spts[0][1])
+		var bx := float(spts[2][0]) - float(spts[1][0])
+		var bz := float(spts[2][1]) - float(spts[1][1])
+		var a_len := sqrt(ax * ax + az * az)
+		var b_len := sqrt(bx * bx + bz * bz)
+		# Long axis is the longer side
+		var long_dx: float; var long_dz: float; var field_l: float; var field_w: float
+		var short_dx: float; var short_dz: float
+		if a_len >= b_len:
+			long_dx = ax / a_len; long_dz = az / a_len
+			short_dx = bx / b_len; short_dz = bz / b_len
+			field_l = a_len; field_w = b_len
+		else:
+			long_dx = bx / b_len; long_dz = bz / b_len
+			short_dx = ax / a_len; short_dz = az / a_len
+			field_l = b_len; field_w = a_len
+		var cy := _terrain_y(cx, cz) + 0.025
+		var lw := 0.10  # line width
+		var half_l := field_l * 0.5
+		var half_w := field_w * 0.5
+		var s_verts := PackedVector3Array()
+		var s_norms := PackedVector3Array()
+		# Helper: draw a line strip in world space
+		var _draw_line := func(x0: float, z0: float, x1: float, z1: float) -> void:
+			var dx2 := x1 - x0; var dz2 := z1 - z0
+			var ln := sqrt(dx2 * dx2 + dz2 * dz2)
+			if ln < 0.01: return
+			var px := -dz2 / ln * lw * 0.5; var pz := dx2 / ln * lw * 0.5
+			var y0 := _terrain_y(x0, z0) + 0.025
+			var y1 := _terrain_y(x1, z1) + 0.025
+			s_verts.append(Vector3(x0 + px, y0, z0 + pz))
+			s_verts.append(Vector3(x0 - px, y0, z0 - pz))
+			s_verts.append(Vector3(x1 + px, y1, z1 + pz))
+			s_verts.append(Vector3(x0 - px, y0, z0 - pz))
+			s_verts.append(Vector3(x1 - px, y1, z1 - pz))
+			s_verts.append(Vector3(x1 + px, y1, z1 + pz))
+			for _j2 in 6: s_norms.append(Vector3.UP)
+		# Touchlines (long sides)
+		for side in [-1.0, 1.0]:
+			var sf := float(side)
+			var sx: float = cx + short_dx * half_w * sf - long_dx * half_l
+			var sz: float = cz + short_dz * half_w * sf - long_dz * half_l
+			var ex: float = cx + short_dx * half_w * sf + long_dx * half_l
+			var ez: float = cz + short_dz * half_w * sf + long_dz * half_l
+			_draw_line.call(sx, sz, ex, ez)
+		# Goal lines (short sides)
+		for side2 in [-1.0, 1.0]:
+			var sf2 := float(side2)
+			var sx2: float = cx + long_dx * half_l * sf2 - short_dx * half_w
+			var sz2: float = cz + long_dz * half_l * sf2 - short_dz * half_w
+			var ex2: float = cx + long_dx * half_l * sf2 + short_dx * half_w
+			var ez2: float = cz + long_dz * half_l * sf2 + short_dz * half_w
+			_draw_line.call(sx2, sz2, ex2, ez2)
+		# Halfway line
+		var hx0 := cx - short_dx * half_w; var hz0 := cz - short_dz * half_w
+		var hx1 := cx + short_dx * half_w; var hz1 := cz + short_dz * half_w
+		_draw_line.call(hx0, hz0, hx1, hz1)
+		# Center circle (radius ~9.15m)
+		var cr := 9.15
+		var c_segs := 32
+		for ci in c_segs:
+			var a0 := TAU * float(ci) / float(c_segs)
+			var a1 := TAU * float(ci + 1) / float(c_segs)
+			var p0x := cx + cos(a0) * cr * long_dx + sin(a0) * cr * short_dx
+			var p0z := cz + cos(a0) * cr * long_dz + sin(a0) * cr * short_dz
+			var p1x := cx + cos(a1) * cr * long_dx + sin(a1) * cr * short_dx
+			var p1z := cz + cos(a1) * cr * long_dz + sin(a1) * cr * short_dz
+			_draw_line.call(p0x, p0z, p1x, p1z)
+		# Penalty areas (16.5m from goal line, 40.3m wide)
+		var pa_d := 16.5; var pa_hw := 20.15
+		for side3 in [-1.0, 1.0]:
+			var sf3 := float(side3)
+			var goal_cx: float = cx + long_dx * half_l * sf3
+			var goal_cz: float = cz + long_dz * half_l * sf3
+			# Inward direction (toward center)
+			var inx: float = -long_dx * sf3; var inz: float = -long_dz * sf3
+			# 4 corners of penalty area
+			var c0x: float = goal_cx - short_dx * pa_hw
+			var c0z: float = goal_cz - short_dz * pa_hw
+			var c1x: float = goal_cx + short_dx * pa_hw
+			var c1z: float = goal_cz + short_dz * pa_hw
+			var c2x: float = c1x + inx * pa_d; var c2z: float = c1z + inz * pa_d
+			var c3x: float = c0x + inx * pa_d; var c3z: float = c0z + inz * pa_d
+			_draw_line.call(c0x, c0z, c3x, c3z)
+			_draw_line.call(c3x, c3z, c2x, c2z)
+			_draw_line.call(c2x, c2z, c1x, c1z)
+
+		if not s_verts.is_empty():
+			var sa2: Array = []; sa2.resize(Mesh.ARRAY_MAX)
+			sa2[Mesh.ARRAY_VERTEX] = s_verts
+			sa2[Mesh.ARRAY_NORMAL] = s_norms
+			var sm := ArrayMesh.new()
+			sm.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, sa2)
+			sm.surface_set_material(0, line_mat)
+			var smi := MeshInstance3D.new()
+			smi.mesh = sm
+			smi.name = "Soccer_" + name2.replace(" ", "_")
+			add_child(smi)
+			soccer_count += 1
+
+	if soccer_count > 0:
+		print("ParkLoader: soccer field markings = ", soccer_count)
+
+	# --- Basketball court markings ---
+	var bball_count := 0
+	for zone2 in landuse_zones:
+		var name3: String = zone2.get("name", "")
+		if name3.is_empty():
+			continue
+		var nl3 := name3.to_lower()
+		if "basketball" not in nl3:
+			continue
+		var bpts: Array = zone2.get("points", [])
+		if bpts.size() < 4:
+			continue
+		# Compute center and axes
+		var bcx := 0.0; var bcz := 0.0
+		for bp in bpts:
+			bcx += float(bp[0]); bcz += float(bp[1])
+		bcx /= bpts.size(); bcz /= bpts.size()
+		# Court dimensions: ~28.7m × 15.2m (NBA standard)
+		var bax := float(bpts[1][0]) - float(bpts[0][0])
+		var baz := float(bpts[1][1]) - float(bpts[0][1])
+		var bbx := float(bpts[2][0]) - float(bpts[1][0])
+		var bbz := float(bpts[2][1]) - float(bpts[1][1])
+		var ba_len := sqrt(bax * bax + baz * baz)
+		var bb_len := sqrt(bbx * bbx + bbz * bbz)
+		var blong_dx: float; var blong_dz: float; var bcourt_l: float; var bcourt_w: float
+		var bshort_dx: float; var bshort_dz: float
+		if ba_len >= bb_len:
+			blong_dx = bax / ba_len; blong_dz = baz / ba_len
+			bshort_dx = bbx / bb_len; bshort_dz = bbz / bb_len
+			bcourt_l = ba_len; bcourt_w = bb_len
+		else:
+			blong_dx = bbx / bb_len; blong_dz = bbz / bb_len
+			bshort_dx = bax / ba_len; bshort_dz = baz / ba_len
+			bcourt_l = bb_len; bcourt_w = ba_len
+		var bcy := _terrain_y(bcx, bcz) + 0.025
+		var blw := 0.08  # line width
+		var bhalf_l := bcourt_l * 0.5
+		var bhalf_w := bcourt_w * 0.5
+		var b_verts := PackedVector3Array()
+		var b_norms := PackedVector3Array()
+		var _draw_bline := func(x0b: float, z0b: float, x1b: float, z1b: float) -> void:
+			var dbx := x1b - x0b; var dbz := z1b - z0b
+			var bln := sqrt(dbx * dbx + dbz * dbz)
+			if bln < 0.01: return
+			var bpx := -dbz / bln * blw * 0.5; var bpz := dbx / bln * blw * 0.5
+			var by0 := _terrain_y(x0b, z0b) + 0.025
+			var by1 := _terrain_y(x1b, z1b) + 0.025
+			b_verts.append(Vector3(x0b + bpx, by0, z0b + bpz))
+			b_verts.append(Vector3(x0b - bpx, by0, z0b - bpz))
+			b_verts.append(Vector3(x1b + bpx, by1, z1b + bpz))
+			b_verts.append(Vector3(x0b - bpx, by0, z0b - bpz))
+			b_verts.append(Vector3(x1b - bpx, by1, z1b - bpz))
+			b_verts.append(Vector3(x1b + bpx, by1, z1b + bpz))
+			for _j3 in 6: b_norms.append(Vector3.UP)
+		# Court outline
+		var corners: Array[Vector2] = [
+			Vector2(bcx - blong_dx * bhalf_l - bshort_dx * bhalf_w, bcz - blong_dz * bhalf_l - bshort_dz * bhalf_w),
+			Vector2(bcx + blong_dx * bhalf_l - bshort_dx * bhalf_w, bcz + blong_dz * bhalf_l - bshort_dz * bhalf_w),
+			Vector2(bcx + blong_dx * bhalf_l + bshort_dx * bhalf_w, bcz + blong_dz * bhalf_l + bshort_dz * bhalf_w),
+			Vector2(bcx - blong_dx * bhalf_l + bshort_dx * bhalf_w, bcz - blong_dz * bhalf_l + bshort_dz * bhalf_w),
+		]
+		for ci2 in 4:
+			_draw_bline.call(corners[ci2].x, corners[ci2].y, corners[(ci2 + 1) % 4].x, corners[(ci2 + 1) % 4].y)
+		# Halfway line
+		_draw_bline.call(
+			bcx - bshort_dx * bhalf_w, bcz - bshort_dz * bhalf_w,
+			bcx + bshort_dx * bhalf_w, bcz + bshort_dz * bhalf_w)
+		# Center circle (radius ~1.8m)
+		var bcr := 1.83
+		var bc_segs := 24
+		for bci in bc_segs:
+			var ba0 := TAU * float(bci) / float(bc_segs)
+			var ba1 := TAU * float(bci + 1) / float(bc_segs)
+			var bp0x := bcx + cos(ba0) * bcr * blong_dx + sin(ba0) * bcr * bshort_dx
+			var bp0z := bcz + cos(ba0) * bcr * blong_dz + sin(ba0) * bcr * bshort_dz
+			var bp1x := bcx + cos(ba1) * bcr * blong_dx + sin(ba1) * bcr * bshort_dx
+			var bp1z := bcz + cos(ba1) * bcr * blong_dz + sin(ba1) * bcr * bshort_dz
+			_draw_bline.call(bp0x, bp0z, bp1x, bp1z)
+		# Free throw lanes + 3-point arcs at each end
+		var ft_d := 5.8; var ft_hw := 2.44  # free throw lane 4.88m wide, 5.8m deep
+		for bside in [-1.0, 1.0]:
+			var bsf := float(bside)
+			var goal_cx2: float = bcx + blong_dx * bhalf_l * bsf
+			var goal_cz2: float = bcz + blong_dz * bhalf_l * bsf
+			var binx: float = -blong_dx * bsf; var binz: float = -blong_dz * bsf
+			# Free throw lane rectangle
+			var fc0x: float = goal_cx2 - bshort_dx * ft_hw
+			var fc0z: float = goal_cz2 - bshort_dz * ft_hw
+			var fc1x: float = goal_cx2 + bshort_dx * ft_hw
+			var fc1z: float = goal_cz2 + bshort_dz * ft_hw
+			var fc2x: float = fc1x + binx * ft_d; var fc2z: float = fc1z + binz * ft_d
+			var fc3x: float = fc0x + binx * ft_d; var fc3z: float = fc0z + binz * ft_d
+			_draw_bline.call(fc0x, fc0z, fc3x, fc3z)
+			_draw_bline.call(fc3x, fc3z, fc2x, fc2z)
+			_draw_bline.call(fc2x, fc2z, fc1x, fc1z)
+
+		if not b_verts.is_empty():
+			var ba3: Array = []; ba3.resize(Mesh.ARRAY_MAX)
+			ba3[Mesh.ARRAY_VERTEX] = b_verts
+			ba3[Mesh.ARRAY_NORMAL] = b_norms
+			var bm2 := ArrayMesh.new()
+			bm2.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, ba3)
+			bm2.surface_set_material(0, line_mat)
+			var bmi := MeshInstance3D.new()
+			bmi.mesh = bm2
+			bmi.name = "Basketball_" + name3.replace(" ", "_")
+			add_child(bmi)
+			bball_count += 1
+
+	if bball_count > 0:
+		print("ParkLoader: basketball court markings = ", bball_count)
 
 
 func _build_grass_blades(trees: Array) -> void:
