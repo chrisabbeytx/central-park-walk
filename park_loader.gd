@@ -6543,14 +6543,24 @@ func _build_rocks(trees: Array, water: Array) -> void:
 	var rock_nrm := _load_tex("res://textures/rock_wall_nrm.jpg")
 	var rock_rgh := _load_tex("res://textures/rock_wall_rgh.jpg")
 
-	var rock_mesh := SphereMesh.new()
-	rock_mesh.radius          = 1.0
-	rock_mesh.height          = 2.0
-	rock_mesh.radial_segments = 6
-	rock_mesh.rings           = 4
+	# Load GLB rock variants if available, else fallback to sphere
+	var rock_glb_path := ProjectSettings.globalize_path("res://models/furniture/cp_rocks.glb")
+	var rock_glb_meshes := _load_glb_meshes(rock_glb_path)
+	var rock_variants: Array[Mesh] = []
+	for key in rock_glb_meshes:
+		rock_variants.append(rock_glb_meshes[key] as Mesh)
+	if rock_variants.is_empty():
+		var rock_mesh := SphereMesh.new()
+		rock_mesh.radius          = 1.0
+		rock_mesh.height          = 2.0
+		rock_mesh.radial_segments = 6
+		rock_mesh.rings           = 4
+		rock_variants.append(rock_mesh)
 
 	var rock_mat := _make_rock_material(rock_alb, rock_nrm, rock_rgh)
-	var xforms: Array = []
+	var xforms_by_variant: Array = []
+	for _v in rock_variants.size():
+		xforms_by_variant.append([])
 
 	# Rocks along water body shores (~30 per body)
 	for body in water:
@@ -6587,7 +6597,7 @@ func _build_rocks(trees: Array, water: Array) -> void:
 				Vector3(cos(rot) * scale, 0.0, sin(rot) * scale),
 				Vector3(0.0, sy, 0.0),
 				Vector3(-sin(rot) * scale, 0.0, cos(rot) * scale))
-			xforms.append(Transform3D(basis, Vector3(rx, ry - sy * 0.3, rz)))
+			xforms_by_variant[rng.randi() % rock_variants.size()].append(Transform3D(basis, Vector3(rx, ry - sy * 0.3, rz)))
 
 	# Rocks near ~every 5th tree
 	for i in range(0, trees.size(), 5):
@@ -6610,10 +6620,14 @@ func _build_rocks(trees: Array, water: Array) -> void:
 				Vector3(cos(rot) * scale, 0.0, sin(rot) * scale),
 				Vector3(0.0, sy, 0.0),
 				Vector3(-sin(rot) * scale, 0.0, cos(rot) * scale))
-			xforms.append(Transform3D(basis, Vector3(rx, ry - sy * 0.3, rz)))
+			xforms_by_variant[rng.randi() % rock_variants.size()].append(Transform3D(basis, Vector3(rx, ry - sy * 0.3, rz)))
 
-	print("ParkLoader: rocks = ", xforms.size())
-	_spawn_multimesh(rock_mesh, rock_mat, xforms, "Rocks")
+	var total_rocks := 0
+	for vi in rock_variants.size():
+		if not xforms_by_variant[vi].is_empty():
+			_spawn_multimesh(rock_variants[vi], rock_mat, xforms_by_variant[vi], "Rocks_%d" % vi)
+			total_rocks += xforms_by_variant[vi].size()
+	print("ParkLoader: rocks = ", total_rocks)
 
 
 func _rock_shader_code() -> String:
