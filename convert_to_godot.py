@@ -881,6 +881,41 @@ def main() -> None:
     print(f"  Trees: +{osm_added} from OSM individual nodes")
     print(f"  Trees total: {len(trees_out)}")
 
+    # --- Step 5: Enrich with LiDAR heights from 6 Million Trees ---
+    LIDAR_TREES = "lidar_data/6m_trees_central_park.json"
+    if os.path.exists(LIDAR_TREES):
+        with open(LIDAR_TREES) as fh:
+            lidar_trees = json.load(fh)
+        # Build spatial hash for LiDAR trees (10m cells)
+        lidar_hash: dict = {}
+        for lt in lidar_trees:
+            lck = (int(lt["x"] // CELL), int(lt["z"] // CELL))
+            if lck not in lidar_hash:
+                lidar_hash[lck] = []
+            lidar_hash[lck].append(lt)
+        # Match each tree to nearest LiDAR point within 5m
+        MATCH_DIST = 5.0
+        matched = 0
+        for tree in trees_out:
+            tx, tz = tree["pos"][0], tree["pos"][2]
+            tck = (int(tx // CELL), int(tz // CELL))
+            best_d2 = MATCH_DIST * MATCH_DIST
+            best_lt = None
+            for dx in range(-1, 2):
+                for dz in range(-1, 2):
+                    for lt in lidar_hash.get((tck[0] + dx, tck[1] + dz), []):
+                        d2 = (lt["x"] - tx) ** 2 + (lt["z"] - tz) ** 2
+                        if d2 < best_d2:
+                            best_d2 = d2
+                            best_lt = lt
+            if best_lt is not None:
+                tree["lidar_h"] = round(best_lt["h"], 1)
+                tree["crown_a"] = best_lt["a"]
+                matched += 1
+        print(f"  Trees: {matched}/{len(trees_out)} matched to LiDAR heights (6M Trees)")
+    else:
+        print(f"  Trees: LiDAR file not found ({LIDAR_TREES}), using DBH estimates only")
+
     for e in elements:
         if e["type"] != "node" or "lat" not in e:
             continue
