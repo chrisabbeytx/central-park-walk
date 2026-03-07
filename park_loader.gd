@@ -169,6 +169,7 @@ func _path_color(hw: String, surface: String) -> Color:
 		"woodchips":          return Color(0.46, 0.32, 0.14)   # woodchip mulch
 		"mulch":              return Color(0.40, 0.28, 0.12)   # dark mulch
 		"sand":               return Color(0.76, 0.70, 0.52)   # sand
+		"tartan":             return Color(0.58, 0.32, 0.22)   # reddish-brown cinder track
 	# Fallback to highway type
 	match hw:
 		"footway":    return Color(0.72, 0.68, 0.58)   # buff paving stone
@@ -220,7 +221,7 @@ func _path_tex_prefix(hw: String, surface: String) -> String:
 		"stone", "brick":                       return "res://textures/PavingStones130_2K-JPG"
 		"gravel", "fine_gravel", "compacted", "pebblestone", \
 		"unpaved", "dirt", "ground", "woodchips", \
-		"mulch", "sand":                        return "res://textures/Gravel021_2K-JPG"
+		"mulch", "sand", "tartan":              return "res://textures/Gravel021_2K-JPG"
 		"wood":                                 return "res://textures/WoodFloor041_2K-JPG"
 	match hw:
 		"cycleway":   return "res://textures/Asphalt012_2K-JPG"
@@ -736,6 +737,7 @@ func _splat_mat_idx(hw: String, surface: String) -> int:
 		"woodchips":          return 21
 		"mulch":              return 22
 		"sand":               return 23
+		"tartan":             return 24
 	match hw:
 		"footway":    return 4   # paving_stones (most CP footways are paved stone)
 		"cycleway":   return 1   # asphalt

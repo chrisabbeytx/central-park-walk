@@ -482,6 +482,11 @@ def main() -> None:
     if skipped_sidewalk:
         print(f"  Paths: filtered out {skipped_sidewalk} sidewalks/crossings")
 
+    # Retag Reservoir Running Track surface → tartan (distinctive cinder color)
+    for p in paths_out:
+        if "Running Track" in p.get("name", ""):
+            p["surface"] = "tartan"
+
     # -------------------------------------------------------------------
     # Boundary  (stays 2D – used for invisible walls only)
     # -------------------------------------------------------------------

@@ -1638,7 +1638,7 @@ vec4 mat_lookup(int idx) {
 	if (idx == 21) return vec4(3.0, 0.54, 0.40, 0.22);   // woodchips
 	if (idx == 22) return vec4(3.0, 0.48, 0.36, 0.20);   // mulch
 	if (idx == 23) return vec4(3.0, 0.82, 0.76, 0.58);   // sand
-	if (idx == 24) return vec4(0.0, 0.52, 0.50, 0.46);   // hw:footway → asphalt sidewalk
+	if (idx == 24) return vec4(3.0, 0.64, 0.38, 0.28);   // tartan — reddish-brown cinder track
 	if (idx == 25) return vec4(0.0, 0.42, 0.42, 0.44);   // hw:cycleway
 	if (idx == 26) return vec4(0.0, 0.50, 0.48, 0.44);   // hw:pedestrian → asphalt plaza
 	if (idx == 27) return vec4(3.0, 0.62, 0.52, 0.38);   // hw:path
