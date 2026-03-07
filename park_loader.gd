@@ -701,6 +701,7 @@ func _ready() -> void:
 	#_build_squirrels(trees)  # disabled — animal life
 	_build_field_markings()
 	_build_rocks(trees, water)
+	_build_tree_dirt(trees)
 	_build_grass_blades(trees)
 	print("ParkLoader: done")
 
