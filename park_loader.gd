@@ -4733,7 +4733,17 @@ func _build_buildings(buildings: Array) -> void:
 		for pt in pts:
 			cx += float(pt[0]); cz += float(pt[1])
 		cx /= float(n); cz /= float(n)
+		var bld_name: String = str(bld.get("name", "")).to_lower()
 		var style := _building_style(cx, cz, h)
+		# Named in-park buildings: override style per Wikimedia research
+		if bld_name.contains("boathouse") or bld_name.contains("kerbs"):
+			style = 2  # RED_BRICK — Kerbs Boathouse (red brick + copper roof)
+		elif bld_name.contains("dairy"):
+			style = 4  # DARK_STONE — The Dairy (Victorian stone + gables)
+		elif bld_name.contains("belvedere") or bld_name.contains("castle"):
+			style = 4  # DARK_STONE — Belvedere Castle (Manhattan schist)
+		elif bld_name.contains("bandshell") or bld_name.contains("naumburg"):
+			style = 0  # LIMESTONE — Naumburg Bandshell (concrete/limestone)
 
 		# Per-building tint variation via vertex color (±15%)
 		rng.seed = int(abs(cx * 73.7 + cz * 131.1)) + 12345
@@ -4939,15 +4949,27 @@ func _build_buildings(buildings: Array) -> void:
 		for pt in pts:
 			polygon.append(Vector2(float(pt[0]), float(pt[1])))
 		var indices := Geometry2D.triangulate_polygon(polygon)
-		# Per-building roof color: dark tar (30%), light concrete (30%), brown (20%), greenish (20%)
-		var roof_rv := fmod(abs(cx * 11.3 + cz * 17.7), 10.0)
+		# Named in-park building roof overrides (Wikimedia reference)
 		var roof_col := Color(0.18, 0.17, 0.16)  # dark tar default
-		if roof_rv >= 3.0 and roof_rv < 6.0:
-			roof_col = Color(0.52, 0.50, 0.48)    # light concrete
-		elif roof_rv >= 6.0 and roof_rv < 8.0:
-			roof_col = Color(0.34, 0.28, 0.20)    # brown
-		elif roof_rv >= 8.0:
-			roof_col = Color(0.28, 0.36, 0.26)    # greenish patina
+		var roof_override := false
+		if bld_name.contains("boathouse") or bld_name.contains("kerbs"):
+			roof_col = Color(0.29, 0.48, 0.42)    # aged copper verdigris #4A7B6B
+			roof_override = true
+		elif bld_name.contains("dairy"):
+			roof_col = Color(0.35, 0.33, 0.30)    # dark slate
+			roof_override = true
+		elif bld_name.contains("belvedere") or bld_name.contains("castle"):
+			roof_col = Color(0.32, 0.30, 0.28)    # schist gray cap
+			roof_override = true
+		if not roof_override:
+			# Random roof: dark tar (30%), light concrete (30%), brown (20%), greenish (20%)
+			var roof_rv := fmod(abs(cx * 11.3 + cz * 17.7), 10.0)
+			if roof_rv >= 3.0 and roof_rv < 6.0:
+				roof_col = Color(0.52, 0.50, 0.48)    # light concrete
+			elif roof_rv >= 6.0 and roof_rv < 8.0:
+				roof_col = Color(0.34, 0.28, 0.20)    # brown
+			elif roof_rv >= 8.0:
+				roof_col = Color(0.28, 0.36, 0.26)    # greenish patina
 		for i in range(0, indices.size(), 3):
 			roof_verts.append(Vector3(polygon[indices[i    ]].x, top, polygon[indices[i    ]].y))
 			roof_verts.append(Vector3(polygon[indices[i + 1]].x, top, polygon[indices[i + 1]].y))
