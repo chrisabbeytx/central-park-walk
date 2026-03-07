@@ -155,6 +155,10 @@ func _ready() -> void:
 	_build_keyframes()
 	_load_heightmap()
 	_setup_environment()
+	# Register global shader parameters BEFORE park_loader creates materials
+	RenderingServer.global_shader_parameter_add("wind_vec", RenderingServer.GLOBAL_VAR_TYPE_VEC2, Vector2.ZERO)
+	RenderingServer.global_shader_parameter_add("snow_cover", RenderingServer.GLOBAL_VAR_TYPE_FLOAT, 0.0)
+	RenderingServer.global_shader_parameter_add("rain_wetness", RenderingServer.GLOBAL_VAR_TYPE_FLOAT, 0.0)
 	if not _terrain_only:
 		_setup_park()
 		_apply_tunnel_depressions()
@@ -180,10 +184,6 @@ func _ready() -> void:
 		#_setup_falling_leaves()  # disabled — spring/summer season
 		#_setup_pigeons()  # disabled — no animals for now
 		_setup_audio()
-	# Register global wind uniform so all vegetation shaders can read it
-	RenderingServer.global_shader_parameter_add("wind_vec", RenderingServer.GLOBAL_VAR_TYPE_VEC2, Vector2.ZERO)
-	RenderingServer.global_shader_parameter_add("snow_cover", RenderingServer.GLOBAL_VAR_TYPE_FLOAT, 0.0)
-	RenderingServer.global_shader_parameter_add("rain_wetness", RenderingServer.GLOBAL_VAR_TYPE_FLOAT, 0.0)
 	_setup_weather_audio()
 	_apply_time_of_day()
 	_setup_weather()
@@ -1243,6 +1243,33 @@ func _apply_time_of_day() -> void:
 		_sky_mat.set_shader_parameter("cloud_coverage", 0.92)
 		_sky_mat.set_shader_parameter("cloud_density", 0.80)
 
+	# Morning dew — specular on grass surfaces at dawn (4:30-8:30 AM)
+	var dew := 0.0
+	if _time_of_day >= 4.5 and _time_of_day <= 8.5:
+		if _time_of_day <= 6.0:
+			dew = smoothstep(4.5, 6.0, _time_of_day)
+		else:
+			dew = 1.0 - smoothstep(6.0, 8.5, _time_of_day)
+	if _weather_mode != "clear":
+		dew = 0.0  # no visible dew in rain/snow
+	if _terrain_mat:
+		_terrain_mat.set_shader_parameter("dew_amount", dew)
+
+	# Dawn mist — natural morning fog that lifts with sunrise (5-7:30 AM)
+	# Common phenomenon in Central Park near water bodies and in wooded areas
+	if _weather_mode == "clear":
+		var dawn_mist := 0.0
+		if _time_of_day >= 4.5 and _time_of_day <= 7.5:
+			# Peak at 5:30, fading by 7:30
+			if _time_of_day <= 5.5:
+				dawn_mist = smoothstep(4.5, 5.5, _time_of_day)
+			else:
+				dawn_mist = 1.0 - smoothstep(5.5, 7.5, _time_of_day)
+			_env.fog_density += dawn_mist * 0.008  # subtle ground fog
+			if _env.volumetric_fog_enabled:
+				_env.volumetric_fog_density += dawn_mist * 0.003
+			_env.adjustment_saturation *= (1.0 - dawn_mist * 0.15)  # slightly desaturated mist
+
 	# Sun / moon directional light
 	_sun.light_energy    = _lerp_kf("sun_energy", a, b, t)
 	_sun.light_color     = _lerp_kf("sun_color", a, b, t)
@@ -1650,6 +1677,8 @@ uniform sampler2D park_mask : filter_linear, repeat_disable;
 uniform float snow_cover : hint_range(0.0, 1.0) = 0.0;
 // Rain wetness — darkens surfaces, lowers roughness
 uniform float rain_wetness : hint_range(0.0, 1.0) = 0.0;
+// Morning dew — subtle specular on grass at dawn
+uniform float dew_amount : hint_range(0.0, 1.0) = 0.0;
 
 // Landuse zone map: encodes zone type per pixel
 // 0=unzoned (default mowed lawn), 1=garden, 2=grass, 3=pitch, 4=playground,
@@ -2078,6 +2107,17 @@ void fragment() {
 		// Rock surfaces get mica sparkle (higher specular), grass stays subtle
 		SPECULAR        = max(0.15, rock_specular);
 		METALLIC        = 0.0;
+	}
+
+	// --- Morning dew: subtle sparkle on grass surfaces at dawn ---
+	if (dew_amount > 0.01 && mat_idx == 0) {
+		// Dew on grass: tiny water droplets create scattered specular highlights
+		float dew_noise = hash2(floor(world_pos.xz * 12.0));
+		float dew_sparkle = step(0.7, dew_noise) * dew_amount;
+		ROUGHNESS = mix(ROUGHNESS, 0.15, dew_sparkle * 0.6);
+		SPECULAR = mix(SPECULAR, 0.6, dew_sparkle * 0.5);
+		// Slightly brighter green from moisture
+		ALBEDO *= mix(1.0, 1.08, dew_amount * 0.5);
 	}
 
 	// --- Rain wetness: darken surfaces, lower roughness, increase specular ---
