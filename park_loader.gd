@@ -698,7 +698,7 @@ func _ready() -> void:
 	_build_boundary_facades()
 	_build_undergrowth(trees, paths)
 	_build_meadow_grass(trees)
-	#_build_squirrels(trees)  # disabled — animal life
+	_build_squirrels(trees)
 	_build_field_markings()
 	_build_rocks(trees, water)
 	_build_tree_dirt(trees)
