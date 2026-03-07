@@ -8103,26 +8103,35 @@ func _build_furniture(bench_data: Array, lamppost_data: Array, paths: Array) -> 
 		return
 	print("Furniture: loaded %d meshes from GLB" % furn_meshes.size())
 
-	# --- Lamp meshes by zone style ---
-	# A/B = ornate (formal areas: Mall, Bethesda, Conservatory Garden)
-	# C = standard single-globe (most common, default)
-	# D/E = simpler/utilitarian (recreational: Great Lawn, fields)
+	# --- Lamp meshes ---
+	# Load CP-specific lamppost (Bishop's Crook style)
+	var cp_lamp_path := ProjectSettings.globalize_path("res://models/furniture/cp_lamppost.glb")
+	var cp_lamp_meshes := _load_glb_meshes(cp_lamp_path)
 	var lamp_meshes_formal: Array[Mesh] = []
 	var lamp_meshes_standard: Array[Mesh] = []
 	var lamp_meshes_simple: Array[Mesh] = []
-	for lname in ["ParkFurn_Lamp_A", "ParkFurn_Lamp_B"]:
-		if furn_meshes.has(lname):
-			lamp_meshes_formal.append(furn_meshes[lname] as Mesh)
-	for lname in ["ParkFurn_Lamp_C"]:
-		if furn_meshes.has(lname):
-			lamp_meshes_standard.append(furn_meshes[lname] as Mesh)
-	for lname in ["ParkFurn_Lamp_D", "ParkFurn_Lamp_E"]:
-		if furn_meshes.has(lname):
-			lamp_meshes_simple.append(furn_meshes[lname] as Mesh)
+	var _cp_lamp_loaded := false
+	if cp_lamp_meshes.has("CP_Lamppost"):
+		var cp_mesh: Mesh = cp_lamp_meshes["CP_Lamppost"] as Mesh
+		lamp_meshes_formal.append(cp_mesh)
+		lamp_meshes_standard.append(cp_mesh)
+		lamp_meshes_simple.append(cp_mesh)
+		_cp_lamp_loaded = true
+		print("Lamp: loaded CP lamppost model (Bishop's Crook)")
+	# Fallback to generic furniture GLB variants
+	if not _cp_lamp_loaded:
+		for lname in ["ParkFurn_Lamp_A", "ParkFurn_Lamp_B"]:
+			if furn_meshes.has(lname):
+				lamp_meshes_formal.append(furn_meshes[lname] as Mesh)
+		for lname in ["ParkFurn_Lamp_C"]:
+			if furn_meshes.has(lname):
+				lamp_meshes_standard.append(furn_meshes[lname] as Mesh)
+		for lname in ["ParkFurn_Lamp_D", "ParkFurn_Lamp_E"]:
+			if furn_meshes.has(lname):
+				lamp_meshes_simple.append(furn_meshes[lname] as Mesh)
 	if lamp_meshes_standard.is_empty():
 		print("WARNING: no lamp meshes found in GLB")
 		return
-	# Fallback: if a style has no meshes, use standard
 	if lamp_meshes_formal.is_empty():
 		lamp_meshes_formal = lamp_meshes_standard
 	if lamp_meshes_simple.is_empty():
@@ -8330,9 +8339,11 @@ func _build_furniture(bench_data: Array, lamppost_data: Array, paths: Array) -> 
 			if not var_xf[vi].is_empty():
 				_spawn_multimesh(meshes[vi], lamp_mat_override, var_xf[vi], "%s_%d" % [label, vi])
 		# Bulb positions for all lamps in this zone
+		# CP lamppost globe at (0.45, 3.2, 0), generic at (0.012, 2.79, 0.475)
+		var bulb_offset := Vector3(0.45, 3.2, 0.0) if _cp_lamp_loaded else Vector3(0.012, 2.79, 0.475)
 		for xf in xf_list:
 			var bxf: Transform3D = xf
-			bxf.origin += Vector3(0.012, 2.79, 0.475)
+			bxf.origin += bulb_offset
 			all_bulb_xf.append(bxf)
 	if not all_bulb_xf.is_empty():
 		_spawn_multimesh(bulb_mesh, lamp_bulb_mat, all_bulb_xf, "LampBulbs")
