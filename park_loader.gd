@@ -4006,6 +4006,103 @@ func _build_bethesda_terrace() -> void:
 
 
 # ---------------------------------------------------------------------------
+# Strawberry Fields — Imagine Mosaic (circular black & white starburst)
+# ---------------------------------------------------------------------------
+func _build_imagine_mosaic(cx: float, cy: float, cz: float) -> void:
+	## 10.4m diameter disc (34ft) with procedural radial starburst pattern.
+	var radius := 5.2
+	var segs := 64
+	var verts := PackedVector3Array()
+	var normals := PackedVector3Array()
+	var uvs := PackedVector2Array()
+	# Fan triangulation: center + rim
+	for i in range(segs):
+		var a0 := TAU * float(i) / float(segs)
+		var a1 := TAU * float(i + 1) / float(segs)
+		verts.append(Vector3(cx, cy + 0.02, cz))
+		verts.append(Vector3(cx + radius * cos(a0), cy + 0.02, cz + radius * sin(a0)))
+		verts.append(Vector3(cx + radius * cos(a1), cy + 0.02, cz + radius * sin(a1)))
+		for _j in 3: normals.append(Vector3.UP)
+		uvs.append(Vector2(0.5, 0.5))
+		uvs.append(Vector2(0.5 + 0.5 * cos(a0), 0.5 + 0.5 * sin(a0)))
+		uvs.append(Vector2(0.5 + 0.5 * cos(a1), 0.5 + 0.5 * sin(a1)))
+	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts
+	arrays[Mesh.ARRAY_NORMAL] = normals
+	arrays[Mesh.ARRAY_TEX_UV] = uvs
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	var mat := ShaderMaterial.new()
+	mat.shader = _get_shader("imagine_mosaic", _imagine_mosaic_shader())
+	mesh.surface_set_material(0, mat)
+	var mi := MeshInstance3D.new(); mi.mesh = mesh
+	mi.name = "Imagine_Mosaic"
+	add_child(mi)
+	# "IMAGINE" label flat on ground
+	var lbl := Label3D.new()
+	lbl.text = "IMAGINE"
+	lbl.font_size = 72
+	lbl.pixel_size = 0.012
+	lbl.modulate = Color(0.10, 0.10, 0.10, 0.95)
+	lbl.outline_size = 0
+	lbl.rotation_degrees = Vector3(-90, 0, 0)
+	lbl.position = Vector3(cx, cy + 0.03, cz)
+	add_child(lbl)
+	print("ParkLoader: Imagine Mosaic at (%.0f, %.0f)" % [cx, cz])
+
+
+func _imagine_mosaic_shader() -> String:
+	return """shader_type spatial;
+render_mode cull_disabled;
+
+void fragment() {
+	// UV 0..1, center at 0.5
+	vec2 c = UV - 0.5;
+	float r = length(c);
+	float angle = atan(c.y, c.x);
+
+	// Concentric bands + radial spokes = starburst
+	float radial = sin(angle * 16.0);  // 16 radial spokes
+	float rings  = sin(r * 40.0);      // concentric rings
+
+	// Combine for mosaic pattern
+	float pattern = radial * 0.5 + rings * 0.5;
+
+	// Inner circle: solid with IMAGINE text area
+	float inner = smoothstep(0.08, 0.10, r);
+
+	// Outer border ring
+	float border = smoothstep(0.46, 0.48, r) * (1.0 - smoothstep(0.49, 0.50, r));
+
+	// Black and warm-white stones
+	vec3 white_stone = vec3(0.91, 0.88, 0.82);  // #E8E0D0
+	vec3 black_stone = vec3(0.10, 0.10, 0.10);  // #1A1A1A
+	vec3 col = mix(black_stone, white_stone, step(0.0, pattern) * inner);
+
+	// Central medallion area (r < 0.10): warm white for text
+	col = mix(white_stone, col, inner);
+
+	// Border ring: black
+	col = mix(col, black_stone, border);
+
+	// Outside circle: gray path surround
+	float outside = smoothstep(0.49, 0.50, r);
+	col = mix(col, vec3(0.45, 0.43, 0.40), outside);
+
+	// Subtle stone grain noise
+	float grain = fract(sin(dot(UV * 200.0, vec2(12.9898, 78.233))) * 43758.5453);
+	col += (grain - 0.5) * 0.03;
+
+	ALBEDO = col;
+	ROUGHNESS = 0.75;
+	METALLIC = 0.0;
+	SPECULAR = 0.2;
+	NORMAL_MAP = vec3(0.5, 0.5, 1.0);
+}
+""";
+
+
+# ---------------------------------------------------------------------------
 # Shore vegetation — reeds and cattails along water body edges
 # ---------------------------------------------------------------------------
 func _build_shore_vegetation(water: Array) -> void:
@@ -6806,14 +6903,30 @@ void fragment() {
 	float rgh_z = texture(rock_rough, world_pos.xy * scale).r;
 	float rgh = rgh_x * blend.x + rgh_y * blend.y + rgh_z * blend.z;
 
-	// Per-rock color variation
+	// Per-rock color variation — Manhattan schist gray base
 	float h = hash21(floor(world_pos.xz * 0.05));
 	float bright = 0.55 + h * 0.35;
 	alb *= bright;
 
+	// Manhattan schist: gray base (#5A5A5A) with warm/cool variation
+	vec3 schist_gray = vec3(0.35, 0.35, 0.35);
+	alb = mix(alb, alb * schist_gray / max(dot(alb, vec3(0.333)), 0.01) * 0.35, 0.6);
+
+	// Rusty weathering patches (#7B4B3A)
+	float rust_n = sin(world_pos.x * 0.8 + world_pos.z * 1.2) * 0.5
+	             + sin(world_pos.y * 2.3 + world_pos.x * 0.6) * 0.3;
+	float rust = smoothstep(0.3, 0.7, rust_n * 0.5 + 0.5) * 0.25;
+	alb = mix(alb, alb * vec3(1.3, 0.85, 0.65), rust);
+
+	// Mica sparkle — view-dependent glint
+	float mica = hash21(floor(world_pos.xz * 8.0));
+	float sparkle = pow(max(dot(reflect(-VIEW, NORMAL), vec3(0.0, 1.0, 0.0)), 0.0), 32.0);
+	sparkle *= step(0.92, mica);  // only 8% of surface has mica flakes
+
 	ALBEDO    = clamp(alb, 0.0, 1.0);
-	ROUGHNESS = clamp(rgh * 0.9 + 0.1, 0.0, 1.0);
+	ROUGHNESS = clamp(rgh * 0.85 + 0.08, 0.0, 1.0);
 	METALLIC  = 0.0;
+	SPECULAR  = 0.15 + sparkle * 0.6;
 }
 """
 
@@ -7428,6 +7541,11 @@ func _build_statues(statues: Array) -> void:
 			lbl.position = Vector3(sx, sy + desired_h + 0.5, sz)
 			add_child(lbl)
 		if used_named:
+			continue
+
+		# Strawberry Fields Imagine Mosaic — flat circular disc, not a statue
+		if sname_lower.contains("strawberry"):
+			_build_imagine_mosaic(sx, sy, sz)
 			continue
 
 		# Generic statue placement
