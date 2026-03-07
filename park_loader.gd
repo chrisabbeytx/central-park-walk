@@ -3295,12 +3295,13 @@ func _build_fountain(body: Dictionary) -> void:
 	var rw_nrm := _load_tex("res://textures/rock_wall_nrm.jpg")
 	var rw_rgh := _load_tex("res://textures/rock_wall_rgh.jpg")
 
-	# All fountains get a water-filled pool from their polygon
+	var lname := bname.to_lower()
 	_build_fountain_pool(pts, pool_y)
 
-	var lname := bname.to_lower()
 	if lname.contains("bethesda"):
-		_build_bethesda_fountain(cx, cz, base_y, max_r, rw_alb, rw_nrm, rw_rgh)
+		var loaded: bool = _build_bethesda_fountain(cx, cz, base_y, max_r, rw_alb, rw_nrm, rw_rgh)
+		if not loaded:
+			_build_bethesda_fountain_procedural(cx, cz, base_y, max_r, rw_alb, rw_nrm, rw_rgh)
 	elif lname.contains("cherry"):
 		_build_cherry_hill_fountain(cx, cz, base_y, max_r, rw_alb, rw_nrm, rw_rgh)
 	elif lname.contains("untermyer"):
@@ -3543,47 +3544,63 @@ func _add_cascade_ring(x: float, top_y: float, z: float,
 	add_child(particles)
 
 
-# -- Bethesda Fountain: ~29m pool, two-tier sandstone basin, angel column ---
+# -- Bethesda Fountain: photogrammetry GLB ------
+# Returns true if photogrammetry model was loaded (skip procedural pool)
 func _build_bethesda_fountain(cx: float, cz: float, base_y: float, pool_r: float,
+							  alb: ImageTexture, nrm: ImageTexture, rgh: ImageTexture) -> bool:
+	var glb_path := ProjectSettings.globalize_path("res://models/bethesda_fountain_photogrammetry.glb")
+	if FileAccess.file_exists("res://models/bethesda_fountain_photogrammetry.glb") or FileAccess.file_exists(glb_path):
+		var gltf_doc := GLTFDocument.new()
+		var gltf_state := GLTFState.new()
+		var err := gltf_doc.append_from_file(glb_path, gltf_state)
+		if err == OK:
+			var scene: Node = gltf_doc.generate_scene(gltf_state)
+			if scene:
+				var node3d := Node3D.new()
+				node3d.name = "Bethesda_Photogrammetry"
+				# Mesh height 1.68, real angel tip ~8.5m from rim → scale 5.0
+				var glb_scale := 5.0
+				node3d.scale = Vector3(glb_scale, glb_scale, glb_scale)
+				node3d.position = Vector3(cx, base_y + 0.45, cz)
+				var children: Array = []
+				for c in scene.get_children():
+					children.append(c)
+				for c in children:
+					scene.remove_child(c)
+					node3d.add_child(c)
+				scene.queue_free()
+				add_child(node3d)
+				print("ParkLoader: Bethesda Fountain photogrammetry placed at (%.0f, %.0f)" % [cx, cz])
+				return true
+		else:
+			print("WARNING: failed to load Bethesda GLB: error %d" % err)
+	return false
+
+
+func _build_bethesda_fountain_procedural(cx: float, cz: float, base_y: float, pool_r: float,
 							  alb: ImageTexture, nrm: ImageTexture, rgh: ImageTexture) -> void:
-	# Smooth granite for the rim/basins (Concrete034 is smoother than rock_wall)
 	var con_alb := _load_tex("res://textures/Concrete034_2K-JPG_Color.jpg")
 	var con_nrm := _load_tex("res://textures/Concrete034_2K-JPG_NormalGL.jpg")
 	var con_rgh := _load_tex("res://textures/Concrete034_2K-JPG_Roughness.jpg")
 	var stone := _make_stone_material(con_alb, con_nrm, con_rgh, Color(0.82, 0.76, 0.65))
 	var bronze := StandardMaterial3D.new()
-	bronze.albedo_color = Color(0.35, 0.45, 0.30)  # green-brown patina
+	bronze.albedo_color = Color(0.35, 0.45, 0.30)
 	bronze.roughness    = 0.55
 	bronze.metallic     = 0.7
-
-	# Basin rim (raised lip around the pool)
 	var rim_h := 0.45
 	_make_ring_mesh(cx, base_y, cz, pool_r - 0.4, pool_r + 0.3, rim_h, stone, "Bethesda_Rim")
-
-	# Lower basin (wide dish, 4m radius, 0.6m above pool)
 	var lb_r := 4.0; var lb_h := 0.6
 	_make_ring_mesh(cx, base_y + rim_h, cz, lb_r - 0.3, lb_r, lb_h, stone, "Bethesda_LowerBasin")
-	# Lower basin pedestal
 	_make_cylinder_mesh(cx, base_y, cz, 1.8, rim_h + lb_h, stone, "Bethesda_LowerPedestal")
-
-	# Upper basin (narrower dish, 2m radius)
 	var ub_base := base_y + rim_h + lb_h
 	var ub_r := 2.0; var ub_h := 0.5
 	_make_ring_mesh(cx, ub_base, cz, ub_r - 0.2, ub_r, ub_h, stone, "Bethesda_UpperBasin")
-	# Upper pedestal column
 	_make_cylinder_mesh(cx, ub_base, cz, 0.8, ub_h + 1.0, stone, "Bethesda_UpperPedestal")
-
-	# Angel column
 	var angel_base := ub_base + ub_h + 1.0
 	_make_cylinder_mesh(cx, angel_base, cz, 0.35, 3.0, bronze, "Bethesda_AngelColumn")
-
-	# Composite angel figure
 	var fig_base := angel_base + 3.0
-	# Torso — tapered (wider at shoulders, narrow at waist)
 	_make_cylinder_mesh(cx, fig_base, cz, 0.35, 1.8, bronze, "Bethesda_AngelTorso", 12)
-	# Head
 	_make_cylinder_mesh(cx, fig_base + 1.8, cz, 0.15, 0.25, bronze, "Bethesda_AngelHead", 8)
-	# Arms — angled 45 deg outward+down (holding lily)
 	for arm_side_i in range(2):
 		var arm_s: float = -1.0 if arm_side_i == 0 else 1.0
 		var arm_verts := PackedVector3Array()
@@ -3593,7 +3610,6 @@ func _build_bethesda_fountain(cx: float, cz: float, base_y: float, pool_r: float
 		var arm_ex := arm_cx + arm_s * 0.65
 		var arm_ey := arm_y - 0.45
 		var arm_r := 0.08
-		# Simple 4-sided cylinder approximation for arm
 		var arm_dir := Vector3(arm_ex - arm_cx, arm_ey - arm_y, 0.0).normalized()
 		var arm_up := Vector3.UP
 		var arm_right := arm_dir.cross(arm_up).normalized()
@@ -3609,11 +3625,7 @@ func _build_bethesda_fountain(cx: float, cz: float, base_y: float, pool_r: float
 			arm_verts.append_array(PackedVector3Array([p0, p2, p3, p0, p3, p1]))
 			for _j in 6: arm_norms.append(fn)
 		_add_batch_mesh(arm_verts, arm_norms, Color(0.35, 0.45, 0.30), 0.55, "Bethesda_Arm_%d" % arm_side_i)
-
-	# Lily/cup in front of figure
 	_make_cylinder_mesh(cx, fig_base + 0.8, cz + 0.4, 0.15, 0.3, bronze, "Bethesda_Lily", 8)
-
-	# Wings — 4 curved quad strips each for dimensional sweep
 	var wing_mat := bronze
 	for wing_side_i in range(2):
 		var ws: float = -1.0 if wing_side_i == 0 else 1.0
@@ -3621,24 +3633,21 @@ func _build_bethesda_fountain(cx: float, cz: float, base_y: float, pool_r: float
 		var wnormals := PackedVector3Array()
 		var wing_base_x := cx + ws * 0.30
 		var wing_base_y := fig_base + 1.2
-		# 4 strips from shoulder outward+up with backward arc
 		var n_strips := 4
 		for si in range(n_strips):
 			var t0 := float(si) / float(n_strips)
 			var t1 := float(si + 1) / float(n_strips)
 			var span := 2.0
 			var height := 1.8
-			# Each strip curves outward and backward (arc in Z)
 			var x0 := wing_base_x + ws * span * t0
 			var x1 := wing_base_x + ws * span * t1
-			var z_arc0 := cz - 0.15 * sin(t0 * PI)  # backward arc
+			var z_arc0 := cz - 0.15 * sin(t0 * PI)
 			var z_arc1 := cz - 0.15 * sin(t1 * PI)
 			var y_bot0 := wing_base_y + height * 0.1 * t0
 			var y_bot1 := wing_base_y + height * 0.1 * t1
 			var y_top0 := wing_base_y + height * (1.0 - 0.3 * t0 * t0)
 			var y_top1 := wing_base_y + height * (1.0 - 0.3 * t1 * t1)
-			var wt := 0.04  # wing thickness
-			# Front face quad
+			var wt := 0.04
 			var p0 := Vector3(x0, y_bot0, z_arc0 - wt)
 			var p1 := Vector3(x1, y_bot1, z_arc1 - wt)
 			var p2 := Vector3(x1, y_top1, z_arc1 - wt)
@@ -3646,7 +3655,6 @@ func _build_bethesda_fountain(cx: float, cz: float, base_y: float, pool_r: float
 			var fn := Vector3(0.0, 0.0, -1.0)
 			wverts.append_array(PackedVector3Array([p0, p1, p2, p0, p2, p3]))
 			for _j in 6: wnormals.append(fn)
-			# Back face quad
 			var p4 := Vector3(x0, y_bot0, z_arc0 + wt)
 			var p5 := Vector3(x1, y_bot1, z_arc1 + wt)
 			var p6 := Vector3(x1, y_top1, z_arc1 + wt)
@@ -3663,24 +3671,16 @@ func _build_bethesda_fountain(cx: float, cz: float, base_y: float, pool_r: float
 		var mi := MeshInstance3D.new(); mi.mesh = mesh
 		mi.name = "Bethesda_Wing_%d" % wing_side_i
 		add_child(mi)
-
-	# 4 cherub figures on lower basin rim, spaced 90 degrees apart
 	for ci in range(4):
 		var c_ang := TAU * float(ci) / 4.0 + PI / 4.0
 		var c_x := cx + (lb_r - 0.5) * cos(c_ang)
 		var c_z := cz + (lb_r - 0.5) * sin(c_ang)
 		var c_y := base_y + rim_h + lb_h
-		# Cherub body
 		_make_cylinder_mesh(c_x, c_y, c_z, 0.12, 0.35, bronze, "Bethesda_Cherub_%d" % ci, 8)
-		# Cherub head
 		_make_cylinder_mesh(c_x, c_y + 0.35, c_z, 0.08, 0.12, bronze, "Bethesda_CherubHead_%d" % ci, 8)
-
-	# Water spray: gentle pour from angel's feet, cascading through basins
-	var angel_top := ub_base + ub_h + 1.0 + 3.0  # top of angel column
+	var angel_top := ub_base + ub_h + 1.0 + 3.0
 	_add_fountain_spray(cx, angel_top, cz, 1.5, 15.0, 200, 0.3)
-	# Cascade from upper basin rim into lower basin
 	_add_cascade_ring(cx, ub_base + ub_h, cz, ub_r * 0.9, lb_h + 0.5, 300)
-	# Cascade from lower basin rim into main pool
 	_add_cascade_ring(cx, base_y + rim_h + lb_h, cz, lb_r * 0.9, rim_h + lb_h, 500)
 
 
@@ -7060,6 +7060,30 @@ func _build_statues(statues: Array) -> void:
 	if use_glb:
 		print("Statues: loaded %d GLB variants" % statue_glb_meshes.size())
 
+	# Named statue GLBs (photogrammetry scans with own textures)
+	# Each entry: { "file": glb filename, "height": desired real-world height in metres }
+	var named_statue_glbs: Dictionary = {}  # key -> { "root": Node, "scale": float }
+	var named_defs: Dictionary = {
+		"alice in wonderland": { "file": "alice_in_wonderland.glb", "height": 3.35 },
+		"hans christian andersen": { "file": "hans_christian_andersen.glb", "height": 3.4 },
+		"eagles and prey": { "file": "eagles_and_prey.glb", "height": 3.8 },
+	}
+	for skey in named_defs:
+		var def: Dictionary = named_defs[skey]
+		var abs_path := ProjectSettings.globalize_path("res://models/furniture/%s" % def["file"])
+		if not FileAccess.file_exists(abs_path):
+			continue
+		var gd := GLTFDocument.new()
+		var gs := GLTFState.new()
+		if gd.append_from_file(abs_path, gs) == OK:
+			var root: Node = gd.generate_scene(gs)
+			if root:
+				named_statue_glbs[skey] = { "root": root, "height": def["height"] }
+				print("Statues: loaded named GLB '%s'" % skey)
+			else:
+				print("Statues: failed to generate scene for '%s'" % skey)
+	print("Statues: %d named GLBs loaded" % named_statue_glbs.size())
+
 	var statue_col_shapes: Array = []
 
 	for statue in statues:
@@ -7067,19 +7091,91 @@ func _build_statues(statues: Array) -> void:
 		var sname: String = str(statue.get("name", ""))
 		var pos: Array = statue.get("position", [0, 0, 0])
 		var sx := float(pos[0]); var sz := float(pos[2])
-		if not _in_boundary(sx, sz):
-			continue
 		var sy := _terrain_y(sx, sz)
+		# Skip out-of-boundary unless it's a named photogrammetry statue
+		if not _in_boundary(sx, sz) and not sname.to_lower() in named_statue_glbs:
+			continue
 
 		# Skip murals/graffiti/street_art — 2D art, no 3D geometry
 		if stype in ["mural", "graffiti", "street_art"]:
 			continue
 
+		var safe_name: String = sname if sname else stype.capitalize()
+
+		# Check for named photogrammetry model (these include their own base)
+		var sname_lower := sname.to_lower()
+		var used_named := false
+		if sname_lower in named_statue_glbs:
+			var entry: Dictionary = named_statue_glbs[sname_lower]
+			var scene_root: Node = (entry["root"] as Node).duplicate()
+			scene_root.name = "NamedStatue_%s" % safe_name
+			if scene_root is Node3D:
+				(scene_root as Node3D).position = Vector3(sx, sy, sz)
+			add_child(scene_root)
+			# Measure actual world-space Y bounds now that it's in tree
+			var y_min := 1e9
+			var y_max := -1e9
+			var mi_stack: Array = [scene_root]
+			while not mi_stack.is_empty():
+				var n: Node = mi_stack.pop_back()
+				if n is MeshInstance3D:
+					var mi := n as MeshInstance3D
+					if mi.mesh:
+						var ab: AABB = mi.mesh.get_aabb()
+						var gt: Transform3D = mi.global_transform
+						for ix in [0, 1]:
+							for iy in [0, 1]:
+								for iz in [0, 1]:
+									var pt := gt * (ab.position + ab.size * Vector3(float(ix), float(iy), float(iz)))
+									if pt.y < y_min:
+										y_min = pt.y
+									if pt.y > y_max:
+										y_max = pt.y
+				for c in n.get_children():
+					mi_stack.append(c)
+			var actual_h := y_max - y_min
+			var desired_h: float = entry["height"]
+			# Scale to desired height and reposition so base sits on terrain
+			var s := desired_h / maxf(actual_h, 0.01)
+			if scene_root is Node3D:
+				var n3d := scene_root as Node3D
+				n3d.scale = Vector3(s, s, s)
+				# After scaling, the bottom moves: new_y_min = sy + s*(y_min - sy)
+				# We want new_y_min = sy, so shift up by (1-s)*(y_min - sy)...
+				# Simpler: new bottom = root_y + s*(old_y_min - root_y)
+				# old_y_min - root_y = y_min - sy, so new bottom = sy + s*(y_min - sy)
+				# Want new bottom = sy → shift = sy - (sy + s*(y_min - sy)) = -s*(y_min - sy)
+				n3d.position.y = sy - s * (y_min - sy)
+			used_named = true
+			print("Named statue '%s' at (%.0f, %.1f, %.0f) actual_h=%.2f scale=%.2f y_range=[%.2f,%.2f]" % [sname, sx, sy, sz, actual_h, s, y_min, y_max])
+			# Collision
+			var cyl := CylinderShape3D.new()
+			cyl.radius = 1.5
+			cyl.height = desired_h
+			var col := CollisionShape3D.new()
+			col.shape = cyl
+			col.position = Vector3(sx, sy + desired_h * 0.5, sz)
+			statue_col_shapes.append(col)
+			# Label
+			var lbl := Label3D.new()
+			lbl.text = sname
+			lbl.font_size = 48
+			lbl.pixel_size = 0.02
+			lbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+			lbl.modulate = Color(1.0, 1.0, 0.9, 0.9)
+			lbl.outline_size = 6
+			lbl.outline_modulate = Color(0.0, 0.0, 0.0, 0.7)
+			lbl.position = Vector3(sx, sy + desired_h + 0.5, sz)
+			add_child(lbl)
+		if used_named:
+			continue
+
+		# Generic statue placement
 		var ped_h := 1.2
 		var ped_r := 0.6
 		var fig_h := 1.6
 
-		if stype == "obelisk" or sname.to_lower().contains("needle") or sname.to_lower().contains("obelisk"):
+		if stype == "obelisk" or sname_lower.contains("needle") or sname_lower.contains("obelisk"):
 			stype = "obelisk"
 			ped_h = 1.5
 			ped_r = 1.2
@@ -7094,7 +7190,6 @@ func _build_statues(statues: Array) -> void:
 							"Pedestal_%s" % sname if sname else "Pedestal")
 
 		var fig_y := sy + ped_h
-		var safe_name: String = sname if sname else stype.capitalize()
 
 		if stype == "obelisk":
 			# Tall tapered column — keep procedural (unique shape)
