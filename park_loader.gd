@@ -8126,6 +8126,98 @@ func _build_perimeter_wall(boundary: Array, paths: Array) -> void:
 	body.add_child(col)
 	print("ParkLoader: perimeter wall = %d segments" % n_quads)
 
+	# Gate pillars — stone posts flanking each gate opening
+	# Real CP gates have paired granite pillars ~2.4m tall with capstones
+	var pillar_verts := PackedVector3Array()
+	var pillar_normals := PackedVector3Array()
+	var pillar_w := 0.55   # pillar width
+	var pillar_h := 2.4    # pillar height (taller than wall)
+	var cap_overhang := 0.08  # capstone extends beyond pillar
+	for gp in gate_positions:
+		# Find nearest boundary segment to get wall direction
+		var best_dir := Vector2.RIGHT
+		var best_d := INF
+		for bi in range(boundary.size()):
+			var bp1 := Vector2(float(boundary[bi][0]), float(boundary[bi][1]))
+			var bp2 := Vector2(float(boundary[(bi + 1) % boundary.size()][0]),
+							float(boundary[(bi + 1) % boundary.size()][1]))
+			var seg2 := bp2 - bp1
+			var sl := seg2.length()
+			if sl < 0.5: continue
+			var t2 := clampf(seg2.dot(gp - bp1) / (sl * sl), 0.0, 1.0)
+			var closest := bp1 + seg2 * t2
+			var d: float = gp.distance_to(closest)
+			if d < best_d:
+				best_d = d
+				best_dir = seg2.normalized()
+		var nrm2 := Vector2(-best_dir.y, best_dir.x)
+		if nrm2.dot(Vector2(cx - gp.x, cz - gp.y)) < 0.0:
+			nrm2 = -nrm2
+		var gy := _terrain_y(gp.x, gp.y) - 0.02
+		# Place two pillars at ±(gate_radius + pillar_w/2) along wall direction
+		for side in [-1.0, 1.0]:
+			var offset: Vector2 = best_dir * (gate_radius + pillar_w * 0.5) * side
+			var pc: Vector2 = gp + offset  # pillar center XZ
+			var phw := pillar_w * 0.5
+			var py := _terrain_y(pc.x, pc.y) - 0.02
+			# 4 vertical faces of the pillar
+			for face in range(4):
+				var fn: Vector3; var c0: Vector3; var c1: Vector3; var c2: Vector3; var c3: Vector3
+				if face == 0:  # +X face
+					fn = Vector3(1, 0, 0)
+					c0 = Vector3(pc.x + phw, py, pc.y - phw)
+					c1 = Vector3(pc.x + phw, py, pc.y + phw)
+					c2 = Vector3(pc.x + phw, py + pillar_h, pc.y + phw)
+					c3 = Vector3(pc.x + phw, py + pillar_h, pc.y - phw)
+				elif face == 1:  # -X face
+					fn = Vector3(-1, 0, 0)
+					c0 = Vector3(pc.x - phw, py, pc.y + phw)
+					c1 = Vector3(pc.x - phw, py, pc.y - phw)
+					c2 = Vector3(pc.x - phw, py + pillar_h, pc.y - phw)
+					c3 = Vector3(pc.x - phw, py + pillar_h, pc.y + phw)
+				elif face == 2:  # +Z face
+					fn = Vector3(0, 0, 1)
+					c0 = Vector3(pc.x + phw, py, pc.y + phw)
+					c1 = Vector3(pc.x - phw, py, pc.y + phw)
+					c2 = Vector3(pc.x - phw, py + pillar_h, pc.y + phw)
+					c3 = Vector3(pc.x + phw, py + pillar_h, pc.y + phw)
+				else:  # -Z face
+					fn = Vector3(0, 0, -1)
+					c0 = Vector3(pc.x - phw, py, pc.y - phw)
+					c1 = Vector3(pc.x + phw, py, pc.y - phw)
+					c2 = Vector3(pc.x + phw, py + pillar_h, pc.y - phw)
+					c3 = Vector3(pc.x - phw, py + pillar_h, pc.y - phw)
+				pillar_verts.append_array(PackedVector3Array([c0, c1, c2, c0, c2, c3]))
+				for _j in 6: pillar_normals.append(fn)
+			# Capstone top face
+			var cw := phw + cap_overhang
+			var cap_y := py + pillar_h
+			pillar_verts.append_array(PackedVector3Array([
+				Vector3(pc.x - cw, cap_y, pc.y - cw),
+				Vector3(pc.x + cw, cap_y, pc.y - cw),
+				Vector3(pc.x + cw, cap_y, pc.y + cw),
+				Vector3(pc.x - cw, cap_y, pc.y - cw),
+				Vector3(pc.x + cw, cap_y, pc.y + cw),
+				Vector3(pc.x - cw, cap_y, pc.y + cw)
+			]))
+			for _j in 6: pillar_normals.append(Vector3.UP)
+
+	if not pillar_verts.is_empty():
+		# Light gray granite for gate pillars (dressed stone, lighter than schist wall)
+		var pillar_mat := _make_stone_material(rw_alb, rw_nrm, rw_rgh, Color(0.62, 0.60, 0.56))
+		var pillar_arrays: Array = []; pillar_arrays.resize(Mesh.ARRAY_MAX)
+		pillar_arrays[Mesh.ARRAY_VERTEX] = pillar_verts
+		pillar_arrays[Mesh.ARRAY_NORMAL] = pillar_normals
+		var pillar_mesh := ArrayMesh.new()
+		pillar_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, pillar_arrays)
+		pillar_mesh.surface_set_material(0, pillar_mat)
+		var pillar_mi := MeshInstance3D.new()
+		pillar_mi.mesh = pillar_mesh
+		pillar_mi.name = "GatePillars"
+		pillar_mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
+		add_child(pillar_mi)
+		print("ParkLoader: gate pillars = %d" % (gate_positions.size() * 2))
+
 
 func _build_boundary_facades() -> void:
 	## NYC building facades along the park boundary, matching real skyline.
