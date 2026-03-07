@@ -178,6 +178,8 @@ func _path_color(hw: String, surface: String) -> Color:
 		"steps":      return Color(0.60, 0.58, 0.54)   # grey stone
 		"track":      return Color(0.48, 0.40, 0.26)   # brown dirt track
 		"bridleway":  return Color(0.52, 0.42, 0.28)   # compacted earth
+		"service":    return Color(0.26, 0.26, 0.28)   # dark asphalt (park drives)
+		"secondary":  return Color(0.28, 0.28, 0.30)   # dark grey asphalt (streets)
 		_:            return Color(0.60, 0.53, 0.40)   # gravel
 
 
@@ -225,6 +227,8 @@ func _path_tex_prefix(hw: String, surface: String) -> String:
 		"steps":      return "res://textures/Concrete034_2K-JPG"
 		"pedestrian": return "res://textures/PavingStones130_2K-JPG"
 		"footway":    return "res://textures/PavingStones130_2K-JPG"
+		"service":    return "res://textures/Asphalt012_2K-JPG"
+		"secondary":  return "res://textures/Asphalt012_2K-JPG"
 		_:            return "res://textures/Gravel021_2K-JPG"
 
 
@@ -739,6 +743,8 @@ func _splat_mat_idx(hw: String, surface: String) -> int:
 		"steps":      return 28
 		"track":      return 29
 		"bridleway":  return 14  # compacted (bridle paths are packed earth)
+		"service":    return 1   # asphalt (park drives)
+		"secondary":  return 1   # asphalt (city streets)
 		_:            return 16  # gravel
 
 
