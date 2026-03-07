@@ -5439,12 +5439,13 @@ func _build_trees(trees: Array) -> void:
 		"deciduous": "deciduous",
 	}
 	# Desired height ranges per species archetype (metres)
+	# [min, max] — mature American Elms are 20-30m; census DBH drives interpolation
 	var height_ranges := {
-		"oak":       [15.0, 24.0],
-		"maple":     [12.0, 18.0],
-		"elm":       [20.0, 28.0],
-		"conifer":   [18.0, 32.0],
-		"deciduous": [12.0, 22.0],
+		"oak":       [14.0, 25.0],
+		"maple":     [10.0, 20.0],
+		"elm":       [18.0, 30.0],   # American Elm — tall vase shape
+		"conifer":   [15.0, 30.0],
+		"deciduous": [10.0, 22.0],
 	}
 
 	# Collect transforms per species-variant for MultiMesh batching
@@ -5485,11 +5486,13 @@ func _build_trees(trees: Array) -> void:
 		# Pick variant based on tree index
 		var variant_idx := i % n_variants
 
-		# Desired height: scale from DBH (diameter at breast height, inches)
-		# DBH→height approximation: h ≈ 0.5 * DBH + 5, clamped to species range
-		var h_range: Array = height_ranges.get(tree_species, [12.0, 22.0])
-		var dbh_h := float(dbh) * 0.5 + 5.0
-		var desired_h := clampf(dbh_h, float(h_range[0]) * 0.5, float(h_range[1]))
+		# Desired height: interpolate within species range using DBH
+		# DBH 0-5" → range minimum, DBH 30+" → range maximum
+		var h_range: Array = height_ranges.get(tree_species, [10.0, 22.0])
+		var h_min := float(h_range[0])
+		var h_max := float(h_range[1])
+		var dbh_t := clampf((float(dbh) - 3.0) / 30.0, 0.0, 1.0)
+		var desired_h := lerpf(h_min, h_max, dbh_t)
 
 		# Scale factor: desired_height / mesh_height_in_raw_units
 		var mesh_h: float = species_heights[species]
