@@ -5508,13 +5508,18 @@ func _build_trees(trees: Array) -> void:
 		# Pick variant based on tree index
 		var variant_idx := i % n_variants
 
-		# Desired height: interpolate within species range using DBH
-		# DBH 0-5" → range minimum, DBH 30+" → range maximum
-		var h_range: Array = height_ranges.get(tree_species, [10.0, 22.0])
-		var h_min := float(h_range[0])
-		var h_max := float(h_range[1])
-		var dbh_t := clampf((float(dbh) - 3.0) / 30.0, 0.0, 1.0)
-		var desired_h := lerpf(h_min, h_max, dbh_t)
+		# Desired height: use LiDAR measurement if available, else DBH estimate
+		var desired_h: float
+		if typeof(tree_entry) == TYPE_DICTIONARY and tree_entry.has("lidar_h"):
+			desired_h = float(tree_entry["lidar_h"])
+			if desired_h < 3.0:
+				desired_h = 3.0  # clamp tiny LiDAR readings
+		else:
+			var h_range: Array = height_ranges.get(tree_species, [10.0, 22.0])
+			var h_min := float(h_range[0])
+			var h_max := float(h_range[1])
+			var dbh_t := clampf((float(dbh) - 3.0) / 30.0, 0.0, 1.0)
+			desired_h = lerpf(h_min, h_max, dbh_t)
 
 		# Scale factor: desired_height / mesh_height_in_raw_units
 		var mesh_h: float = species_heights[species]
