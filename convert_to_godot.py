@@ -47,7 +47,7 @@ HIGHWAY_WIDTH = {
 
 TERRAIN_Z   = 15           # zoom level matching download_terrain.py
 TERRAIN_DIR = "terrain_tiles"
-LIDAR_DEM   = "lidar_data/central_park_dem_8k.tif"  # LiDAR DEM 8192x8192 (~0.6 m/cell)
+LIDAR_DEM   = "lidar_data/central_park_dsm_enhanced_8k.tif"  # Structure-enhanced DSM (HH with trees removed)
 GRID_W      = 8192         # heightmap output resolution (~0.6 m/cell)
 GRID_H      = 8192
 WORLD_SIZE  = 5000.0       # metres – must match main.gd ground plane size
@@ -717,6 +717,44 @@ def main() -> None:
     import random as _random
     _rng_wood = _random.Random(42)
 
+    # ── Foliage zones from Central Park Conservancy Fall Foliage Map ──
+    # Each zone: [x_min, x_max, z_min, z_max, species_pool]
+    # Street N → Z ≈ 1500 - (N - 66) * 75  (calibrated from OSM landmarks)
+    # Species pools weighted by Conservancy's published dominant species per area.
+    FOLIAGE_ZONES = [
+        # 1. North Woods (W side, 101st-110th St)
+        [-300, 700, -1800, -1125,
+         ["elm", "oak", "oak", "maple", "maple", "deciduous", "deciduous", "conifer"]],
+        # 2. Conservatory Garden (E side, 104th-106th St)
+        [200, 600, -1500, -1350,
+         ["deciduous", "deciduous", "deciduous", "maple", "maple"]],  # crabapple/magnolia → deciduous
+        # 3. The Pool (W side, 100th-103rd St)
+        [-600, 0, -1275, -1050,
+         ["maple", "maple", "maple", "deciduous", "deciduous", "conifer"]],  # bald cypress, hickory, maples
+        # 4. North Meadow (Mid-Park, 97th-102nd St)
+        [-200, 600, -1200, -825,
+         ["deciduous", "deciduous", "maple", "maple"]],  # dogwood, hickory, sugar maple
+        # 5. Reservoir perimeter (Mid-Park, 85th-96th St)
+        [-400, 300, -750, 75,
+         ["deciduous", "deciduous", "deciduous", "deciduous"]],  # cherries → deciduous
+        # 6. The Ramble (Mid-Park, 73rd-79th St)
+        [-600, 0, 375, 975,
+         ["oak", "oak", "maple", "deciduous", "deciduous", "deciduous", "conifer"]],
+        # 7. The Mall / Literary Walk (Mid-Park, 66th-72nd St)
+        [-700, -300, 1050, 1500,
+         ["elm", "elm", "elm", "elm", "elm"]],  # American Elm canopy — signature trees
+        # 8. Hallett Nature Sanctuary & The Pond (South, ~59th-62nd St)
+        [-700, 100, 1650, 2050,
+         ["oak", "oak", "birch", "deciduous", "deciduous", "deciduous"]],
+    ]
+
+    def _zone_species(x, z):
+        """Return species pool for a given position, or None for default."""
+        for zone in FOLIAGE_ZONES:
+            if zone[0] <= x <= zone[1] and zone[2] <= z <= zone[3]:
+                return zone[4]
+        return None
+
     SPECIES_MAP = {
         # Deciduous — broad-leaved
         "quercus":     "oak",
@@ -891,7 +929,11 @@ def main() -> None:
                         gz += WOOD_SPACING
                         continue
                     h = round(terrain(tx, tz), 2)
-                    sp = _rng_wood.choice(["oak", "maple", "elm", "deciduous", "deciduous", "deciduous", "deciduous", "conifer"])
+                    zone_pool = _zone_species(tx, tz)
+                    if zone_pool:
+                        sp = _rng_wood.choice(zone_pool)
+                    else:
+                        sp = _rng_wood.choice(["oak", "maple", "elm", "deciduous", "deciduous", "deciduous", "deciduous", "conifer"])
                     dbh = _rng_wood.randint(8, 24)
                     trees_out.append({"pos": [round(tx, 2), h, round(tz, 2)], "species": sp, "dbh": dbh})
                     if ck not in tree_hash:
@@ -1235,6 +1277,90 @@ def main() -> None:
         print(f"  Amenities: {len(amenities_out)}")
 
     # -------------------------------------------------------------------
+    # Conservancy map data — playgrounds, restrooms, dining, facilities
+    # Source: Central Park Conservancy downloadable maps (2025-2026)
+    # Coordinates are approximate, derived from street/side designations.
+    # Street N → Z ≈ 1500 - (N-66)*75; West edge X≈-750, East edge X≈350
+    # -------------------------------------------------------------------
+
+    # 21 playgrounds from Playground Map
+    playgrounds = [
+        # West side
+        {"name": "Darlene & Julien Yoseoff Playground", "pos": [-500, -1800], "ages": "toddler, pre-school, school-age"},
+        {"name": "Tarr Family Playground", "pos": [-600, -1050], "ages": "pre-school, school-age"},
+        {"name": "Rudin Family Playground", "pos": [-650, -750], "ages": "pre-school, school-age"},
+        {"name": "Tarr-Coyne Wild West Playground", "pos": [-650, -525], "ages": "pre-school, school-age"},
+        {"name": "Safari Playground", "pos": [-650, -375], "ages": "toddler, pre-school"},
+        {"name": "West 85th Street Playground", "pos": [-650, 75], "ages": "pre-school, school-age"},
+        {"name": "Pinetum Playground", "pos": [-600, 75], "ages": "pre-school, school-age, teens, adults"},
+        {"name": "Toll Family Playground", "pos": [-650, 150], "ages": "toddler, pre-school"},
+        {"name": "Diana Ross Playground", "pos": [-650, 375], "ages": "pre-school, school-age"},
+        {"name": "Tarr-Coyne Tots Playground", "pos": [-650, 1350], "ages": "toddler"},
+        {"name": "Adventure Playground", "pos": [-650, 1425], "ages": "school-age"},
+        {"name": "Heckscher Playground", "pos": [-400, 1725], "ages": "pre-school, school-age"},
+        # East side
+        {"name": "East 110th Street Playground", "pos": [400, -1800], "ages": "school-age"},
+        {"name": "Bernard Family Playground", "pos": [400, -1650], "ages": "toddler, pre-school"},
+        {"name": "Robert Bendheim Playground", "pos": [350, -1050], "ages": "pre-school, school-age"},
+        {"name": "Margaret L. Kempner Playground", "pos": [350, -750], "ages": "pre-school, school-age"},
+        {"name": "Ancient Playground", "pos": [300, 75], "ages": "pre-school, school-age"},
+        {"name": "Smadbeck-Heckscher East Playground", "pos": [300, 525], "ages": "toddler, pre-school"},
+        {"name": "James Michael Levin Playground", "pos": [300, 675], "ages": "pre-school, school-age"},
+        {"name": "East 72nd Street Playground", "pos": [300, 1050], "ages": "school-age"},
+        {"name": "Billy Johnson Playground", "pos": [300, 1425], "ages": "pre-school, school-age"},
+    ]
+
+    # Visitor centers and major facilities from General + Accessibility maps
+    facilities = [
+        {"name": "Charles A. Dana Discovery Center", "pos": [400, -1800], "type": "visitor_center"},
+        {"name": "Belvedere Castle", "pos": [0, 525], "type": "visitor_center"},
+        {"name": "Dairy Visitor Center & Gift Shop", "pos": [-500, 1425], "type": "visitor_center"},
+        {"name": "Chess & Checkers House", "pos": [-450, 1500], "type": "facility"},
+        {"name": "Columbus Circle Information Kiosk", "pos": [-900, 2025], "type": "visitor_center"},
+        {"name": "North Meadow Recreation Center", "pos": [100, -1200], "type": "facility"},
+        {"name": "Central Park Police Precinct", "pos": [-150, -450], "type": "building"},
+        {"name": "Arsenal (NYC Parks HQ)", "pos": [350, 1575], "type": "building"},
+        {"name": "Swedish Cottage Marionette Theatre", "pos": [-200, 600], "type": "building"},
+        {"name": "Kerbs Boathouse", "pos": [-200, 900], "type": "building"},
+        {"name": "Loeb Boathouse", "pos": [-300, 800], "type": "dining"},
+        {"name": "Tavern on the Green", "pos": [-900, 1575], "type": "dining"},
+        {"name": "Le Pain Quotidien (Mineral Springs)", "pos": [-700, 1200], "type": "dining"},
+        {"name": "Central Park Zoo", "pos": [200, 1575], "type": "facility"},
+        {"name": "Wollman Rink", "pos": [-600, 2100], "type": "facility"},
+        {"name": "Lasker Pool/Rink", "pos": [800, -1950], "type": "facility"},
+        {"name": "Delacorte Theater", "pos": [-200, 400], "type": "facility"},
+        {"name": "SummerStage (Rumsey Playfield)", "pos": [-500, 1200], "type": "facility"},
+        {"name": "North Gate House", "pos": [0, -600], "type": "building"},
+        {"name": "South Gate House", "pos": [0, -375], "type": "building"},
+    ]
+
+    # Running loops from Running Map (distances in miles)
+    running_loops = [
+        {"name": "Full Park Loop", "miles": 6.02, "surface": "paved"},
+        {"name": "Lower Loop", "miles": 5.14, "surface": "paved"},
+        {"name": "Upper Loop", "miles": 4.92, "surface": "paved"},
+        {"name": "Mid Loop", "miles": 4.04, "surface": "paved"},
+        {"name": "Small Lower Loop", "miles": 1.71, "surface": "paved"},
+        {"name": "Bridle Path Loop", "miles": 1.66, "surface": "dirt"},
+        {"name": "Reservoir Running Track", "miles": 1.58, "surface": "crushed_gravel"},
+        {"name": "Small Upper Loop", "miles": 1.42, "surface": "paved"},
+    ]
+
+    # Fall foliage zones — tree species by area (Conservancy Fall Foliage Map)
+    foliage_zones = [
+        {"name": "North Woods", "z_range": [-1800, -1125], "species": ["American Elm", "Black Cherry", "Pin Oak", "Red Maple", "Red Oak", "Scarlet Oak", "Sweetgum"]},
+        {"name": "Conservatory Garden", "z_range": [-1500, -1350], "species": ["Crabapple", "Star Magnolia", "Stewartia"]},
+        {"name": "The Pool", "z_range": [-1275, -1050], "species": ["Bald Cypress", "Hickory", "Red Maple", "Sugar Maple", "Sweetgum", "Tupelo"]},
+        {"name": "North Meadow", "z_range": [-1200, -825], "species": ["Flowering Dogwood", "Hickory", "Sugar Maple"]},
+        {"name": "Reservoir", "z_range": [-750, 75], "species": ["Kwanzan Cherry (west)", "Yoshino Cherry (east)"]},
+        {"name": "The Ramble", "z_range": [375, 975], "species": ["Black Cherry", "Hickory", "Pin Oak", "Red Maple", "Red Oak", "Sassafras", "Sweetgum", "Tupelo"]},
+        {"name": "The Mall", "z_range": [1050, 1500], "species": ["American Elm"]},
+        {"name": "Hallett & The Pond", "z_range": [1650, 2050], "species": ["Black Cherry", "Ginkgo", "Gray Birch", "Hickory", "Pin Oak", "Sawtooth Oak", "Tupelo"]},
+    ]
+
+    print(f"  Conservancy data: {len(playgrounds)} playgrounds, {len(facilities)} facilities, {len(foliage_zones)} foliage zones")
+
+    # -------------------------------------------------------------------
     # Write park_data.json
     # -------------------------------------------------------------------
     out = {
@@ -1260,6 +1386,9 @@ def main() -> None:
         "rocks":              rocks_out,
         "amenities":          amenities_out,
         "perimeter_heights":  perimeter_heights,
+        "playgrounds":        playgrounds,
+        "facilities":         facilities,
+        "foliage_zones":      foliage_zones,
     }
 
     with open("park_data.json", "w") as fh:

@@ -704,6 +704,7 @@ func _ready() -> void:
 	_build_barriers(barriers)
 	_build_staircases(paths)
 	_build_statues(statues)
+	#_build_bethesda_terrace()  # disabled — LiDAR DSM terrain provides the geometry
 	_build_amenities(amenities)
 	_build_boats(water)
 	#_build_waterfowl(water)   # disabled — no animals
@@ -1716,14 +1717,14 @@ func _build_bridge(path: Dictionary) -> void:
 	var _label: String = bridge_name if not bridge_name.is_empty() else "(unnamed %.0fm)" % total_len
 	print("  Bridge: ", _label, " → ", _style_names.get(style, "STONE"))
 
-	# Per-style material tints
-	var soffit_tint := Color(0.78, 0.76, 0.72)
-	var parapet_tint := Color(0.82, 0.80, 0.76)
-	var abut_tint := Color(0.80, 0.78, 0.74)
+	# Per-style material tints — Manhattan schist gray for stone (Wikimedia reference)
+	var soffit_tint := Color(0.52, 0.50, 0.46)   # schist gray
+	var parapet_tint := Color(0.56, 0.54, 0.50)  # dressed stone
+	var abut_tint := Color(0.50, 0.48, 0.44)     # schist gray
 	match style:
 		BridgeStyle.CAST_IRON:
-			soffit_tint = Color(0.72, 0.70, 0.68)
-			abut_tint = Color(0.70, 0.68, 0.65)
+			soffit_tint = Color(0.48, 0.46, 0.44)
+			abut_tint = Color(0.50, 0.48, 0.44)
 		BridgeStyle.BRICK:
 			soffit_tint = Color(0.60, 0.40, 0.30)
 			parapet_tint = Color(0.65, 0.42, 0.32)
@@ -2756,11 +2757,11 @@ func _build_bow_bridge_railings(pts: Array, pt_y: PackedFloat32Array,
 
 	if rail_verts.is_empty():
 		return
-	# Bow Bridge: warm cream cast iron (distinctive light color)
+	# Bow Bridge: warm reddish-brown cast iron (per Wikimedia reference #7B4B3A-#8B5A4A)
 	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(0.62, 0.58, 0.52)
-	mat.metallic = 0.45
-	mat.roughness = 0.40
+	mat.albedo_color = Color(0.52, 0.33, 0.25)
+	mat.metallic = 0.35
+	mat.roughness = 0.45
 	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
 	# Build railing mesh
 	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
@@ -2774,12 +2775,12 @@ func _build_bow_bridge_railings(pts: Array, pt_y: PackedFloat32Array,
 	mi.name = "BowBridge_Railings"
 	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(mi)
-	# Urn mesh (patinated bronze on warm stone)
+	# Urn mesh — same cast iron as bridge (#7B4B3A warm reddish-brown)
 	if not urn_verts.is_empty():
 		var urn_mat := StandardMaterial3D.new()
-		urn_mat.albedo_color = Color(0.30, 0.32, 0.22)
-		urn_mat.roughness = 0.60
-		urn_mat.metallic = 0.35
+		urn_mat.albedo_color = Color(0.48, 0.29, 0.23)  # cast iron, matching bridge paint
+		urn_mat.roughness = 0.50
+		urn_mat.metallic = 0.40
 		var ua: Array = []; ua.resize(Mesh.ARRAY_MAX)
 		ua[Mesh.ARRAY_VERTEX] = urn_verts; ua[Mesh.ARRAY_NORMAL] = urn_normals; ua[Mesh.ARRAY_INDEX] = urn_indices
 		var urn_mesh := ArrayMesh.new()
@@ -2789,7 +2790,7 @@ func _build_bow_bridge_railings(pts: Array, pt_y: PackedFloat32Array,
 		umi.mesh = urn_mesh
 		umi.name = "BowBridge_Urns"
 		add_child(umi)
-	# Baluster post mesh (same warm cream material)
+	# Baluster post mesh (same warm reddish-brown material)
 	if not post_verts.is_empty():
 		var pa: Array = []; pa.resize(Mesh.ARRAY_MAX)
 		pa[Mesh.ARRAY_VERTEX] = post_verts
@@ -3744,11 +3745,11 @@ func _build_bethesda_fountain_procedural(cx: float, cz: float, base_y: float, po
 	var con_alb := _load_tex("res://textures/Concrete034_2K-JPG_Color.jpg")
 	var con_nrm := _load_tex("res://textures/Concrete034_2K-JPG_NormalGL.jpg")
 	var con_rgh := _load_tex("res://textures/Concrete034_2K-JPG_Roughness.jpg")
-	var stone := _make_stone_material(con_alb, con_nrm, con_rgh, Color(0.82, 0.76, 0.65))
+	var stone := _make_stone_material(con_alb, con_nrm, con_rgh, Color(0.61, 0.55, 0.29))  # New Brunswick sandstone — mustard-olive
 	var bronze := StandardMaterial3D.new()
-	bronze.albedo_color = Color(0.35, 0.45, 0.30)
-	bronze.roughness    = 0.55
-	bronze.metallic     = 0.7
+	bronze.albedo_color = Color(0.29, 0.42, 0.29)  # aged green-brown patina
+	bronze.roughness    = 0.60
+	bronze.metallic     = 0.65
 	var rim_h := 0.45
 	_make_ring_mesh(cx, base_y, cz, pool_r - 0.4, pool_r + 0.3, rim_h, stone, "Bethesda_Rim")
 	var lb_r := 4.0; var lb_h := 0.6
@@ -3786,7 +3787,7 @@ func _build_bethesda_fountain_procedural(cx: float, cz: float, base_y: float, po
 			var fn := (arm_right * cos(aa) + arm_fwd * sin(aa)).normalized()
 			arm_verts.append_array(PackedVector3Array([p0, p2, p3, p0, p3, p1]))
 			for _j in 6: arm_norms.append(fn)
-		_add_batch_mesh(arm_verts, arm_norms, Color(0.35, 0.45, 0.30), 0.55, "Bethesda_Arm_%d" % arm_side_i)
+		_add_batch_mesh(arm_verts, arm_norms, Color(0.29, 0.42, 0.29), 0.60, "Bethesda_Arm_%d" % arm_side_i)
 	_make_cylinder_mesh(cx, fig_base + 0.8, cz + 0.4, 0.15, 0.3, bronze, "Bethesda_Lily", 8)
 	var wing_mat := bronze
 	for wing_side_i in range(2):
@@ -3849,14 +3850,15 @@ func _build_bethesda_fountain_procedural(cx: float, cz: float, base_y: float, po
 # -- Cherry Hill Fountain: 6m basin, ornate column, globe lamps, gold spire --
 func _build_cherry_hill_fountain(cx: float, cz: float, base_y: float, pool_r: float,
 								 alb: ImageTexture, nrm: ImageTexture, rgh: ImageTexture) -> void:
-	var stone := _make_stone_material(alb, nrm, rgh, Color(0.72, 0.70, 0.66))
+	var stone := _make_stone_material(alb, nrm, rgh, Color(0.50, 0.50, 0.50))  # polished gray granite
+	var bluestone := _make_stone_material(alb, nrm, rgh, Color(0.35, 0.42, 0.48))  # bluestone basin
 	var tile_mat := StandardMaterial3D.new()
-	tile_mat.albedo_color = Color(0.20, 0.45, 0.55)  # blue-green Minton tile
-	tile_mat.roughness    = 0.4
-	tile_mat.metallic     = 0.15
+	tile_mat.albedo_color = Color(0.17, 0.31, 0.55)  # Minton cobalt blue + buff
+	tile_mat.roughness    = 0.35
+	tile_mat.metallic     = 0.10
 	var gold := StandardMaterial3D.new()
-	gold.albedo_color = Color(0.85, 0.72, 0.25)
-	gold.roughness    = 0.3
+	gold.albedo_color = Color(0.77, 0.64, 0.28)  # golden spire #C5A348
+	gold.roughness    = 0.25
 	gold.metallic     = 0.85
 	var lamp_mat := StandardMaterial3D.new()
 	lamp_mat.albedo_color = Color(0.95, 0.92, 0.82)  # frosted glass
@@ -3865,7 +3867,7 @@ func _build_cherry_hill_fountain(cx: float, cz: float, base_y: float, pool_r: fl
 	lamp_mat.emission_enabled = true
 
 	# Basin rim
-	_make_ring_mesh(cx, base_y, cz, pool_r - 0.25, pool_r + 0.2, 0.35, stone, "Cherry_Rim")
+	_make_ring_mesh(cx, base_y, cz, pool_r - 0.25, pool_r + 0.2, 0.35, bluestone, "Cherry_Rim")  # 20ft bluestone basin
 
 	# Central column — stone base, tile-clad shaft, bronze top
 	_make_cylinder_mesh(cx, base_y, cz, 0.6, 0.8, stone, "Cherry_Base")
@@ -3916,11 +3918,11 @@ func _build_cherry_hill_fountain(cx: float, cz: float, base_y: float, pool_r: fl
 # -- Untermyer Fountain: oval pool, 3 dancing bronze figures on plinth ------
 func _build_untermyer_fountain(cx: float, cz: float, base_y: float, pool_r: float,
 							   alb: ImageTexture, nrm: ImageTexture, rgh: ImageTexture) -> void:
-	var stone := _make_stone_material(alb, nrm, rgh, Color(0.80, 0.78, 0.72))
+	var stone := _make_stone_material(alb, nrm, rgh, Color(0.56, 0.56, 0.54))  # gray granite
 	var bronze := StandardMaterial3D.new()
-	bronze.albedo_color = Color(0.30, 0.40, 0.28)  # green patina
-	bronze.roughness    = 0.5
-	bronze.metallic     = 0.7
+	bronze.albedo_color = Color(0.29, 0.42, 0.29)  # aged green-brown patina
+	bronze.roughness    = 0.55
+	bronze.metallic     = 0.65
 
 	# Basin rim
 	_make_ring_mesh(cx, base_y, cz, pool_r - 0.2, pool_r + 0.15, 0.3, stone, "Untermyer_Rim")
@@ -3960,6 +3962,47 @@ func _build_generic_fountain(cx: float, cz: float, base_y: float, pool_r: float,
 
 	# Simple upward jet
 	_add_fountain_spray(cx, base_y + 1.5, cz, 2.0, 5.0, 100, 0.08)
+
+
+# ---------------------------------------------------------------------------
+# Bethesda Terrace — load GLB architectural model
+# ---------------------------------------------------------------------------
+func _build_bethesda_terrace() -> void:
+	var glb_res := "res://models/furniture/cp_bethesda_terrace.glb"
+	var glb_path := ProjectSettings.globalize_path(glb_res)
+	if not FileAccess.file_exists(glb_res) and not FileAccess.file_exists(glb_path):
+		return
+	var gltf_doc := GLTFDocument.new()
+	var gltf_state := GLTFState.new()
+	var err := gltf_doc.append_from_file(glb_path, gltf_state)
+	if err != OK:
+		print("WARNING: failed to load Bethesda Terrace GLB: error %d" % err)
+		return
+	var scene: Node = gltf_doc.generate_scene(gltf_state)
+	if scene == null:
+		return
+
+	# Terrace placement — arcade center between Mall and fountain
+	var cx := -460.0
+	var cz := 1000.0
+	var base_y := _terrain_y(cx, cz)
+
+	var node3d := Node3D.new()
+	node3d.name = "BethesdaTerrace"
+	# Blender +Y (south in model) exports as GLB -Z → Godot -Z (north).
+	# We need south facing +Z, so rotate 180 deg around Y.
+	node3d.rotation.y = PI
+	node3d.position = Vector3(cx, base_y, cz)
+
+	var children: Array = []
+	for c in scene.get_children():
+		children.append(c)
+	for c in children:
+		scene.remove_child(c)
+		node3d.add_child(c)
+	scene.queue_free()
+	add_child(node3d)
+	print("ParkLoader: Bethesda Terrace placed at (%.0f, %.0f) y=%.1f" % [cx, cz, base_y])
 
 
 # ---------------------------------------------------------------------------
@@ -4413,8 +4456,8 @@ void fragment() {
 	float n_fine  = gnoise(uv * 3.5 + vec2(t * 0.15, -t * 0.12));
 	float wave_h  = n_large * 0.4 + n_med * 0.35 + n_fine * 0.25;
 
-	vec3 deep    = vec3(0.018, 0.035, 0.030);
-	vec3 shallow = vec3(0.045, 0.08, 0.055);
+	vec3 deep    = vec3(0.020, 0.038, 0.028);   // dark olive-green (Central Park lakes)
+	vec3 shallow = vec3(0.050, 0.075, 0.045);   // slightly warmer shallow
 	// Subtle blend — mostly deep, shallow only at wave peaks
 	vec3 base_col = mix(deep, shallow, smoothstep(-0.3, 0.6, wave_h));
 
@@ -6873,8 +6916,9 @@ func _build_barriers(barriers: Array) -> void:
 
 	# Stone wall mesh
 	if not wall_verts.is_empty():
+		# Manhattan schist: gray stone with subtle warm weathering
 		_add_stone_mesh(wall_verts, wall_normals, rw_alb, rw_nrm, rw_rgh,
-						Color(0.78, 0.76, 0.72), "StoneWalls")
+						Color(0.50, 0.48, 0.44), "StoneWalls")
 	# Iron fence mesh
 	if not fence_verts.is_empty():
 		_add_batch_mesh(fence_verts, fence_normals,
@@ -7236,12 +7280,12 @@ func _build_statues(statues: Array) -> void:
 	var rw_alb := _load_tex("res://textures/rock_wall_diff.jpg")
 	var rw_nrm := _load_tex("res://textures/rock_wall_nrm.jpg")
 	var rw_rgh := _load_tex("res://textures/rock_wall_rgh.jpg")
-	var stone_mat := _make_stone_material(rw_alb, rw_nrm, rw_rgh, Color(0.78, 0.72, 0.62))
+	var stone_mat := _make_stone_material(rw_alb, rw_nrm, rw_rgh, Color(0.56, 0.56, 0.54))  # gray granite pedestal
 
 	var bronze_mat := StandardMaterial3D.new()
-	bronze_mat.albedo_color = Color(0.22, 0.24, 0.14)  # patinated bronze-green
-	bronze_mat.roughness    = 0.72
-	bronze_mat.metallic     = 0.50
+	bronze_mat.albedo_color = Color(0.29, 0.42, 0.29)  # aged green-brown patina per Wikimedia
+	bronze_mat.roughness    = 0.65
+	bronze_mat.metallic     = 0.55
 
 	# Load GLB statue models (3 variants for variety)
 	var statue_glb_meshes: Array[Mesh] = []
@@ -7776,7 +7820,8 @@ func _build_perimeter_wall(boundary: Array, paths: Array) -> void:
 		var b2 := qi * 4
 		indices.append_array(PackedInt32Array([b2, b2+1, b2+2, b2, b2+2, b2+3]))
 
-	var mat := _make_stone_material(rw_alb, rw_nrm, rw_rgh, Color(0.65, 0.55, 0.42))
+	# Manhattan schist: gray with subtle warm weathering (Wikimedia reference)
+	var mat := _make_stone_material(rw_alb, rw_nrm, rw_rgh, Color(0.48, 0.46, 0.42))
 	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
 	arrays[Mesh.ARRAY_VERTEX] = verts
 	arrays[Mesh.ARRAY_NORMAL] = normals
@@ -8198,12 +8243,12 @@ func _label_boundary_buildings() -> void:
 
 		var lbl := Label3D.new()
 		lbl.text = bname
-		lbl.font_size = 48
-		lbl.pixel_size = 0.012
+		lbl.font_size = 36
+		lbl.pixel_size = 0.008
 		lbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-		lbl.modulate = Color(0.85, 0.82, 0.78, 0.75)
-		lbl.outline_size = 6
-		lbl.outline_modulate = Color(0.08, 0.08, 0.08, 0.55)
+		lbl.modulate = Color(0.85, 0.82, 0.78, 0.50)
+		lbl.outline_size = 4
+		lbl.outline_modulate = Color(0.08, 0.08, 0.08, 0.35)
 		lbl.no_depth_test = false
 		lbl.position = Vector3(cx, label_y, cz)
 		add_child(lbl)
