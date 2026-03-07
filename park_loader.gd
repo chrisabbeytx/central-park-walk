@@ -54,7 +54,7 @@ var lamppost_material: StandardMaterial3D
 var facade_materials: Array = []  # ShaderMaterial list for night window emission
 
 # Splat map: 4096×4096 RG8 — R=material index, G=coverage alpha (smooth edges)
-const SPLAT_RES := 2048
+const SPLAT_RES := 4096
 const SPLAT_FEATHER := 1.2  # metres — soft edge transition width
 var splat_texture: ImageTexture
 var _splat_data: PackedByteArray  # raw RG8 bytes for path coverage queries
@@ -677,13 +677,13 @@ func _ready() -> void:
 	var amenities: Array = data.get("amenities", [])
 
 	print("ParkLoader: building path meshes…")
-	_load_vegetation_meshes()
+	var _t0 := Time.get_ticks_msec()
+	#_load_vegetation_meshes()  # disabled — terrain tiles will replace
 	_build_buildings(buildings)
 	_build_paths(paths)
 	_build_water(water)
 	_build_streams(streams)
 	_populate_water_grid(water)
-	_build_shore_vegetation(water)
 	_build_labels(water)
 	_build_trees(trees)
 	_build_furniture(benches, lampposts, paths)
@@ -693,20 +693,21 @@ func _ready() -> void:
 	_build_statues(statues)
 	_build_amenities(amenities)
 	_build_boats(water)
-	#_build_waterfowl(water)   # disabled — no animals for now
-	#_build_pedestrians(paths)  # disabled — no pedestrians for now
+	#_build_waterfowl(water)   # disabled — no animals
+	#_build_pedestrians(paths)  # disabled — no pedestrians
 	_build_boundary(boundary)
 	_build_perimeter_wall(boundary, paths)
 	_build_boundary_facades()
-	_build_undergrowth(trees, paths)
-	_build_meadow_grass(trees)
-	#_build_wildflowers(trees, water)  # disabled — will replace with terrain tile approach
-	#_build_squirrels(trees)    # disabled — no animals for now
+	#_build_undergrowth(trees, paths)   # disabled — terrain tiles will replace
+	#_build_meadow_grass(trees)         # disabled — terrain tiles will replace
+	#_build_wildflowers(trees, water)   # disabled — terrain tiles will replace
+	#_build_squirrels(trees)            # disabled — no animals
 	_build_field_markings()
 	_build_rocks(trees, water)
-	_build_tree_dirt(trees)
-	_build_grass_blades(trees)
-	print("ParkLoader: done")
+	#_build_tree_dirt(trees)            # disabled — terrain tiles will replace
+	#_build_grass_blades(trees)         # disabled — terrain tiles will replace
+	#_build_shore_vegetation(water)     # disabled — terrain tiles will replace
+	print("ParkLoader: done in %d ms total" % (Time.get_ticks_msec() - _t0))
 
 
 
@@ -8261,30 +8262,22 @@ func _build_furniture(bench_data: Array, lamppost_data: Array, paths: Array) -> 
 	lamp_bulb_mat.emission_energy_multiplier = 3.0
 	lamppost_material = lamp_bulb_mat
 
-	# --- Bench meshes (multiple variants for variety) ---
-	# Load CP-specific bench model (green iron + wood slats, 2 materials baked in)
+	# --- Bench mesh (CP-specific model with iron + wood materials baked in) ---
 	var cp_bench_path := ProjectSettings.globalize_path("res://models/furniture/cp_bench.glb")
 	var cp_bench_meshes := _load_glb_meshes(cp_bench_path)
-	var bench_variants: Array[Mesh] = []
-	# CP bench is the primary variant
+	var bench_mesh: Mesh = null
 	if cp_bench_meshes.has("ParkFurn_Bench_CP"):
-		bench_variants.append(cp_bench_meshes["ParkFurn_Bench_CP"] as Mesh)
+		bench_mesh = cp_bench_meshes["ParkFurn_Bench_CP"] as Mesh
 		print("Bench: loaded CP bench model (iron + wood)")
-	# Fallback to generic furniture GLB variants
-	for bname in ["ParkFurn_Bench_A", "ParkFurn_Bench_B", "ParkFurn_Bench_C"]:
-		if furn_meshes.has(bname):
-			bench_variants.append(furn_meshes[bname] as Mesh)
-	if bench_variants.is_empty():
-		print("WARNING: no bench meshes found in GLB")
+	else:
+		# Fallback: first available bench from furniture GLB
+		for bname in ["ParkFurn_Bench_A", "ParkFurn_Bench_B", "ParkFurn_Bench_C"]:
+			if furn_meshes.has(bname):
+				bench_mesh = furn_meshes[bname] as Mesh
+				break
+	if bench_mesh == null:
+		print("WARNING: no bench mesh found in GLB")
 		return
-	# Material override only for fallback benches (CP bench has its own materials)
-	var bench_mat: Material = null
-	if cp_bench_meshes.is_empty():
-		var mat := StandardMaterial3D.new()
-		mat.albedo_color = Color(0.18, 0.24, 0.14)  # dark hunter green (CP bench iron)
-		mat.roughness    = 0.80
-		mat.metallic     = 0.30  # slight metallic sheen for cast iron
-		bench_mat = mat
 
 	# --- Place lampposts: OSM positions + procedural supplement ---
 	# Zone classification: formal areas get ornate lamps, naturalistic get standard,
@@ -8458,17 +8451,9 @@ func _build_furniture(bench_data: Array, lamppost_data: Array, paths: Array) -> 
 			all_bulb_xf.append(bxf)
 	if not all_bulb_xf.is_empty():
 		_spawn_multimesh(bulb_mesh, lamp_bulb_mat, all_bulb_xf, "LampBulbs")
-	# Distribute benches across variants for visual variety
+	# Spawn all benches with the CP bench model (materials baked into GLB)
 	if not bench_xf.is_empty():
-		var n_variants := bench_variants.size()
-		var variant_xf: Array = []
-		for _vi in n_variants:
-			variant_xf.append([])
-		for i in bench_xf.size():
-			variant_xf[i % n_variants].append(bench_xf[i])
-		for vi in n_variants:
-			if not variant_xf[vi].is_empty():
-				_spawn_multimesh(bench_variants[vi], bench_mat, variant_xf[vi], "Benches_%d" % vi)
+		_spawn_multimesh(bench_mesh, null, bench_xf, "Benches_0")
 
 
 # ---------------------------------------------------------------------------
@@ -9064,17 +9049,22 @@ func _build_meadow_grass(trees: Array) -> void:
 				continue
 
 			# Must be within 50m of a tree (actual park area)
-			var mg_min := 999.0
+			var mg_near := false
 			var mgk := Vector2i(int(floor(x / MG_TREE_CELL)), int(floor(z / MG_TREE_CELL)))
+			var mg_pos := Vector2(x, z)
 			for di in range(-2, 3):
+				if mg_near:
+					break
 				for dj in range(-2, 3):
 					var nk := Vector2i(mgk.x + di, mgk.y + dj)
 					if mg_tree_hash.has(nk):
 						for tp: Vector2 in mg_tree_hash[nk]:
-							var d := Vector2(x, z).distance_to(tp)
-							if d < mg_min:
-								mg_min = d
-			if mg_min > 50.0:
+							if mg_pos.distance_squared_to(tp) < 2500.0:
+								mg_near = true
+								break
+					if mg_near:
+						break
+			if not mg_near:
 				z += scan_step
 				continue
 

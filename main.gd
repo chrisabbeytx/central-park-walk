@@ -268,7 +268,6 @@ func _load_heightmap() -> void:
 		var buf := fa.get_buffer(byte_count)
 		fa.close()
 		_hm_data = buf.to_float32_array()
-		# Mesh built at half resolution if heightmap > 2048
 		_mesh_width = _hm_width
 		_mesh_depth = _hm_depth
 		print("Heightmap loaded (bin): %d×%d  mesh=%d×%d  origin_y=%.1f m" % [
@@ -1148,32 +1147,38 @@ func _apply_time_of_day() -> void:
 	_env.volumetric_fog_density    = _lerp_kf("vol_fog_density", a, b, t)
 	_env.volumetric_fog_anisotropy = _lerp_kf("vol_fog_anisotropy", a, b, t)
 
-	# Weather overrides — applied after keyframe interpolation so they stick
+	# Weather overrides — use absolute values for fog/clouds so the effect
+	# is clearly visible regardless of time-of-day keyframe base values.
 	if _weather_mode == "fog":
-		_env.fog_density *= 30.0
-		_env.fog_light_energy *= 0.5
+		_env.fog_density = 0.035  # heavy fade: ~50% at 20m, ~90% at 65m
+		_env.fog_light_energy = 0.6
+		_env.fog_light_color = Color(0.78, 0.80, 0.82)
+		_env.fog_sun_scatter = 0.05
 		if _env.volumetric_fog_enabled:
-			_env.volumetric_fog_density *= 20.0
-		_env.adjustment_saturation *= 0.6
+			_env.volumetric_fog_density = 0.015
+		_env.adjustment_saturation = 0.45
+		_env.adjustment_brightness = 0.90
+		_sky_mat.set_shader_parameter("cloud_coverage", 0.99)
+		_sky_mat.set_shader_parameter("cloud_density", 0.95)
 	elif _weather_mode == "rain":
-		_env.fog_density *= 12.0
+		_env.fog_density = 0.012
 		_env.fog_light_energy *= 0.7
 		if _env.volumetric_fog_enabled:
-			_env.volumetric_fog_density *= 8.0
+			_env.volumetric_fog_density = 0.006
 		_env.adjustment_saturation *= 0.7
 		_sky_mat.set_shader_parameter("cloud_coverage", 0.95)
 		_sky_mat.set_shader_parameter("cloud_density", 0.85)
 	elif _weather_mode == "thunderstorm":
-		_env.fog_density *= 18.0
+		_env.fog_density = 0.018
 		_env.fog_light_energy *= 0.5
 		if _env.volumetric_fog_enabled:
-			_env.volumetric_fog_density *= 12.0
+			_env.volumetric_fog_density = 0.010
 		_env.adjustment_saturation *= 0.55
 		_env.adjustment_brightness *= 0.85
 		_sky_mat.set_shader_parameter("cloud_coverage", 0.98)
 		_sky_mat.set_shader_parameter("cloud_density", 0.92)
 	elif _weather_mode == "snow":
-		_env.fog_density *= 2.0
+		_env.fog_density = 0.008
 		_env.adjustment_saturation *= 0.75
 		_sky_mat.set_shader_parameter("cloud_coverage", 0.92)
 		_sky_mat.set_shader_parameter("cloud_density", 0.80)
@@ -1406,75 +1411,46 @@ func _setup_ground() -> void:
 		return
 
 	# ---- Build terrain ArrayMesh ----
-	# Mesh at _mesh_width × _mesh_depth; heightmap data at _hm_width × _hm_depth
+	# Mesh at full heightmap resolution; shader computes per-pixel normals
+	# from the heightmap texture, so we skip mesh normals/tangents.
 	var MW        := _mesh_width
 	var MH        := _mesh_depth
-	var step      := _hm_width / MW  # subsampling step in heightmap pixels
 	var half      := _hm_world_size * 0.5
 	var cell      := _hm_world_size / float(MW - 1)
-	var hm_cell   := _hm_world_size / float(_hm_width - 1)
 	var V         := MW * MH
+	var inv_mw    := 1.0 / float(MW - 1)
+	var inv_mh    := 1.0 / float(MH - 1)
 
 	var verts    := PackedVector3Array(); verts.resize(V)
-	var normals  := PackedVector3Array(); normals.resize(V)
 	var uvs      := PackedVector2Array(); uvs.resize(V)
-	var tangents := PackedFloat32Array(); tangents.resize(V * 4)
 
 	for zi in MH:
-		var hzi := mini(zi * step, _hm_depth - 1)
+		var zw  := -half + zi * cell
+		var uzv := float(zi) * inv_mh
+		var row := zi * MW
 		for xi in MW:
-			var hxi := mini(xi * step, _hm_width - 1)
-			var idx := zi * MW + xi
-			var xw  := -half + xi * cell
-			var zw  := -half + zi * cell
-			var h   := _hm_data[hzi * _hm_width + hxi]
-			verts[idx]   = Vector3(xw, h, zw)
-			uvs[idx]     = Vector2(float(xi) / float(MW - 1), float(zi) / float(MH - 1))
-			# Slope-based normal using full-res heightmap neighbours
-			var hL := _hm_data[hzi * _hm_width + maxi(hxi - 1, 0)]
-			var hR := _hm_data[hzi * _hm_width + mini(hxi + 1, _hm_width - 1)]
-			var hU := _hm_data[maxi(hzi - 1, 0)          * _hm_width + hxi]
-			var hD := _hm_data[mini(hzi + 1, _hm_depth - 1) * _hm_width + hxi]
-			normals[idx] = Vector3(hL - hR, 2.0 * hm_cell, hU - hD).normalized()
-			tangents[idx*4] = 1.0; tangents[idx*4+3] = 1.0
+			var idx := row + xi
+			verts[idx] = Vector3(-half + xi * cell, _hm_data[idx], zw)
+			uvs[idx]   = Vector2(float(xi) * inv_mw, uzv)
 
 	var T       := (MW - 1) * (MH - 1) * 6
 	var indices := PackedInt32Array(); indices.resize(T)
 	var t       := 0
 	for zi in (MH - 1):
-		var hzi := mini(zi * step, _hm_depth - 2)
+		var row0 := zi * MW
+		var row1 := row0 + MW
 		for xi in (MW - 1):
-			var hxi := mini(xi * step, _hm_width - 2)
-			var i00 := zi * MW + xi
-			var i10 := zi * MW + xi + 1
-			var i01 := (zi + 1) * MW + xi
-			var i11 := (zi + 1) * MW + xi + 1
-			# Adaptive diagonal using full-res heights
-			var hi00 := hzi * _hm_width + hxi
-			var h00_v := _hm_data[hi00]
-			var h11_v := _hm_data[mini(hzi + step, _hm_depth - 1) * _hm_width + mini(hxi + step, _hm_width - 1)]
-			var h10_v := _hm_data[hzi * _hm_width + mini(hxi + step, _hm_width - 1)]
-			var h01_v := _hm_data[mini(hzi + step, _hm_depth - 1) * _hm_width + hxi]
-			var d1 := absf(h00_v - h11_v)
-			var d2 := absf(h10_v - h01_v)
-			var use_alt: bool
-			if absf(d1 - d2) < 0.02:
-				use_alt = (xi + zi) % 2 == 1
-			else:
-				use_alt = d2 < d1
-			if not use_alt:
-				indices[t]     = i00; indices[t + 1] = i10; indices[t + 2] = i11
-				indices[t + 3] = i00; indices[t + 4] = i11; indices[t + 5] = i01
-			else:
-				indices[t]     = i00; indices[t + 1] = i10; indices[t + 2] = i01
-				indices[t + 3] = i10; indices[t + 4] = i11; indices[t + 5] = i01
+			var i00 := row0 + xi
+			var i10 := i00 + 1
+			var i01 := row1 + xi
+			var i11 := i01 + 1
+			indices[t]     = i00; indices[t + 1] = i10; indices[t + 2] = i11
+			indices[t + 3] = i00; indices[t + 4] = i11; indices[t + 5] = i01
 			t += 6
 
 	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
 	arrays[Mesh.ARRAY_VERTEX]  = verts
-	arrays[Mesh.ARRAY_NORMAL]  = normals
 	arrays[Mesh.ARRAY_TEX_UV]  = uvs
-	arrays[Mesh.ARRAY_TANGENT] = tangents
 	arrays[Mesh.ARRAY_INDEX]   = indices
 	var mesh := ArrayMesh.new()
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
@@ -1485,16 +1461,21 @@ func _setup_ground() -> void:
 	mi.name       = "Terrain"
 	add_child(mi)
 
-	# ---- HeightMapShape3D collision (at mesh resolution) ----
+	# ---- HeightMapShape3D collision (subsampled for physics performance) ----
+	var COL_RES := 1024
+	var col_step := MW / COL_RES
+	var col_cell := _hm_world_size / float(COL_RES - 1)
 	var hm_shape          := HeightMapShape3D.new()
-	hm_shape.map_width     = MW
-	hm_shape.map_depth     = MH
-	var pf                := PackedFloat32Array(); pf.resize(V)
-	for i in V:
-		pf[i] = verts[i].y
+	hm_shape.map_width     = COL_RES
+	hm_shape.map_depth     = COL_RES
+	var pf                := PackedFloat32Array(); pf.resize(COL_RES * COL_RES)
+	for czi in COL_RES:
+		var src_row := mini(czi * col_step, MW - 1) * MW
+		for cxi in COL_RES:
+			pf[czi * COL_RES + cxi] = _hm_data[src_row + mini(cxi * col_step, MW - 1)]
 	hm_shape.map_data      = pf
 
-	# Heightmap texture for per-pixel fragment normals — use full-res data
+	# Heightmap texture for per-pixel fragment normals — full-res data
 	var hm_img := Image.create(_hm_width, _hm_depth, false, Image.FORMAT_RF)
 	hm_img.set_data(_hm_width, _hm_depth, false, Image.FORMAT_RF, _hm_data.to_byte_array())
 	var hm_tex := ImageTexture.create_from_image(hm_img)
@@ -1502,7 +1483,7 @@ func _setup_ground() -> void:
 
 	var col               := CollisionShape3D.new()
 	col.shape              = hm_shape
-	col.scale              = Vector3(cell, 1.0, cell)
+	col.scale              = Vector3(col_cell, 1.0, col_cell)
 
 	var body              := StaticBody3D.new()
 	body.name              = "TerrainBody"
@@ -2333,6 +2314,9 @@ func _cycle_weather() -> void:
 		idx = 0
 	_weather_mode = WEATHER_MODES[(idx + 1) % WEATHER_MODES.size()]
 	_setup_weather()
+	# Force re-apply time-of-day so keyframe values override stale weather fog/clouds
+	_last_applied_tod = -999.0
+	_apply_time_of_day()
 	print("Weather: %s" % _weather_mode)
 
 
