@@ -7661,7 +7661,7 @@ func _build_statues(statues: Array) -> void:
 			stype = "obelisk"
 			ped_h = 1.5
 			ped_r = 1.2
-			fig_h = 18.0
+			fig_h = 21.0  # Cleopatra's Needle = 69ft (21m)
 		elif stype == "monument":
 			ped_h = 1.8
 			ped_r = 0.9
@@ -7675,7 +7675,11 @@ func _build_statues(statues: Array) -> void:
 
 		if stype == "obelisk":
 			# Tall tapered column — keep procedural (unique shape)
-			_make_cylinder_mesh(sx, fig_y, sz, 0.8, fig_h, stone_mat,
+			# Cleopatra's Needle: Aswan red granite — warm pinkish-red
+			var obelisk_mat := stone_mat
+			if sname_lower.contains("needle") or sname_lower.contains("cleopatra"):
+				obelisk_mat = _make_stone_material(rw_alb, rw_nrm, rw_rgh, Color(0.62, 0.42, 0.38))
+			_make_cylinder_mesh(sx, fig_y, sz, 0.8, fig_h, obelisk_mat,
 								"Obelisk_%s" % safe_name, 4)
 		elif use_glb and stype != "bust":
 			# Use GLB statue model
