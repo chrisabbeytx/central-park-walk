@@ -8390,15 +8390,24 @@ func _make_dirt_circle_mesh() -> ArrayMesh:
 
 func _build_trash_cans(trash_data: Array, paths: Array) -> void:
 	## Trash receptacles from OSM data, with procedural fallback.
-	if not _furn_glb_meshes.has("ParkFurn_TrashCan_A"):
-		print("WARNING: ParkFurn_TrashCan_A not found, skipping trash cans")
+	# Load CP-specific trash can (green wire basket)
+	var cp_tc_path := ProjectSettings.globalize_path("res://models/furniture/cp_trash_can.glb")
+	var cp_tc_meshes := _load_glb_meshes(cp_tc_path)
+	var mesh: Mesh
+	var mat: Material = null
+	if cp_tc_meshes.has("CP_TrashCan"):
+		mesh = cp_tc_meshes["CP_TrashCan"] as Mesh
+		print("TrashCan: loaded CP trash can model (green wire)")
+	elif _furn_glb_meshes.has("ParkFurn_TrashCan_A"):
+		mesh = _furn_glb_meshes["ParkFurn_TrashCan_A"]
+		var trash_mat := StandardMaterial3D.new()
+		trash_mat.albedo_color = Color(0.08, 0.08, 0.06)
+		trash_mat.roughness = 0.78
+		trash_mat.metallic = 0.45
+		mat = trash_mat
+	else:
+		print("WARNING: no trash can mesh found, skipping")
 		return
-	var mesh: Mesh = _furn_glb_meshes["ParkFurn_TrashCan_A"]
-	var trash_mat := StandardMaterial3D.new()
-	trash_mat.albedo_color = Color(0.08, 0.08, 0.06)  # matches lamppost wrought iron
-	trash_mat.roughness = 0.78
-	trash_mat.metallic = 0.45
-	var mat: Material = trash_mat
 
 	# Place from OSM data + procedural supplement
 	var xforms: Array = []
