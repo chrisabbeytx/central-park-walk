@@ -164,7 +164,7 @@ func _ready() -> void:
 	if not _terrain_only:
 		_setup_lamp_lights()
 		#_setup_falling_leaves()  # disabled — spring/summer season
-		#_setup_pigeons()  # disabled — animal life
+		_setup_pigeons()
 		_setup_audio()
 	# Register global wind uniform so all vegetation shaders can read it
 	RenderingServer.global_shader_parameter_add("wind_vec", RenderingServer.GLOBAL_VAR_TYPE_VEC2, Vector2.ZERO)
@@ -1189,21 +1189,21 @@ func _apply_time_of_day() -> void:
 			if fm is ShaderMaterial:
 				fm.set_shader_parameter("night_factor", nf)
 
-	# Day/night audio modulation — disabled (audio not ready yet)
-	#if _audio_birds and _audio_birds.stream:
-	#	var bird_energy := 1.0
-	#	if _time_of_day < 5.0 or _time_of_day > 21.0:
-	#		bird_energy = 0.1
-	#	elif _time_of_day < 7.0:
-	#		bird_energy = lerpf(0.1, 1.2, (_time_of_day - 5.0) / 2.0)
-	#	elif _time_of_day > 19.0:
-	#		bird_energy = lerpf(1.0, 0.1, (_time_of_day - 19.0) / 2.0)
-	#	_audio_birds.volume_db = lerpf(-25.0, -6.0, bird_energy)
-	#if _audio_wind and _audio_wind.stream:
-	#	var wind_vol := -14.0
-	#	if _time_of_day > 18.0 or _time_of_day < 6.0:
-	#		wind_vol = -10.0
-	#	_audio_wind.volume_db = wind_vol
+	# Day/night audio modulation
+	if _audio_birds and _audio_birds.stream:
+		var bird_energy := 1.0
+		if _time_of_day < 5.0 or _time_of_day > 21.0:
+			bird_energy = 0.1
+		elif _time_of_day < 7.0:
+			bird_energy = lerpf(0.1, 1.2, (_time_of_day - 5.0) / 2.0)
+		elif _time_of_day > 19.0:
+			bird_energy = lerpf(1.0, 0.1, (_time_of_day - 19.0) / 2.0)
+		_audio_birds.volume_db = lerpf(-25.0, -6.0, bird_energy)
+	if _audio_wind and _audio_wind.stream:
+		var wind_vol := -14.0
+		if _time_of_day > 18.0 or _time_of_day < 6.0:
+			wind_vol = -10.0
+		_audio_wind.volume_db = wind_vol
 
 
 # ---------------------------------------------------------------------------
@@ -3044,7 +3044,7 @@ func _setup_pigeons() -> void:
 		pigeon_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
 		pigeon_mat.billboard_mode = BaseMaterial3D.BILLBOARD_PARTICLES
 		pigeon_mat.roughness = 0.90
-		pigeon_mat.specular = 0.0
+		pigeon_mat.metallic_specular = 0.0
 		quad.material = pigeon_mat
 		particles.draw_pass_1 = quad
 
