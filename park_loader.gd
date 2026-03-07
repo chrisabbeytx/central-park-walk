@@ -10279,6 +10279,236 @@ func _build_field_markings() -> void:
 	if bball_count > 0:
 		print("ParkLoader: basketball court markings = ", bball_count)
 
+	# --- Tennis court markings ---
+	# Central Park Tennis Center: Har-Tru green clay, white lines
+	var tennis_count := 0
+	for zone3 in landuse_zones:
+		var name4: String = zone3.get("name", "")
+		if name4.is_empty():
+			continue
+		if "Tennis" not in name4:
+			continue
+		var tpts2: Array = zone3.get("points", [])
+		if tpts2.size() < 4:
+			continue
+		# Skip facilities outside park boundary
+		var in_park := false
+		for tp_chk in tpts2:
+			if _in_boundary(float(tp_chk[0]), float(tp_chk[1])):
+				in_park = true
+				break
+		if not in_park:
+			continue
+		# Compute bounding box center and axes from polygon
+		var tcx2 := 0.0; var tcz2 := 0.0
+		for tp in tpts2:
+			tcx2 += float(tp[0]); tcz2 += float(tp[1])
+		tcx2 /= tpts2.size(); tcz2 /= tpts2.size()
+		# Find longest edge to determine facility orientation
+		var best_edge_len := 0.0
+		var best_edge_dx := 0.0; var best_edge_dz := 0.0
+		for ei in tpts2.size():
+			var ei2 := (ei + 1) % tpts2.size()
+			var edx := float(tpts2[ei2][0]) - float(tpts2[ei][0])
+			var edz := float(tpts2[ei2][1]) - float(tpts2[ei][1])
+			var elen := sqrt(edx * edx + edz * edz)
+			if elen > best_edge_len:
+				best_edge_len = elen
+				best_edge_dx = edx / elen; best_edge_dz = edz / elen
+		if best_edge_len < 1.0:
+			continue
+		var fac_long_x := best_edge_dx; var fac_long_z := best_edge_dz
+		var fac_short_x := -fac_long_z; var fac_short_z := fac_long_x
+		# Project all polygon points onto axes to get true extent
+		var min_long := 1e9; var max_long := -1e9
+		var min_short := 1e9; var max_short := -1e9
+		for tp2 in tpts2:
+			var px2 := float(tp2[0]) - tcx2; var pz2 := float(tp2[1]) - tcz2
+			var proj_l := px2 * fac_long_x + pz2 * fac_long_z
+			var proj_s := px2 * fac_short_x + pz2 * fac_short_z
+			min_long = minf(min_long, proj_l); max_long = maxf(max_long, proj_l)
+			min_short = minf(min_short, proj_s); max_short = maxf(max_short, proj_s)
+		var fac_l := max_long - min_long
+		var fac_w := max_short - min_short
+		# Recenter on polygon extent
+		var ctr_long := (min_long + max_long) * 0.5
+		var ctr_short := (min_short + max_short) * 0.5
+		tcx2 += fac_long_x * ctr_long + fac_short_x * ctr_short
+		tcz2 += fac_long_z * ctr_long + fac_short_z * ctr_short
+		# Tennis court dimensions (doubles)
+		var court_l := 23.77  # baseline to baseline
+		var court_w := 10.97  # doubles sideline to sideline
+		var singles_w := 8.23
+		var service_d := 6.40  # net to service line
+		# Spacing between courts
+		var gap_side := 3.66   # between sidelines
+		var gap_end := 6.40    # between baselines
+		var slot_x := court_w + gap_side  # ~14.6m per court across
+		var slot_z := court_l + gap_end   # ~30.2m per court deep
+		# Inset for walkways/fencing/clubhouse
+		var usable_l := fac_l - 20.0  # margin for perimeter walkways
+		var usable_w := fac_w - 10.0
+		# Courts oriented with long axis along fac_short (perpendicular to facility long axis)
+		var n_cols := int(usable_l / slot_x)
+		var n_rows := int(usable_w / slot_z)
+		if n_cols < 1: n_cols = 1
+		if n_rows < 1: n_rows = 1
+		# Cap to realistic count (Central Park Tennis Center has ~26 courts)
+		while n_cols * n_rows > 30:
+			if n_cols > n_rows and n_cols > 1:
+				n_cols -= 1
+			elif n_rows > 1:
+				n_rows -= 1
+			else:
+				break
+		# Offset so grid is centered
+		var grid_w_total := float(n_cols) * slot_x - gap_side
+		var grid_h_total := float(n_rows) * slot_z - gap_end
+		var off_long := -grid_w_total * 0.5 + court_w * 0.5
+		var off_short := -grid_h_total * 0.5 + court_l * 0.5
+
+		# Materials
+		var court_mat := StandardMaterial3D.new()
+		court_mat.albedo_color = Color(0.35, 0.55, 0.38)  # Har-Tru green clay
+		court_mat.roughness = 0.90
+		court_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+
+		var t_verts := PackedVector3Array()
+		var t_norms := PackedVector3Array()
+		var tl_verts := PackedVector3Array()
+		var tl_norms := PackedVector3Array()
+		var tlw := 0.05  # tennis line width (~2 inches)
+
+		var _draw_tline := func(x0t: float, z0t: float, x1t: float, z1t: float) -> void:
+			var dtx := x1t - x0t; var dtz := z1t - z0t
+			var tln := sqrt(dtx * dtx + dtz * dtz)
+			if tln < 0.01: return
+			var tpx := -dtz / tln * tlw * 0.5; var tpz := dtx / tln * tlw * 0.5
+			var ty0 := _terrain_y(x0t, z0t) + 0.03
+			var ty1 := _terrain_y(x1t, z1t) + 0.03
+			tl_verts.append(Vector3(x0t + tpx, ty0, z0t + tpz))
+			tl_verts.append(Vector3(x0t - tpx, ty0, z0t - tpz))
+			tl_verts.append(Vector3(x1t + tpx, ty1, z1t + tpz))
+			tl_verts.append(Vector3(x0t - tpx, ty0, z0t - tpz))
+			tl_verts.append(Vector3(x1t - tpx, ty1, z1t - tpz))
+			tl_verts.append(Vector3(x1t + tpx, ty1, z1t + tpz))
+			for _jt in 6: tl_norms.append(Vector3.UP)
+
+		var _draw_court_quad := func(x0q: float, z0q: float, x1q: float, z1q: float,
+				x2q: float, z2q: float, x3q: float, z3q: float) -> void:
+			var qy0 := _terrain_y(x0q, z0q) + 0.02
+			var qy1 := _terrain_y(x1q, z1q) + 0.02
+			var qy2 := _terrain_y(x2q, z2q) + 0.02
+			var qy3 := _terrain_y(x3q, z3q) + 0.02
+			t_verts.append(Vector3(x0q, qy0, z0q))
+			t_verts.append(Vector3(x1q, qy1, z1q))
+			t_verts.append(Vector3(x2q, qy2, z2q))
+			t_verts.append(Vector3(x0q, qy0, z0q))
+			t_verts.append(Vector3(x2q, qy2, z2q))
+			t_verts.append(Vector3(x3q, qy3, z3q))
+			for _jq in 6: t_norms.append(Vector3.UP)
+
+		var courts_placed := 0
+		for col in n_cols:
+			for row in n_rows:
+				# Court center in facility-local coords
+				var loc_x := off_long + float(col) * slot_x
+				var loc_z := off_short + float(row) * slot_z
+				# Transform to world
+				var ccx := tcx2 + fac_long_x * loc_x + fac_short_x * loc_z
+				var ccz := tcz2 + fac_long_z * loc_x + fac_short_z * loc_z
+				# Court long axis = fac_short, court short axis = fac_long
+				var cl_x := fac_short_x; var cl_z := fac_short_z  # court long (baseline-to-baseline)
+				var cs_x := fac_long_x; var cs_z := fac_long_z    # court short (sideline-to-sideline)
+				var hl := court_l * 0.5  # half length
+				var hw2 := court_w * 0.5  # half width (doubles)
+				var hsw := singles_w * 0.5  # half width (singles)
+				# Court surface quad
+				var q0x := ccx - cl_x * hl - cs_x * hw2
+				var q0z := ccz - cl_z * hl - cs_z * hw2
+				var q1x := ccx + cl_x * hl - cs_x * hw2
+				var q1z := ccz + cl_z * hl - cs_z * hw2
+				var q2x := ccx + cl_x * hl + cs_x * hw2
+				var q2z := ccz + cl_z * hl + cs_z * hw2
+				var q3x := ccx - cl_x * hl + cs_x * hw2
+				var q3z := ccz - cl_z * hl + cs_z * hw2
+				_draw_court_quad.call(q0x, q0z, q1x, q1z, q2x, q2z, q3x, q3z)
+				# Doubles sidelines (long sides)
+				for tside in [-1.0, 1.0]:
+					var tsf := float(tside)
+					var s0x: float = ccx - cl_x * hl + cs_x * hw2 * tsf
+					var s0z: float = ccz - cl_z * hl + cs_z * hw2 * tsf
+					var s1x: float = ccx + cl_x * hl + cs_x * hw2 * tsf
+					var s1z: float = ccz + cl_z * hl + cs_z * hw2 * tsf
+					_draw_tline.call(s0x, s0z, s1x, s1z)
+				# Singles sidelines
+				for tside2 in [-1.0, 1.0]:
+					var tsf2 := float(tside2)
+					var ss0x: float = ccx - cl_x * hl + cs_x * hsw * tsf2
+					var ss0z: float = ccz - cl_z * hl + cs_z * hsw * tsf2
+					var ss1x: float = ccx + cl_x * hl + cs_x * hsw * tsf2
+					var ss1z: float = ccz + cl_z * hl + cs_z * hsw * tsf2
+					_draw_tline.call(ss0x, ss0z, ss1x, ss1z)
+				# Baselines (short ends)
+				for tside3 in [-1.0, 1.0]:
+					var tsf3 := float(tside3)
+					var b0x: float = ccx + cl_x * hl * tsf3 - cs_x * hw2
+					var b0z: float = ccz + cl_z * hl * tsf3 - cs_z * hw2
+					var b1x: float = ccx + cl_x * hl * tsf3 + cs_x * hw2
+					var b1z: float = ccz + cl_z * hl * tsf3 + cs_z * hw2
+					_draw_tline.call(b0x, b0z, b1x, b1z)
+				# Service lines (parallel to net, 6.40m from center each side)
+				for tside4 in [-1.0, 1.0]:
+					var tsf4 := float(tside4)
+					var sv0x: float = ccx + cl_x * service_d * tsf4 - cs_x * hsw
+					var sv0z: float = ccz + cl_z * service_d * tsf4 - cs_z * hsw
+					var sv1x: float = ccx + cl_x * service_d * tsf4 + cs_x * hsw
+					var sv1z: float = ccz + cl_z * service_d * tsf4 + cs_z * hsw
+					_draw_tline.call(sv0x, sv0z, sv1x, sv1z)
+				# Center service line (net to each service line, along court center)
+				_draw_tline.call(
+					ccx - cl_x * service_d, ccz - cl_z * service_d,
+					ccx + cl_x * service_d, ccz + cl_z * service_d)
+				# Center mark on baselines (short tick at center)
+				var cm_len := 0.1  # 10cm tick
+				for tside5 in [-1.0, 1.0]:
+					var tsf5 := float(tside5)
+					var cmx: float = ccx + cl_x * hl * tsf5
+					var cmz: float = ccz + cl_z * hl * tsf5
+					_draw_tline.call(
+						cmx - cl_x * cm_len * tsf5, cmz - cl_z * cm_len * tsf5,
+						cmx, cmz)
+				courts_placed += 1
+
+		# Build court surface mesh
+		if not t_verts.is_empty():
+			var ta2: Array = []; ta2.resize(Mesh.ARRAY_MAX)
+			ta2[Mesh.ARRAY_VERTEX] = t_verts
+			ta2[Mesh.ARRAY_NORMAL] = t_norms
+			var tm := ArrayMesh.new()
+			tm.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, ta2)
+			tm.surface_set_material(0, court_mat)
+			var tmi := MeshInstance3D.new()
+			tmi.mesh = tm
+			tmi.name = "Tennis_Surface_" + name4.replace(" ", "_")
+			add_child(tmi)
+		# Build court lines mesh
+		if not tl_verts.is_empty():
+			var tla: Array = []; tla.resize(Mesh.ARRAY_MAX)
+			tla[Mesh.ARRAY_VERTEX] = tl_verts
+			tla[Mesh.ARRAY_NORMAL] = tl_norms
+			var tlm := ArrayMesh.new()
+			tlm.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, tla)
+			tlm.surface_set_material(0, line_mat)
+			var tlmi := MeshInstance3D.new()
+			tlmi.mesh = tlm
+			tlmi.name = "Tennis_Lines_" + name4.replace(" ", "_")
+			add_child(tlmi)
+		tennis_count += courts_placed
+
+	if tennis_count > 0:
+		print("ParkLoader: tennis court markings = ", tennis_count)
+
 
 func _build_grass_blades(trees: Array) -> void:
 	var rng := RandomNumberGenerator.new()
