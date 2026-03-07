@@ -692,7 +692,7 @@ func _ready() -> void:
 	_build_amenities(amenities)
 	_build_boats(water)
 	#_build_waterfowl(water)  # disabled — animal life
-	#_build_pedestrians(paths)  # disabled
+	_build_pedestrians(paths)
 	_build_boundary(boundary)
 	_build_perimeter_wall(boundary)
 	_build_boundary_facades()
@@ -9611,17 +9611,36 @@ func _make_person_mesh_sitter() -> ArrayMesh:
 	return mesh
 
 func _build_pedestrians(paths: Array) -> void:
-	## Billboard pedestrian silhouettes along paths + on benches.
+	## Low-poly 3D pedestrians along paths + on benches.
 	if paths.is_empty():
 		return
 	var rng := RandomNumberGenerator.new()
 	rng.seed = 44422
-	var walk_mat := _make_person_material(Color(0.15, 0.15, 0.18))
-	var sit_mat := _make_person_material(Color(0.22, 0.18, 0.14))
-	var walker_mesh := _make_person_mesh_walker()
+	# Load lowpoly human GLB
+	var human_path := ProjectSettings.globalize_path("res://models/furniture/human_lowpoly.glb")
+	var human_meshes := _load_glb_meshes(human_path)
+	var walker_mesh: Mesh = null
+	for key in human_meshes:
+		walker_mesh = human_meshes[key] as Mesh
+		break
+	if walker_mesh == null:
+		walker_mesh = _make_person_mesh_walker()
 	var sitter_mesh := _make_person_mesh_sitter()
+	# Varied clothing colors
+	var ped_colors: Array[Color] = [
+		Color(0.15, 0.15, 0.20),  # dark navy
+		Color(0.25, 0.12, 0.10),  # maroon
+		Color(0.10, 0.18, 0.12),  # forest green
+		Color(0.30, 0.28, 0.22),  # khaki
+		Color(0.12, 0.12, 0.12),  # charcoal
+		Color(0.35, 0.20, 0.10),  # brown
+		Color(0.20, 0.20, 0.25),  # grey-blue
+		Color(0.22, 0.10, 0.15),  # burgundy
+	]
 
-	var walk_xf: Array = []
+	var n_colors := ped_colors.size()
+	var walk_xf_by_color: Array = []
+	for _c in n_colors: walk_xf_by_color.append([])
 	var jog_xf: Array = []
 	var sit_xf: Array = []
 
@@ -9660,7 +9679,8 @@ func _build_pedestrians(paths: Array) -> void:
 					continue
 				var py := _terrain_y(px, pz)
 				var angle := atan2(dx, dz) + rng.randf_range(-0.5, 0.5)
-				walk_xf.append(Transform3D(Basis(Vector3.UP, angle), Vector3(px, py, pz)))
+				var ci := rng.randi() % n_colors
+				walk_xf_by_color[ci].append(Transform3D(Basis(Vector3.UP, angle), Vector3(px, py, pz)))
 				# Occasionally add joggers on major paths
 				if is_major and rng.randf() < 0.15:
 					var jx := x1 + nx * half_w * 0.3 * (-side)
@@ -9684,17 +9704,21 @@ func _build_pedestrians(paths: Array) -> void:
 			var sit_pos := xf.origin + Vector3(0.0, 0.45, 0.0)
 			sit_xf.append(Transform3D(xf.basis, sit_pos))
 
-	# Spawn multimeshes
-	if not walk_xf.is_empty():
-		_spawn_multimesh(walker_mesh, walk_mat, walk_xf, "Pedestrians_Walkers")
+	# Spawn multimeshes — one per color for clothing variety
+	var total_walkers := 0
+	for ci in n_colors:
+		if not walk_xf_by_color[ci].is_empty():
+			var mat := _make_person_material(ped_colors[ci])
+			_spawn_multimesh(walker_mesh, mat, walk_xf_by_color[ci], "Pedestrians_Walk_%d" % ci)
+			total_walkers += walk_xf_by_color[ci].size()
 	if not jog_xf.is_empty():
 		var jog_mat := _make_person_material(Color(0.20, 0.10, 0.10))
-		var jog_mesh := _make_person_mesh_walker()
-		_spawn_multimesh(jog_mesh, jog_mat, jog_xf, "Pedestrians_Joggers")
+		_spawn_multimesh(walker_mesh, jog_mat, jog_xf, "Pedestrians_Joggers")
 	if not sit_xf.is_empty():
+		var sit_mat := _make_person_material(Color(0.22, 0.18, 0.14))
 		_spawn_multimesh(sitter_mesh, sit_mat, sit_xf, "Pedestrians_Sitters")
 	print("ParkLoader: pedestrians = %d walkers, %d joggers, %d sitters" % [
-		walk_xf.size(), jog_xf.size(), sit_xf.size()])
+		total_walkers, jog_xf.size(), sit_xf.size()])
 
 func _build_waterfowl(water: Array) -> void:
 	## Tiny billboard ducks/geese on water surfaces near shorelines.
