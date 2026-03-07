@@ -7387,6 +7387,14 @@ func _build_amenities(amenities: Array) -> void:
 	if amenities.is_empty():
 		return
 
+	# Load drinking fountain GLB
+	var df_path := ProjectSettings.globalize_path("res://models/furniture/cp_drinking_fountain.glb")
+	var df_meshes := _load_glb_meshes(df_path)
+	var df_mesh: Mesh = null
+	if df_meshes.has("CP_DrinkingFountain"):
+		df_mesh = df_meshes["CP_DrinkingFountain"] as Mesh
+	var df_xforms: Array = []
+
 	var count := 0
 	for am in amenities:
 		var pos: Array = am.get("position", [])
@@ -7423,17 +7431,20 @@ func _build_amenities(amenities: Array) -> void:
 			label.pixel_size = 0.01
 			add_child(label)
 
-		# Drinking water: small blue post marker
+		# Drinking water: granite pedestal fountain
 		if am_type == "drinking_water":
-			var post := _make_cylinder(0.06, 0.8, 8)
-			var mi := MeshInstance3D.new()
-			mi.mesh = post
-			var mat := StandardMaterial3D.new()
-			mat.albedo_color = Color(0.3, 0.5, 0.8)
-			mat.roughness = 0.6
-			mi.material_override = mat
-			mi.position = Vector3(x, y + 0.4, z)
-			add_child(mi)
+			if df_mesh:
+				df_xforms.append(Transform3D(Basis.IDENTITY, Vector3(x, y, z)))
+			else:
+				var post := _make_cylinder(0.06, 0.8, 8)
+				var mi := MeshInstance3D.new()
+				mi.mesh = post
+				var mat := StandardMaterial3D.new()
+				mat.albedo_color = Color(0.3, 0.5, 0.8)
+				mat.roughness = 0.6
+				mi.material_override = mat
+				mi.position = Vector3(x, y + 0.4, z)
+				add_child(mi)
 
 		# Toilets: small brown marker
 		elif am_type == "toilets":
@@ -7449,6 +7460,10 @@ func _build_amenities(amenities: Array) -> void:
 
 		count += 1
 
+	# Spawn drinking fountains via MultiMesh
+	if not df_xforms.is_empty() and df_mesh:
+		_spawn_multimesh(df_mesh, null, df_xforms, "DrinkingFountains")
+		print("  Drinking fountains: %d (CP model)" % df_xforms.size())
 	print("  Amenities: %d placed (inside park)" % count)
 
 
