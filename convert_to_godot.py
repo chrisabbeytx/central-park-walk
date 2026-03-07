@@ -47,9 +47,9 @@ HIGHWAY_WIDTH = {
 
 TERRAIN_Z   = 15           # zoom level matching download_terrain.py
 TERRAIN_DIR = "terrain_tiles"
-LIDAR_DEM   = "lidar_data/central_park_dem.tif"  # LiDAR DEM (preferred)
-GRID_W      = 2048         # heightmap output resolution (~2.4 m/cell)
-GRID_H      = 2048
+LIDAR_DEM   = "lidar_data/central_park_dem_4k.tif"  # LiDAR DEM 4096x4096 (~1.2 m/cell)
+GRID_W      = 4096         # heightmap output resolution (~1.2 m/cell)
+GRID_H      = 4096
 WORLD_SIZE  = 5000.0       # metres – must match main.gd ground plane size
 FT_TO_M     = 0.3048006096  # US Survey Foot → metres
 
@@ -132,39 +132,18 @@ def build_height_grid_lidar() -> tuple[list, float, float] | tuple[None, float, 
         img = img.resize((GRID_W, GRID_H), Image.BILINEAR)
         elev_m = np.array(img, dtype=np.float64)
 
-    # Light Gaussian smooth (2 passes) — LiDAR is already high quality,
-    # just reduce 1-foot quantization artifacts at our 2.4m grid spacing
+    # Light Gaussian smooth (2 passes) via scipy — reduces quantization artifacts
+    try:
+        from scipy.ndimage import uniform_filter
+        for _ in range(2):
+            elev_m = uniform_filter(elev_m, size=3)
+        print(f"  Applied 2-pass Gaussian smooth (scipy)")
+    except ImportError:
+        print(f"  scipy not available, skipping smooth")
+
     W, H = GRID_W, GRID_H
     grid = elev_m.flatten().tolist()
-    buf = [0.0] * (W * H)
-    for _pass in range(2):
-        for zi in range(1, H - 1):
-            b = zi * W
-            bm = (zi - 1) * W
-            bp = (zi + 1) * W
-            for xi in range(1, W - 1):
-                buf[b + xi] = (
-                    grid[b + xi]       * 0.25 +
-                    grid[b + xi - 1]   * 0.125 +
-                    grid[b + xi + 1]   * 0.125 +
-                    grid[bm + xi]      * 0.125 +
-                    grid[bp + xi]      * 0.125 +
-                    grid[bm + xi - 1]  * 0.0625 +
-                    grid[bm + xi + 1]  * 0.0625 +
-                    grid[bp + xi - 1]  * 0.0625 +
-                    grid[bp + xi + 1]  * 0.0625
-                )
-        for xi in range(W):
-            buf[xi] = grid[xi]
-            buf[(H - 1) * W + xi] = grid[(H - 1) * W + xi]
-        for zi in range(H):
-            buf[zi * W] = grid[zi * W]
-            buf[zi * W + W - 1] = grid[zi * W + W - 1]
-        grid, buf = buf, grid
-    print(f"  Applied 2-pass Gaussian smooth")
-
     min_elev = min(grid)
-    # Origin height: centre of grid
     origin_height = grid[(H // 2) * W + W // 2] - min_elev
 
     print(f"  Final: min={min_elev:.2f} m  max={max(grid):.2f} m  "
@@ -408,23 +387,24 @@ def main() -> None:
     terrain = make_sampler(hm_grid, min_elev)
 
     if have_terrain:
-        # 3 decimal places (~1mm) — sufficient for terrain, saves ~15-20MB vs 6 decimals
-        flat_grid = [round(v - min_elev, 3) for v in hm_grid]
+        # Subtract min_elev so values start near 0
+        flat_grid = [v - min_elev for v in hm_grid]
         hm_out = {
             "width":         GRID_W,
             "depth":         GRID_H,
             "world_size":    WORLD_SIZE,
             "origin_height": round(origin_height, 2),
         }
-        # Data goes in a separate file to keep park_data.json manageable
-        hm_data_out = {"width": GRID_W, "depth": GRID_H,
-                       "world_size": WORLD_SIZE,
-                       "origin_height": round(origin_height, 2),
-                       "data": flat_grid}
-        with open("heightmap.json", "w") as fh:
-            json.dump(hm_data_out, fh, separators=(",", ":"))
-        hm_kb = os.path.getsize("heightmap.json") / 1024
-        print(f"  Saved → heightmap.json  ({hm_kb:.0f} KB)")
+        # Binary format: uint32 width, uint32 height, float32 world_size,
+        #   float32 origin_height, then width*height float32 values
+        import struct
+        with open("heightmap.bin", "wb") as fh:
+            fh.write(struct.pack("<II", GRID_W, GRID_H))
+            fh.write(struct.pack("<f", WORLD_SIZE))
+            fh.write(struct.pack("<f", origin_height))
+            fh.write(struct.pack(f"<{GRID_W * GRID_H}f", *flat_grid))
+        hm_mb = os.path.getsize("heightmap.bin") / 1e6
+        print(f"  Saved → heightmap.bin  ({hm_mb:.1f} MB)")
     else:
         hm_out = {}
 

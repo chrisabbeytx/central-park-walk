@@ -18,7 +18,11 @@ terrain_tiles/
 
 # Large data files (re-generate via download_osm.py + convert_to_godot.py)
 *.json
+*.bin
 !project.godot
+
+# LiDAR source data (re-download from NOAA/NYS GIS)
+lidar_data/
 
 # Presentations and reference images
 *.odp

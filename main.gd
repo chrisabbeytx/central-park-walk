@@ -11,11 +11,14 @@ const METRES_PER_DEG_LAT := 110_540.0
 const METRES_PER_DEG_LON := 84_264.0   # 111320 × cos(40.7829°)
 
 # Heightmap (loaded once, shared for player spawn positioning)
-var _hm_data:          Array   = []
+var _hm_data:          PackedFloat32Array = PackedFloat32Array()
 var _hm_width:         int     = 0
 var _hm_depth:         int     = 0
 var _hm_world_size:    float   = 5000.0
 var _hm_origin_height: float   = 0.0
+# Mesh resolution (subsample from full heightmap for GPU-feasible vertex count)
+var _mesh_width:       int     = 0
+var _mesh_depth:       int     = 0
 
 # HUD label references kept for per-frame updates
 var _player:        CharacterBody3D
@@ -238,6 +241,26 @@ func _build_tour_shots() -> void:
 # Heightmap helpers
 # ---------------------------------------------------------------------------
 func _load_heightmap() -> void:
+	# Try binary format first, then fall back to JSON
+	if FileAccess.file_exists("res://heightmap.bin"):
+		var fa := FileAccess.open("res://heightmap.bin", FileAccess.READ)
+		_hm_width         = fa.get_32()
+		_hm_depth         = fa.get_32()
+		_hm_world_size    = fa.get_float()
+		_hm_origin_height = fa.get_float()
+		var byte_count := _hm_width * _hm_depth * 4
+		var buf := fa.get_buffer(byte_count)
+		fa.close()
+		_hm_data = buf.to_float32_array()
+		# Mesh built at half resolution if heightmap > 2048
+		_mesh_width = _hm_width
+		_mesh_depth = _hm_depth
+		while _mesh_width > 2048:
+			_mesh_width /= 2
+			_mesh_depth /= 2
+		print("Heightmap loaded (bin): %d×%d  mesh=%d×%d  origin_y=%.1f m" % [
+			_hm_width, _hm_depth, _mesh_width, _mesh_depth, _hm_origin_height])
+		return
 	if not FileAccess.file_exists("res://heightmap.json"):
 		return
 	var fa  := FileAccess.open("res://heightmap.json", FileAccess.READ)
@@ -249,8 +272,13 @@ func _load_heightmap() -> void:
 	_hm_depth         = int(hm["depth"])
 	_hm_world_size    = float(hm["world_size"])
 	_hm_origin_height = float(hm["origin_height"])
-	_hm_data          = hm["data"]
-	print("Heightmap loaded: %d×%d  origin_y=%.1f m" % [_hm_width, _hm_depth, _hm_origin_height])
+	var raw_data: Array = hm["data"]
+	_hm_data.resize(raw_data.size())
+	for i in range(raw_data.size()):
+		_hm_data[i] = float(raw_data[i])
+	_mesh_width = _hm_width
+	_mesh_depth = _hm_depth
+	print("Heightmap loaded (json): %d×%d  origin_y=%.1f m" % [_hm_width, _hm_depth, _hm_origin_height])
 
 
 func _terrain_height(x: float, z: float) -> float:
@@ -1314,55 +1342,61 @@ func _setup_ground() -> void:
 		return
 
 	# ---- Build terrain ArrayMesh ----
-	var W         := _hm_width
-	var H         := _hm_depth
+	# Mesh at _mesh_width × _mesh_depth; heightmap data at _hm_width × _hm_depth
+	var MW        := _mesh_width
+	var MH        := _mesh_depth
+	var step      := _hm_width / MW  # subsampling step in heightmap pixels
 	var half      := _hm_world_size * 0.5
-	var cell      := _hm_world_size / float(W - 1)
-	var V         := W * H
+	var cell      := _hm_world_size / float(MW - 1)
+	var hm_cell   := _hm_world_size / float(_hm_width - 1)
+	var V         := MW * MH
 
 	var verts    := PackedVector3Array(); verts.resize(V)
 	var normals  := PackedVector3Array(); normals.resize(V)
 	var uvs      := PackedVector2Array(); uvs.resize(V)
 	var tangents := PackedFloat32Array(); tangents.resize(V * 4)
 
-	for zi in H:
-		for xi in W:
-			var idx := zi * W + xi
+	for zi in MH:
+		var hzi := mini(zi * step, _hm_depth - 1)
+		for xi in MW:
+			var hxi := mini(xi * step, _hm_width - 1)
+			var idx := zi * MW + xi
 			var xw  := -half + xi * cell
 			var zw  := -half + zi * cell
-			var h   := float(_hm_data[idx])
+			var h   := _hm_data[hzi * _hm_width + hxi]
 			verts[idx]   = Vector3(xw, h, zw)
-			uvs[idx]     = Vector2(float(xi) / float(W - 1), float(zi) / float(H - 1))
-			# Slope-based normal using central differences
-			var hL := float(_hm_data[zi * W + max(xi - 1, 0)    ])
-			var hR := float(_hm_data[zi * W + min(xi + 1, W - 1)])
-			var hU := float(_hm_data[max(zi - 1, 0)     * W + xi])
-			var hD := float(_hm_data[min(zi + 1, H - 1) * W + xi])
-			normals[idx] = Vector3(hL - hR, 2.0 * cell, hU - hD).normalized()
+			uvs[idx]     = Vector2(float(xi) / float(MW - 1), float(zi) / float(MH - 1))
+			# Slope-based normal using full-res heightmap neighbours
+			var hL := _hm_data[hzi * _hm_width + maxi(hxi - 1, 0)]
+			var hR := _hm_data[hzi * _hm_width + mini(hxi + 1, _hm_width - 1)]
+			var hU := _hm_data[maxi(hzi - 1, 0)          * _hm_width + hxi]
+			var hD := _hm_data[mini(hzi + 1, _hm_depth - 1) * _hm_width + hxi]
+			normals[idx] = Vector3(hL - hR, 2.0 * hm_cell, hU - hD).normalized()
 			tangents[idx*4] = 1.0; tangents[idx*4+3] = 1.0
 
-	var T       := (W - 1) * (H - 1) * 6
+	var T       := (MW - 1) * (MH - 1) * 6
 	var indices := PackedInt32Array(); indices.resize(T)
 	var t       := 0
-	for zi in (H - 1):
-		for xi in (W - 1):
-			var i00 := zi * W + xi
-			var i10 := zi * W + xi + 1
-			var i01 := (zi + 1) * W + xi
-			var i11 := (zi + 1) * W + xi + 1
-			# Adaptive diagonal on slopes, checkerboard on flat — eliminates plowed-row artifacts
-			var h00_v := float(_hm_data[i00])
-			var h11_v := float(_hm_data[i11])
-			var h10_v := float(_hm_data[i10])
-			var h01_v := float(_hm_data[i01])
+	for zi in (MH - 1):
+		var hzi := mini(zi * step, _hm_depth - 2)
+		for xi in (MW - 1):
+			var hxi := mini(xi * step, _hm_width - 2)
+			var i00 := zi * MW + xi
+			var i10 := zi * MW + xi + 1
+			var i01 := (zi + 1) * MW + xi
+			var i11 := (zi + 1) * MW + xi + 1
+			# Adaptive diagonal using full-res heights
+			var hi00 := hzi * _hm_width + hxi
+			var h00_v := _hm_data[hi00]
+			var h11_v := _hm_data[mini(hzi + step, _hm_depth - 1) * _hm_width + mini(hxi + step, _hm_width - 1)]
+			var h10_v := _hm_data[hzi * _hm_width + mini(hxi + step, _hm_width - 1)]
+			var h01_v := _hm_data[mini(hzi + step, _hm_depth - 1) * _hm_width + hxi]
 			var d1 := absf(h00_v - h11_v)
 			var d2 := absf(h10_v - h01_v)
 			var use_alt: bool
 			if absf(d1 - d2) < 0.02:
-				# Nearly flat — checkerboard breaks visible diagonal pattern
 				use_alt = (xi + zi) % 2 == 1
 			else:
-				# Sloped — pick flatter diagonal
 				use_alt = d2 < d1
 			if not use_alt:
 				indices[t]     = i00; indices[t + 1] = i10; indices[t + 2] = i11
@@ -1387,17 +1421,18 @@ func _setup_ground() -> void:
 	mi.name       = "Terrain"
 	add_child(mi)
 
-	# ---- HeightMapShape3D collision ----
+	# ---- HeightMapShape3D collision (at mesh resolution) ----
 	var hm_shape          := HeightMapShape3D.new()
-	hm_shape.map_width     = W
-	hm_shape.map_depth     = H
+	hm_shape.map_width     = MW
+	hm_shape.map_depth     = MH
 	var pf                := PackedFloat32Array(); pf.resize(V)
 	for i in V:
-		pf[i] = float(_hm_data[i])
+		pf[i] = verts[i].y
 	hm_shape.map_data      = pf
 
-	# Heightmap texture for per-pixel fragment normals (decouples lighting from mesh topology)
-	var hm_img := Image.create_from_data(W, H, false, Image.FORMAT_RF, pf.to_byte_array())
+	# Heightmap texture for per-pixel fragment normals — use full-res data
+	var hm_img := Image.create(_hm_width, _hm_depth, false, Image.FORMAT_RF)
+	hm_img.set_data(_hm_width, _hm_depth, false, Image.FORMAT_RF, _hm_data.to_byte_array())
 	var hm_tex := ImageTexture.create_from_image(hm_img)
 	_terrain_mat.set_shader_parameter("heightmap_tex", hm_tex)
 
@@ -2018,8 +2053,8 @@ func _setup_player() -> CharacterBody3D:
 		p.rotation_degrees.y = 0.0
 		p.set_physics_process(false)
 	else:
-		p.position = Vector3(-594.0, _terrain_height(-594.0, 1155.0) + 1.8, 1155.0)
-	p.rotation_degrees.y = -160.0
+		p.position = Vector3(-400.0, _terrain_height(-400.0, 600.0) + 1.8, 600.0)
+	p.rotation_degrees.y = 30.0
 	add_child(p)
 	if _terrain_only and p.head:
 		p.head.rotation_degrees.x = -55.0  # look down at terrain

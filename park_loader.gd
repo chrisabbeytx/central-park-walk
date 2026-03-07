@@ -481,6 +481,47 @@ static func _tree_pos(entry) -> Array:
 	return entry
 
 
+static func _convex_hull(points: PackedVector2Array) -> PackedVector2Array:
+	## Andrew's monotone chain — returns convex hull in CCW order.
+	if points.size() < 3:
+		return points
+	var pts: Array = []
+	for p in points:
+		pts.append(p)
+	pts.sort_custom(func(a: Vector2, b: Vector2) -> bool:
+		return a.x < b.x or (a.x == b.x and a.y < b.y))
+	var lower: Array = []
+	for p in pts:
+		while lower.size() >= 2:
+			var a: Vector2 = lower[lower.size() - 2]
+			var b: Vector2 = lower[lower.size() - 1]
+			if (b - a).cross(p - a) <= 0.0:
+				lower.pop_back()
+			else:
+				break
+		lower.append(p)
+	var upper: Array = []
+	for i in range(pts.size() - 1, -1, -1):
+		var p: Vector2 = pts[i]
+		while upper.size() >= 2:
+			var a: Vector2 = upper[upper.size() - 2]
+			var b: Vector2 = upper[upper.size() - 1]
+			if (b - a).cross(p - a) <= 0.0:
+				upper.pop_back()
+			else:
+				break
+		upper.append(p)
+	# Remove last point of each half because it repeats
+	lower.pop_back()
+	upper.pop_back()
+	var result := PackedVector2Array()
+	for p in lower:
+		result.append(p)
+	for p in upper:
+		result.append(p)
+	return result
+
+
 func _rasterize_boundary() -> void:
 	## Scanline-rasterize boundary_polygon into _bnd_bitmap for O(1) lookups.
 	var poly := boundary_polygon
@@ -554,22 +595,16 @@ func _ready() -> void:
 		push_error("ParkLoader: failed to parse park_data.json")
 		return
 
-	# Populate boundary polygon FIRST so all builders can clip to it
+	# Populate boundary polygon FIRST so all builders can clip to it.
+	# Use convex hull to eliminate transverse-road pinch points in OSM boundary.
 	var raw_boundary: Array = data.get("boundary", [])
 	if raw_boundary.size() >= 3:
-		boundary_polygon.resize(raw_boundary.size())
+		var raw_poly := PackedVector2Array()
+		raw_poly.resize(raw_boundary.size())
 		for i in range(raw_boundary.size()):
-			boundary_polygon[i] = Vector2(float(raw_boundary[i][0]), float(raw_boundary[i][1]))
-		# Close gap if first/last points are far apart (OSM ring assembly gap)
-		var gap := boundary_polygon[0].distance_to(boundary_polygon[boundary_polygon.size() - 1])
-		if gap > 50.0:
-			var p0 := boundary_polygon[0]
-			var pN := boundary_polygon[boundary_polygon.size() - 1]
-			var steps := int(ceilf(gap / 20.0))
-			for s in range(1, steps):
-				var t := float(s) / float(steps)
-				boundary_polygon.append(pN.lerp(p0, t))
-			print("ParkLoader: closed boundary gap (%.0fm, %d points added)" % [gap, steps - 1])
+			raw_poly[i] = Vector2(float(raw_boundary[i][0]), float(raw_boundary[i][1]))
+		boundary_polygon = _convex_hull(raw_poly)
+		print("ParkLoader: boundary convex hull %d -> %d points" % [raw_poly.size(), boundary_polygon.size()])
 	_rasterize_boundary()
 
 	# Cache data arrays once — avoids repeated Dictionary.get() calls
@@ -582,7 +617,10 @@ func _ready() -> void:
 	var benches: Array = data.get("benches", [])
 	var lampposts: Array = data.get("lampposts", [])
 	var trash_cans: Array = data.get("trash_cans", [])
-	var boundary: Array = data.get("boundary", [])
+	# Build boundary array from convex hull for walls/perimeter
+	var boundary: Array = []
+	for p in boundary_polygon:
+		boundary.append([p.x, p.y])
 	landuse_zones = data.get("landuse", [])
 	_bridge_outlines = data.get("bridge_outlines", [])
 	_tunnel_outlines = data.get("tunnel_outlines", [])
