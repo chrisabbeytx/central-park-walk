@@ -695,7 +695,7 @@ func _ready() -> void:
 	_build_waterfowl(water)
 	_build_pedestrians(paths)
 	_build_boundary(boundary)
-	_build_perimeter_wall(boundary)
+	_build_perimeter_wall(boundary, paths)
 	_build_boundary_facades()
 	_build_undergrowth(trees, paths)
 	_build_meadow_grass(trees)
@@ -7520,9 +7520,10 @@ func _build_boundary(boundary: Array) -> void:
 		body.add_child(col)
 
 
-func _build_perimeter_wall(boundary: Array) -> void:
+func _build_perimeter_wall(boundary: Array, paths: Array) -> void:
 	## Central Park's brownstone perimeter wall — 1.17m tall, 0.45m thick,
 	## slanted top (15-degree batter angle on inner cap). rock_wall texture.
+	## Gate openings where paths cross the boundary.
 	if boundary.size() < 3:
 		return
 	var wall_h := 1.17
@@ -7538,9 +7539,39 @@ func _build_perimeter_wall(boundary: Array) -> void:
 		cx += float(pt[0]); cz += float(pt[1])
 	cx /= float(boundary.size()); cz /= float(boundary.size())
 
-	# Find gate positions: where paths cross the boundary
-	var gate_positions: Array = []  # Array of Vector2 positions along boundary
-	# We'll skip gate detection for now and just build continuous wall
+	# Find gate positions: where a path segment crosses the boundary polygon
+	# Only actual entry/exit roads and paths (service, footway, pedestrian)
+	var gate_positions: Array = []  # Array of Vector2
+	var gate_radius := 4.0  # gate half-width in metres
+	for path in paths:
+		if bool(path.get("bridge", false)) or bool(path.get("tunnel", false)):
+			continue
+		var hw: String = str(path.get("highway", "path"))
+		if hw == "steps" or hw == "track" or hw == "bridleway":
+			continue
+		var ppts: Array = path["points"]
+		if ppts.size() < 2:
+			continue
+		# Check consecutive points for boundary crossings
+		for pi in range(ppts.size() - 1):
+			var ax := float(ppts[pi][0]); var az := float(ppts[pi][2])
+			var bx := float(ppts[pi+1][0]); var bz := float(ppts[pi+1][2])
+			var a_in := _in_boundary(ax, az)
+			var b_in := _in_boundary(bx, bz)
+			if a_in == b_in:
+				continue
+			# Crossing found — approximate position at midpoint
+			var gx := (ax + bx) * 0.5
+			var gz := (az + bz) * 0.5
+			# Gate width scales with path type
+			var too_close := false
+			for gp in gate_positions:
+				if Vector2(gx, gz).distance_to(gp) < gate_radius * 2.5:
+					too_close = true
+					break
+			if not too_close:
+				gate_positions.append(Vector2(gx, gz))
+	print("ParkLoader: perimeter wall gates = %d" % gate_positions.size())
 
 	var verts := PackedVector3Array()
 	var normals := PackedVector3Array()
@@ -7564,6 +7595,16 @@ func _build_perimeter_wall(boundary: Array) -> void:
 			var a := p1.lerp(p2, t0)
 			var b := p1.lerp(p2, t1)
 			var sub_len := a.distance_to(b)
+			# Skip segments near gate positions
+			var mid := (a + b) * 0.5
+			var is_gate := false
+			for gp in gate_positions:
+				if mid.distance_to(gp) < gate_radius:
+					is_gate = true
+					break
+			if is_gate:
+				cum_d += sub_len
+				continue
 			var dir := (b - a) / sub_len if sub_len > 0.01 else Vector2.RIGHT
 			# Inward normal (toward centroid)
 			var nrm2 := Vector2(-dir.y, dir.x)
