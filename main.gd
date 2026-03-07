@@ -45,6 +45,7 @@ var _lamp_emission: float = 0.0  # cached for SpotLight3D pool
 var _terrain_mat: ShaderMaterial
 var _time_label: Label
 var _speed_label: Label
+var _location_label: Label
 
 # Dynamic lamppost lighting — pool of SpotLight3D nodes that follow player
 var _lamp_lights: Array = []  # Array of SpotLight3D
@@ -459,6 +460,10 @@ func _update_hud() -> void:
 		_time_label.text = "%d:%02d %s  [%s]" % [h12, mins, ampm, TIME_SPEED_NAMES[_time_speed_idx]]
 	if _speed_label and _player:
 		_speed_label.text = "%s (%.1f m/s)" % [_player.SPEED_NAMES[_player._speed_idx], _player.walk_speed]
+	if _location_label:
+		var area := _nearest_area(pos.x, pos.z)
+		_location_label.text = area if area else ""
+		_location_label.visible = not area.is_empty()
 
 
 func _tour_teleport(idx: int) -> void:
@@ -491,6 +496,40 @@ func _tour_write_manifest() -> void:
 func _compass_label(deg: float) -> String:
 	var labels := ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
 	return labels[int(fmod(deg + 22.5, 360.0) / 45.0) % 8]
+
+
+# Central Park named areas — [x_min, x_max, z_min, z_max, name]
+const PARK_AREAS: Array = [
+	[-700, -400, 1300, 1500, "Literary Walk"],
+	[-550, -380, 1050, 1300, "The Mall"],
+	[-530, -390, 900, 1050, "Bethesda Terrace"],
+	[-650, -420, 700, 900, "The Lake"],
+	[-550, -200, 400, 700, "The Ramble"],
+	[-700, -550, 800, 1000, "Cherry Hill"],
+	[-200, 200, -200, 400, "Great Lawn"],
+	[-900, -600, 1500, 2100, "Sheep Meadow"],
+	[-300, 200, -800, -400, "Reservoir"],
+	[-200, 100, 800, 1050, "Conservatory Water"],
+	[200, 800, -1800, -1200, "North Meadow"],
+	[400, 900, -1600, -1000, "North Woods"],
+	[-100, 500, -200, 200, "Turtle Pond"],
+	[600, 1200, -2200, -1700, "Harlem Meer"],
+	[-600, -300, 1800, 2050, "Heckscher Playground"],
+	[-100, 200, 600, 900, "Belvedere Castle"],
+	[-350, 0, 200, 500, "Delacorte Theater"],
+	[0, 300, 300, 500, "Cleopatra's Needle"],
+	[-700, -500, 1450, 1550, "Naumburg Bandshell"],
+	[-250, 0, -600, -300, "Reservoir Running Track"],
+	[100, 500, -900, -600, "Tennis Center"],
+	[-200, 200, -1200, -800, "Conservatory Garden"],
+	[-600, -350, 600, 750, "Bow Bridge"],
+]
+
+func _nearest_area(x: float, z: float) -> String:
+	for area in PARK_AREAS:
+		if x >= float(area[0]) and x <= float(area[1]) and z >= float(area[2]) and z <= float(area[3]):
+			return area[4]
+	return ""
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -2907,6 +2946,13 @@ func _setup_hud() -> void:
 	_speed_label.add_theme_font_size_override("font_size", 22)
 	_speed_label.add_theme_color_override("font_color", Color(0.75, 0.90, 1.0))
 	vbox.add_child(_speed_label)
+
+	_location_label = Label.new()
+	_location_label.text = ""
+	_location_label.add_theme_font_size_override("font_size", 26)
+	_location_label.add_theme_color_override("font_color", Color(1.0, 1.0, 1.0, 0.95))
+	_location_label.visible = false
+	vbox.add_child(_location_label)
 
 	var hint := Label.new()
 	hint.text = "WASD: move   Mouse+RMB: look   Scroll/+/-: speed   T: time   [/]: ±1h   P: weather   H: HUD"
