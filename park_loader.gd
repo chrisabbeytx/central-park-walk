@@ -8872,16 +8872,16 @@ func _build_wildflowers(trees: Array, water: Array) -> void:
 			tree_hash[tk] = []
 		tree_hash[tk].append(tp)
 
-	# Grid scan — dense carpet concentrated near trees
+	# Grid scan — carpet concentrated near trees
 	var half := _hm_world_size * 0.5
-	var scan_step := 10.0
+	var scan_step := 12.0
 	var x := -half + 50.0
 	while x < half - 50.0:
 		var z := -half + 50.0
 		while z < half - 50.0:
 			# FBM noise gate — creates natural patches
 			var noise_val := _fbm(Vector2(x, z) * 0.007, 3)
-			if noise_val < 0.35:
+			if noise_val < 0.38:
 				z += scan_step
 				continue
 
@@ -8889,32 +8889,38 @@ func _build_wildflowers(trees: Array, water: Array) -> void:
 				z += scan_step
 				continue
 
-			# Check tree proximity via spatial hash — within 30m of a tree
+			# Check tree proximity via spatial hash — within 25m of a tree
 			var min_dist := 999.0
 			var ck := Vector2i(int(floor(x / TREE_HASH_CELL)), int(floor(z / TREE_HASH_CELL)))
-			for di in range(-2, 3):
-				for dj in range(-2, 3):
+			for di in range(-1, 2):
+				for dj in range(-1, 2):
 					var nk := Vector2i(ck.x + di, ck.y + dj)
 					if tree_hash.has(nk):
 						for tp: Vector2 in tree_hash[nk]:
 							var d := Vector2(x, z).distance_to(tp)
 							if d < min_dist:
 								min_dist = d
-			if min_dist > 30.0:
+								if d < 8.0:
+									break
+					if min_dist < 8.0:
+						break
+				if min_dist < 8.0:
+					break
+			if min_dist > 25.0:
 				z += scan_step
 				continue
 
-			# Dense carpet: many instances per cluster, tight radius
+			# Moderate clusters near trees
 			var cluster_size: int
 			var cluster_r: float
 			if min_dist < 8.0:
-				cluster_size = rng.randi_range(35, 60)
+				cluster_size = rng.randi_range(15, 30)
 				cluster_r = rng.randf_range(2.0, 3.5)
-			elif min_dist < 18.0:
-				cluster_size = rng.randi_range(18, 35)
+			elif min_dist < 16.0:
+				cluster_size = rng.randi_range(8, 18)
 				cluster_r = rng.randf_range(2.0, 4.0)
 			else:
-				cluster_size = rng.randi_range(8, 16)
+				cluster_size = rng.randi_range(4, 10)
 				cluster_r = rng.randf_range(1.5, 3.0)
 
 			# Choose dominant species for this cluster
