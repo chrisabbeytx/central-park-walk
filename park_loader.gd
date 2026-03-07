@@ -176,7 +176,7 @@ func _path_color(hw: String, surface: String) -> Color:
 	match hw:
 		"footway":    return Color(0.72, 0.68, 0.58)   # buff paving stone
 		"cycleway":   return Color(0.30, 0.30, 0.32)   # asphalt
-		"pedestrian": return Color(0.78, 0.74, 0.65)   # pale cream stone (Mall)
+		"pedestrian": return Color(0.24, 0.24, 0.25)   # dark gray asphalt (Mall promenade per Wikimedia)
 		"path":       return Color(0.60, 0.53, 0.40)   # gravel trail
 		"steps":      return Color(0.60, 0.58, 0.54)   # grey stone
 		"track":      return Color(0.48, 0.40, 0.26)   # brown dirt track
@@ -228,7 +228,7 @@ func _path_tex_prefix(hw: String, surface: String) -> String:
 	match hw:
 		"cycleway":   return "res://textures/Asphalt012_2K-JPG"
 		"steps":      return "res://textures/Concrete034_2K-JPG"
-		"pedestrian": return "res://textures/PavingStones130_2K-JPG"
+		"pedestrian": return "res://textures/Asphalt012_2K-JPG"  # Mall promenade
 		"footway":    return "res://textures/PavingStones130_2K-JPG"
 		"service":    return "res://textures/Asphalt012_2K-JPG"
 		"secondary":  return "res://textures/Asphalt012_2K-JPG"
@@ -758,7 +758,7 @@ func _splat_mat_idx(hw: String, surface: String) -> int:
 	match hw:
 		"footway":    return 4   # paving_stones (most CP footways are paved stone)
 		"cycleway":   return 1   # asphalt
-		"pedestrian": return 4   # paving_stones (Mall, plazas)
+		"pedestrian": return 1   # asphalt (Mall promenade)
 		"path":       return 16  # gravel (Ramble trails, natural paths)
 		"steps":      return 28
 		"track":      return 29
@@ -4555,6 +4555,37 @@ void fragment() {
 
 	vec3 deep    = vec3(0.020, 0.038, 0.028);   // dark olive-green (Central Park lakes)
 	vec3 shallow = vec3(0.050, 0.075, 0.045);   // slightly warmer shallow
+	float extra_reflect = 0.0;
+
+	// Per-water-body character based on world position
+	// Conservatory Water (Model Boat Pond): shallow formal reflecting pool
+	float d_conserv = length(world_pos.xz - vec2(-152.0, 958.0));
+	if (d_conserv < 80.0) {
+		deep    = vec3(0.035, 0.050, 0.045);   // lighter, blue-gray
+		shallow = vec3(0.065, 0.085, 0.075);
+		extra_reflect = 0.15;
+	}
+	// Turtle Pond: shallow, murky, dark green-brown
+	float d_turtle = length(world_pos.xz - vec2(-213.0, 374.0));
+	if (d_turtle < 120.0) {
+		deep    = vec3(0.018, 0.030, 0.020);   // darker, murkier
+		shallow = vec3(0.040, 0.055, 0.035);
+	}
+	// Reservoir: large, open, more reflective blue
+	float d_reserv = length(world_pos.xz - vec2(282.0, -424.0));
+	if (d_reserv < 500.0) {
+		deep    = vec3(0.015, 0.030, 0.035);   // blue-tinted deep
+		shallow = vec3(0.040, 0.065, 0.070);
+		extra_reflect = 0.10;
+	}
+	// Harlem Meer: large, dark green-blue, reflective
+	float d_meer = length(world_pos.xz - vec2(1132.0, -1494.0));
+	if (d_meer < 250.0) {
+		deep    = vec3(0.015, 0.032, 0.032);
+		shallow = vec3(0.040, 0.060, 0.058);
+		extra_reflect = 0.08;
+	}
+
 	// Subtle blend — mostly deep, shallow only at wave peaks
 	vec3 base_col = mix(deep, shallow, smoothstep(-0.3, 0.6, wave_h));
 
@@ -4563,9 +4594,9 @@ void fragment() {
 	// Fresnel — glancing angles reflect sky
 	float fresnel = pow(1.0 - max(dot(NORMAL, VIEW), 0.0), 4.0);
 	vec3 sky_col = vec3(0.32, 0.38, 0.45);
-	vec3 col = mix(base_col, sky_col, fresnel * 0.6);
+	vec3 col = mix(base_col, sky_col, fresnel * (0.6 + extra_reflect));
 
-	// Foam — white caps at wave peaks
+	// Foam — white caps at wave peaks (subtle in ponds, more on reservoir)
 	float foam = smoothstep(0.6, 0.85, wave_h);
 	col = mix(col, vec3(0.85, 0.90, 0.92), foam * 0.7);
 
