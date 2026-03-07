@@ -1954,6 +1954,28 @@ void fragment() {
 		grass_rgh = mix(grass_rgh, s_rgh, s_blend);
 	}
 
+	// --- Named plaza overrides: herringbone brick at Bethesda Terrace ---
+	// Bethesda lower plaza: ~30m radius around fountain at (-458, 949)
+	float d_beth = length(world_pos.xz - vec2(-458.0, 949.0));
+	if (d_beth < 35.0 && slope < 0.15) {
+		// Herringbone Roman brick pattern — terracotta red-brown (#A0522D)
+		vec2 brick_uv = world_pos.xz * 4.0;  // ~25cm brick scale
+		// Herringbone: alternating 45-degree bricks
+		float bx = fract(brick_uv.x * 0.707 + brick_uv.y * 0.707);
+		float bz = fract(brick_uv.x * 0.707 - brick_uv.y * 0.707);
+		float herring = step(0.5, bx) * step(0.5, bz) + (1.0 - step(0.5, bx)) * (1.0 - step(0.5, bz));
+		float mortar = smoothstep(0.02, 0.04, min(fract(bx * 2.0), fract(bz * 2.0)));
+		vec3 brick_col = mix(vec3(0.63, 0.32, 0.18), vec3(0.55, 0.28, 0.15), herring);
+		// Mortar lines: lighter
+		brick_col = mix(vec3(0.72, 0.68, 0.62), brick_col, mortar);
+		// Weathering variation
+		float wear = fbm(world_pos.xz * 0.3, 2) * 0.15;
+		brick_col *= (0.9 + wear);
+		float beth_blend = smoothstep(35.0, 28.0, d_beth);
+		grass_alb = mix(grass_alb, brick_col, beth_blend);
+		grass_rgh = mix(grass_rgh, 0.78, beth_blend);
+	}
+
 	if (mat_idx > 0 && path_weight > 0.5) {
 		// --- Path shading — winner-takes-all, no blending ---
 		vec4 ml = mat_lookup(mat_idx);
