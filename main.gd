@@ -113,6 +113,9 @@ const TIME_PRESETS: Dictionary = {
 	"golden_hour": 17.5, "dusk": 19.5, "night": 22.0,
 }
 
+var _cli_pos := Vector3.ZERO  # --pos x,z  or --pos x,z,yaw
+var _cli_pos_set := false
+
 func _ready() -> void:
 	# Check for CLI args early
 	var cli_time := ""
@@ -124,6 +127,14 @@ func _ready() -> void:
 			cli_time = OS.get_cmdline_user_args()[i + 1]
 		elif arg == "--weather" and i + 1 < OS.get_cmdline_user_args().size():
 			_weather_mode = OS.get_cmdline_user_args()[i + 1]
+		elif arg == "--pos" and i + 1 < OS.get_cmdline_user_args().size():
+			var parts := OS.get_cmdline_user_args()[i + 1].split(",")
+			if parts.size() >= 2:
+				_cli_pos.x = float(parts[0])
+				_cli_pos.z = float(parts[1])
+				if parts.size() >= 3:
+					_cli_pos.y = float(parts[2])  # yaw
+				_cli_pos_set = true
 	if cli_time != "":
 		if TIME_PRESETS.has(cli_time):
 			_time_of_day = TIME_PRESETS[cli_time]
@@ -2100,14 +2111,16 @@ func _setup_player() -> CharacterBody3D:
 	var p: CharacterBody3D = load("res://player.gd").new()
 	p.name       = "Player"
 	if _terrain_only:
-		# Bird's eye view for terrain inspection — disable physics, look down
-		# Bird's eye for terrain inspection
 		p.position = Vector3(-300.0, _terrain_height(-300.0, 200.0) + 200.0, 200.0)
 		p.rotation_degrees.y = 0.0
 		p.set_physics_process(false)
+	elif _cli_pos_set:
+		p.position = Vector3(_cli_pos.x, _terrain_height(_cli_pos.x, _cli_pos.z) + 1.8, _cli_pos.z)
+		p.rotation_degrees.y = _cli_pos.y if _cli_pos.y != 0.0 else 30.0
 	else:
 		p.position = Vector3(-400.0, _terrain_height(-400.0, 600.0) + 1.8, 600.0)
-	p.rotation_degrees.y = 30.0
+	if not _cli_pos_set:
+		p.rotation_degrees.y = 30.0
 	add_child(p)
 	if _terrain_only and p.head:
 		p.head.rotation_degrees.x = -55.0  # look down at terrain
