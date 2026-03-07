@@ -5525,14 +5525,26 @@ func _build_trees(trees: Array) -> void:
 		var mesh_h: float = species_heights[species]
 		if mesh_h < 0.001:
 			mesh_h = 0.06
-		var s := desired_h / mesh_h
+		var sy := desired_h / mesh_h
+
+		# Crown width: blend uniform scale with LiDAR crown data for subtle variation
+		var sx := sy
+		if typeof(tree_entry) == TYPE_DICTIONARY and tree_entry.has("crown_a"):
+			var crown_a := float(tree_entry["crown_a"])
+			if crown_a > 0.0 and desired_h > 1.0:
+				var crown_d := 2.0 * sqrt(crown_a / PI)
+				# Ratio of crown spread to height (typical trees: 0.3–1.0)
+				var crown_ratio := clampf(crown_d / desired_h, 0.3, 1.2)
+				# Apply as a subtle modifier (30% blend) to avoid extreme stretching
+				sx = sy * lerpf(1.0, crown_ratio, 0.3)
 
 		# Random Y rotation for variety
 		var y_rot := rng.randf() * TAU
 
-		# Build transform: Y rotation × Z-up fix (rotate -90° around X) × uniform scale
+		# Build transform: Y rotation × Z-up fix (rotate -90° around X) × non-uniform scale
 		# The GLB meshes grow along +Z (Blender convention). We need +Y up.
-		var basis := Basis(Vector3.UP, y_rot) * Basis(Vector3.RIGHT, -PI * 0.5) * Basis().scaled(Vector3(s, s, s))
+		# sx scales crown width (XZ), sy scales height (Y after rotation)
+		var basis := Basis(Vector3.UP, y_rot) * Basis(Vector3.RIGHT, -PI * 0.5) * Basis().scaled(Vector3(sx, sy, sx))
 		var tf := Transform3D(basis, Vector3(tx, ty, tz))
 
 		var key := "%s_%d" % [species, variant_idx]
