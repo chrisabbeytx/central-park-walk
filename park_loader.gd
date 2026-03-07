@@ -5446,6 +5446,19 @@ func _build_trees(trees: Array) -> void:
 	# Each GLB has 5 tree variants as separate MeshInstance3D children.
 	# Models use centimetre scale (node scale=100 in GLB) and Z-up orientation.
 	# We load at runtime via GLTFDocument since the project has no editor import cache.
+	# Per-species leaf and bark colors
+	var leaf_tints := {
+		"maple":     Vector3(0.30, 0.50, 0.18),   # bright green, warm
+		"birch":     Vector3(0.34, 0.52, 0.22),   # light yellow-green
+		"deciduous": Vector3(0.26, 0.44, 0.16),   # medium green
+		"pine":      Vector3(0.14, 0.30, 0.10),   # dark desaturated green
+	}
+	var bark_colors := {
+		"maple":     Color(0.50, 0.40, 0.30),     # medium brown
+		"birch":     Color(0.80, 0.76, 0.68),     # distinctive white bark
+		"deciduous": Color(0.42, 0.34, 0.26),     # dark brown
+		"pine":      Color(0.48, 0.34, 0.22),     # reddish-brown
+	}
 	var species_meshes: Dictionary = {}  # species_name -> Array[Mesh]
 	var species_heights: Dictionary = {} # species_name -> float (mesh height in raw units)
 	for species in ["maple", "birch", "deciduous", "pine"]:
@@ -5494,8 +5507,9 @@ func _build_trees(trees: Array) -> void:
 		if meshes.is_empty():
 			print("WARNING: no meshes found in %s" % species)
 			continue
-		# Impressionistic art nouveau palette — rich, warm, painterly
-		# Replace leaf surfaces with custom shader (snow + wind), keep bark as Standard
+		# Per-species colors for leaves and bark
+		var leaf_tint: Vector3 = leaf_tints.get(species, Vector3(0.28, 0.48, 0.18))
+		var bark_col: Color = bark_colors.get(species, Color(0.48, 0.38, 0.28))
 		var leaf_shader: Shader = _get_shader("tree_leaf_glb", _tree_glb_leaf_shader_code())
 		for m: Mesh in meshes:
 			for si in m.get_surface_count():
@@ -5506,14 +5520,14 @@ func _build_trees(trees: Array) -> void:
 						# Leaves — replace with snow-aware shader
 						var leaf_mat := ShaderMaterial.new()
 						leaf_mat.shader = leaf_shader
-						leaf_mat.set_shader_parameter("albedo_tint", Vector3(0.28, 0.48, 0.18))
+						leaf_mat.set_shader_parameter("albedo_tint", leaf_tint)
 						if sm.albedo_texture:
 							leaf_mat.set_shader_parameter("albedo_tex", sm.albedo_texture)
 						leaf_mat.set_shader_parameter("alpha_scissor", sm.alpha_scissor_threshold if sm.alpha_scissor_threshold > 0.0 else 0.5)
 						m.surface_set_material(si, leaf_mat)
 					else:
-						# Bark — warm umber, like a Mucha illustration
-						sm.albedo_color = Color(0.48, 0.38, 0.28, 1.0)
+						# Bark — species-specific color
+						sm.albedo_color = bark_col
 						sm.roughness = 0.90
 						sm.metallic = 0.0
 		species_meshes[species] = meshes
@@ -5528,9 +5542,10 @@ func _build_trees(trees: Array) -> void:
 	var glb_species_map := {
 		"oak":       "deciduous",
 		"maple":     "maple",
-		"elm":       "birch",    # birch silhouette works for elm
+		"elm":       "maple",    # maple's wider canopy better matches elm's vase shape
 		"conifer":   "pine",
 		"deciduous": "deciduous",
+		"birch":     "birch",
 	}
 	# Desired height ranges per species archetype (metres)
 	# [min, max] — mature American Elms are 20-30m; census DBH drives interpolation
@@ -5601,6 +5616,9 @@ func _build_trees(trees: Array) -> void:
 
 		# Crown width: blend uniform scale with LiDAR crown data for subtle variation
 		var sx := sy
+		# Elms get 30% wider crowns — vase-shaped canopy characteristic
+		if tree_species == "elm":
+			sx *= 1.3
 		if typeof(tree_entry) == TYPE_DICTIONARY and tree_entry.has("crown_a"):
 			var crown_a := float(tree_entry["crown_a"])
 			if crown_a > 0.0 and desired_h > 1.0:
@@ -5609,6 +5627,8 @@ func _build_trees(trees: Array) -> void:
 				var crown_ratio := clampf(crown_d / desired_h, 0.3, 1.2)
 				# Apply as a subtle modifier (30% blend) to avoid extreme stretching
 				sx = sy * lerpf(1.0, crown_ratio, 0.3)
+				if tree_species == "elm":
+					sx *= 1.3
 
 		# Random Y rotation for variety
 		var y_rot := rng.randf() * TAU
