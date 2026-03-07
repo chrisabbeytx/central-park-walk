@@ -8109,10 +8109,12 @@ func _build_furniture(bench_data: Array, lamppost_data: Array, paths: Array) -> 
 	if bench_variants.is_empty():
 		print("WARNING: no bench meshes found in GLB")
 		return
+	# Central Park bench: dark hunter green cast iron + wood slats
+	# Since the mesh is single-material, use a muted green-brown to evoke both
 	var bench_mat := StandardMaterial3D.new()
-	bench_mat.albedo_color = Color(0.45, 0.30, 0.15)  # warm honey wood
-	bench_mat.roughness    = 0.88
-	bench_mat.metallic     = 0.0
+	bench_mat.albedo_color = Color(0.18, 0.24, 0.14)  # dark hunter green (CP bench iron)
+	bench_mat.roughness    = 0.80
+	bench_mat.metallic     = 0.30  # slight metallic sheen for cast iron
 
 	# --- Place lampposts: OSM positions + procedural supplement ---
 	# Zone classification: formal areas get ornate lamps, naturalistic get standard,
