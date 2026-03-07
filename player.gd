@@ -86,9 +86,13 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 func _change_speed(dir: int) -> void:
+	var old_idx := _speed_idx
 	_speed_idx = clampi(_speed_idx + dir, 0, SPEED_STEPS.size() - 1)
 	walk_speed = SPEED_STEPS[_speed_idx]
-	print("Speed: %s (%.1f m/s)" % [SPEED_NAMES[_speed_idx], walk_speed])
+	if _speed_idx == old_idx:
+		print("Speed: %s (%.1f m/s) [already at %s]" % [SPEED_NAMES[_speed_idx], walk_speed, "min" if dir < 0 else "max"])
+	else:
+		print("Speed: %s (%.1f m/s)" % [SPEED_NAMES[_speed_idx], walk_speed])
 
 
 func _handle_look(delta: float) -> void:

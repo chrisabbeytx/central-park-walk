@@ -268,8 +268,10 @@ func _load_heightmap() -> void:
 		var buf := fa.get_buffer(byte_count)
 		fa.close()
 		_hm_data = buf.to_float32_array()
-		_mesh_width = _hm_width
-		_mesh_depth = _hm_depth
+		# Mesh capped at 4096 (GDScript can't build 67M verts fast enough);
+		# shader heightmap texture uses full resolution for per-pixel normals.
+		_mesh_width = mini(_hm_width, 4096)
+		_mesh_depth = mini(_hm_depth, 4096)
 		print("Heightmap loaded (bin): %d×%d  mesh=%d×%d  origin_y=%.1f m" % [
 			_hm_width, _hm_depth, _mesh_width, _mesh_depth, _hm_origin_height])
 		return
@@ -588,19 +590,17 @@ func _unhandled_input(event: InputEvent) -> void:
 	elif event.keycode == KEY_PERIOD:
 		_user_gamma = clampf(_user_gamma + 0.05, 0.5, 2.0)
 		print("Gamma: %.2f" % _user_gamma)
-	elif event.keycode == KEY_MINUS:
+	# +/- reserved for movement speed (player.gd)
+	elif event.keycode == KEY_9:
 		if _wind_override < 0.0:
 			_wind_override = 1.0
 		_wind_override = clampf(_wind_override - 0.1, 0.0, 3.0)
 		print("Wind: %.0f%%" % (_wind_override * 100.0))
-	elif event.keycode == KEY_EQUAL:
+	elif event.keycode == KEY_0:
 		if _wind_override < 0.0:
 			_wind_override = 1.0
 		_wind_override = clampf(_wind_override + 0.1, 0.0, 3.0)
 		print("Wind: %.0f%%" % (_wind_override * 100.0))
-	elif event.keycode == KEY_0:
-		_wind_override = -1.0
-		print("Wind: auto")
 
 
 # ---------------------------------------------------------------------------
@@ -1411,15 +1411,19 @@ func _setup_ground() -> void:
 		return
 
 	# ---- Build terrain ArrayMesh ----
-	# Mesh at full heightmap resolution; shader computes per-pixel normals
-	# from the heightmap texture, so we skip mesh normals/tangents.
+	# Mesh at MW×MH (capped at 4096); shader computes per-pixel normals
+	# from the full-res heightmap texture, so we skip mesh normals/tangents.
 	var MW        := _mesh_width
 	var MH        := _mesh_depth
+	var HW        := _hm_width   # full heightmap resolution
 	var half      := _hm_world_size * 0.5
 	var cell      := _hm_world_size / float(MW - 1)
 	var V         := MW * MH
 	var inv_mw    := 1.0 / float(MW - 1)
 	var inv_mh    := 1.0 / float(MH - 1)
+	# Step for subsampling full-res heightmap into mesh vertices
+	var hm_step_x := float(HW - 1) / float(MW - 1)
+	var hm_step_z := float(_hm_depth - 1) / float(MH - 1)
 
 	var verts    := PackedVector3Array(); verts.resize(V)
 	var uvs      := PackedVector2Array(); uvs.resize(V)
@@ -1428,9 +1432,12 @@ func _setup_ground() -> void:
 		var zw  := -half + zi * cell
 		var uzv := float(zi) * inv_mh
 		var row := zi * MW
+		var hzi := mini(int(zi * hm_step_z + 0.5), _hm_depth - 1)
+		var hm_row := hzi * HW
 		for xi in MW:
 			var idx := row + xi
-			verts[idx] = Vector3(-half + xi * cell, _hm_data[idx], zw)
+			var hxi := mini(int(xi * hm_step_x + 0.5), HW - 1)
+			verts[idx] = Vector3(-half + xi * cell, _hm_data[hm_row + hxi], zw)
 			uvs[idx]   = Vector2(float(xi) * inv_mw, uzv)
 
 	var T       := (MW - 1) * (MH - 1) * 6
@@ -1461,18 +1468,19 @@ func _setup_ground() -> void:
 	mi.name       = "Terrain"
 	add_child(mi)
 
-	# ---- HeightMapShape3D collision (subsampled for physics performance) ----
+	# ---- HeightMapShape3D collision (subsampled from full-res heightmap) ----
 	var COL_RES := 1024
-	var col_step := MW / COL_RES
 	var col_cell := _hm_world_size / float(COL_RES - 1)
+	var col_step_x := float(HW - 1) / float(COL_RES - 1)
+	var col_step_z := float(_hm_depth - 1) / float(COL_RES - 1)
 	var hm_shape          := HeightMapShape3D.new()
 	hm_shape.map_width     = COL_RES
 	hm_shape.map_depth     = COL_RES
 	var pf                := PackedFloat32Array(); pf.resize(COL_RES * COL_RES)
 	for czi in COL_RES:
-		var src_row := mini(czi * col_step, MW - 1) * MW
+		var src_row := mini(int(czi * col_step_z + 0.5), _hm_depth - 1) * HW
 		for cxi in COL_RES:
-			pf[czi * COL_RES + cxi] = _hm_data[src_row + mini(cxi * col_step, MW - 1)]
+			pf[czi * COL_RES + cxi] = _hm_data[src_row + mini(int(cxi * col_step_x + 0.5), HW - 1)]
 	hm_shape.map_data      = pf
 
 	# Heightmap texture for per-pixel fragment normals — full-res data
@@ -2963,7 +2971,7 @@ func _setup_hud() -> void:
 	vbox.add_child(_location_label)
 
 	var hint := Label.new()
-	hint.text = "WASD: move   Mouse+RMB: look   Scroll/+/-: speed   T: time   [/]: ±1h   P: weather   H: HUD"
+	hint.text = "WASD: move   Mouse+RMB: look   Scroll/+/-: speed   9/0: wind   T: time   [/]: ±1h   P: weather   H: HUD"
 	hint.add_theme_font_size_override("font_size", 15)
 	hint.add_theme_color_override("font_color", Color(0.55, 0.55, 0.55))
 	vbox.add_child(hint)

@@ -72,6 +72,7 @@ var boundary_polygon: PackedVector2Array  # XZ boundary for player clamping
 var landuse_zones: Array = []             # from park_data.json: type, name, points
 var _bridge_outlines: Array = []          # bridge outline polygons for deck shapes
 var _tunnel_outlines: Array = []          # tunnel outline polygons for labels
+var _perimeter_heights: Array = []        # NYC real building heights [x, z, h_m, ?name]
 
 
 # ---------------------------------------------------------------------------
@@ -276,7 +277,7 @@ func _make_path_material(hw: String, surface: String) -> Material:
 		mat.set_shader_parameter("hm_world_size", _hm_world_size)
 		mat.set_shader_parameter("hm_min_h",      _hm_min_h)
 		mat.set_shader_parameter("hm_range",      _hm_max_h - _hm_min_h)
-		mat.set_shader_parameter("hm_res",        float(_hm_width))
+		mat.set_shader_parameter("hm_res",        float(mini(_hm_width, 4096)))
 	return mat
 
 
@@ -371,6 +372,7 @@ func set_heightmap(data: Array, width: int, depth: int, world_size: float) -> vo
 func _build_hm_gpu_texture() -> void:
 	## Build GPU texture for vertex-shader terrain snapping.
 	## Encode heights as 16-bit (RG8) for precision: R = high byte, G = low byte.
+	## Capped at 4096 for GPU texture (sufficient for vertex snapping).
 	if _hm_data.is_empty():
 		return
 	_hm_min_h = INF; _hm_max_h = -INF
@@ -379,17 +381,25 @@ func _build_hm_gpu_texture() -> void:
 		_hm_min_h = minf(_hm_min_h, fv)
 		_hm_max_h = maxf(_hm_max_h, fv)
 	var h_range := maxf(_hm_max_h - _hm_min_h, 0.01)
-	var img := Image.create(_hm_width, _hm_depth, false, Image.FORMAT_RG8)
-	for zi in _hm_depth:
-		for xi in _hm_width:
-			var h := (float(_hm_data[zi * _hm_width + xi]) - _hm_min_h) / h_range
+	var tex_w := mini(_hm_width, 4096)
+	var tex_h := mini(_hm_depth, 4096)
+	var sx := float(_hm_width - 1) / float(tex_w - 1)
+	var sz := float(_hm_depth - 1) / float(tex_h - 1)
+	var data := PackedByteArray()
+	data.resize(tex_w * tex_h * 2)
+	for zi in tex_h:
+		var hzi := mini(int(zi * sz + 0.5), _hm_depth - 1)
+		for xi in tex_w:
+			var hxi := mini(int(xi * sx + 0.5), _hm_width - 1)
+			var h := (float(_hm_data[hzi * _hm_width + hxi]) - _hm_min_h) / h_range
 			var h16 := int(clampf(h, 0.0, 1.0) * 65535.0)
-			var hi := h16 >> 8        # high byte → R
-			var lo := h16 & 0xFF      # low byte → G
-			img.set_pixel(xi, zi, Color(float(hi) / 255.0, float(lo) / 255.0, 0.0, 1.0))
+			var off := (zi * tex_w + xi) * 2
+			data[off]     = h16 >> 8     # high byte → R
+			data[off + 1] = h16 & 0xFF   # low byte → G
+	var img := Image.create_from_data(tex_w, tex_h, false, Image.FORMAT_RG8, data)
 	_hm_texture = ImageTexture.create_from_image(img)
 	print("ParkLoader: heightmap GPU texture created %d×%d (h_range=%.1f)" % [
-		_hm_width, _hm_depth, h_range])
+		tex_w, tex_h, h_range])
 
 
 func _terrain_y(x: float, z: float) -> float:
@@ -673,6 +683,7 @@ func _ready() -> void:
 	landuse_zones = data.get("landuse", [])
 	_bridge_outlines = data.get("bridge_outlines", [])
 	_tunnel_outlines = data.get("tunnel_outlines", [])
+	_perimeter_heights = data.get("perimeter_heights", [])
 	var streams: Array = data.get("streams", [])
 	var amenities: Array = data.get("amenities", [])
 
@@ -4222,7 +4233,7 @@ func _build_water(water: Array) -> void:
 		mat.set_shader_parameter("hm_world_size", _hm_world_size)
 		mat.set_shader_parameter("hm_min_h",      _hm_min_h)
 		mat.set_shader_parameter("hm_range",      _hm_max_h - _hm_min_h)
-		mat.set_shader_parameter("hm_res",        float(_hm_width))
+		mat.set_shader_parameter("hm_res",        float(mini(_hm_width, 4096)))
 	mesh.surface_set_material(0, mat)
 
 	var mi := MeshInstance3D.new()
@@ -4294,7 +4305,7 @@ func _build_streams(streams: Array) -> void:
 		mat.set_shader_parameter("hm_world_size", _hm_world_size)
 		mat.set_shader_parameter("hm_min_h",      _hm_min_h)
 		mat.set_shader_parameter("hm_range",      _hm_max_h - _hm_min_h)
-		mat.set_shader_parameter("hm_res",        float(_hm_width))
+		mat.set_shader_parameter("hm_res",        float(mini(_hm_width, 4096)))
 	s_mesh.surface_set_material(0, mat)
 
 	var s_mi := MeshInstance3D.new()
@@ -7837,6 +7848,18 @@ func _build_boundary_facades() -> void:
 		[-100.0, 50.0,   306.0, 1],  # One57 — glass curtain wall (306m)
 	]
 
+	# Build spatial grid index for fast perimeter height lookups
+	var _ph_grid: Dictionary = {}  # "gx,gz" → Array of [x, z, h] entries
+	var PH_CELL := 50.0  # grid cell size in metres
+	for ph in _perimeter_heights:
+		var gx := int(floor(float(ph[0]) / PH_CELL))
+		var gz := int(floor(float(ph[1]) / PH_CELL))
+		var key := "%d,%d" % [gx, gz]
+		if not _ph_grid.has(key):
+			_ph_grid[key] = []
+		_ph_grid[key].append(ph)
+	var ph_search_r := int(ceil(300.0 / PH_CELL))  # grid cells to search
+
 	var n := boundary_polygon.size()
 	var cum_dist := 0.0
 
@@ -7865,73 +7888,79 @@ func _build_boundary_facades() -> void:
 		var fp2 := p2 + face_offset
 		var norm3 := Vector3(inward.x, 0.0, inward.y)
 
-		# Building block index for height variation (30m blocks)
+		# Building block index for style variation (30m blocks)
 		var block_idx := int(floor(cum_dist / 30.0))
 		var bh := fmod(abs(float(block_idx) * 73.7 + 17.3), 1.0)  # 0..1 hash
 
-		# --- Classify side and determine height + style ---
-		var bld_h: float
+		# --- Find nearest real building height from NYC data (grid lookup) ---
+		var bld_h := 10.0  # fallback
+		var found_nyc := false
+		var best_dist_sq := 300.0 * 300.0
+		var cgx := int(floor(mx / PH_CELL))
+		var cgz := int(floor(mz / PH_CELL))
+		for gx2 in range(cgx - ph_search_r, cgx + ph_search_r + 1):
+			for gz2 in range(cgz - ph_search_r, cgz + ph_search_r + 1):
+				var key2 := "%d,%d" % [gx2, gz2]
+				if _ph_grid.has(key2):
+					for ph in _ph_grid[key2]:
+						var dx := float(ph[0]) - mx
+						var dz := float(ph[1]) - mz
+						var dsq := dx * dx + dz * dz
+						if dsq < best_dist_sq:
+							best_dist_sq = dsq
+							bld_h = float(ph[2])
+							found_nyc = true
+
+		# --- Classify side for style + tint ---
 		var style: int
 		var tint := Color(1.0, 1.0, 1.0)
 		var matched_lm := false
 
 		if mx > 500.0 and mz > -1700.0 and mz < 1800.0:
 			# ═══ EAST SIDE — Fifth Avenue ═══
-			# Default: cream Indiana limestone co-ops, 12-18 stories (40-60m)
 			style = 0  # LIMESTONE
-			bld_h = 40.0 + bh * 20.0
 			tint = Color(1.02, 1.0, 0.96)  # warm cream
-			# Check landmarks
 			for lm in east_lm:
 				if mz >= lm[0] and mz <= lm[1]:
-					bld_h = lm[2]; style = int(lm[3]); matched_lm = true; break
-			# North of 103rd: transition to shorter red brick (East Harlem)
-			if not matched_lm and mz < -1320.0:
-				bld_h = 18.0 + bh * 8.0; style = 2
+					style = int(lm[3]); matched_lm = true; break
+			if mz < -1320.0:
+				style = 2  # red brick north of 103rd
 				tint = Color(0.98, 0.94, 0.90)
 
 		elif mx < -700.0 and mz > -1700.0 and mz < 1800.0:
 			# ═══ WEST SIDE — Central Park West ═══
-			# Default: tan/buff brick pre-war apartments, 8-12 stories (28-42m)
 			style = 3  # BUFF_BRICK
-			bld_h = 28.0 + bh * 14.0
 			tint = Color(1.0, 0.98, 0.94)
 			for lm in west_lm:
 				if mz >= lm[0] and mz <= lm[1]:
-					bld_h = lm[2]; style = int(lm[3]); matched_lm = true; break
-			# Dakota special tint (pale yellow brick)
+					style = int(lm[3]); matched_lm = true; break
 			if matched_lm and mz >= 920.0 and mz < 996.0:
-				tint = Color(1.05, 1.02, 0.86)
-			# North of 98th: transition to shorter brick
-			if not matched_lm and mz < -700.0:
-				bld_h = 20.0 + bh * 10.0; style = 2
+				tint = Color(1.05, 1.02, 0.86)  # Dakota tint
+			if mz < -700.0 and not matched_lm:
+				style = 2
 				tint = Color(0.96, 0.93, 0.88)
 
 		elif mz > 1700.0:
 			# ═══ SOUTH SIDE — Central Park South / 59th St ═══
-			# Default: Art Deco hotels, 30-44 stories (100-145m)
-			style = 3  # BUFF_BRICK (Art Deco cream brick)
-			bld_h = 100.0 + bh * 45.0
+			style = 3  # BUFF_BRICK
 			tint = Color(1.0, 0.98, 0.95)
-			# Check landmarks by X coordinate
 			for lm in south_lm:
 				if mx >= lm[0] and mx <= lm[1]:
-					bld_h = lm[2]; style = int(lm[3]); matched_lm = true; break
+					style = int(lm[3]); matched_lm = true; break
 
 		else:
-			# ═══ NORTH SIDE — 110th St / Central Park North ═══
-			# Low brownstone/brick mix, 4-7 stories (15-22m)
+			# ═══ NORTH SIDE — 110th St ═══
 			style = 2  # RED_BRICK
-			bld_h = 15.0 + bh * 8.0
 			tint = Color(0.98, 0.94, 0.90)
-			# Occasional newer glass mid-rise
-			if bh > 0.85:
-				bld_h = 35.0 + bh * 20.0; style = 1
+			if bld_h > 30.0:
+				style = 1  # glass for taller buildings
 
-		# Height sawtooth jitter ±4m (seeded from position)
-		var h_jitter := fmod(abs(float(block_idx) * 29.7 + mx * 0.13), 8.0) - 4.0
-		if not matched_lm:
-			bld_h += h_jitter
+		if not found_nyc:
+			# No NYC data — use procedural fallback
+			if mx > 500.0: bld_h = 40.0 + bh * 20.0
+			elif mx < -700.0: bld_h = 28.0 + bh * 14.0
+			elif mz > 1700.0: bld_h = 100.0 + bh * 45.0
+			else: bld_h = 15.0 + bh * 8.0
 
 		# Per-building tint variation (±15%)
 		var rv := fmod(abs(float(block_idx) * 17.3), 0.30) - 0.15
