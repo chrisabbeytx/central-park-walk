@@ -8125,19 +8125,29 @@ func _build_furniture(bench_data: Array, lamppost_data: Array, paths: Array) -> 
 	lamppost_material = lamp_bulb_mat
 
 	# --- Bench meshes (multiple variants for variety) ---
+	# Load CP-specific bench model (green iron + wood slats, 2 materials baked in)
+	var cp_bench_path := ProjectSettings.globalize_path("res://models/furniture/cp_bench.glb")
+	var cp_bench_meshes := _load_glb_meshes(cp_bench_path)
 	var bench_variants: Array[Mesh] = []
+	# CP bench is the primary variant
+	if cp_bench_meshes.has("ParkFurn_Bench_CP"):
+		bench_variants.append(cp_bench_meshes["ParkFurn_Bench_CP"] as Mesh)
+		print("Bench: loaded CP bench model (iron + wood)")
+	# Fallback to generic furniture GLB variants
 	for bname in ["ParkFurn_Bench_A", "ParkFurn_Bench_B", "ParkFurn_Bench_C"]:
 		if furn_meshes.has(bname):
 			bench_variants.append(furn_meshes[bname] as Mesh)
 	if bench_variants.is_empty():
 		print("WARNING: no bench meshes found in GLB")
 		return
-	# Central Park bench: dark hunter green cast iron + wood slats
-	# Since the mesh is single-material, use a muted green-brown to evoke both
-	var bench_mat := StandardMaterial3D.new()
-	bench_mat.albedo_color = Color(0.18, 0.24, 0.14)  # dark hunter green (CP bench iron)
-	bench_mat.roughness    = 0.80
-	bench_mat.metallic     = 0.30  # slight metallic sheen for cast iron
+	# Material override only for fallback benches (CP bench has its own materials)
+	var bench_mat: Material = null
+	if cp_bench_meshes.is_empty():
+		var mat := StandardMaterial3D.new()
+		mat.albedo_color = Color(0.18, 0.24, 0.14)  # dark hunter green (CP bench iron)
+		mat.roughness    = 0.80
+		mat.metallic     = 0.30  # slight metallic sheen for cast iron
+		bench_mat = mat
 
 	# --- Place lampposts: OSM positions + procedural supplement ---
 	# Zone classification: formal areas get ornate lamps, naturalistic get standard,

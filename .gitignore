@@ -3,6 +3,8 @@
 
 # Downloaded binary assets (re-download via scripts)
 models/
+!models/furniture/cp_bench.glb
+!scripts/make_bench.py
 textures/*.jpg
 textures/*.hdr
 textures/*.png
