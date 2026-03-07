@@ -729,21 +729,27 @@ void sky() {
 	float sun_glow = pow(max(sun_dot, 0.0), 64.0) * 0.3;
 	sky_col += sun_col * (sun_disc + sun_glow);
 
-	// --- Stars ---
+	// --- Stars (Bortle 8-9: inner-city light pollution) ---
+	// Central Park: nearly starless sky. Only ~10 brightest stars visible on clear nights.
 	if (elev > 0.0) {
 		float star_fade = smoothstep(0.15, 0.0, LIGHT0_ENERGY);
 		if (star_fade > 0.0) {
 			vec2 star_uv = dir.xz / (elev + 0.001) * 80.0;
 			vec2 star_cell = floor(star_uv);
 			float star_rand = sky_hash(star_cell);
-			float star_mask = step(0.97, star_rand);
+			float star_mask = step(0.997, star_rand);  // 0.3% density — only brightest stars
 			float star_bright = sky_hash(star_cell + vec2(13.7, 29.3));
-			star_bright = star_bright * star_bright * 1.5;
+			star_bright = star_bright * star_bright * 0.8;  // dimmer through light pollution
 			float twinkle = 0.8 + 0.2 * sin(TIME * 2.0 + star_rand * 100.0);
 			vec2 star_frac = fract(star_uv) - 0.5;
-			float star_point = smoothstep(0.12, 0.02, length(star_frac));
+			float star_point = smoothstep(0.10, 0.02, length(star_frac));
 			sky_col += vec3(star_bright * star_mask * star_point * star_fade * twinkle);
 		}
+		// Light pollution sky glow — warm amber dome
+		float lp_fade = smoothstep(0.15, 0.0, LIGHT0_ENERGY);
+		vec3 light_pollution = vec3(0.12, 0.08, 0.04);  // warm amber-brown
+		float lp_strength = lp_fade * (0.6 + 0.4 * (1.0 - elev));  // stronger near horizon
+		sky_col += light_pollution * lp_strength;
 	}
 
 	// --- FBM cloud layer ---
