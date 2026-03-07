@@ -198,7 +198,7 @@ var _tour_idx := 0  # index into _tour_shots array
 var _tour_shots: Array = []  # populated in _build_tour_shots()
 
 const TOUR_VIEWPOINTS: Array = [
-	{"name": "bethesda_fountain", "x": -480.0, "z": 1020.0, "yaw": 350.0},
+	{"name": "bethesda_fountain", "x": -430.0, "z": 920.0, "yaw": 330.0},
 	{"name": "literary_walk", "x": -600.0, "z": 1420.0, "yaw": 30.0},
 	{"name": "great_lawn", "x": -200.0, "z": 0.0, "yaw": 0.0},
 	{"name": "conservatory_water", "x": -152.0, "z": 958.0, "yaw": 270.0},
@@ -212,6 +212,9 @@ const TOUR_VIEWPOINTS: Array = [
 	{"name": "fifth_ave_skyline", "x": 100.0, "z": 200.0, "yaw": 270.0},
 	{"name": "north_woods", "x": 600.0, "z": -1315.0, "yaw": 180.0},
 	{"name": "reservoir_south", "x": -200.0, "z": -300.0, "yaw": 0.0},
+	{"name": "bow_bridge", "x": -540.0, "z": 740.0, "yaw": 310.0},
+	{"name": "soccer_fields", "x": 390.0, "z": -1070.0, "yaw": 30.0},
+	{"name": "sheep_meadow", "x": -700.0, "z": 1600.0, "yaw": 270.0},
 ]
 
 const TOUR_ANGLES: Array = [
