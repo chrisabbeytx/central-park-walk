@@ -2018,8 +2018,8 @@ func _setup_player() -> CharacterBody3D:
 		p.rotation_degrees.y = 0.0
 		p.set_physics_process(false)
 	else:
-		p.position = Vector3(-400.0, _terrain_height(-400.0, 600.0) + 1.8, 600.0)
-	p.rotation_degrees.y = 30.0
+		p.position = Vector3(-594.0, _terrain_height(-594.0, 1155.0) + 1.8, 1155.0)
+	p.rotation_degrees.y = -160.0
 	add_child(p)
 	if _terrain_only and p.head:
 		p.head.rotation_degrees.x = -55.0  # look down at terrain
