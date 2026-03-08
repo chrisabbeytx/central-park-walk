@@ -1465,7 +1465,7 @@ func _setup_ground() -> void:
 		_terrain_mat.set_shader_parameter("grass_albedo", tex_alb)
 		_terrain_mat.set_shader_parameter("grass_normal", tex_nrm)
 		_terrain_mat.set_shader_parameter("grass_rough",  tex_rgh)
-		_terrain_mat.set_shader_parameter("tile_m",       5.0)
+		_terrain_mat.set_shader_parameter("tile_m",       6.0)
 		# Anti-tiling noise texture
 		var noise_tex := _load_img_tex("res://textures/tile_noise.png")
 		if noise_tex:
@@ -1888,9 +1888,16 @@ void fragment() {
 	// --- Grass shading (textureNoTile — Inigo Quilez anti-tiling) ---
 	vec2 uv  = world_pos.xz / tile_m;
 	vec3 grass_alb = textureNoTile_c(grass_albedo, uv);
-	// Boost green channel slightly to keep grass looking lively under filmic tonemap
-	grass_alb.g *= 1.12;
-	grass_alb.r *= 0.92;
+	// Natural grass: moderate color correction (texture is quite saturated)
+	float grass_lum = dot(grass_alb, vec3(0.299, 0.587, 0.114));
+	grass_alb = mix(vec3(grass_lum), grass_alb, 0.88);  // 12% desaturation
+	grass_alb.g *= 1.02;  // very mild green boost (was 1.12 — too neon)
+	// Large-scale color variation: breaks up uniformity across wide lawns
+	float lawn_noise = fbm(world_pos.xz * 0.006, 2);
+	float lawn_warm  = fbm(world_pos.xz * 0.003 + vec2(100.0), 2);
+	grass_alb *= 0.94 + lawn_noise * 0.12;  // ±6% brightness variation
+	grass_alb.r += lawn_warm * 0.015;       // subtle warm/cool patches
+	grass_alb.b -= lawn_warm * 0.01;
 	vec3 grass_nrm = textureNoTile_n(grass_normal, uv);
 	float grass_rgh = clamp(textureNoTile_r(grass_rough, uv) * 0.20 + 0.65, 0.0, 1.0);
 
