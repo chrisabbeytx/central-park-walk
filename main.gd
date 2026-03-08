@@ -3561,35 +3561,90 @@ var _footstep_interval: float = 0.65  # seconds per step at walk speed
 func _setup_audio() -> void:
 	## Initialize layered ambient soundscape.
 	# Background layers (non-spatial)
-	_audio_birds = _make_audio_player("res://sounds/birds_daytime.ogg", -8.0)
-	_audio_wind = _make_audio_player("res://sounds/wind_trees.ogg", -14.0)
-	_audio_city = _make_audio_player("res://sounds/city_distant.ogg", -18.0)
+	_audio_birds = _make_audio_player("res://sounds/birds_daytime.wav", -8.0)
+	_audio_wind = _make_audio_player("res://sounds/wind_trees.wav", -14.0)
+	_audio_city = _make_audio_player("res://sounds/city_distant.wav", -18.0)
 	# Spatial water
 	_audio_water = AudioStreamPlayer3D.new()
 	_audio_water.name = "AudioWater"
-	if ResourceLoader.exists("res://sounds/water_lake.ogg"):
-		var wstream = ResourceLoader.load("res://sounds/water_lake.ogg")
-		if wstream is AudioStream:
-			_audio_water.stream = wstream
-			_audio_water.volume_db = -10.0
-			_audio_water.max_distance = 60.0
-			_audio_water.autoplay = true
-			add_child(_audio_water)
+	var wstream: AudioStream = _load_audio_stream("res://sounds/water_lake.wav")
+	if wstream:
+		_audio_water.stream = wstream
+		_audio_water.volume_db = -10.0
+		_audio_water.max_distance = 60.0
+		_audio_water.autoplay = true
+		add_child(_audio_water)
 	# Footsteps
-	_audio_footstep_grass = _make_audio_player("res://sounds/footstep_grass.ogg", -6.0, false)
-	_audio_footstep_stone = _make_audio_player("res://sounds/footstep_stone.ogg", -6.0, false)
+	_audio_footstep_grass = _make_audio_player("res://sounds/footstep_grass.wav", -6.0, false)
+	_audio_footstep_stone = _make_audio_player("res://sounds/footstep_stone.wav", -6.0, false)
 
 func _make_audio_player(path: String, vol_db: float, autoplay: bool = true) -> AudioStreamPlayer:
 	var player := AudioStreamPlayer.new()
 	player.name = path.get_file().get_basename()
+	var stream: AudioStream = _load_audio_stream(path)
+	if stream:
+		player.stream = stream
+		player.volume_db = vol_db
+		player.autoplay = autoplay
+		add_child(player)
+	return player
+
+func _load_audio_stream(path: String) -> AudioStream:
+	## Load audio — try ResourceLoader first, then runtime WAV parsing.
 	if ResourceLoader.exists(path):
 		var stream = ResourceLoader.load(path)
 		if stream is AudioStream:
-			player.stream = stream
-			player.volume_db = vol_db
-			player.autoplay = autoplay
-			add_child(player)
-	return player
+			return stream as AudioStream
+	# Runtime WAV loader for files not imported by editor
+	var abs_path := ProjectSettings.globalize_path(path)
+	if not FileAccess.file_exists(abs_path):
+		return null
+	var fa := FileAccess.open(abs_path, FileAccess.READ)
+	if not fa:
+		return null
+	# Read WAV header
+	var riff := fa.get_buffer(4)
+	if riff != PackedByteArray([0x52, 0x49, 0x46, 0x46]):  # "RIFF"
+		return null
+	fa.get_32()  # file size
+	var wave := fa.get_buffer(4)
+	if wave != PackedByteArray([0x57, 0x41, 0x56, 0x45]):  # "WAVE"
+		return null
+	# Find fmt and data chunks
+	var fmt_found := false
+	var channels := 1
+	var sample_rate := 44100
+	var bits_per_sample := 16
+	var audio_data := PackedByteArray()
+	while fa.get_position() < fa.get_length() - 8:
+		var chunk_id := fa.get_buffer(4).get_string_from_ascii()
+		var chunk_size: int = fa.get_32()
+		if chunk_id == "fmt ":
+			var audio_fmt := fa.get_16()  # 1 = PCM
+			channels = fa.get_16()
+			sample_rate = fa.get_32()
+			fa.get_32()  # byte rate
+			fa.get_16()  # block align
+			bits_per_sample = fa.get_16()
+			if chunk_size > 16:
+				fa.get_buffer(chunk_size - 16)
+			fmt_found = true
+		elif chunk_id == "data":
+			audio_data = fa.get_buffer(chunk_size)
+		else:
+			fa.get_buffer(chunk_size)
+	fa.close()
+	if not fmt_found or audio_data.is_empty():
+		return null
+	var stream := AudioStreamWAV.new()
+	stream.data = audio_data
+	stream.format = AudioStreamWAV.FORMAT_16_BITS if bits_per_sample == 16 else AudioStreamWAV.FORMAT_8_BITS
+	stream.mix_rate = sample_rate
+	stream.stereo = channels == 2
+	stream.loop_mode = AudioStreamWAV.LOOP_FORWARD
+	stream.loop_end = audio_data.size() / (bits_per_sample / 8) / channels
+	print("Audio: loaded %s (%ds)" % [path.get_file(), audio_data.size() / sample_rate / (bits_per_sample / 8) / channels])
+	return stream
 
 var _boundary_dist_timer: float = 0.0
 var _cached_boundary_dist: float = 999999.0

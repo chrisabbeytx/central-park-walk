@@ -1168,7 +1168,7 @@ func _build_paths(paths: Array) -> void:
 			lbl.font_size = 48
 			lbl.pixel_size = 0.01
 			lbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-			lbl.shading_mode = Label3D.SHADING_MODE_UNSHADED
+
 			lbl.modulate = Color(0.75, 0.72, 0.68, 0.60)
 			lbl.outline_modulate = Color(0.1, 0.1, 0.1, 0.50)
 			lbl.outline_size = 8
@@ -2229,7 +2229,7 @@ func _build_bridge(path: Dictionary) -> void:
 		lbl.font_size = 48
 		lbl.pixel_size = 0.01
 		lbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-		lbl.shading_mode = Label3D.SHADING_MODE_UNSHADED
+
 		lbl.modulate = Color(0.75, 0.72, 0.68, 0.60)
 		lbl.outline_modulate = Color(0.1, 0.1, 0.1, 0.50)
 		lbl.outline_size = 8
@@ -7151,8 +7151,8 @@ func _build_labels(water: Array) -> void:
 		lbl.font_size         = 64
 		lbl.pixel_size        = pixel_size
 		lbl.billboard         = BaseMaterial3D.BILLBOARD_ENABLED
-		lbl.shading_mode      = Label3D.SHADING_MODE_UNSHADED
-		lbl.modulate          = Color(0.75, 0.75, 0.75, 0.65)
+		lbl.render_priority   = 1
+		lbl.modulate          = Color(0.55, 0.55, 0.55, 0.55)
 		lbl.outline_size      = 8
 		lbl.outline_modulate  = Color(0.0, 0.08, 0.25, 0.55)
 		var water_y: float = float(body.get("water_y", 0.0))
@@ -7704,7 +7704,7 @@ func _build_statues(statues: Array) -> void:
 			lbl.font_size = 48
 			lbl.pixel_size = 0.02
 			lbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-			lbl.shading_mode = Label3D.SHADING_MODE_UNSHADED
+
 			lbl.modulate = Color(0.75, 0.72, 0.68, 0.65)
 			lbl.outline_size = 6
 			lbl.outline_modulate = Color(0.0, 0.0, 0.0, 0.50)
@@ -7779,7 +7779,7 @@ func _build_statues(statues: Array) -> void:
 		lbl.font_size = 48
 		lbl.pixel_size = 0.02
 		lbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-		lbl.shading_mode = Label3D.SHADING_MODE_UNSHADED
+
 		lbl.modulate = Color(0.75, 0.72, 0.68, 0.65)
 		lbl.outline_size = 6
 		lbl.outline_modulate = Color(0.0, 0.0, 0.0, 0.50)
@@ -7850,7 +7850,7 @@ func _build_amenities(amenities: Array) -> void:
 			label.font_size = 28
 			label.position = Vector3(x, y + 2.5, z)
 			label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-			label.shading_mode = Label3D.SHADING_MODE_UNSHADED
+
 			label.modulate = Color(0.70, 0.68, 0.60, 0.60)
 			label.outline_modulate = Color(0.1, 0.1, 0.1, 0.45)
 			label.outline_size = 4
@@ -8632,7 +8632,7 @@ func _label_boundary_buildings() -> void:
 		lbl.font_size = 36
 		lbl.pixel_size = 0.008
 		lbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-		lbl.shading_mode = Label3D.SHADING_MODE_UNSHADED
+
 		lbl.modulate = Color(0.70, 0.68, 0.64, 0.45)
 		lbl.outline_size = 4
 		lbl.outline_modulate = Color(0.08, 0.08, 0.08, 0.30)
