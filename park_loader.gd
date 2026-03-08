@@ -72,6 +72,7 @@ var boundary_polygon: PackedVector2Array  # XZ boundary for player clamping
 var landuse_zones: Array = []             # from park_data.json: type, name, points
 var _bridge_outlines: Array = []          # bridge outline polygons for deck shapes
 var _tunnel_outlines: Array = []          # tunnel outline polygons for labels
+var _foliage_zones: Array = []            # per-area species composition
 var _perimeter_heights: Array = []        # NYC real building heights [x, z, h_m, ?name]
 var water_bodies: Array = []              # water body polygons for shore blending
 
@@ -686,6 +687,7 @@ func _ready() -> void:
 	_bridge_outlines = data.get("bridge_outlines", [])
 	_tunnel_outlines = data.get("tunnel_outlines", [])
 	_perimeter_heights = data.get("perimeter_heights", [])
+	_foliage_zones = data.get("foliage_zones", [])
 	var streams: Array = data.get("streams", [])
 	var amenities: Array = data.get("amenities", [])
 
@@ -5865,10 +5867,15 @@ func _build_trees(trees: Array) -> void:
 		"deciduous": [10.0, 22.0],
 	}
 
+	# Foliage zone data for deciduous sub-species assignment
+	var foliage_zones: Array = _foliage_zones
+
 	# Collect transforms per species-variant for MultiMesh batching
 	# Key: "species_variantIdx" -> Array[Transform3D]
 	var xf_by_key: Dictionary = {}
 	var all_trunk_xf: Array = []  # for collision
+	# LOD1 billboard data: [Transform3D] per color_key for distant imposters
+	var lod1_xf: Array = []  # Array of Transform3D (position + crown scale encoded)
 
 	for i in trees.size():
 		var tree_entry = trees[i]
@@ -5890,7 +5897,34 @@ func _build_trees(trees: Array) -> void:
 		var ty := _terrain_y(tx, tz)
 		rng.seed = i * 1234567891 + 987654321
 
-		var species: String = glb_species_map.get(tree_species, "deciduous")
+		# Zone-based species refinement for generic "deciduous" trees
+		var effective_species := tree_species
+		if tree_species == "deciduous":
+			# Check foliage zones: if tree is in a known zone, assign dominant species
+			for fz in foliage_zones:
+				var zr: Array = fz.get("z_range", [])
+				if zr.size() >= 2 and tz >= float(zr[0]) and tz <= float(zr[1]):
+					var zone_species: Array = fz.get("species", [])
+					if not zone_species.is_empty():
+						var zname: String = fz.get("name", "")
+						if zname == "The Mall":
+							effective_species = "elm"
+						elif "Cherry" in str(zone_species[0]) or "cherry" in zname.to_lower():
+							effective_species = "maple"  # cherry → maple model
+						elif rng.randf() < 0.4 and zone_species.size() > 0:
+							# Probabilistic: 40% chance to use a zone species
+							var pick: String = str(zone_species[rng.randi() % zone_species.size()]).to_lower()
+							if "oak" in pick:
+								effective_species = "oak"
+							elif "maple" in pick:
+								effective_species = "maple"
+							elif "birch" in pick:
+								effective_species = "birch"
+							elif "pine" in pick or "conifer" in pick or "cypress" in pick:
+								effective_species = "conifer"
+					break
+
+		var species: String = glb_species_map.get(effective_species, "deciduous")
 		if not species_meshes.has(species):
 			species = "deciduous"
 			if not species_meshes.has(species):
@@ -5910,7 +5944,7 @@ func _build_trees(trees: Array) -> void:
 			if desired_h < 3.0:
 				desired_h = 3.0  # clamp tiny LiDAR readings
 		else:
-			var h_range: Array = height_ranges.get(tree_species, [10.0, 22.0])
+			var h_range: Array = height_ranges.get(effective_species, [10.0, 22.0])
 			var h_min := float(h_range[0])
 			var h_max := float(h_range[1])
 			var dbh_t := clampf((float(dbh) - 3.0) / 30.0, 0.0, 1.0)
@@ -5925,7 +5959,7 @@ func _build_trees(trees: Array) -> void:
 		# Crown width: blend uniform scale with LiDAR crown data for subtle variation
 		var sx := sy
 		# Elms get 30% wider crowns — vase-shaped canopy characteristic
-		if tree_species == "elm":
+		if effective_species == "elm":
 			sx *= 1.3
 		if typeof(tree_entry) == TYPE_DICTIONARY and tree_entry.has("crown_a"):
 			var crown_a := float(tree_entry["crown_a"])
@@ -5935,7 +5969,7 @@ func _build_trees(trees: Array) -> void:
 				var crown_ratio := clampf(crown_d / desired_h, 0.3, 1.2)
 				# Apply as a subtle modifier (30% blend) to avoid extreme stretching
 				sx = sy * lerpf(1.0, crown_ratio, 0.3)
-				if tree_species == "elm":
+				if effective_species == "elm":
 					sx *= 1.3
 
 		# Random Y rotation for variety
@@ -5951,6 +5985,15 @@ func _build_trees(trees: Array) -> void:
 		if not xf_by_key.has(key):
 			xf_by_key[key] = []
 		xf_by_key[key].append(tf)
+
+		# LOD1 billboard: encode crown width & height in basis for distant imposter
+		var crown_w := sx * mesh_h * 0.7  # approximate crown width in metres
+		var crown_h := desired_h * 0.65   # canopy portion (top 65%)
+		var bb_basis := Basis(
+			Vector3(crown_w, 0.0, 0.0),
+			Vector3(0.0, crown_h, 0.0),
+			Vector3(0.0, 0.0, crown_w))
+		lod1_xf.append(Transform3D(bb_basis, Vector3(tx, ty + desired_h * 0.5, tz)))
 
 		# Collision: simplified cylinder at trunk position
 		var trunk_r := desired_h * 0.02
@@ -6014,8 +6057,56 @@ func _build_trees(trees: Array) -> void:
 		mmi.visibility_range_fade_mode = GeometryInstance3D.VISIBILITY_RANGE_FADE_SELF
 		add_child(mmi)
 
+	# --- LOD1: crossed-quad billboard imposters for distant trees (120–500m) ---
+	# Simple X-shaped billboard per tree, chunked by 300m cells.
+	var bb_mesh := _make_crossed_quad_mesh()
+	var bb_shader := _get_shader("tree_billboard", _tree_billboard_shader_code())
+	var bb_mat := ShaderMaterial.new()
+	bb_mat.shader = bb_shader
+
+	const LOD1_CHUNK := 300.0
+	const LOD1_BEGIN := 120.0
+	const LOD1_END := 500.0
+	var lod1_chunks: Dictionary = {}
+	for tf: Transform3D in lod1_xf:
+		var cx := int(floorf(tf.origin.x / LOD1_CHUNK))
+		var cz := int(floorf(tf.origin.z / LOD1_CHUNK))
+		var ck := "bb|%d|%d" % [cx, cz]
+		if not lod1_chunks.has(ck):
+			lod1_chunks[ck] = []
+		lod1_chunks[ck].append(tf)
+
+	var lod1_count := 0
+	for ck in lod1_chunks:
+		var xf_list: Array = lod1_chunks[ck]
+		if xf_list.is_empty():
+			continue
+		# Compute centroid
+		var sum_x := 0.0; var sum_y := 0.0; var sum_z := 0.0
+		for tf: Transform3D in xf_list:
+			sum_x += tf.origin.x; sum_y += tf.origin.y; sum_z += tf.origin.z
+		var n := float(xf_list.size())
+		var origin := Vector3(sum_x / n, sum_y / n, sum_z / n)
+		var mm := MultiMesh.new()
+		mm.transform_format = MultiMesh.TRANSFORM_3D
+		mm.mesh = bb_mesh
+		mm.instance_count = xf_list.size()
+		for i in xf_list.size():
+			var tf: Transform3D = xf_list[i]
+			mm.set_instance_transform(i, Transform3D(tf.basis, tf.origin - origin))
+		var mmi := MultiMeshInstance3D.new()
+		mmi.multimesh = mm
+		mmi.material_override = bb_mat
+		mmi.position = origin
+		mmi.name = "TrL1_%s" % ck.replace("|", "_")
+		mmi.visibility_range_begin = LOD1_BEGIN
+		mmi.visibility_range_end = LOD1_END
+		mmi.visibility_range_fade_mode = GeometryInstance3D.VISIBILITY_RANGE_FADE_SELF
+		add_child(mmi)
+		lod1_count += xf_list.size()
+
 	_build_tree_collision(all_trunk_xf)
-	print("Trees: %d placed, LOD0 chunks=%d" % [all_trunk_xf.size(), lod0_chunks.size()])
+	print("Trees: %d placed, LOD0 chunks=%d, LOD1 billboards=%d (chunks=%d)" % [all_trunk_xf.size(), lod0_chunks.size(), lod1_count, lod1_chunks.size()])
 
 
 func _build_tree_collision(trunk_xf: Array) -> void:
@@ -6541,6 +6632,103 @@ void fragment() {
 	SPECULAR = 0.08;
 	METALLIC = 0.0;
 	BACKLIGHT = vec3(0.15, 0.08, 0.02);
+}
+"""
+
+
+func _make_crossed_quad_mesh() -> ArrayMesh:
+	## Two quads crossing at 90° forming an X shape, unit size (-0.5 to 0.5).
+	## Transform basis scales to crown dimensions per-instance.
+	var verts := PackedVector3Array()
+	var normals := PackedVector3Array()
+	var uvs := PackedVector2Array()
+	# Quad 1: aligned along X axis
+	for quad_rot in [0.0, PI * 0.5]:
+		var c := cos(quad_rot); var s := sin(quad_rot)
+		var bl := Vector3(-0.5 * c, -0.5, -0.5 * s)
+		var br := Vector3( 0.5 * c, -0.5,  0.5 * s)
+		var tl := Vector3(-0.5 * c,  0.5, -0.5 * s)
+		var tr := Vector3( 0.5 * c,  0.5,  0.5 * s)
+		var n := Vector3(-s, 0.0, c)
+		# Triangle 1
+		verts.append(bl); verts.append(br); verts.append(tr)
+		# Triangle 2
+		verts.append(bl); verts.append(tr); verts.append(tl)
+		for _i in 6:
+			normals.append(n)
+		uvs.append(Vector2(0, 1)); uvs.append(Vector2(1, 1)); uvs.append(Vector2(1, 0))
+		uvs.append(Vector2(0, 1)); uvs.append(Vector2(1, 0)); uvs.append(Vector2(0, 0))
+	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts
+	arrays[Mesh.ARRAY_NORMAL] = normals
+	arrays[Mesh.ARRAY_TEX_UV] = uvs
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	return mesh
+
+
+func _tree_billboard_shader_code() -> String:
+	return """shader_type spatial;
+render_mode cull_disabled;
+
+global uniform vec2 wind_vec;
+global uniform float snow_cover;
+
+float hash21(vec2 p) {
+	p = fract(p * vec2(233.34, 851.73));
+	p += dot(p, p + 23.45);
+	return fract(p.x * p.y);
+}
+
+void vertex() {
+	vec3 tree_origin = (MODEL_MATRIX * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+	float sway = max(VERTEX.y + 0.5, 0.0);
+	float wind_str = length(wind_vec);
+	VERTEX.x += sin(TIME * 0.5 + tree_origin.x * 0.03) * 0.04 * sway * (0.3 + wind_str);
+	VERTEX.z += sin(TIME * 0.7 + tree_origin.z * 0.04) * 0.03 * sway * (0.3 + wind_str);
+}
+
+void fragment() {
+	// Elliptical canopy mask from UV
+	vec2 c = UV - 0.5;
+	float r = length(c * vec2(1.0, 1.3));  // slightly taller than wide
+	if (r > 0.48) discard;
+
+	// Per-tree color variation
+	vec3 tree_pos = (MODEL_MATRIX * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+	float h = hash21(floor(tree_pos.xz * 0.025));
+
+	// 5-tone impressionist green palette
+	vec3 base_col;
+	if (h < 0.2) {
+		base_col = vec3(0.12, 0.28, 0.06);  // deep forest
+	} else if (h < 0.4) {
+		base_col = vec3(0.18, 0.38, 0.10);  // rich green
+	} else if (h < 0.6) {
+		base_col = vec3(0.22, 0.42, 0.12);  // sap green
+	} else if (h < 0.8) {
+		base_col = vec3(0.16, 0.34, 0.08);  // viridian
+	} else {
+		base_col = vec3(0.20, 0.36, 0.14);  // olive green
+	}
+
+	// Soft edge darkening for crown shape
+	float edge = smoothstep(0.30, 0.48, r);
+	base_col *= 1.0 - edge * 0.4;
+
+	// Snow
+	if (snow_cover > 0.01) {
+		float upward = max(NORMAL.y, 0.0);
+		float noise = sin(tree_pos.x * 0.3 + tree_pos.z * 0.4) * 0.15;
+		float snow_amt = clamp((0.3 + upward * 0.7 + noise) * snow_cover, 0.0, 1.0);
+		base_col = mix(base_col, vec3(0.92, 0.93, 0.96), snow_amt * 0.65);
+	}
+
+	ALBEDO = base_col;
+	ROUGHNESS = 0.85;
+	SPECULAR = 0.05;
+	METALLIC = 0.0;
+	ALPHA = smoothstep(0.48, 0.40, r);  // soft edge
 }
 """
 

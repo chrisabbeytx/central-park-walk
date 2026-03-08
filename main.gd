@@ -381,17 +381,17 @@ func _process(delta: float) -> void:
 	# Auto-screenshot for dev review (non-tour mode)
 	if not _screenshot_done:
 		_screenshot_timer += delta
-		if _screenshot_timer <= delta:  # first frame only
+		if _screenshot_timer <= delta and _player:
 			_player.set_physics_process(false)
 			_player.velocity = Vector3.ZERO
-		if _screenshot_timer >= 4.0:
+		if _screenshot_timer >= 8.0:
 			_screenshot_done = true
 			var img := get_viewport().get_texture().get_image()
 			if img:
 				img.save_png("/tmp/godot_screenshot.png")
 				print("Screenshot saved to /tmp/godot_screenshot.png")
-			img = null
-			_player.set_physics_process(true)
+			if _player:
+				_player.set_physics_process(true)
 	# Update lamp lights every 0.5s
 	_lamp_light_timer += delta
 	if _lamp_light_timer >= LAMP_LIGHT_UPDATE_INTERVAL:
