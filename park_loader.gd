@@ -7850,8 +7850,9 @@ func _build_amenities(amenities: Array) -> void:
 			label.font_size = 28
 			label.position = Vector3(x, y + 2.5, z)
 			label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-			label.modulate = Color(0.9, 0.85, 0.7, 0.85)
-			label.outline_modulate = Color(0.1, 0.1, 0.1, 0.6)
+			label.shading_mode = Label3D.SHADING_MODE_UNSHADED
+			label.modulate = Color(0.70, 0.68, 0.60, 0.60)
+			label.outline_modulate = Color(0.1, 0.1, 0.1, 0.45)
 			label.outline_size = 4
 			label.no_depth_test = false
 			label.pixel_size = 0.01
@@ -8631,9 +8632,10 @@ func _label_boundary_buildings() -> void:
 		lbl.font_size = 36
 		lbl.pixel_size = 0.008
 		lbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-		lbl.modulate = Color(0.85, 0.82, 0.78, 0.50)
+		lbl.shading_mode = Label3D.SHADING_MODE_UNSHADED
+		lbl.modulate = Color(0.70, 0.68, 0.64, 0.45)
 		lbl.outline_size = 4
-		lbl.outline_modulate = Color(0.08, 0.08, 0.08, 0.35)
+		lbl.outline_modulate = Color(0.08, 0.08, 0.08, 0.30)
 		lbl.no_depth_test = false
 		lbl.position = Vector3(cx, label_y, cz)
 		add_child(lbl)
