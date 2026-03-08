@@ -182,8 +182,8 @@ func _ready() -> void:
 	_setup_letterbox()
 	if not _terrain_only:
 		_setup_lamp_lights()
-		#_setup_falling_leaves()  # disabled — spring/summer season
-		#_setup_pigeons()  # disabled — no animals for now
+		_setup_falling_leaves()
+		_setup_pigeons()
 		_setup_audio()
 	_setup_weather_audio()
 	_apply_time_of_day()
@@ -3446,27 +3446,26 @@ func _setup_pigeons() -> void:
 
 		var mat := ParticleProcessMaterial.new()
 		mat.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
-		mat.emission_box_extents = Vector3(8, 0.2, 8)
-		mat.gravity = Vector3(0, 0, 0)
+		mat.emission_box_extents = Vector3(6, 0.1, 6)
+		mat.gravity = Vector3(0, -0.05, 0)  # very slight settling
 		mat.initial_velocity_min = 0.0
-		mat.initial_velocity_max = 0.5
+		mat.initial_velocity_max = 0.3
 		mat.direction = Vector3(0.1, 0, 0.1)
 		mat.spread = 180.0
-		mat.damping_min = 2.0
-		mat.damping_max = 4.0
+		mat.damping_min = 3.0
+		mat.damping_max = 5.0
 		mat.scale_min = 0.8
 		mat.scale_max = 1.2
-		mat.color = Color(0.45, 0.42, 0.48)
+		mat.color = Color(1.0, 1.0, 1.0)  # white — let draw material control color
 		particles.process_material = mat
 
 		var quad := QuadMesh.new()
-		quad.size = Vector2(0.15, 0.12)
+		quad.size = Vector2(0.14, 0.10)  # pigeon body ~14cm × 10cm
 		var pigeon_mat := StandardMaterial3D.new()
-		pigeon_mat.albedo_color = Color(0.10, 0.09, 0.11)
+		pigeon_mat.albedo_color = Color(0.38, 0.36, 0.40)  # rock pigeon gray
 		pigeon_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
 		pigeon_mat.billboard_mode = BaseMaterial3D.BILLBOARD_PARTICLES
-		pigeon_mat.roughness = 0.90
-		pigeon_mat.metallic_specular = 0.0
+		pigeon_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 		quad.material = pigeon_mat
 		particles.draw_pass_1 = quad
 

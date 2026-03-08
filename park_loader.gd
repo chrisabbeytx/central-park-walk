@@ -707,15 +707,15 @@ func _ready() -> void:
 	#_build_bethesda_terrace()  # disabled — LiDAR DSM terrain provides the geometry
 	_build_amenities(amenities)
 	_build_boats(water)
-	#_build_waterfowl(water)   # disabled — no animals
-	#_build_pedestrians(paths)  # disabled — no pedestrians
+	_build_waterfowl(water)
+	_build_pedestrians(paths)
 	_build_boundary(boundary)
 	_build_perimeter_wall(boundary, paths)
 	_build_boundary_facades()
 	#_build_undergrowth(trees, paths)   # disabled — terrain tiles will replace
 	#_build_meadow_grass(trees)         # disabled — terrain tiles will replace
 	#_build_wildflowers(trees, water)   # disabled — terrain tiles will replace
-	#_build_squirrels(trees)            # disabled — no animals
+	_build_squirrels(trees)
 	_build_field_markings()
 	_build_rocks(trees, water)
 	#_build_tree_dirt(trees)            # disabled — terrain tiles will replace
@@ -8721,8 +8721,8 @@ func _build_furniture(bench_data: Array, lamppost_data: Array, paths: Array) -> 
 	lamp_bulb_mat.albedo_color = Color(1.0, 0.72, 0.32)
 	lamp_bulb_mat.roughness    = 0.3
 	lamp_bulb_mat.emission_enabled = true
-	lamp_bulb_mat.emission         = Color(1.0, 0.72, 0.32)
-	lamp_bulb_mat.emission_energy_multiplier = 3.0
+	lamp_bulb_mat.emission         = Color(0.0, 0.0, 0.0)  # start dark; main.gd modulates
+	lamp_bulb_mat.emission_energy_multiplier = 0.0
 	lamppost_material = lamp_bulb_mat
 
 	# --- Bench mesh (CP-specific model with iron + wood materials baked in) ---
@@ -10384,15 +10384,15 @@ func _build_squirrels(trees: Array) -> void:
 		return
 	var rng := RandomNumberGenerator.new()
 	rng.seed = 22211
-	# Small billboard quad for squirrels
-	var sq_mat := _make_person_material(Color(0.35, 0.22, 0.12))
-	# Tiny crossed quads for squirrel silhouette
+	# Eastern gray squirrel silhouette — slightly oversized for visibility
+	var sq_mat := _make_person_material(Color(0.42, 0.34, 0.24))  # warm brown-gray
 	var sv := PackedVector3Array(); var sn := PackedVector3Array()
-	sv.append(Vector3(-0.09, 0.0, 0.0)); sv.append(Vector3(0.09, 0.0, 0.0))
-	sv.append(Vector3(0.09, 0.14, 0.0)); sv.append(Vector3(-0.09, 0.14, 0.0))
+	var shw := 0.12; var sh := 0.18  # ~24cm wide × 18cm tall
+	sv.append(Vector3(-shw, 0.0, 0.0)); sv.append(Vector3(shw, 0.0, 0.0))
+	sv.append(Vector3(shw, sh, 0.0)); sv.append(Vector3(-shw, sh, 0.0))
 	for _j in 4: sn.append(Vector3.BACK)
-	sv.append(Vector3(0.0, 0.0, -0.09)); sv.append(Vector3(0.0, 0.0, 0.09))
-	sv.append(Vector3(0.0, 0.14, 0.09)); sv.append(Vector3(0.0, 0.14, -0.09))
+	sv.append(Vector3(0.0, 0.0, -shw)); sv.append(Vector3(0.0, 0.0, shw))
+	sv.append(Vector3(0.0, sh, shw)); sv.append(Vector3(0.0, sh, -shw))
 	for _j in 4: sn.append(Vector3.RIGHT)
 	var si := PackedInt32Array([0,1,2, 0,2,3, 4,5,6, 4,6,7])
 	var sa: Array = []; sa.resize(Mesh.ARRAY_MAX)
