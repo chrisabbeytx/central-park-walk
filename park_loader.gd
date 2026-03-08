@@ -707,15 +707,15 @@ func _ready() -> void:
 	#_build_bethesda_terrace()  # disabled — LiDAR DSM terrain provides the geometry
 	_build_amenities(amenities)
 	_build_boats(water)
-	_build_waterfowl(water)
-	_build_pedestrians(paths)
+	#_build_waterfowl(water)    # procedural — defer to later
+	#_build_pedestrians(paths)  # procedural — defer to later
 	_build_boundary(boundary)
 	_build_perimeter_wall(boundary, paths)
 	_build_boundary_facades()
 	#_build_undergrowth(trees, paths)   # disabled — terrain tiles will replace
 	#_build_meadow_grass(trees)         # disabled — terrain tiles will replace
 	#_build_wildflowers(trees, water)   # disabled — terrain tiles will replace
-	_build_squirrels(trees)
+	#_build_squirrels(trees)    # procedural — defer to later
 	_build_field_markings()
 	_build_rocks(trees, water)
 	#_build_tree_dirt(trees)            # disabled — terrain tiles will replace
@@ -1168,8 +1168,9 @@ func _build_paths(paths: Array) -> void:
 			lbl.font_size = 48
 			lbl.pixel_size = 0.01
 			lbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-			lbl.modulate = Color(0.95, 0.90, 0.80)
-			lbl.outline_modulate = Color(0.1, 0.1, 0.1, 0.8)
+			lbl.shading_mode = Label3D.SHADING_MODE_UNSHADED
+			lbl.modulate = Color(0.75, 0.72, 0.68, 0.60)
+			lbl.outline_modulate = Color(0.1, 0.1, 0.1, 0.50)
 			lbl.outline_size = 8
 			lbl.position = Vector3(lx, ly, lz)
 			lbl.name = "Arch_Label"
@@ -2228,8 +2229,9 @@ func _build_bridge(path: Dictionary) -> void:
 		lbl.font_size = 48
 		lbl.pixel_size = 0.01
 		lbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-		lbl.modulate = Color(0.95, 0.90, 0.80)
-		lbl.outline_modulate = Color(0.1, 0.1, 0.1, 0.8)
+		lbl.shading_mode = Label3D.SHADING_MODE_UNSHADED
+		lbl.modulate = Color(0.75, 0.72, 0.68, 0.60)
+		lbl.outline_modulate = Color(0.1, 0.1, 0.1, 0.50)
 		lbl.outline_size = 8
 		lbl.position = label_pos
 		lbl.name = "Bridge_Label"
@@ -4656,6 +4658,19 @@ void fragment() {
 		deep    = vec3(0.015, 0.032, 0.032);
 		shallow = vec3(0.040, 0.060, 0.058);
 		extra_reflect = 0.08;
+	}
+	// The Pool (North Woods): secluded, dark, tree-shadowed
+	float d_pool = length(world_pos.xz - vec2(-400.0, -1100.0));
+	if (d_pool < 80.0) {
+		deep    = vec3(0.012, 0.025, 0.018);   // very dark, canopy-shadowed
+		shallow = vec3(0.030, 0.048, 0.032);
+	}
+	// The Lake (main): classic Central Park, moderate reflectivity
+	float d_lake = length(world_pos.xz - vec2(-420.0, 740.0));
+	if (d_lake < 250.0) {
+		deep    = vec3(0.018, 0.034, 0.028);   // natural dark green
+		shallow = vec3(0.045, 0.065, 0.050);
+		extra_reflect = 0.05;
 	}
 
 	// Subtle blend — mostly deep, shallow only at wave peaks
@@ -7136,9 +7151,10 @@ func _build_labels(water: Array) -> void:
 		lbl.font_size         = 64
 		lbl.pixel_size        = pixel_size
 		lbl.billboard         = BaseMaterial3D.BILLBOARD_ENABLED
-		lbl.modulate          = Color(1.0, 1.0, 1.0, 0.95)
+		lbl.shading_mode      = Label3D.SHADING_MODE_UNSHADED
+		lbl.modulate          = Color(0.75, 0.75, 0.75, 0.65)
 		lbl.outline_size      = 8
-		lbl.outline_modulate  = Color(0.0, 0.08, 0.25, 0.85)
+		lbl.outline_modulate  = Color(0.0, 0.08, 0.25, 0.55)
 		var water_y: float = float(body.get("water_y", 0.0))
 		lbl.position          = Vector3(cx, water_y + height, cz)
 		add_child(lbl)
@@ -7688,9 +7704,10 @@ func _build_statues(statues: Array) -> void:
 			lbl.font_size = 48
 			lbl.pixel_size = 0.02
 			lbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-			lbl.modulate = Color(1.0, 1.0, 0.9, 0.9)
+			lbl.shading_mode = Label3D.SHADING_MODE_UNSHADED
+			lbl.modulate = Color(0.75, 0.72, 0.68, 0.65)
 			lbl.outline_size = 6
-			lbl.outline_modulate = Color(0.0, 0.0, 0.0, 0.7)
+			lbl.outline_modulate = Color(0.0, 0.0, 0.0, 0.50)
 			lbl.position = Vector3(sx, sy + desired_h + 0.5, sz)
 			add_child(lbl)
 		if used_named:
@@ -7762,9 +7779,10 @@ func _build_statues(statues: Array) -> void:
 		lbl.font_size = 48
 		lbl.pixel_size = 0.02
 		lbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-		lbl.modulate = Color(1.0, 1.0, 0.9, 0.9)
+		lbl.shading_mode = Label3D.SHADING_MODE_UNSHADED
+		lbl.modulate = Color(0.75, 0.72, 0.68, 0.65)
 		lbl.outline_size = 6
-		lbl.outline_modulate = Color(0.0, 0.0, 0.0, 0.7)
+		lbl.outline_modulate = Color(0.0, 0.0, 0.0, 0.50)
 		lbl.position = Vector3(sx, sy + ped_h + fig_h + 0.5, sz)
 		add_child(lbl)
 

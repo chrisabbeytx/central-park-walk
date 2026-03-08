@@ -182,13 +182,13 @@ func _ready() -> void:
 	_setup_letterbox()
 	if not _terrain_only:
 		_setup_lamp_lights()
-		_setup_falling_leaves()
-		_setup_pigeons()
+		#_setup_falling_leaves()  # procedural — defer to later
+		#_setup_pigeons()         # procedural — defer to later
 		_setup_audio()
 	_setup_weather_audio()
 	_apply_time_of_day()
 	_setup_weather()
-	_setup_fireflies()
+	#_setup_fireflies()  # procedural — defer to later
 	# Check for --tour CLI arg
 	for arg in OS.get_cmdline_user_args():
 		if arg == "--tour":
@@ -1049,7 +1049,7 @@ func _build_keyframes() -> void:
 		"sun_pitch":      -12.0,
 		"sun_yaw":        95.0,
 		"shadow_dist":    220.0,
-		"lamp_emission":  0.5,
+		"lamp_emission":  0.0,  # lamps off until after sunset (ramp 19h→21h)
 		"vol_fog_density":    0.0004,
 		"vol_fog_anisotropy": 0.88,
 		"cloud_coverage":     0.65,
@@ -1289,14 +1289,16 @@ func _apply_time_of_day() -> void:
 	_sun.rotation_degrees = Vector3(pitch, yaw, 0.0)
 	_sun.directional_shadow_max_distance = _lerp_kf("shadow_dist", a, b, t)
 
-	# Lamppost bulb emission
+	# Lamppost bulb emission — also dim albedo during day to prevent glow bloom
 	if _lamp_mat:
 		_lamp_emission = _lerp_kf("lamp_emission", a, b, t)
 		_lamp_mat.emission_energy_multiplier = _lamp_emission
 		if _lamp_emission < 0.01:
 			_lamp_mat.emission = Color(0.0, 0.0, 0.0)
+			_lamp_mat.albedo_color = Color(0.25, 0.22, 0.18)  # dark glass during day
 		else:
 			_lamp_mat.emission = Color(1.0, 0.72, 0.32) * _lamp_emission
+			_lamp_mat.albedo_color = Color(1.0, 0.72, 0.32)  # warm amber when lit
 
 	# Building window emission — smooth night_factor curve
 	# 0.0 during day (7h-18h), ramps to 1.0 at night (21h-5h)
@@ -2008,9 +2010,24 @@ void fragment() {
 		// Bethesda Terrace: New Brunswick sandstone (warm mustard-olive)
 		float d_beth_s = length(world_pos.xz - vec2(-458.0, 949.0));
 		if (d_beth_s < 60.0) warmth = 0.85;
-		// Belvedere Castle: Manhattan schist (cool gray)
+		// Belvedere Castle / Vista Rock: Manhattan schist (cool gray)
 		float d_belv = length(world_pos.xz - vec2(-215.0, 372.0));
-		if (d_belv < 40.0) warmth = 0.15;
+		if (d_belv < 50.0) warmth = 0.15;
+		// Gapstow Bridge area: Manhattan schist (cool gray stone bridge)
+		float d_gap = length(world_pos.xz - vec2(-355.0, 1640.0));
+		if (d_gap < 25.0) warmth = 0.18;
+		// Huddlestone Arch: massive schist boulders (cool gray, no mortar)
+		float d_hudd = length(world_pos.xz - vec2(300.0, -1050.0));
+		if (d_hudd < 20.0) warmth = 0.10;
+		// The Dairy: Victorian Gothic, warm stone + slate
+		float d_dairy = length(world_pos.xz - vec2(-500.0, 1425.0));
+		if (d_dairy < 25.0) warmth = 0.65;
+		// Dana Discovery Center: warm brick + stone (Victorian)
+		float d_dana = length(world_pos.xz - vec2(400.0, -1800.0));
+		if (d_dana < 20.0) warmth = 0.70;
+		// Naumburg Bandshell: warm limestone
+		float d_naum = length(world_pos.xz - vec2(-600.0, 1500.0));
+		if (d_naum < 15.0) warmth = 0.75;
 		vec3 s_tint;
 		float tex_layer;
 		if (struct_slope > 0.35) {
@@ -2102,6 +2119,32 @@ void fragment() {
 		vec3 bluestone = vec3(0.42, 0.46, 0.50);  // bluestone paving
 		grass_alb = mix(grass_alb, bluestone, ch_blend);
 		grass_rgh = mix(grass_rgh, 0.72, ch_blend);
+	}
+
+	// Naumburg Bandshell plaza — formal paving around bandshell
+	float d_naum_p = length(world_pos.xz - vec2(-600.0, 1500.0));
+	if (d_naum_p < 20.0 && slope < 0.10) {
+		float naum_blend = smoothstep(20.0, 12.0, d_naum_p);
+		vec3 naum_pave = vec3(0.50, 0.48, 0.45);  // light gray stone paving
+		grass_alb = mix(grass_alb, naum_pave, naum_blend);
+		grass_rgh = mix(grass_rgh, 0.65, naum_blend);
+	}
+
+	// Great Lawn: Kentucky bluegrass — rich maintained green
+	float d_gl = length(world_pos.xz - vec2(0.0, 100.0));
+	if (d_gl < 200.0 && slope < 0.08 && mat_idx == 0) {
+		float gl_blend = smoothstep(200.0, 150.0, d_gl);
+		// Kentucky bluegrass: rich green, well-maintained
+		vec3 bluegrass = vec3(0.23, 0.49, 0.23);
+		grass_alb = mix(grass_alb, bluegrass, gl_blend * 0.4);
+	}
+
+	// Harlem Meer shoreline: naturalistic, darker water-influenced ground
+	float d_hm = length(world_pos.xz - vec2(350.0, -1750.0));
+	if (d_hm < 80.0 && mat_idx == 0) {
+		float hm_blend = smoothstep(80.0, 40.0, d_hm);
+		// Lush shoreline vegetation tint
+		grass_alb = mix(grass_alb, grass_alb * vec3(0.92, 1.06, 0.90), hm_blend);
 	}
 
 	if (mat_idx > 0 && path_weight > 0.5) {
