@@ -729,6 +729,37 @@ void fragment() {
 		}
 	}
 
+	// --- Spring/summer morning dew: grass glistens with tiny water droplets ---
+	// Dew appears when rain is recent (wetness > 0) on grass in spring/summer
+	{
+		float dew_season = smoothstep(0.0, 1.0, season_t) * (1.0 - smoothstep(2.5, 3.5, season_t));
+		if (dew_season > 0.01 && rain_wetness > 0.05 && rain_wetness < 0.5 && mat_idx == 0) {
+			// After rain stops, residual wetness creates dew-like droplets
+			float dew_noise = hash2(floor(world_pos.xz * 12.0));
+			float dew = step(0.6, dew_noise) * dew_season * rain_wetness * 2.0;
+			ROUGHNESS = mix(ROUGHNESS, 0.12, dew * 0.5);
+			SPECULAR = mix(SPECULAR, 0.55, dew * 0.4);
+			// Dew brightens grass slightly (moisture vividity)
+			ALBEDO *= mix(1.0, 1.06, dew * 0.4);
+		}
+	}
+
+	// --- Winter ground frost: rime on grass blades in cold weather ---
+	// Visible in late autumn and winter mornings — white rime on grass tips
+	{
+		float frost_season = smoothstep(2.8, 3.5, season_t);
+		if (frost_season > 0.01 && mat_idx == 0 && snow_cover < 0.3) {
+			float frost_noise = hash2(floor(world_pos.xz * 8.0));
+			float frost_mask = step(0.4, frost_noise) * frost_season;
+			// Frost prefers flat, exposed grass (not under canopy)
+			float exposed = is_woodland ? 0.3 : 1.0;
+			frost_mask *= exposed * terrain_n.y;
+			ALBEDO = mix(ALBEDO, vec3(0.85, 0.88, 0.92), frost_mask * 0.35);
+			ROUGHNESS = mix(ROUGHNESS, 0.10, frost_mask * 0.5);
+			SPECULAR = mix(SPECULAR, 0.6, frost_mask * 0.4);
+		}
+	}
+
 	// --- Snow accumulation on flat surfaces ---
 	if (snow_cover > 0.01) {
 		float flatness = terrain_n.y;  // 1.0=flat, 0.0=vertical
