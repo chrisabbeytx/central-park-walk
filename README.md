@@ -14,7 +14,7 @@ The terrain is clipped to the park boundary — no terrain is rendered outside t
 
 55 bridges span the park in 5 architectural styles: stone, cast iron, brick, rustic wood, and the signature Bow Bridge with its interlocking-circles railing. 15 tunnels have barrel-vault interiors with portal lighting. A 7,962-segment brownstone perimeter wall with 105 gate openings marks where the park meets the city. Custom Blender scripts generate period-accurate park furniture: Bishop's Crook lampposts, cast iron benches, wire mesh trash cans, granite drinking fountains.
 
-Rain, snow, fog, puddles, morning dew. A full day/night cycle with sodium vapor park lighting and lit windows. A seasonal cycle where each tree species changes color on its own phenological schedule — maples turn brilliant red, oaks go brown, elms yellow, birches gold — and the grass shifts from spring green through summer richness to autumn amber to winter dormancy. The data-first philosophy means: if we don't have real data for something, we leave a gap rather than guess. Gaps tell us what humans haven't yet measured, mapped, or photographed.
+Rain, snow, fog, puddles, morning dew, winter frost. A full day/night cycle with sodium vapor park lighting, lit windows, a moon with surface maria, and NYC light pollution. A seasonal cycle where each tree species changes color on its own phenological schedule — maples turn brilliant red, oaks go brown, elms yellow, birches gold — and the grass shifts from spring green through summer richness to autumn amber to winter dormancy. Fallen leaves scatter along path edges and gather in woodland hollows each autumn. Water bodies shift from spring algae green through summer clarity to autumn tannin-brown to winter gray. The atmosphere itself changes: golden haze in autumn, cool blue-gray in winter, with seasonal fog density and cloud coverage. The data-first philosophy means: if we don't have real data for something, we leave a gap rather than guess. Gaps tell us what humans haven't yet measured, mapped, or photographed.
 
 ## The Vision
 
@@ -118,7 +118,7 @@ All data is freely available. No paid APIs. No API keys.
 | Terrain | 4096×4096 | LiDAR-accurate, per-pixel normals, structure mask, clipped to park boundary, 2048-res collision |
 | Trees | ~6,200 placed (39K census + woodland scatter) | 12 species archetypes, LiDAR heights, seasonal phenology, foliage zone biasing |
 | Paths | 2,624 | Analytical GPU rendering, 58K segments, width-correct |
-| Water | 27 bodies | Per-body color, shore alpha, depth tinting |
+| Water | 27 bodies + 10 streams | Per-body color, seasonal tint, shore alpha, depth tinting, night city reflections |
 | Buildings | 4,865 | Real NYC footprints + measured heights (filtered to 350m), 5 facade styles, night emission, collision |
 | Bridges | 55 | 5 styles, miter joints, arched soffits, Bow Bridge railings, parapet collision |
 | Tunnels | 15 | Barrel vault interiors, portal lighting |
@@ -126,9 +126,9 @@ All data is freely available. No paid APIs. No API keys.
 | Statues | 106 positions | 3 photogrammetry scans, labels mark unscanned locations |
 | Perimeter wall | 7,962 segments | Brownstone with 105 gate openings, 210 gate pillars |
 | Sports fields | 60 | Baseball (25), soccer (6), tennis (28), basketball (1) |
-| Seasons | 4 | Per-species phenology: leaf color, density, canopy shape, grass tint |
-| Weather | 4 modes | Rain, snow, fog, clear — with puddles, mist, dew |
-| Day/night | 5 keyframes | 48-light lamp pool, lit windows, NYC light pollution, dawn mist |
+| Seasons | 4 | Per-species phenology, fallen leaf scatter, seasonal water/fog/atmosphere, winter frost |
+| Weather | 4 modes | Rain (wet surfaces, glossy leaves), snow (accumulation on terrain/trees/buildings), fog, clear — puddles, mist, dew |
+| Day/night | 5 keyframes | 48-light lamp pool, lit windows, NYC light pollution, moon, dawn mist |
 | Sound | — | Audio not yet implemented (field recordings needed) |
 
 ## How to Contribute
@@ -178,7 +178,7 @@ See [FUNDING.md](FUNDING.md) for details on how funds are used.
 | Data pipeline | Python: GDAL, numpy/scipy, Pillow |
 | 3D modeling | Blender 3.0.1 (headless scripts) |
 | Audio | Not yet implemented (awaiting field recordings) |
-| Rendering | Custom GLSL shaders, MultiMesh instancing, analytical GPU path rendering |
+| Rendering | Custom GLSL shaders (terrain, water, facade, tree, sky, stone, color grade), MultiMesh instancing, analytical GPU path rendering |
 
 ## License
 
