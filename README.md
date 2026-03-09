@@ -29,11 +29,11 @@ The project is designed to expand. More places, more data sources, more contribu
 ![Literary Walk — Golden Hour](screenshots/literary_walk_golden.png)
 *The Literary Walk at golden hour. Every tree placed from NYC Tree Census data, every path from OpenStreetMap.*
 
-![Literary Walk — Noon](screenshots/literary_walk_noon.png)
-*Midday on the Mall. 16,243 trees rendered with LiDAR-measured heights across 843 acres.*
+![Bethesda Terrace — Sunrise](screenshots/bethesda_sunrise.png)
+*Sunrise over Bethesda Terrace. 18,368 buildings rendered from NYC Building Footprints with real measured heights.*
 
-![Literary Walk — Morning](screenshots/literary_walk_morning.png)
-*Early morning light. The day/night cycle shifts sun angle, sky color, and shadow direction across 5 keyframes.*
+![The Mall](screenshots/the_mall_path.png)
+*The Mall at midday. 2,624 paths rendered with analytical GPU path rendering — width-correct and material-specific.*
 
 ![North Woods Rustic Bridge](screenshots/north_woods_bridge.png)
 *A rustic wood bridge in the North Woods — one of 55 bridges rendered in 5 architectural styles from OSM data.*
