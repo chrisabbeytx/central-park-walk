@@ -75,6 +75,8 @@ python3 scripts/generate_sounds.py
 | H | Toggle HUD |
 | F11 | Toggle fullscreen |
 
+**Xbox/gamepad support**: left stick to walk, right stick to look, right trigger for fly mode.
+
 ### CLI Options
 
 ```bash
@@ -137,7 +139,6 @@ This project grows with human attention. Here's what we need:
 - **Cross-platform**: Currently Linux-only.
 
 ### Creative Contributions
-- **Guided meditations**: Contemplative experiences within the park.
 - **Historical overlays**: What did this spot look like in 1860? 1920?
 - **Literary connections**: Central Park appears in thousands of works. Help map stories to places.
 

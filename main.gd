@@ -62,17 +62,10 @@ const LAMP_LIGHT_COUNT := 32
 const LAMP_LIGHT_RANGE := 18.0
 const LAMP_LIGHT_UPDATE_INTERVAL := 0.5  # seconds between position updates
 
-# Falling leaf particles
-var _falling_leaves: GPUParticles3D
 
 # Weather particles
 var _rain_particles: GPUParticles3D
 var _snow_particles: GPUParticles3D
-var _firefly_nodes: Array = []       # Array of Dictionary {node, target, pulse_timer, pulse_on}
-var _firefly_tree_xz: PackedVector2Array  # tree XZ positions for firefly attraction
-const FIREFLY_COUNT := 35
-const FIREFLY_RANGE := 20.0          # spawn/despawn radius around player
-var _rain_overlay: CanvasLayer  # screen-space rain streaks
 var _lens_canvas: CanvasLayer   # barrel distortion overlay
 
 # 5 keyframes defining the full day/night cycle
@@ -94,20 +87,6 @@ var _snow_cover := 0.0          # 0-1, ramps up during snow weather
 # Rain wetness — ground darkens + specular increases
 var _rain_wetness := 0.0        # 0-1, ramps up during rain
 
-# Weather audio
-var _rain_audio_player: AudioStreamPlayer
-var _wind_audio_player: AudioStreamPlayer
-var _thunder_audio_player: AudioStreamPlayer
-var _audio_rng := RandomNumberGenerator.new()
-var _rain_b0 := 0.0   # pink noise filter state
-var _rain_b1 := 0.0
-var _rain_b2 := 0.0
-var _wind_lp_state := 0.0
-var _lightning_flash := 0.0
-var _lightning_timer := 0.0
-var _thunder_queue: Array = []   # [{time: float, vol: float}]
-var _thunder_wavs: Array = []    # pre-generated AudioStreamWAV
-const AUDIO_RATE := 22050
 
 # --time name-to-hour mapping
 const TIME_PRESETS: Dictionary = {
@@ -188,13 +167,8 @@ func _ready() -> void:
 	_setup_letterbox()
 	if not _terrain_only:
 		_setup_lamp_lights()
-		#_setup_falling_leaves()  # procedural — defer to later
-		#_setup_pigeons()         # procedural — defer to later
-		#_setup_audio()  # disabled — not working on audio yet
-	#_setup_weather_audio()  # disabled — not working on audio yet
 	_apply_time_of_day()
 	_setup_weather()
-	#_setup_fireflies()  # procedural — defer to later
 	# Check for --tour CLI arg
 	for arg in OS.get_cmdline_user_args():
 		if arg == "--tour":
@@ -446,10 +420,6 @@ func _process(delta: float) -> void:
 		_snow_particles.global_position = _player.global_position + Vector3(0, 15, 0)
 		var spm: ParticleProcessMaterial = _snow_particles.process_material
 		spm.gravity = Vector3(_wind_vec.x * 3.0, -1.5, _wind_vec.y * 3.0)
-	# Fireflies — scripted wander agents
-	if not _firefly_nodes.is_empty() and _player:
-		var ff_active: bool = _time_of_day >= 17.0 and _time_of_day <= 22.0 and _weather_mode != "rain" and _weather_mode != "thunderstorm" and _weather_mode != "snow"
-		_update_fireflies(delta, ff_active)
 
 	# Advance clock
 	_time_of_day += _time_speed * delta
@@ -458,24 +428,7 @@ func _process(delta: float) -> void:
 	elif _time_of_day < 0.0:
 		_time_of_day += 24.0
 	# Only update sky/env/lighting when time actually changes (saves ~50 ops/frame when paused)
-	if absf(_time_of_day - _last_applied_tod) > 0.0005 or _lightning_flash > 0.01:
-		_last_applied_tod = _time_of_day
-		_apply_time_of_day()
 
-	# Lightning flash decay — applied after tod sets clean brightness
-	if _lightning_flash > 0.01:
-		_lightning_flash *= exp(-delta * 6.0)
-		if _env:
-			_env.adjustment_brightness += _lightning_flash * 4.0
-		if _sun:
-			_sun.light_energy += _lightning_flash * 8.0
-	else:
-		_lightning_flash = 0.0
-
-	# Ambient audio (birds, wind, city, water)
-	#_update_audio(delta)  # disabled — not working on audio yet
-	# Weather audio (rain, wind, thunder)
-	#_update_weather_audio(delta)  # disabled — not working on audio yet
 
 	# Letterbox bar sizing (adapts to viewport resize)
 	if _letterbox_on and _letterbox_top:
@@ -905,8 +858,6 @@ func _build_keyframes() -> void:
 		"sky_horizon":    Color(0.10, 0.10, 0.18),
 		"gnd_bottom":     Color(0.01, 0.01, 0.02),
 		"gnd_horizon":    Color(0.08, 0.06, 0.10),
-		"sun_angle_max":  3.0,
-		"sun_curve":      0.01,
 		"ambient_color":  Color(0.10, 0.10, 0.18),
 		"ambient_energy": 0.15,
 		"exposure":       0.65,
@@ -951,8 +902,6 @@ func _build_keyframes() -> void:
 		"sky_horizon":    Color(0.68, 0.50, 0.38),
 		"gnd_bottom":     Color(0.10, 0.08, 0.06),
 		"gnd_horizon":    Color(0.42, 0.32, 0.22),
-		"sun_angle_max":  5.0,
-		"sun_curve":      0.08,
 		"ambient_color":  Color(0.45, 0.35, 0.25),
 		"ambient_energy": 0.60,
 		"exposure":       0.70,
@@ -997,8 +946,6 @@ func _build_keyframes() -> void:
 		"sky_horizon":    Color(0.55, 0.60, 0.68),
 		"gnd_bottom":     Color(0.12, 0.12, 0.10),
 		"gnd_horizon":    Color(0.38, 0.36, 0.32),
-		"sun_angle_max":  1.5,
-		"sun_curve":      0.15,
 		"ambient_color":  Color(0.50, 0.46, 0.38),
 		"ambient_energy": 0.85,
 		"exposure":       0.68,
@@ -1043,8 +990,6 @@ func _build_keyframes() -> void:
 		"sky_horizon":    Color(0.72, 0.46, 0.30),
 		"gnd_bottom":     Color(0.08, 0.06, 0.04),
 		"gnd_horizon":    Color(0.42, 0.32, 0.20),
-		"sun_angle_max":  5.0,
-		"sun_curve":      0.08,
 		"ambient_color":  Color(0.48, 0.38, 0.26),
 		"ambient_energy": 0.80,
 		"exposure":       0.70,
@@ -1089,8 +1034,6 @@ func _build_keyframes() -> void:
 		"sky_horizon":    Color(0.04, 0.05, 0.12),
 		"gnd_bottom":     Color(0.005, 0.008, 0.012),
 		"gnd_horizon":    Color(0.02, 0.03, 0.06),
-		"sun_angle_max":  3.0,
-		"sun_curve":      0.01,
 		"ambient_color":  Color(0.10, 0.10, 0.18),
 		"ambient_energy": 0.15,
 		"exposure":       0.60,
@@ -1339,21 +1282,6 @@ func _apply_time_of_day() -> void:
 			if fm is ShaderMaterial:
 				fm.set_shader_parameter("night_factor", nf)
 
-	# Day/night audio modulation
-	if _audio_birds and _audio_birds.stream:
-		var bird_energy := 1.0
-		if _time_of_day < 5.0 or _time_of_day > 21.0:
-			bird_energy = 0.1
-		elif _time_of_day < 7.0:
-			bird_energy = lerpf(0.1, 1.2, (_time_of_day - 5.0) / 2.0)
-		elif _time_of_day > 19.0:
-			bird_energy = lerpf(1.0, 0.1, (_time_of_day - 19.0) / 2.0)
-		_audio_birds.volume_db = lerpf(-25.0, -6.0, bird_energy)
-	if _audio_wind and _audio_wind.stream:
-		var wind_vol := -14.0
-		if _time_of_day > 18.0 or _time_of_day < 6.0:
-			wind_vol = -10.0
-		_audio_wind.volume_db = wind_vol
 
 
 # ---------------------------------------------------------------------------
@@ -1456,17 +1384,6 @@ func _apply_tunnel_depressions() -> void:
 	print("Terrain: applied ", depressions.size(), " tunnel depressions")
 
 
-func _perturb_heightmap() -> void:
-	## Add ±2cm micro-randomization to the heightmap for subtle terrain undulation.
-	if _hm_data.is_empty():
-		return
-	for zi in _hm_depth:
-		for xi in _hm_width:
-			var idx := zi * _hm_width + xi
-			var h := fmod(abs(float(xi) * 127.1 + float(zi) * 311.7), 1000.0) / 1000.0
-			_hm_data[idx] = _hm_data[idx] + (h - 0.5) * 0.04  # ±2cm
-	print("Terrain: micro-randomization applied (±2cm)")
-
 
 # ---------------------------------------------------------------------------
 # Terrain ground – height-mapped mesh + HeightMapShape3D collision
@@ -1483,7 +1400,7 @@ func _setup_ground() -> void:
 	if tex_rgh == null:
 		tex_rgh = _load_img_tex("res://textures/grass_rough.jpg")
 	var shader  := Shader.new()
-	shader.code  = _terrain_shader_textured() if tex_alb != null else _terrain_shader_code()
+	shader.code  = _terrain_shader_textured()
 	_terrain_mat = ShaderMaterial.new()
 	_terrain_mat.shader = shader
 	if tex_alb != null:
@@ -2308,72 +2225,6 @@ void fragment() {
 """
 
 
-func _terrain_shader_code() -> String:
-	return """shader_type spatial;
-render_mode cull_disabled;
-
-varying vec3 world_pos;
-
-// ---- value noise helpers ----
-float hash2(vec2 p) {
-	p = fract(p * vec2(127.1, 311.7));
-	p += dot(p, p + 43.21);
-	return fract(p.x * p.y);
-}
-
-float vnoise(vec2 p) {
-	vec2 i = floor(p);
-	vec2 f = fract(p);
-	vec2 u = f * f * (3.0 - 2.0 * f);
-	return mix(
-		mix(hash2(i),                hash2(i + vec2(1.0, 0.0)), u.x),
-		mix(hash2(i + vec2(0.0,1.0)), hash2(i + vec2(1.0, 1.0)), u.x),
-		u.y);
-}
-
-float fbm(vec2 p, int oct) {
-	float v = 0.0, a = 0.5;
-	for (int i = 0; i < oct; i++) {
-		v += a * vnoise(p);
-		p *= 2.13;
-		a *= 0.47;
-	}
-	return v;
-}
-
-void vertex() {
-	world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
-}
-
-void fragment() {
-	vec2 pos = world_pos.xz;
-
-	// Three noise scales: large terrain-scale patches, medium lawn variation, fine detail
-	float f_large  = fbm(pos * 0.004, 4);   // ~250 m blobs
-	float f_medium = fbm(pos * 0.028, 4);   // ~35 m patches
-	float f_fine   = fbm(pos * 0.20,  3);   // ~5 m detail
-
-	float t = clamp(f_large * 0.45 + f_medium * 0.38 + f_fine * 0.17, 0.0, 1.0);
-
-	// Five-stop grass colour ramp
-	vec3 c0 = vec3(0.07, 0.20, 0.05);   // deep shade
-	vec3 c1 = vec3(0.14, 0.34, 0.10);   // shaded grass
-	vec3 c2 = vec3(0.24, 0.50, 0.15);   // typical lawn
-	vec3 c3 = vec3(0.38, 0.60, 0.20);   // sun-lit grass
-	vec3 c4 = vec3(0.52, 0.48, 0.20);   // dry / worn patch
-
-	vec3 color;
-	if      (t < 0.25) color = mix(c0, c1, t / 0.25);
-	else if (t < 0.50) color = mix(c1, c2, (t - 0.25) / 0.25);
-	else if (t < 0.75) color = mix(c2, c3, (t - 0.50) / 0.25);
-	else               color = mix(c3, c4, (t - 0.75) / 0.25);
-
-	ALBEDO    = color;
-	ROUGHNESS = 0.92;
-	METALLIC  = 0.0;
-}
-"""
-
 
 # ---------------------------------------------------------------------------
 # Central Park geometry (paths + boundary walls from park_data.json)
@@ -2826,12 +2677,6 @@ func _cycle_weather() -> void:
 	if _snow_particles:
 		_snow_particles.queue_free()
 		_snow_particles = null
-	if _rain_overlay:
-		_rain_overlay.queue_free()
-		_rain_overlay = null
-	_lightning_flash = 0.0
-	_lightning_timer = 0.0
-	_thunder_queue.clear()
 	# Advance to next mode
 	var idx := WEATHER_MODES.find(_weather_mode)
 	if idx < 0:
@@ -2926,8 +2771,7 @@ func _setup_thunderstorm() -> void:
 	_rain_particles.material_override = mat
 
 	add_child(_rain_particles)
-	_lightning_timer = randf_range(3.0, 8.0)  # first strike soon
-	print("Thunderstorm: 30000 heavy rain + lightning")
+	print("Thunderstorm: 30000 heavy rain")
 
 
 func _setup_snow() -> void:
@@ -2965,219 +2809,6 @@ func _setup_snow() -> void:
 	print("Snow: 3000 particles")
 
 
-func _setup_fireflies() -> void:
-	# Extract tree XZ positions for attraction targets
-	_firefly_tree_xz = PackedVector2Array()
-	if _park_loader:
-		for child in _park_loader.get_children():
-			if not (child is MultiMeshInstance3D):
-				continue
-			if not child.name.begins_with("TrL0_"):
-				continue
-			var mmi: MultiMeshInstance3D = child as MultiMeshInstance3D
-			var chunk_pos: Vector3 = mmi.position
-			var mm: MultiMesh = mmi.multimesh
-			for i in mm.instance_count:
-				var xf: Transform3D = mm.get_instance_transform(i)
-				var wx: float = xf.origin.x + chunk_pos.x
-				var wz: float = xf.origin.z + chunk_pos.z
-				_firefly_tree_xz.append(Vector2(wx, wz))
-
-	# Shared mesh + material for all fireflies — soft oval, warm gold
-	var mesh := QuadMesh.new()
-	mesh.size = Vector2(0.07, 0.04)  # small, consistent
-
-	# Generate soft oval alpha texture so they look round, not rectangular
-	var oval_img := Image.create(32, 32, false, Image.FORMAT_RGBA8)
-	for py in 32:
-		for px2 in 32:
-			var u: float = (float(px2) - 15.5) / 15.5  # -1..1
-			var v: float = (float(py) - 15.5) / 15.5
-			# Ellipse: wider than tall (1.0 x 0.7 aspect in UV)
-			var d: float = u * u + v * v * 2.0
-			var a: float = clampf(1.0 - d * 1.5, 0.0, 1.0)
-			a = a * a  # softer falloff
-			oval_img.set_pixel(px2, py, Color(1.0, 1.0, 1.0, a))
-	var oval_tex := ImageTexture.create_from_image(oval_img)
-
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(1.0, 0.82, 0.2, 1.0)
-	mat.albedo_texture = oval_tex
-	mat.emission_enabled = true
-	mat.emission = Color(1.0, 0.75, 0.08)
-	mat.emission_energy_multiplier = 6.0
-	mat.emission_texture = oval_tex
-	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	mat.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
-	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	mat.no_depth_test = true
-
-	var rng := RandomNumberGenerator.new()
-	rng.seed = 42
-
-	for i in FIREFLY_COUNT:
-		var mi := MeshInstance3D.new()
-		var s: float = rng.randf_range(0.7, 1.4)
-		var imesh := QuadMesh.new()
-		imesh.size = Vector2(0.04 * s, 0.02 * s)
-		mi.mesh = imesh
-		mi.material_override = mat.duplicate()
-		mi.visible = false
-		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-		add_child(mi)
-		_firefly_nodes.append({
-			"node": mi,
-			"target": Vector3.ZERO,
-			"vel": Vector3.ZERO,
-			"pulse_timer": rng.randf_range(0.0, 4.0),
-			"pulse_period": rng.randf_range(4.0, 5.5),
-			"pulse_on_frac": 0.0,  # computed from fixed glow duration
-			"spawned": false,
-		})
-
-	print("Fireflies: %d agents, %d tree attractors" % [FIREFLY_COUNT, _firefly_tree_xz.size()])
-
-
-func _find_near_tree(pos: Vector3) -> Vector3:
-	## Find a random tree within 25m, biased toward denser clusters.
-	var candidates: Array = []
-	var px := pos.x; var pz := pos.z
-	for t in _firefly_tree_xz:
-		var dx := t.x - px; var dz := t.y - pz
-		var d := dx * dx + dz * dz
-		if d < 625.0:  # 25m radius
-			candidates.append(t)
-			if candidates.size() >= 20:
-				break
-	if candidates.is_empty():
-		# No trees nearby — wander randomly near ground
-		return pos + Vector3(randf_range(-5, 5), randf_range(-0.3, 0.5), randf_range(-5, 5))
-	# Weight by local density: pick a tree, then bias toward ones with neighbors
-	var best_pick: Vector2 = candidates[0]
-	var best_score: float = 0.0
-	for c in candidates:
-		var score: float = 0.0
-		for c2 in candidates:
-			var dd: float = c.distance_squared_to(c2)
-			if dd < 100.0 and dd > 0.01:  # neighbors within 10m
-				score += 1.0
-		score += randf_range(0.0, 2.0)  # some randomness
-		if score > best_score:
-			best_score = score
-			best_pick = c
-	# Target: near tree base, low to ground
-	return Vector3(
-		best_pick.x + randf_range(-2.5, 2.5),
-		_terrain_height(best_pick.x, best_pick.y) + randf_range(0.3, 1.5),
-		best_pick.y + randf_range(-2.5, 2.5))
-
-
-func _update_fireflies(delta: float, active: bool) -> void:
-	var ppos := _player.global_position
-	for ff in _firefly_nodes:
-		var node: MeshInstance3D = ff["node"]
-		if not active:
-			node.visible = false
-			ff["spawned"] = false
-			continue
-
-		# Spawn / respawn — always cluster around player
-		var dist_to_player: float = node.global_position.distance_to(ppos)
-		if not ff["spawned"] or dist_to_player > FIREFLY_RANGE:
-			# Spawn in a ring around the player (2m–15m away)
-			var angle: float = randf() * TAU
-			var radius: float = randf_range(3.0, 15.0)
-			var sx: float = ppos.x + cos(angle) * radius
-			var sz: float = ppos.z + sin(angle) * radius
-			var sy: float = _terrain_height(sx, sz) + randf_range(0.4, 1.5)
-			node.global_position = Vector3(sx, sy, sz)
-			ff["target"] = _find_near_tree(node.global_position)
-			ff["vel"] = Vector3.ZERO
-			ff["spawned"] = true
-			node.visible = true
-
-		var pos: Vector3 = node.global_position
-
-		# Steer toward target — lazy, drifting flight
-		var tgt: Vector3 = ff["target"]
-		var to_target: Vector3 = tgt - pos
-		var dist_to_target: float = to_target.length()
-		if dist_to_target < 1.5:
-			# New target: wander near current player position
-			ff["target"] = _find_near_tree(ppos)
-		elif dist_to_target > 0.01:
-			var vel: Vector3 = ff["vel"]
-			ff["vel"] = vel + to_target.normalized() * 0.04 * delta
-
-		# Gentle pull toward player — follow them everywhere
-		var to_pp: Vector3 = ppos - pos
-		var pp_dist: float = to_pp.length()
-		if pp_dist > 5.0:
-			var vel2: Vector3 = ff["vel"]
-			ff["vel"] = vel2 + to_pp.normalized() * 0.03 * delta * clampf((pp_dist - 5.0) * 0.2, 0.0, 1.0)
-
-		# Keep height reasonable (1–5m above terrain)
-		var terrain_y: float = _terrain_height(pos.x, pos.z)
-		var above: float = pos.y - terrain_y
-		var cur_vel: Vector3 = ff["vel"]
-
-		# Repel from nearby lamps (check squared distance first)
-		var repel := Vector3.ZERO
-		for lp in _lamp_positions:
-			var dx: float = pos.x - lp.x
-			var dz: float = pos.z - lp.z
-			var d2: float = dx * dx + dz * dz
-			if d2 < 100.0 and d2 > 0.01:  # 10m radius
-				var to_lamp: Vector3 = pos - lp
-				var ld: float = sqrt(d2 + (pos.y - lp.y) * (pos.y - lp.y))
-				if ld > 0.1:
-					repel += to_lamp / ld * (1.0 / (ld * ld))
-		cur_vel += repel * delta
-
-		# Repel from player — hard 1m minimum distance
-		var to_player: Vector3 = pos - ppos
-		var player_d2: float = to_player.length_squared()
-		if player_d2 < 1.0 and player_d2 > 0.001:  # within 1m — push away hard
-			var pd: float = sqrt(player_d2)
-			cur_vel = to_player / pd * 0.15
-		elif player_d2 < 9.0 and player_d2 > 0.01:  # 1-3m — gentle drift away
-			var pd: float = sqrt(player_d2)
-			cur_vel += to_player / pd * (0.3 / (pd * pd)) * delta
-
-		if above < 0.3:
-			cur_vel.y += 0.3 * delta
-		elif above > 1.8:
-			cur_vel.y -= 0.5 * delta
-
-		# Heavy damping — barely drifting
-		cur_vel *= 0.85
-		# Clamp speed
-		var spd: float = cur_vel.length()
-		if spd > 0.05:
-			cur_vel = cur_vel / spd * 0.05
-
-		# Erratic jitter — more vertical bobbing, random direction changes
-		cur_vel += Vector3(randf_range(-0.04, 0.04), randf_range(-0.06, 0.06), randf_range(-0.04, 0.04)) * delta
-		ff["vel"] = cur_vel
-
-		node.global_position = pos + cur_vel
-
-		# Pulse glow — ~2s on, 2-3s off (realistic firefly flash)
-		var pt: float = float(ff["pulse_timer"]) + delta
-		ff["pulse_timer"] = pt
-		var period: float = ff["pulse_period"]
-		var cycle_t: float = fmod(pt, period)
-		var glow_dur := 1.8  # seconds of glow
-		var glow: float
-		if cycle_t < glow_dur:
-			var t: float = cycle_t / glow_dur
-			glow = sin(t * PI)  # smooth fade in/out over 1.8s
-		else:
-			glow = 0.0
-		var m: StandardMaterial3D = node.material_override
-		m.albedo_color.a = glow * 0.9
-		m.emission_energy_multiplier = glow * 6.0
-
 
 func _setup_fog_weather() -> void:
 	# Fog multipliers are applied per-frame in the day/night cycle update
@@ -3188,177 +2819,6 @@ func _setup_fog_weather() -> void:
 # Weather audio — procedural rain, wind, and thunder
 # ---------------------------------------------------------------------------
 
-func _setup_weather_audio() -> void:
-	_audio_rng.seed = 42
-
-	# Rain — procedural pink noise, always running (volume controlled per-weather)
-	_rain_audio_player = AudioStreamPlayer.new()
-	var rain_gen := AudioStreamGenerator.new()
-	rain_gen.mix_rate = AUDIO_RATE
-	rain_gen.buffer_length = 0.5
-	_rain_audio_player.stream = rain_gen
-	_rain_audio_player.volume_db = -80.0
-	_rain_audio_player.name = "RainAudio"
-	add_child(_rain_audio_player)
-	_rain_audio_player.play()
-
-	# Wind — procedural filtered noise, always running
-	_wind_audio_player = AudioStreamPlayer.new()
-	var wind_gen := AudioStreamGenerator.new()
-	wind_gen.mix_rate = AUDIO_RATE
-	wind_gen.buffer_length = 0.5
-	_wind_audio_player.stream = wind_gen
-	_wind_audio_player.volume_db = -80.0
-	_wind_audio_player.name = "WindAudio"
-	add_child(_wind_audio_player)
-	_wind_audio_player.play()
-
-	# Thunder — one-shot player, pre-generated WAVs
-	_thunder_audio_player = AudioStreamPlayer.new()
-	_thunder_audio_player.volume_db = -4.0
-	_thunder_audio_player.name = "ThunderAudio"
-	add_child(_thunder_audio_player)
-	_generate_thunder_wavs()
-
-
-func _generate_thunder_wavs() -> void:
-	for i in 4:
-		_thunder_wavs.append(_make_thunder_wav(i * 7919 + 12345))
-
-
-func _make_thunder_wav(seed_val: int) -> AudioStreamWAV:
-	var rng := RandomNumberGenerator.new()
-	rng.seed = seed_val
-	var dur := 4.0
-	var samples := int(AUDIO_RATE * dur)
-	var data := PackedByteArray()
-	data.resize(samples * 2)
-	var lp := 0.0
-	var lp2 := 0.0
-	for i in samples:
-		var t := float(i) / float(AUDIO_RATE)
-		var white := rng.randf() * 2.0 - 1.0
-		# Envelope: sharp initial crack + long rumbling decay
-		var env := exp(-t * 1.2) * (1.0 + 0.3 * sin(t * 2.5 + rng.randf() * 0.01))
-		if t < 0.06:
-			env += (1.0 - t / 0.06) * 2.5  # sharp crack
-		# Two-stage lowpass for deep rumble
-		lp += 0.04 * (white * env - lp)
-		lp2 += 0.07 * (lp - lp2)
-		var s := clampf(lp2 * 2.8, -1.0, 1.0)
-		var s16 := int(s * 32767.0)
-		data[i * 2] = s16 & 0xFF
-		data[i * 2 + 1] = (s16 >> 8) & 0xFF
-	var wav := AudioStreamWAV.new()
-	wav.data = data
-	wav.format = AudioStreamWAV.FORMAT_16_BITS
-	wav.mix_rate = AUDIO_RATE
-	wav.stereo = false
-	wav.loop_mode = AudioStreamWAV.LOOP_DISABLED
-	return wav
-
-
-func _update_weather_audio(delta: float) -> void:
-	# --- Target volumes ---
-	var rain_target_db := -80.0
-	var wind_target_db := -80.0
-	var wind_str := _wind_vec.length()
-
-	if _weather_mode == "rain":
-		rain_target_db = -18.0  # soft, soothing
-	elif _weather_mode == "thunderstorm":
-		rain_target_db = -8.0   # heavy downpour
-
-	# Wind always audible when blowing, louder in storms
-	if wind_str > 0.02:
-		wind_target_db = lerpf(-40.0, -10.0, clampf(wind_str * 2.5, 0.0, 1.0))
-
-	# Smooth volume transitions
-	if _rain_audio_player:
-		_rain_audio_player.volume_db = lerpf(_rain_audio_player.volume_db, rain_target_db, clampf(delta * 2.0, 0.0, 1.0))
-	if _wind_audio_player:
-		_wind_audio_player.volume_db = lerpf(_wind_audio_player.volume_db, wind_target_db, clampf(delta * 3.0, 0.0, 1.0))
-
-	# Push audio frames
-	_push_rain_frames()
-	_push_wind_frames()
-
-	# --- Lightning / thunder ---
-	if _weather_mode == "thunderstorm":
-		_lightning_timer -= delta
-		if _lightning_timer <= 0.0:
-			_lightning_flash = 1.0
-			var delay := randf_range(0.8, 4.0)
-			var vol := randf_range(0.5, 1.0)
-			_thunder_queue.append({"time": delay, "vol": vol})
-			_lightning_timer = randf_range(8.0, 25.0)
-
-	# Process thunder queue
-	var i := 0
-	while i < _thunder_queue.size():
-		_thunder_queue[i]["time"] -= delta
-		if float(_thunder_queue[i]["time"]) <= 0.0:
-			if not _thunder_wavs.is_empty():
-				_thunder_audio_player.stream = _thunder_wavs[randi() % _thunder_wavs.size()]
-				_thunder_audio_player.volume_db = linear_to_db(float(_thunder_queue[i]["vol"]))
-				_thunder_audio_player.play()
-			_thunder_queue.remove_at(i)
-		else:
-			i += 1
-
-
-func _push_rain_frames() -> void:
-	if not _rain_audio_player or not _rain_audio_player.playing:
-		return
-	if _rain_audio_player.volume_db < -60.0:
-		return
-	var playback = _rain_audio_player.get_stream_playback()
-	if playback == null:
-		return
-	var frames: int = playback.get_frames_available()
-	if frames <= 0:
-		return
-
-	# Pink noise — warm, soothing patter
-	for fi in frames:
-		var white := _audio_rng.randf() * 2.0 - 1.0
-		_rain_b0 = 0.99765 * _rain_b0 + white * 0.0990460
-		_rain_b1 = 0.96300 * _rain_b1 + white * 0.2965164
-		_rain_b2 = 0.57000 * _rain_b2 + white * 1.0526913
-		var pink := (_rain_b0 + _rain_b1 + _rain_b2 + white * 0.1848) * 0.11
-		pink *= 0.7
-		playback.push_frame(Vector2(pink, pink))
-
-
-func _push_wind_frames() -> void:
-	if not _wind_audio_player or not _wind_audio_player.playing:
-		return
-	if _wind_audio_player.volume_db < -60.0:
-		return
-	var playback = _wind_audio_player.get_stream_playback()
-	if playback == null:
-		return
-	var frames: int = playback.get_frames_available()
-	if frames <= 0:
-		return
-
-	var wind_str := _wind_vec.length()
-	# Character: low wind = airy whisper, high wind = deep rushing howl
-	var howl := clampf((wind_str - 0.05) * 3.0, 0.0, 1.0)
-	var cutoff := lerpf(3000.0, 400.0, howl)
-	var alpha := 1.0 - exp(-TAU * cutoff / float(AUDIO_RATE))
-	# Slow gusting modulation
-	var gust := sin(_wind_time * 0.4) * 0.15 + 0.85
-
-	for fi in frames:
-		var white := _audio_rng.randf() * 2.0 - 1.0
-		# Lowpass — shifts from bright whisper to deep howl
-		_wind_lp_state += alpha * (white - _wind_lp_state)
-		# Blend: whisper (raw high-freq) + howl (filtered low-freq)
-		var whisper := white * 0.25 * (1.0 - howl * 0.7)
-		var deep := _wind_lp_state * 0.55 * howl
-		var sample := (whisper + deep) * gust
-		playback.push_frame(Vector2(sample, sample))
 
 
 func _setup_lens_distortion() -> void:
@@ -3493,252 +2953,7 @@ func _setup_hud() -> void:
 	vbox.add_child(hint)
 
 
-func _setup_falling_leaves() -> void:
-	var particles := GPUParticles3D.new()
-	particles.amount = 200
-	particles.lifetime = 8.0
-	particles.preprocess = 4.0  # pre-fill so leaves are already falling at start
-	particles.visibility_aabb = AABB(Vector3(-30, -15, -30), Vector3(60, 30, 60))
-
-	# Particle material
-	var mat := ParticleProcessMaterial.new()
-	mat.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
-	mat.emission_box_extents = Vector3(30, 0.5, 30)
-	mat.gravity = Vector3(0, -0.4, 0)
-	mat.initial_velocity_min = 0.1
-	mat.initial_velocity_max = 0.3
-	mat.direction = Vector3(0.3, -1, 0.2)
-	mat.spread = 30.0
-	mat.angular_velocity_min = -90.0
-	mat.angular_velocity_max = 90.0
-	mat.damping_min = 0.3
-	mat.damping_max = 0.6
-	mat.scale_min = 0.6
-	mat.scale_max = 1.4
-	particles.process_material = mat
-
-	# Draw pass — leaf quad
-	var quad := QuadMesh.new()
-	quad.size = Vector2(0.4, 0.4)
-	var leaf_mat := StandardMaterial3D.new()
-	leaf_mat.albedo_color = Color(0.55, 0.35, 0.12, 0.8)
-	leaf_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	leaf_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
-	leaf_mat.billboard_mode = BaseMaterial3D.BILLBOARD_PARTICLES
-	leaf_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	quad.material = leaf_mat
-	particles.draw_pass_1 = quad
-
-	particles.name = "FallingLeaves"
-	add_child(particles)
-	_falling_leaves = particles
 
 
-func _setup_pigeons() -> void:
-	## 3 pigeon flocks at key gathering spots as GPUParticles3D.
-	var locations := [
-		{"name": "Bethesda", "x": -458.0, "z": 949.0},
-		{"name": "LiteraryWalk", "x": -600.0, "z": 1420.0},
-		{"name": "ConservatoryWater", "x": -152.0, "z": 958.0},
-	]
-	for loc in locations:
-		var px: float = loc["x"]
-		var pz: float = loc["z"]
-		var py := _terrain_height(px, pz) + 0.1
-		var particles := GPUParticles3D.new()
-		particles.amount = 40
-		particles.lifetime = 8.0
-		particles.preprocess = 4.0
-		particles.visibility_aabb = AABB(Vector3(-10, -1, -10), Vector3(20, 3, 20))
-		particles.position = Vector3(px, py, pz)
-
-		var mat := ParticleProcessMaterial.new()
-		mat.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
-		mat.emission_box_extents = Vector3(6, 0.1, 6)
-		mat.gravity = Vector3(0, -0.05, 0)  # very slight settling
-		mat.initial_velocity_min = 0.0
-		mat.initial_velocity_max = 0.3
-		mat.direction = Vector3(0.1, 0, 0.1)
-		mat.spread = 180.0
-		mat.damping_min = 3.0
-		mat.damping_max = 5.0
-		mat.scale_min = 0.8
-		mat.scale_max = 1.2
-		mat.color = Color(1.0, 1.0, 1.0)  # white — let draw material control color
-		particles.process_material = mat
-
-		var quad := QuadMesh.new()
-		quad.size = Vector2(0.14, 0.10)  # pigeon body ~14cm × 10cm
-		var pigeon_mat := StandardMaterial3D.new()
-		pigeon_mat.albedo_color = Color(0.38, 0.36, 0.40)  # rock pigeon gray
-		pigeon_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
-		pigeon_mat.billboard_mode = BaseMaterial3D.BILLBOARD_PARTICLES
-		pigeon_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-		quad.material = pigeon_mat
-		particles.draw_pass_1 = quad
-
-		particles.name = "Pigeons_%s" % loc["name"]
-		add_child(particles)
-	print("Pigeons: 3 flocks placed")
 
 
-# ---------------------------------------------------------------------------
-# Ambient Soundscape
-# ---------------------------------------------------------------------------
-var _audio_birds: AudioStreamPlayer
-var _audio_wind: AudioStreamPlayer
-var _audio_city: AudioStreamPlayer
-var _audio_water: AudioStreamPlayer3D
-var _audio_footstep_grass: AudioStreamPlayer
-var _audio_footstep_stone: AudioStreamPlayer
-var _footstep_timer: float = 0.0
-var _footstep_interval: float = 0.65  # seconds per step at walk speed
-
-func _setup_audio() -> void:
-	## Initialize layered ambient soundscape.
-	# Background layers (non-spatial)
-	_audio_birds = _make_audio_player("res://sounds/birds_daytime.wav", -8.0)
-	_audio_wind = _make_audio_player("res://sounds/wind_trees.wav", -14.0)
-	_audio_city = _make_audio_player("res://sounds/city_distant.wav", -18.0)
-	# Spatial water
-	_audio_water = AudioStreamPlayer3D.new()
-	_audio_water.name = "AudioWater"
-	var wstream: AudioStream = _load_audio_stream("res://sounds/water_lake.wav")
-	if wstream:
-		_audio_water.stream = wstream
-		_audio_water.volume_db = -10.0
-		_audio_water.max_distance = 60.0
-		_audio_water.autoplay = true
-		add_child(_audio_water)
-	# Footsteps
-	_audio_footstep_grass = _make_audio_player("res://sounds/footstep_grass.wav", -6.0, false)
-	_audio_footstep_stone = _make_audio_player("res://sounds/footstep_stone.wav", -6.0, false)
-
-func _make_audio_player(path: String, vol_db: float, autoplay: bool = true) -> AudioStreamPlayer:
-	var player := AudioStreamPlayer.new()
-	player.name = path.get_file().get_basename()
-	var stream: AudioStream = _load_audio_stream(path)
-	if stream:
-		player.stream = stream
-		player.volume_db = vol_db
-		player.autoplay = autoplay
-		add_child(player)
-	return player
-
-func _load_audio_stream(path: String) -> AudioStream:
-	## Load audio — try ResourceLoader first, then runtime WAV parsing.
-	if ResourceLoader.exists(path):
-		var stream = ResourceLoader.load(path)
-		if stream is AudioStream:
-			return stream as AudioStream
-	# Runtime WAV loader for files not imported by editor
-	var abs_path := ProjectSettings.globalize_path(path)
-	if not FileAccess.file_exists(abs_path):
-		return null
-	var fa := FileAccess.open(abs_path, FileAccess.READ)
-	if not fa:
-		return null
-	# Read WAV header
-	var riff := fa.get_buffer(4)
-	if riff != PackedByteArray([0x52, 0x49, 0x46, 0x46]):  # "RIFF"
-		return null
-	fa.get_32()  # file size
-	var wave := fa.get_buffer(4)
-	if wave != PackedByteArray([0x57, 0x41, 0x56, 0x45]):  # "WAVE"
-		return null
-	# Find fmt and data chunks
-	var fmt_found := false
-	var channels := 1
-	var sample_rate := 44100
-	var bits_per_sample := 16
-	var audio_data := PackedByteArray()
-	while fa.get_position() < fa.get_length() - 8:
-		var chunk_id := fa.get_buffer(4).get_string_from_ascii()
-		var chunk_size: int = fa.get_32()
-		if chunk_id == "fmt ":
-			var audio_fmt := fa.get_16()  # 1 = PCM
-			channels = fa.get_16()
-			sample_rate = fa.get_32()
-			fa.get_32()  # byte rate
-			fa.get_16()  # block align
-			bits_per_sample = fa.get_16()
-			if chunk_size > 16:
-				fa.get_buffer(chunk_size - 16)
-			fmt_found = true
-		elif chunk_id == "data":
-			audio_data = fa.get_buffer(chunk_size)
-		else:
-			fa.get_buffer(chunk_size)
-	fa.close()
-	if not fmt_found or audio_data.is_empty():
-		return null
-	var stream := AudioStreamWAV.new()
-	stream.data = audio_data
-	stream.format = AudioStreamWAV.FORMAT_16_BITS if bits_per_sample == 16 else AudioStreamWAV.FORMAT_8_BITS
-	stream.mix_rate = sample_rate
-	stream.stereo = channels == 2
-	stream.loop_mode = AudioStreamWAV.LOOP_FORWARD
-	stream.loop_end = audio_data.size() / (bits_per_sample / 8) / channels
-	print("Audio: loaded %s (%ds)" % [path.get_file(), audio_data.size() / sample_rate / (bits_per_sample / 8) / channels])
-	return stream
-
-var _boundary_dist_timer: float = 0.0
-var _cached_boundary_dist: float = 999999.0
-
-func _update_audio(delta: float) -> void:
-	if not _player:
-		return
-	var ppos := _player.global_position
-
-	# City hum louder near boundary — throttle expensive polygon scan to every 0.2s
-	if _audio_city and _audio_city.stream:
-		_boundary_dist_timer += delta
-		if _boundary_dist_timer >= 0.2:
-			_boundary_dist_timer = 0.0
-			_cached_boundary_dist = 999999.0
-			if _park_loader and _park_loader.boundary_polygon.size() > 2:
-				for pt in _park_loader.boundary_polygon:
-					var d := Vector2(ppos.x - pt.x, ppos.z - pt.y).length()
-					if d < _cached_boundary_dist:
-						_cached_boundary_dist = d
-		var city_vol := lerpf(-12.0, -22.0, clampf(_cached_boundary_dist / 200.0, 0.0, 1.0))
-		_audio_city.volume_db = city_vol
-
-	# Birds louder in dense tree areas (use tree density heuristic)
-	if _audio_birds and _audio_birds.stream:
-		var bird_vol := -10.0  # base volume
-		# Louder in The Ramble area (dense trees)
-		if ppos.x > -550 and ppos.x < -250 and ppos.z > 400 and ppos.z < 800:
-			bird_vol = -5.0
-		_audio_birds.volume_db = bird_vol
-
-	# Water proximity
-	if _audio_water and _audio_water.stream and _park_loader:
-		# Move water audio to nearest water zone
-		var wgk := Vector2i(int(floor(ppos.x / 4.0)), int(floor(ppos.z / 4.0)))
-		if _park_loader._water_grid.has(wgk):
-			_audio_water.position = ppos + Vector3(0, -1, 0)
-		else:
-			# Find nearest water (crude: just place far away to mute)
-			_audio_water.position = ppos + Vector3(0, -1, 80)
-
-	# Footsteps
-	if _player.velocity.length() > 0.5:
-		_footstep_timer += delta
-		if _footstep_timer >= _footstep_interval:
-			_footstep_timer = 0.0
-			# Check if on path
-			var on_path := false
-			if _park_loader:
-				on_path = _park_loader._is_on_path(ppos.x, ppos.z)
-			var player_to_use: AudioStreamPlayer
-			if on_path and _audio_footstep_stone and _audio_footstep_stone.stream:
-				player_to_use = _audio_footstep_stone
-			elif _audio_footstep_grass and _audio_footstep_grass.stream:
-				player_to_use = _audio_footstep_grass
-			if player_to_use:
-				# Pitch variation
-				player_to_use.pitch_scale = randf_range(0.9, 1.1)
-				player_to_use.play()
-	else:
-		_footstep_timer = 0.0
