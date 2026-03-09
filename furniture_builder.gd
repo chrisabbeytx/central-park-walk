@@ -227,3 +227,63 @@ func _build_flagpoles(flagpole_data: Array) -> void:
 	print("ParkLoader: flagpoles = %d" % xforms.size())
 
 
+func _build_rocks(rock_data: Array) -> void:
+	## Rock outcrops from OSM data — Manhattan schist boulders.
+	if rock_data.is_empty():
+		return
+	var cp_rocks_path := ProjectSettings.globalize_path("res://models/furniture/cp_rocks.glb")
+	var rock_meshes: Dictionary = _loader._load_glb_meshes(cp_rocks_path)
+	if rock_meshes.is_empty():
+		print("WARNING: no rock meshes found, skipping")
+		return
+	# Collect mesh variants
+	var variants: Array[Mesh] = []
+	for rname in ["Rock_A", "Rock_B", "Rock_C"]:
+		if rock_meshes.has(rname):
+			variants.append(rock_meshes[rname] as Mesh)
+	if variants.is_empty():
+		return
+	# Stone shader material — Manhattan schist with mica + weathering
+	var stone_sh: Shader = _loader._get_shader("stone", "res://shaders/stone.gdshader")
+	var rw_alb: ImageTexture = _loader._load_tex("res://textures/rock_wall_diff.jpg")
+	var rw_nrm: ImageTexture = _loader._load_tex("res://textures/rock_wall_nrm.jpg")
+	var rw_rgh: ImageTexture = _loader._load_tex("res://textures/rock_wall_rgh.jpg")
+	var rock_mat := ShaderMaterial.new()
+	rock_mat.shader = stone_sh
+	rock_mat.set_shader_parameter("tint", Color(0.56, 0.54, 0.50))
+	if rw_alb: rock_mat.set_shader_parameter("tex_alb", rw_alb)
+	if rw_nrm: rock_mat.set_shader_parameter("tex_nrm", rw_nrm)
+	if rw_rgh: rock_mat.set_shader_parameter("tex_rgh", rw_rgh)
+	# Place rocks — each OSM point gets a cluster of 2-4 boulders
+	var var_xf: Array = []
+	for _v in variants.size():
+		var_xf.append([])
+	var total := 0
+	for rock in rock_data:
+		var pts: Array = rock.get("points", [])
+		for pt in pts:
+			var rx: float = float(pt[0])
+			var rz: float = float(pt[1]) if pt.size() > 1 else 0.0
+			if not _loader._in_boundary(rx, rz):
+				continue
+			var ry: float = _loader._terrain_y(rx, rz)
+			# Place a small cluster of boulders with random offsets/rotations/scales
+			var seed_h := fmod(abs(rx * 0.37 + rz * 0.71), 1.0)
+			var n_boulders := 2 + int(seed_h * 3.0)  # 2-4 boulders per point
+			for bi in n_boulders:
+				var bh := fmod(seed_h * float(bi + 1) * 7.3, 1.0)
+				var ox := (bh - 0.5) * 4.0
+				var oz := (fmod(bh * 3.7, 1.0) - 0.5) * 4.0
+				var bx := rx + ox
+				var bz := rz + oz
+				var by: float = _loader._terrain_y(bx, bz)
+				var angle := bh * TAU
+				var s := 1.0 + bh * 2.0  # scale 1x-3x
+				var basis := Basis(Vector3.UP, angle).scaled(Vector3(s, s * 0.6, s))  # flatten vertically
+				var vi: int = int(bh * 99.0) % variants.size()
+				var_xf[vi].append(Transform3D(basis, Vector3(bx, by - 0.2, bz)))
+				total += 1
+	for vi in variants.size():
+		if not var_xf[vi].is_empty():
+			_loader._spawn_multimesh(variants[vi], rock_mat, var_xf[vi], "Rocks_%d" % vi)
+	print("ParkLoader: rock outcrops = %d boulders from %d OSM points" % [total, rock_data.size()])
