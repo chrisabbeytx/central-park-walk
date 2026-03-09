@@ -1095,11 +1095,12 @@ func _build_iron_railings(pts: Array, pt_y: PackedFloat32Array,
 
 	if rail_verts.is_empty():
 		return
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(0.42, 0.30, 0.24)  # warm reddish-brown iron paint (#6B4D3D)
-	mat.metallic = 0.45
-	mat.roughness = 0.40
-	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	var iron_sh: Shader = _loader._get_shader("cast_iron", "res://shaders/cast_iron.gdshader")
+	var mat := ShaderMaterial.new()
+	mat.shader = iron_sh
+	mat.set_shader_parameter("iron_color", Vector3(0.42, 0.30, 0.24))
+	mat.set_shader_parameter("base_metallic", 0.45)
+	mat.set_shader_parameter("base_roughness", 0.40)
 	var mesh: ArrayMesh = _loader._make_mesh(rail_verts, rail_normals)
 	mesh.surface_set_material(0, mat)
 	var mi := MeshInstance3D.new()
@@ -1268,11 +1269,12 @@ func _build_bow_bridge_railings(pts: Array, pt_y: PackedFloat32Array,
 	if rail_verts.is_empty():
 		return
 	# Bow Bridge: warm reddish-brown cast iron (per Wikimedia reference #7B4B3A-#8B5A4A)
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(0.52, 0.33, 0.25)
-	mat.metallic = 0.35
-	mat.roughness = 0.45
-	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	var iron_sh: Shader = _loader._get_shader("cast_iron", "res://shaders/cast_iron.gdshader")
+	var mat := ShaderMaterial.new()
+	mat.shader = iron_sh
+	mat.set_shader_parameter("iron_color", Vector3(0.52, 0.33, 0.25))
+	mat.set_shader_parameter("base_metallic", 0.35)
+	mat.set_shader_parameter("base_roughness", 0.45)
 	# Build railing mesh
 	var mesh: ArrayMesh = _loader._make_mesh(rail_verts, rail_normals)
 	mesh.surface_set_material(0, mat)
@@ -1283,10 +1285,11 @@ func _build_bow_bridge_railings(pts: Array, pt_y: PackedFloat32Array,
 	_loader.add_child(mi)
 	# Urn mesh — same cast iron as bridge (#7B4B3A warm reddish-brown)
 	if not urn_verts.is_empty():
-		var urn_mat := StandardMaterial3D.new()
-		urn_mat.albedo_color = Color(0.48, 0.29, 0.23)  # cast iron, matching bridge paint
-		urn_mat.roughness = 0.50
-		urn_mat.metallic = 0.40
+		var urn_mat := ShaderMaterial.new()
+		urn_mat.shader = iron_sh
+		urn_mat.set_shader_parameter("iron_color", Vector3(0.48, 0.29, 0.23))
+		urn_mat.set_shader_parameter("base_metallic", 0.40)
+		urn_mat.set_shader_parameter("base_roughness", 0.50)
 		var urn_mesh: ArrayMesh = _loader._make_mesh(urn_verts, urn_normals, null, null, urn_indices)
 		urn_mesh.surface_set_material(0, urn_mat)
 		var umi := MeshInstance3D.new()
