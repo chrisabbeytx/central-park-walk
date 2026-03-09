@@ -117,6 +117,7 @@ func _build_buildings(buildings: Array) -> void:
 	var roof_verts   := PackedVector3Array()
 	var roof_normals := PackedVector3Array()
 	var roof_colors  := PackedColorArray()
+	var water_tower_xf: Array = []  # rooftop water tower positions
 
 	var built_count := 0
 	var skipped_dist := 0
@@ -426,6 +427,17 @@ func _build_buildings(buildings: Array) -> void:
 				roof_normals.append(Vector3.UP)
 				roof_colors.append(roof_col)
 
+		# NYC rooftop water towers — wooden barrel tanks on pre-war buildings (>20m, not glass)
+		if h > 20.0 and style != 1 and not in_park:
+			# Hash-based probability: ~40% of qualifying buildings get a water tower
+			var wt_hash := fmod(abs(cx * 0.137 + cz * 0.293), 1.0)
+			if wt_hash < 0.40:
+				# Place at random offset from centroid (within footprint)
+				var ox := (fmod(wt_hash * 7.3, 1.0) - 0.5) * 6.0
+				var oz := (fmod(wt_hash * 3.1, 1.0) - 0.5) * 6.0
+				var wt_y := top + 0.5  # slightly above roof
+				water_tower_xf.append(Transform3D(Basis.IDENTITY, Vector3(cx + ox, wt_y, cz + oz)))
+
 	print("Buildings: %d rendered, %d skipped (>%dm from boundary), %d total" % [built_count, skipped_dist, MAX_BUILDING_DIST, buildings.size()])
 
 	# Building collision — combined wall + roof geometry
@@ -473,6 +485,33 @@ func _build_buildings(buildings: Array) -> void:
 		r_mi.mesh = r_mesh
 		r_mi.name = "BuildingRoofs"
 		_loader.add_child(r_mi)
+
+	# NYC rooftop water towers — wooden barrel tanks, iconic skyline element
+	if not water_tower_xf.is_empty():
+		# Barrel mesh — squat cylinder (1.2m radius × 2.5m tall)
+		var wt_mesh := _loader._make_cylinder(1.2, 2.5, 10)
+		var wood_sh: Shader = _loader._get_shader("wood", "res://shaders/wood.gdshader")
+		var wt_mat := ShaderMaterial.new()
+		wt_mat.shader = wood_sh
+		wt_mat.set_shader_parameter("wood_color", Vector3(0.42, 0.34, 0.22))  # weathered cedar
+		wt_mat.set_shader_parameter("base_roughness", 0.92)
+		_loader._spawn_multimesh(wt_mesh, wt_mat, water_tower_xf, "WaterTowers")
+		# Steel leg frame — thin dark cylinders under each barrel
+		var leg_mesh := _loader._make_cylinder(0.06, 2.8, 6)
+		var iron_sh: Shader = _loader._get_shader("cast_iron", "res://shaders/cast_iron.gdshader")
+		var leg_mat := ShaderMaterial.new()
+		leg_mat.shader = iron_sh
+		leg_mat.set_shader_parameter("iron_color", Vector3(0.12, 0.12, 0.10))
+		var leg_xf: Array = []
+		for wt_tf in water_tower_xf:
+			var wt_pos: Vector3 = (wt_tf as Transform3D).origin
+			# 4 legs in a square pattern under the barrel
+			for lx in [-0.7, 0.7]:
+				for lz in [-0.7, 0.7]:
+					var lpos := Vector3(wt_pos.x + lx, wt_pos.y - 1.4, wt_pos.z + lz)
+					leg_xf.append(Transform3D(Basis.IDENTITY, lpos))
+		_loader._spawn_multimesh(leg_mesh, leg_mat, leg_xf, "WaterTowerLegs")
+		print("  Water towers: %d on rooftops" % water_tower_xf.size())
 
 
 

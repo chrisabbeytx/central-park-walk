@@ -120,7 +120,7 @@ All data is freely available. No paid APIs. No API keys.
 | Trees | ~9,500 placed (20K census + woodland scatter) | 12 species archetypes, LiDAR heights, seasonal phenology, foliage zone biasing, wind gusts, subsurface scattering, bark weather response |
 | Paths | 2,624 | Analytical GPU rendering, 58K segments, width-correct, seasonal leaf litter + salt stains, rain puddles with sky reflection, snow sparkle, bridge deck weather, Reservoir cinder track |
 | Water | 27 bodies + 10 streams | Per-body color, seasonal tint, shore alpha, depth tinting, night city reflections, wind waves, winter ice formation, stream directional flow with slope turbulence + edge foam |
-| Buildings | 6,557 | NYC Building Footprints + LiDAR heights, 5 facade styles, night window variety (incandescent/LED/TV blue), age patina, seasonal haze, rain streaks, weather-responsive roofs, collision |
+| Buildings | 6,557 | NYC Building Footprints + LiDAR heights, 5 facade styles, night window variety (incandescent/LED/TV blue), age patina, rooftop water towers, seasonal haze, rain streaks, weather-responsive roofs, collision |
 | Bridges | 55 | 5 styles, miter joints, arched soffits, Bow Bridge railings, parapet collision |
 | Tunnels | 15 | Barrel vault interiors, portal lighting |
 | Furniture | 1,022+ | Custom Blender models: lampposts (201), benches (610), trash cans (166), fountains (19), flagpoles (18), rock outcrops — cast iron shader with rust/rain/snow, wood shader for bridge railings |
