@@ -1,0 +1,73 @@
+=============================================================================
+Central Park Walk — Asset Credits & Licenses
+=============================================================================
+
+All third-party assets used in this project are free and openly licensed.
+
+-----------------------------------------------------------------------------
+3D Tree Models — Quaternius (CC0 1.0)
+-----------------------------------------------------------------------------
+
+"Ultimate Stylized Nature" pack
+  Author: Quaternius (https://quaternius.com)
+  Source: https://quaternius.com/packs/ultimatestylizednature.html
+  License: CC0 1.0 (Public Domain)
+  Models used: Maple Trees, Birch Trees, Generic Deciduous, Pine Trees,
+               Dead Trees
+
+-----------------------------------------------------------------------------
+3D Shrub Models — Polyhaven (CC0 1.0)
+-----------------------------------------------------------------------------
+
+"shrub_02" — https://polyhaven.com/a/shrub_02
+"shrub_03" — https://polyhaven.com/a/shrub_03
+License: CC0 1.0 (Public Domain)
+
+-----------------------------------------------------------------------------
+3D Park Furniture — OpenGameArt (CC0 1.0)
+-----------------------------------------------------------------------------
+
+"Park Furniture" by loafbrr_1
+  URL: https://opengameart.org/content/park-furniture
+  License: CC0 1.0 (Public Domain)
+
+"Park Props Lowpoly"
+  URL: https://opengameart.org/content/park-props-lowpoly
+  License: CC0 1.0 (Public Domain)
+
+-----------------------------------------------------------------------------
+Terrain Textures — Polyhaven (CC0 1.0)
+-----------------------------------------------------------------------------
+
+"forrest_ground_01" — https://polyhaven.com/a/forrest_ground_01
+"park_dirt" — https://polyhaven.com/a/park_dirt
+License: CC0 1.0 (Public Domain)
+
+-----------------------------------------------------------------------------
+Existing Textures — ambientCG (CC0 1.0)
+-----------------------------------------------------------------------------
+
+Grass004, Ground037, Asphalt012, Concrete034, PavingStones130, Gravel021,
+WoodFloor041, Bark007, LeafSet003, LeafSet009, Facade011, Bricks031,
+Bricks059 — all from https://ambientcg.com/
+
+-----------------------------------------------------------------------------
+Sky HDRI — Polyhaven (CC0 1.0)
+-----------------------------------------------------------------------------
+
+"kloppenheim_06_puresky" — https://polyhaven.com/a/kloppenheim_06_puresky
+
+-----------------------------------------------------------------------------
+Terrain Elevation — Terrarium (Public Domain)
+-----------------------------------------------------------------------------
+
+GEBCO elevation data via Terrarium tiles.
+
+-----------------------------------------------------------------------------
+Map Data — OpenStreetMap (ODbL)
+-----------------------------------------------------------------------------
+
+OpenStreetMap contributors — https://www.openstreetmap.org/copyright
+License: Open Data Commons Open Database License (ODbL)
+
+=============================================================================

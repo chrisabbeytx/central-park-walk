@@ -1,0 +1,38 @@
+# Godot editor cache
+.godot/
+
+# Downloaded binary assets (re-download via scripts)
+models/
+!models/furniture/cp_bench.glb
+!models/furniture/cp_lamppost.glb
+!models/furniture/cp_trash_can.glb
+!models/furniture/cp_drinking_fountain.glb
+!models/furniture/cp_rocks.glb
+textures/*.jpg
+textures/*.hdr
+textures/*.png
+textures/*.blend
+textures/*.mtlx
+textures/*.usdc
+textures/*.tres
+textures/*.import
+sounds/*.ogg
+
+# Terrain tiles (re-download via download_terrain.py)
+terrain_tiles/
+
+# Large data files (re-generate via download_osm.py + convert_to_godot.py)
+*.json
+*.bin
+!project.godot
+
+# LiDAR source data (re-download from NOAA/NYS GIS)
+lidar_data/
+
+# Presentations and reference images
+*.odp
+*.png
+example pics/
+
+# Reference docs
+reference-photos.md

@@ -11,11 +11,14 @@ const METRES_PER_DEG_LAT := 110_540.0
 const METRES_PER_DEG_LON := 84_264.0   # 111320 × cos(40.7829°)
 
 # Heightmap (loaded once, shared for player spawn positioning)
-var _hm_data:          Array   = []
+var _hm_data:          PackedFloat32Array = PackedFloat32Array()
 var _hm_width:         int     = 0
 var _hm_depth:         int     = 0
 var _hm_world_size:    float   = 5000.0
 var _hm_origin_height: float   = 0.0
+# Mesh resolution (subsample from full heightmap for GPU-feasible vertex count)
+var _mesh_width:       int     = 0
+var _mesh_depth:       int     = 0
 
 # HUD label references kept for per-frame updates
 var _player:        CharacterBody3D
@@ -27,8 +30,10 @@ var _latlon_label:  Label
 # Day/night cycle
 # ---------------------------------------------------------------------------
 var _time_of_day: float = 16.0        # start at 4 PM
+var _user_gamma: float = 1.0          # user brightness: , = darker, . = brighter
 var _time_speed: float  = 0.001      # game-hours per real-second (~400 min full cycle)
 var _time_speed_idx: int = 0
+var _last_applied_tod: float = -999.0  # tracks last _apply_time_of_day() value
 const TIME_SPEEDS: Array = [0.001, 0.01, 0.1, 0.0]
 const TIME_SPEED_NAMES: Array = ["1x", "10x", "100x", "Paused"]
 
@@ -40,12 +45,22 @@ var _env: Environment
 var _sky_mat: ShaderMaterial
 var _sun: DirectionalLight3D
 var _lamp_mat: StandardMaterial3D
+var _lamp_emission: float = 0.0  # cached for SpotLight3D pool
 var _terrain_mat: ShaderMaterial
 var _time_label: Label
+var _speed_label: Label
+var _location_label: Label
 
 # Dynamic lamppost lighting — pool of SpotLight3D nodes that follow player
 var _lamp_lights: Array = []  # Array of SpotLight3D
 var _lamp_positions: PackedVector3Array = PackedVector3Array()
+
+# Cinematic letterbox overlay
+var _letterbox_canvas: CanvasLayer
+var _hud_canvas: CanvasLayer
+var _letterbox_top: ColorRect
+var _letterbox_bot: ColorRect
+var _letterbox_on: bool = false
 var _lamp_light_timer: float = 0.0
 const LAMP_LIGHT_COUNT := 32
 const LAMP_LIGHT_RANGE := 18.0
@@ -54,40 +69,130 @@ const LAMP_LIGHT_UPDATE_INTERVAL := 0.5  # seconds between position updates
 # Falling leaf particles
 var _falling_leaves: GPUParticles3D
 
+# Weather particles
+var _rain_particles: GPUParticles3D
+var _snow_particles: GPUParticles3D
+var _firefly_nodes: Array = []       # Array of Dictionary {node, target, pulse_timer, pulse_on}
+var _firefly_tree_xz: PackedVector2Array  # tree XZ positions for firefly attraction
+const FIREFLY_COUNT := 35
+const FIREFLY_RANGE := 20.0          # spawn/despawn radius around player
+var _rain_overlay: CanvasLayer  # screen-space rain streaks
+var _lens_canvas: CanvasLayer   # barrel distortion overlay
+
 # 5 keyframes defining the full day/night cycle
 # Night (21→5) wraps seamlessly; 8 hours of steady darkness.
 var _keyframes: Array = []
 const _KF_HOURS: Array = [5.0, 6.5, 12.0, 19.0, 21.0]
 
 
+var _terrain_only := false
+var _weather_mode := "clear"  # clear, rain, snow, fog, lens
+
+# Wind system — layered crossing breezes
+var _wind_vec := Vector2.ZERO   # current wind XZ direction+strength
+var _wind_time := 0.0           # accumulated wind time (independent of game clock)
+var _wind_override := -1.0      # <0 = auto, 0-1 = manual strength multiplier
+
+# Snow accumulation
+var _snow_cover := 0.0          # 0-1, ramps up during snow weather
+# Rain wetness — ground darkens + specular increases
+var _rain_wetness := 0.0        # 0-1, ramps up during rain
+
+# Weather audio
+var _rain_audio_player: AudioStreamPlayer
+var _wind_audio_player: AudioStreamPlayer
+var _thunder_audio_player: AudioStreamPlayer
+var _audio_rng := RandomNumberGenerator.new()
+var _rain_b0 := 0.0   # pink noise filter state
+var _rain_b1 := 0.0
+var _rain_b2 := 0.0
+var _wind_lp_state := 0.0
+var _lightning_flash := 0.0
+var _lightning_timer := 0.0
+var _thunder_queue: Array = []   # [{time: float, vol: float}]
+var _thunder_wavs: Array = []    # pre-generated AudioStreamWAV
+const AUDIO_RATE := 22050
+
+# --time name-to-hour mapping
+const TIME_PRESETS: Dictionary = {
+	"dawn": 5.5, "morning": 8.0, "noon": 12.0,
+	"golden_hour": 17.5, "dusk": 19.5, "night": 22.0,
+}
+
+var _cli_pos := Vector3.ZERO  # --pos x,z  or --pos x,z,yaw
+var _cli_pos_set := false
+
 func _ready() -> void:
+	# Check for CLI args early
+	var cli_time := ""
+	for i in OS.get_cmdline_user_args().size():
+		var arg: String = OS.get_cmdline_user_args()[i]
+		if arg == "--terrain-only":
+			_terrain_only = true
+		elif arg == "--time" and i + 1 < OS.get_cmdline_user_args().size():
+			cli_time = OS.get_cmdline_user_args()[i + 1]
+		elif arg == "--weather" and i + 1 < OS.get_cmdline_user_args().size():
+			_weather_mode = OS.get_cmdline_user_args()[i + 1]
+		elif arg == "--pos" and i + 1 < OS.get_cmdline_user_args().size():
+			var parts := OS.get_cmdline_user_args()[i + 1].split(",")
+			if parts.size() >= 2:
+				_cli_pos.x = float(parts[0])
+				_cli_pos.z = float(parts[1])
+				if parts.size() >= 3:
+					_cli_pos.y = float(parts[2])  # yaw
+				_cli_pos_set = true
+	if cli_time != "":
+		if TIME_PRESETS.has(cli_time):
+			_time_of_day = TIME_PRESETS[cli_time]
+			_time_speed = 0.0  # freeze clock
+			_time_speed_idx = 3  # "Paused"
+			print("Time locked: %s (%.1fh)" % [cli_time, _time_of_day])
+		elif cli_time.is_valid_float():
+			_time_of_day = clampf(float(cli_time), 0.0, 23.99)
+			_time_speed = 0.0
+			_time_speed_idx = 3
+			print("Time locked: %.1fh" % _time_of_day)
+		else:
+			print("Unknown --time '%s'. Options: dawn morning noon golden_hour dusk night (or 0-24)" % cli_time)
+	if _weather_mode != "clear":
+		print("Weather: %s" % _weather_mode)
 	_build_keyframes()
 	_load_heightmap()
 	_setup_environment()
-	_setup_park()
-	_apply_tunnel_depressions()
+	# Register global shader parameters BEFORE park_loader creates materials
+	RenderingServer.global_shader_parameter_add("wind_vec", RenderingServer.GLOBAL_VAR_TYPE_VEC2, Vector2.ZERO)
+	RenderingServer.global_shader_parameter_add("snow_cover", RenderingServer.GLOBAL_VAR_TYPE_FLOAT, 0.0)
+	RenderingServer.global_shader_parameter_add("rain_wetness", RenderingServer.GLOBAL_VAR_TYPE_FLOAT, 0.0)
+	RenderingServer.global_shader_parameter_add("sky_reflect_color", RenderingServer.GLOBAL_VAR_TYPE_VEC3, Vector3(0.32, 0.38, 0.45))
+	if not _terrain_only:
+		_setup_park()
+		_apply_tunnel_depressions()
 	_setup_ground()
-	if _park_loader and _park_loader.splat_texture:
-		_apply_splat_map(_park_loader.splat_texture)
-	if _park_loader and _park_loader.path_segs_texture:
-		_apply_gpu_path_textures()
-	if _park_loader and _park_loader.boundary_polygon.size() > 2:
-		_apply_boundary_mask(_park_loader.boundary_polygon)
-	if _park_loader and _park_loader.water_proximity_texture:
-		_terrain_mat.set_shader_parameter("water_prox_map", _park_loader.water_proximity_texture)
-		print("Terrain: water proximity map applied")
-	if _park_loader and _park_loader.landuse_texture:
-		_terrain_mat.set_shader_parameter("landuse_map", _park_loader.landuse_texture)
-		print("Terrain: landuse map applied")
+	if not _terrain_only:
+		if _park_loader and _park_loader.splat_texture:
+			_apply_splat_map(_park_loader.splat_texture)
+		if _park_loader and _park_loader.path_segs_texture:
+			_apply_gpu_path_textures()
+		if _park_loader and _park_loader.boundary_polygon.size() > 2:
+			_apply_boundary_mask(_park_loader.boundary_polygon)
+		if _park_loader and not _park_loader.landuse_zones.is_empty():
+			_apply_landuse_map(_park_loader.landuse_zones, _park_loader.water_bodies)
+		_apply_structure_mask()
 	_player = _setup_player()
+	if _park_loader and _park_loader.boundary_polygon.size() > 2:
+		_player.boundary_polygon = _park_loader.boundary_polygon
 	_setup_hud()
 	_setup_color_grade()
-	_setup_lamp_lights()
-	_setup_falling_leaves()
-	_setup_pigeons()
-	_setup_ramble_fog()
-	_setup_audio()
+	_setup_letterbox()
+	if not _terrain_only:
+		_setup_lamp_lights()
+		#_setup_falling_leaves()  # procedural — defer to later
+		#_setup_pigeons()         # procedural — defer to later
+		_setup_audio()
+	_setup_weather_audio()
 	_apply_time_of_day()
+	_setup_weather()
+	#_setup_fireflies()  # procedural — defer to later
 	# Check for --tour CLI arg
 	for arg in OS.get_cmdline_user_args():
 		if arg == "--tour":
@@ -96,6 +201,7 @@ func _ready() -> void:
 			_tour_state = 0  # WAIT_LOAD
 			_tour_timer = 0.0
 			_tour_idx = 0
+			_player.set_physics_process(false)  # disable gravity/collision during tour
 			DirAccess.make_dir_recursive_absolute("/tmp/tour")
 			print("Tour mode: %d shots queued" % _tour_shots.size())
 			break
@@ -113,16 +219,23 @@ var _tour_idx := 0  # index into _tour_shots array
 var _tour_shots: Array = []  # populated in _build_tour_shots()
 
 const TOUR_VIEWPOINTS: Array = [
-	{"name": "bethesda_fountain", "x": -458.0, "z": 949.0, "yaw": 45.0},
+	{"name": "bethesda_fountain", "x": -480.0, "z": 1020.0, "yaw": 180.0},
 	{"name": "literary_walk", "x": -600.0, "z": 1420.0, "yaw": 30.0},
 	{"name": "great_lawn", "x": -200.0, "z": 0.0, "yaw": 0.0},
 	{"name": "conservatory_water", "x": -152.0, "z": 958.0, "yaw": 270.0},
 	{"name": "alice_wonderland", "x": -96.0, "z": 869.0, "yaw": 315.0},
 	{"name": "balto_south", "x": -473.0, "z": 1430.0, "yaw": 60.0},
-	{"name": "the_lake", "x": -522.0, "z": 694.0, "yaw": 0.0},
-	{"name": "cherry_hill", "x": -616.0, "z": 907.0, "yaw": 90.0},
+	{"name": "the_lake", "x": -560.0, "z": 780.0, "yaw": 60.0},
+	{"name": "cherry_hill", "x": -630.0, "z": 880.0, "yaw": 90.0},
 	{"name": "cleopatras_needle", "x": 0.0, "z": 360.0, "yaw": 180.0},
 	{"name": "ramble", "x": -400.0, "z": 600.0, "yaw": 225.0},
+	{"name": "cpw_skyline", "x": -600.0, "z": 1420.0, "yaw": 90.0},
+	{"name": "fifth_ave_skyline", "x": 100.0, "z": 200.0, "yaw": 270.0},
+	{"name": "north_woods", "x": 600.0, "z": -1315.0, "yaw": 180.0},
+	{"name": "reservoir_south", "x": -200.0, "z": -300.0, "yaw": 0.0},
+	{"name": "bow_bridge", "x": -540.0, "z": 740.0, "yaw": 310.0},
+	{"name": "soccer_fields", "x": 390.0, "z": -1070.0, "yaw": 30.0},
+	{"name": "sheep_meadow", "x": -700.0, "z": 1600.0, "yaw": 270.0},
 ]
 
 const TOUR_ANGLES: Array = [
@@ -131,7 +244,7 @@ const TOUR_ANGLES: Array = [
 	{"suffix": "_2", "yaw_offset": 0.0, "pitch": -25.0},   # down
 ]
 
-const TOUR_TIMES: Array = [7.0, 12.0, 17.0]
+const TOUR_TIMES: Array = [7.0, 12.0, 17.0, 22.0]
 
 func _build_tour_shots() -> void:
 	_tour_shots.clear()
@@ -153,6 +266,24 @@ func _build_tour_shots() -> void:
 # Heightmap helpers
 # ---------------------------------------------------------------------------
 func _load_heightmap() -> void:
+	# Try binary format first, then fall back to JSON
+	if FileAccess.file_exists("res://heightmap.bin"):
+		var fa := FileAccess.open("res://heightmap.bin", FileAccess.READ)
+		_hm_width         = fa.get_32()
+		_hm_depth         = fa.get_32()
+		_hm_world_size    = fa.get_float()
+		_hm_origin_height = fa.get_float()
+		var byte_count := _hm_width * _hm_depth * 4
+		var buf := fa.get_buffer(byte_count)
+		fa.close()
+		_hm_data = buf.to_float32_array()
+		# Mesh capped at 4096 (GDScript can't build 67M verts fast enough);
+		# shader heightmap texture uses full resolution for per-pixel normals.
+		_mesh_width = mini(_hm_width, 4096)
+		_mesh_depth = mini(_hm_depth, 4096)
+		print("Heightmap loaded (bin): %d×%d  mesh=%d×%d  origin_y=%.1f m" % [
+			_hm_width, _hm_depth, _mesh_width, _mesh_depth, _hm_origin_height])
+		return
 	if not FileAccess.file_exists("res://heightmap.json"):
 		return
 	var fa  := FileAccess.open("res://heightmap.json", FileAccess.READ)
@@ -164,8 +295,13 @@ func _load_heightmap() -> void:
 	_hm_depth         = int(hm["depth"])
 	_hm_world_size    = float(hm["world_size"])
 	_hm_origin_height = float(hm["origin_height"])
-	_hm_data          = hm["data"]
-	print("Heightmap loaded: %d×%d  origin_y=%.1f m" % [_hm_width, _hm_depth, _hm_origin_height])
+	var raw_data: Array = hm["data"]
+	_hm_data.resize(raw_data.size())
+	for i in range(raw_data.size()):
+		_hm_data[i] = float(raw_data[i])
+	_mesh_width = _hm_width
+	_mesh_depth = _hm_depth
+	print("Heightmap loaded (json): %d×%d  origin_y=%.1f m" % [_hm_width, _hm_depth, _hm_origin_height])
 
 
 func _terrain_height(x: float, z: float) -> float:
@@ -214,7 +350,7 @@ func _process(delta: float) -> void:
 		_tour_timer += delta
 		match _tour_state:
 			0:  # WAIT_LOAD — let scene fully build
-				if _tour_timer >= 50.0:
+				if _tour_timer >= 8.0:
 					_tour_state = 1
 					_tour_timer = 0.0
 					_tour_teleport(_tour_idx)
@@ -243,47 +379,63 @@ func _process(delta: float) -> void:
 			3:  # DONE
 				pass
 		_apply_time_of_day()
+		_update_hud()
 		return
 
 	# Auto-screenshot for dev review (non-tour mode)
 	if not _screenshot_done:
 		_screenshot_timer += delta
-		# Hold player frozen at aerial position every frame until screenshot
-		var sx := -200.0; var sz := 100.0
-		_player.set_physics_process(false)
-		_player.velocity = Vector3.ZERO
-		_player.global_position = Vector3(sx, _terrain_height(sx, sz) + 30.0, sz)
-		_player.rotation_degrees.y = 90.0
-		var head_node: Node3D = _player.get_node("Head")
-		if head_node:
-			head_node.rotation_degrees.x = -55.0
-		_time_of_day = 12.0
-		_time_speed = 0.0
-		_apply_time_of_day()
-		if _screenshot_timer >= 4.0:
+		if _screenshot_timer <= delta and _player:
+			_player.set_physics_process(false)
+			_player.velocity = Vector3.ZERO
+		if _screenshot_timer >= 8.0:
 			_screenshot_done = true
 			var img := get_viewport().get_texture().get_image()
 			if img:
 				img.save_png("/tmp/godot_screenshot.png")
 				print("Screenshot saved to /tmp/godot_screenshot.png")
-			_player.set_physics_process(true)
-			_player.global_position = Vector3(sx, _terrain_height(sx, sz) + 2.0, sz)
-			_player.rotation_degrees.y = 90.0
-			if head_node:
-				head_node.rotation_degrees.x = 0.0
-			_time_speed = TIME_SPEEDS[_time_speed_idx]
+			if _player:
+				_player.set_physics_process(true)
 	# Update lamp lights every 0.5s
 	_lamp_light_timer += delta
 	if _lamp_light_timer >= LAMP_LIGHT_UPDATE_INTERVAL:
 		_lamp_light_timer = 0.0
 		_update_lamp_lights()
 
-	# Move falling leaves to follow player
-	if _falling_leaves and _player:
-		_falling_leaves.global_position = _player.global_position + Vector3(0, 10, 0)
+	# Wind
+	_update_wind(delta)
 
-	# Update audio
-	_update_audio(delta)
+	# Snow accumulation — ramps up during snow, melts otherwise
+	if _weather_mode == "snow":
+		_snow_cover = minf(_snow_cover + delta * 0.02, 1.0)  # ~50s to full cover
+	else:
+		_snow_cover = maxf(_snow_cover - delta * 0.05, 0.0)  # ~20s to melt
+	if _terrain_mat:
+		_terrain_mat.set_shader_parameter("snow_cover", _snow_cover)
+	RenderingServer.global_shader_parameter_set("snow_cover", _snow_cover)
+
+	# Rain wetness — ground darkens, gets glossy
+	if _weather_mode == "rain" or _weather_mode == "thunderstorm":
+		_rain_wetness = minf(_rain_wetness + delta * 0.04, 1.0)  # ~25s to full wet
+	else:
+		_rain_wetness = maxf(_rain_wetness - delta * 0.015, 0.0)  # ~67s to dry
+	if _terrain_mat:
+		_terrain_mat.set_shader_parameter("rain_wetness", _rain_wetness)
+	RenderingServer.global_shader_parameter_set("rain_wetness", _rain_wetness)
+
+	# Particles follow player — wind deflects rain/snow
+	if _rain_particles and _player:
+		_rain_particles.global_position = _player.global_position + Vector3(0, 14, 0)
+		var rpm: ParticleProcessMaterial = _rain_particles.process_material
+		rpm.gravity = Vector3(_wind_vec.x * 5.0, -1.5, _wind_vec.y * 5.0)
+	if _snow_particles and _player:
+		_snow_particles.global_position = _player.global_position + Vector3(0, 15, 0)
+		var spm: ParticleProcessMaterial = _snow_particles.process_material
+		spm.gravity = Vector3(_wind_vec.x * 3.0, -1.5, _wind_vec.y * 3.0)
+	# Fireflies — scripted wander agents
+	if not _firefly_nodes.is_empty() and _player:
+		var ff_active: bool = _time_of_day >= 17.0 and _time_of_day <= 22.0 and _weather_mode != "rain" and _weather_mode != "thunderstorm" and _weather_mode != "snow"
+		_update_fireflies(delta, ff_active)
 
 	# Advance clock
 	_time_of_day += _time_speed * delta
@@ -291,33 +443,59 @@ func _process(delta: float) -> void:
 		_time_of_day -= 24.0
 	elif _time_of_day < 0.0:
 		_time_of_day += 24.0
-	_apply_time_of_day()
+	# Only update sky/env/lighting when time actually changes (saves ~50 ops/frame when paused)
+	if absf(_time_of_day - _last_applied_tod) > 0.0005 or _lightning_flash > 0.01:
+		_last_applied_tod = _time_of_day
+		_apply_time_of_day()
 
+	# Lightning flash decay — applied after tod sets clean brightness
+	if _lightning_flash > 0.01:
+		_lightning_flash *= exp(-delta * 6.0)
+		if _env:
+			_env.adjustment_brightness += _lightning_flash * 4.0
+		if _sun:
+			_sun.light_energy += _lightning_flash * 8.0
+	else:
+		_lightning_flash = 0.0
+
+	# Ambient audio (birds, wind, city, water)
+	_update_audio(delta)
+	# Weather audio (rain, wind, thunder)
+	_update_weather_audio(delta)
+
+	# Letterbox bar sizing (adapts to viewport resize)
+	if _letterbox_on and _letterbox_top:
+		var vp := get_viewport().get_visible_rect().size
+		var bar_h := maxf((vp.y - vp.x / 2.35) * 0.5, 0.0)
+		_letterbox_top.offset_bottom = bar_h
+		_letterbox_bot.offset_top = -bar_h
+
+	_update_hud()
+
+
+func _update_hud() -> void:
 	if not _player or not _coord_label:
 		return
-
 	var pos := _player.position
-
-	# Local-metre coordinates
 	_coord_label.text = "X: %7.1f      Z: %7.1f" % [pos.x, pos.z]
-
-	# Compass bearing (0° = North = −Z, increases clockwise)
 	var bearing := fmod(fmod(-_player.rotation_degrees.y, 360.0) + 360.0, 360.0)
 	_heading_label.text = "Heading: %5.1f°  %s" % [bearing, _compass_label(bearing)]
-
-	# Real-world lat / lon
 	var lat :=  REF_LAT + (-pos.z / METRES_PER_DEG_LAT)
 	var lon :=  REF_LON + ( pos.x / METRES_PER_DEG_LON)
 	_latlon_label.text  = "%.6f° N    %.6f° W" % [lat, absf(lon)]
-
-	# Time of day display
 	if _time_label:
 		var h12: int = int(_time_of_day) % 12
 		if h12 == 0:
 			h12 = 12
 		var mins: int = int(fmod(_time_of_day, 1.0) * 60.0)
 		var ampm: String = "AM" if _time_of_day < 12.0 else "PM"
-		_time_label.text = "%d:%02d %s  [%s] %s" % [h12, mins, ampm, TIME_SPEED_NAMES[_time_speed_idx], WEATHER_NAMES[_weather_state]]
+		_time_label.text = "%d:%02d %s  [%s]" % [h12, mins, ampm, TIME_SPEED_NAMES[_time_speed_idx]]
+	if _speed_label and _player:
+		_speed_label.text = "%s (%.1f m/s)" % [_player.SPEED_NAMES[_player._speed_idx], _player.walk_speed]
+	if _location_label:
+		var area := _nearest_area(pos.x, pos.z)
+		_location_label.text = area if area else ""
+		_location_label.visible = not area.is_empty()
 
 
 func _tour_teleport(idx: int) -> void:
@@ -327,7 +505,7 @@ func _tour_teleport(idx: int) -> void:
 	var yaw: float = shot["yaw"]
 	var pitch: float = shot["pitch"]
 	var hour: float = shot["hour"]
-	_player.position = Vector3(x, _terrain_height(x, z) + 1.8, z)
+	_player.position = Vector3(x, _terrain_height(x, z) + 1.3, z)
 	_player.rotation_degrees.y = yaw
 	var head: Node3D = _player.get_node("Head")
 	if head:
@@ -352,6 +530,90 @@ func _compass_label(deg: float) -> String:
 	return labels[int(fmod(deg + 22.5, 360.0) / 45.0) % 8]
 
 
+# Central Park named areas — [x_min, x_max, z_min, z_max, name]
+const PARK_AREAS: Array = [
+	# ── Landmarks and major areas ──
+	[-700, -400, 1300, 1500, "Literary Walk"],
+	[-550, -380, 1050, 1300, "The Mall"],
+	[-530, -390, 900, 1050, "Bethesda Terrace"],
+	[-650, -420, 700, 900, "The Lake"],
+	[-550, -200, 400, 700, "The Ramble"],
+	[-700, -550, 800, 1000, "Cherry Hill"],
+	[-200, 200, -200, 400, "Great Lawn"],
+	[-900, -600, 1500, 2100, "Sheep Meadow"],
+	[-300, 200, -800, -400, "Reservoir"],
+	[-200, 100, 800, 1050, "Conservatory Water"],
+	[200, 800, -1800, -1200, "North Meadow"],
+	[400, 900, -1600, -1000, "North Woods"],
+	[-100, 500, -200, 200, "Turtle Pond"],
+	[600, 1200, -2200, -1700, "Harlem Meer"],
+	[-100, 200, 600, 900, "Belvedere Castle"],
+	[-350, 0, 200, 500, "Delacorte Theater"],
+	[0, 300, 300, 500, "Cleopatra's Needle"],
+	[-700, -500, 1450, 1550, "Naumburg Bandshell"],
+	[-250, 0, -600, -300, "Reservoir Running Track"],
+	[100, 500, -900, -600, "Tennis Center"],
+	[-200, 200, -1200, -800, "Conservatory Garden"],
+	[-600, -350, 600, 750, "Bow Bridge"],
+	[-900, -650, 1100, 1350, "Strawberry Fields"],
+	[-700, -400, 1900, 2100, "The Pond"],
+	[-800, -500, 2050, 2200, "Wollman Rink"],
+	[700, 1100, -2100, -1800, "Lasker Pool"],
+	[-300, 0, 500, 700, "Shakespeare Garden"],
+	[300, 700, -1100, -700, "The Pool"],
+	[400, 800, -1400, -1100, "The Loch"],
+	[-200, 200, -400, -200, "The Obelisk"],
+	[-1100, -800, 1400, 1800, "Tavern on the Green"],
+	# ── Additional areas from Conservancy maps ──
+	[-500, -200, -1950, -1700, "The Ravine"],
+	[-300, 100, -350, -100, "Summit Rock"],
+	[-700, -500, 450, 650, "Ladies Pavilion"],
+	[100, 400, 150, 400, "Cedar Hill"],
+	[-650, -350, 1100, 1250, "The Dene"],
+	[-400, -100, 1600, 1800, "Heckscher Ballfields"],
+	[200, 600, -1050, -750, "East Meadow"],
+	[-100, 200, -1800, -1500, "Great Hill"],
+	[300, 600, -1600, -1350, "Conservatory Garden East"],
+	[-800, -500, 1050, 1250, "Mineral Springs"],
+	[-500, -200, 750, 950, "Wagner Cove"],
+	[-300, 0, 50, 300, "Arthur Ross Pinetum"],
+	# ── Playgrounds (from Conservancy Playground Map) ──
+	[-700, -550, -1850, -1750, "Yoseoff Playground"],
+	[-700, -500, -1100, -1000, "Tarr Family Playground"],
+	[-750, -600, -800, -700, "Rudin Family Playground"],
+	[-750, -600, -575, -475, "Wild West Playground"],
+	[-750, -600, -425, -325, "Safari Playground"],
+	[-750, -600, 25, 125, "West 85th St Playground"],
+	[-700, -550, 100, 200, "Toll Family Playground"],
+	[-750, -600, 325, 425, "Diana Ross Playground"],
+	[-750, -600, 1300, 1400, "Tarr-Coyne Tots Playground"],
+	[-750, -600, 1375, 1475, "Adventure Playground"],
+	[-500, -300, 1675, 1800, "Heckscher Playground"],
+	[250, 450, -1850, -1750, "East 110th St Playground"],
+	[250, 450, -1700, -1600, "Bernard Family Playground"],
+	[250, 450, -1100, -1000, "Bendheim Playground"],
+	[250, 450, -800, -700, "Kempner Playground"],
+	[200, 400, 25, 125, "Ancient Playground"],
+	[200, 400, 475, 575, "Smadbeck Playground"],
+	[200, 400, 625, 725, "Levin Playground"],
+	[200, 400, 1000, 1100, "East 72nd St Playground"],
+	[200, 400, 1375, 1475, "Billy Johnson Playground"],
+	# ── Facilities ──
+	[300, 500, -1850, -1750, "Dana Discovery Center"],
+	[-600, -400, 1375, 1475, "Dairy Visitor Center"],
+	[-550, -400, 1450, 1550, "Chess & Checkers House"],
+	[100, 350, 1525, 1625, "Central Park Zoo"],
+	[-400, -200, 1150, 1250, "SummerStage"],
+	[-300, -100, 550, 700, "Swedish Cottage"],
+]
+
+func _nearest_area(x: float, z: float) -> String:
+	for area in PARK_AREAS:
+		if x >= float(area[0]) and x <= float(area[1]) and z >= float(area[2]) and z <= float(area[3]):
+			return area[4]
+	return ""
+
+
 func _unhandled_input(event: InputEvent) -> void:
 	if not (event is InputEventKey and event.pressed):
 		return
@@ -365,10 +627,39 @@ func _unhandled_input(event: InputEvent) -> void:
 	elif event.keycode == KEY_BRACKETRIGHT:
 		_time_of_day = fmod(_time_of_day + 1.0, 24.0)
 		print("Time: %.1f h" % _time_of_day)
+	elif event.keycode == KEY_L:
+		_letterbox_on = not _letterbox_on
+		_letterbox_canvas.visible = _letterbox_on
+		print("Letterbox: ", "ON" if _letterbox_on else "OFF")
 	elif event.keycode == KEY_P:
-		_weather_state = (_weather_state + 1) % 3
-		print("Weather: ", WEATHER_NAMES[_weather_state])
-		_apply_time_of_day()
+		_cycle_weather()
+	elif event.keycode == KEY_H:
+		if _hud_canvas:
+			_hud_canvas.visible = not _hud_canvas.visible
+	elif event.keycode == KEY_F11:
+		if DisplayServer.window_get_mode() == DisplayServer.WINDOW_MODE_FULLSCREEN:
+			DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_WINDOWED)
+			Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+		else:
+			DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN)
+			Input.mouse_mode = Input.MOUSE_MODE_HIDDEN
+	elif event.keycode == KEY_COMMA:
+		_user_gamma = clampf(_user_gamma - 0.05, 0.5, 2.0)
+		print("Gamma: %.2f" % _user_gamma)
+	elif event.keycode == KEY_PERIOD:
+		_user_gamma = clampf(_user_gamma + 0.05, 0.5, 2.0)
+		print("Gamma: %.2f" % _user_gamma)
+	# +/- reserved for movement speed (player.gd)
+	elif event.keycode == KEY_9:
+		if _wind_override < 0.0:
+			_wind_override = 1.0
+		_wind_override = clampf(_wind_override - 0.1, 0.0, 3.0)
+		print("Wind: %.0f%%" % (_wind_override * 100.0))
+	elif event.keycode == KEY_0:
+		if _wind_override < 0.0:
+			_wind_override = 1.0
+		_wind_override = clampf(_wind_override + 0.1, 0.0, 3.0)
+		print("Wind: %.0f%%" % (_wind_override * 100.0))
 
 
 # ---------------------------------------------------------------------------
@@ -398,25 +689,39 @@ uniform float cloud_speed = 0.004;
 uniform vec3 cloud_color_top = vec3(0.90, 0.90, 0.92);
 uniform vec3 cloud_color_bottom = vec3(0.45, 0.45, 0.50);
 
+// Scalar hash — used for stars (cell-based)
 float sky_hash(vec2 p) {
 	p = fract(p * vec2(127.1, 311.7));
 	p += dot(p, p + 43.21);
 	return fract(p.x * p.y);
 }
-float sky_vnoise(vec2 p) {
-	vec2 i = floor(p); vec2 f = fract(p);
-	vec2 u = f * f * (3.0 - 2.0 * f);
-	return mix(mix(sky_hash(i), sky_hash(i + vec2(1.0, 0.0)), u.x),
-	           mix(sky_hash(i + vec2(0.0, 1.0)), sky_hash(i + vec2(1.0, 1.0)), u.x), u.y);
+// Gradient hash — returns 2D direction per lattice point
+vec2 sky_grad(vec2 p) {
+	p = vec2(dot(p, vec2(127.1, 311.7)),
+	         dot(p, vec2(269.5, 183.3)));
+	return -1.0 + 2.0 * fract(sin(p) * 43758.5453);
 }
+// Gradient (Perlin-style) noise — no grid artifacts
+float sky_gnoise(vec2 p) {
+	vec2 i = floor(p);
+	vec2 f = fract(p);
+	// Quintic interpolation (C2 continuous — no second-derivative seams)
+	vec2 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+	return mix(mix(dot(sky_grad(i),                 f),
+	               dot(sky_grad(i + vec2(1.0, 0.0)), f - vec2(1.0, 0.0)), u.x),
+	           mix(dot(sky_grad(i + vec2(0.0, 1.0)), f - vec2(0.0, 1.0)),
+	               dot(sky_grad(i + vec2(1.0, 1.0)), f - vec2(1.0, 1.0)), u.x), u.y);
+}
+// FBM with per-octave rotation to break any residual grid alignment
 float sky_fbm(vec2 p, int oct) {
 	float v = 0.0, a = 0.5;
+	mat2 rot = mat2(vec2(0.80, 0.60), vec2(-0.60, 0.80)); // ~37 deg
 	for (int i = 0; i < oct; i++) {
-		v += a * sky_vnoise(p);
-		p *= 2.13;
-		a *= 0.47;
+		v += a * sky_gnoise(p);
+		p = rot * p * 2.0;
+		a *= 0.5;
 	}
-	return v;
+	return v * 0.5 + 0.5; // remap [-1,1] → [0,1]
 }
 
 void sky() {
@@ -441,21 +746,27 @@ void sky() {
 	float sun_glow = pow(max(sun_dot, 0.0), 64.0) * 0.3;
 	sky_col += sun_col * (sun_disc + sun_glow);
 
-	// --- Stars ---
+	// --- Stars (Bortle 8-9: inner-city light pollution) ---
+	// Central Park: nearly starless sky. Only ~10 brightest stars visible on clear nights.
 	if (elev > 0.0) {
 		float star_fade = smoothstep(0.15, 0.0, LIGHT0_ENERGY);
 		if (star_fade > 0.0) {
 			vec2 star_uv = dir.xz / (elev + 0.001) * 80.0;
 			vec2 star_cell = floor(star_uv);
 			float star_rand = sky_hash(star_cell);
-			float star_mask = step(0.97, star_rand);
+			float star_mask = step(0.997, star_rand);  // 0.3% density — only brightest stars
 			float star_bright = sky_hash(star_cell + vec2(13.7, 29.3));
-			star_bright = star_bright * star_bright * 1.5;
+			star_bright = star_bright * star_bright * 0.8;  // dimmer through light pollution
 			float twinkle = 0.8 + 0.2 * sin(TIME * 2.0 + star_rand * 100.0);
 			vec2 star_frac = fract(star_uv) - 0.5;
-			float star_point = smoothstep(0.12, 0.02, length(star_frac));
+			float star_point = smoothstep(0.10, 0.02, length(star_frac));
 			sky_col += vec3(star_bright * star_mask * star_point * star_fade * twinkle);
 		}
+		// Light pollution sky glow — warm amber dome
+		float lp_fade = smoothstep(0.15, 0.0, LIGHT0_ENERGY);
+		vec3 light_pollution = vec3(0.12, 0.08, 0.04);  // warm amber-brown
+		float lp_strength = lp_fade * (0.6 + 0.4 * (1.0 - elev));  // stronger near horizon
+		sky_col += light_pollution * lp_strength;
 	}
 
 	// --- FBM cloud layer ---
@@ -507,7 +818,7 @@ func _setup_environment() -> void:
 	_env.tonemap_mode          = Environment.TONE_MAPPER_FILMIC
 	_env.tonemap_white         = 6.0
 	_env.glow_enabled          = true
-	_env.glow_blend_mode       = Environment.GLOW_BLEND_MODE_SOFTLIGHT
+	_env.glow_blend_mode       = Environment.GLOW_BLEND_MODE_ADDITIVE
 	_env.ssao_enabled          = true
 	_env.ssao_detail           = 0.5
 	_env.ssil_enabled          = true
@@ -524,27 +835,27 @@ func _setup_environment() -> void:
 
 	# Volumetric fog — light shafts (god rays at sunrise/sunset via high anisotropy)
 	_env.volumetric_fog_enabled = true
-	_env.volumetric_fog_density = 0.0008
+	_env.volumetric_fog_density = 0.0003
 	_env.volumetric_fog_albedo = Color(1.0, 1.0, 1.0)
 	_env.volumetric_fog_emission = Color(0.8, 0.85, 0.9)
 	_env.volumetric_fog_emission_energy = 0.12
 	_env.volumetric_fog_anisotropy = 0.3
-	_env.volumetric_fog_length = 150.0
+	_env.volumetric_fog_length = 80.0
 	_env.volumetric_fog_detail_spread = 2.0
-	_env.volumetric_fog_ambient_inject = 0.8
-	_env.volumetric_fog_gi_inject = 0.0
+	_env.volumetric_fog_ambient_inject = 0.25
+	_env.volumetric_fog_gi_inject = 0.3
 	_env.volumetric_fog_sky_affect = 0.30
 	_env.volumetric_fog_temporal_reprojection_enabled = true
 
 	# SDFGI — global illumination (green bounce under canopies, warm path reflections)
-	_env.sdfgi_enabled = false
+	_env.sdfgi_enabled = true
 	_env.sdfgi_use_occlusion = true
 	_env.sdfgi_read_sky_light = true
-	_env.sdfgi_bounce_feedback = 0.0
+	_env.sdfgi_bounce_feedback = 0.5
 	_env.sdfgi_cascades = 4
-	_env.sdfgi_min_cell_size = 0.2
+	_env.sdfgi_min_cell_size = 0.4
 	_env.sdfgi_y_scale = Environment.SDFGI_Y_SCALE_75_PERCENT
-	_env.sdfgi_energy = 0.6
+	_env.sdfgi_energy = 0.8
 	_env.sdfgi_normal_bias = 1.1
 	_env.sdfgi_probe_bias = 1.1
 
@@ -554,6 +865,7 @@ func _setup_environment() -> void:
 
 	_sun = DirectionalLight3D.new()
 	_sun.shadow_enabled = true
+	_sun.light_angular_distance = 1.5  # soft penumbra — velvety shadows
 	_sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_4_SPLITS
 	_sun.directional_shadow_split_1      = 0.08
 	_sun.directional_shadow_max_distance = 200.0
@@ -578,36 +890,36 @@ func _build_keyframes() -> void:
 		"sun_curve":      0.01,
 		"ambient_color":  Color(0.10, 0.10, 0.18),
 		"ambient_energy": 0.15,
-		"exposure":       0.75,
-		"white":          5.0,
-		"glow_intensity": 0.7,
-		"glow_bloom":     0.20,
-		"glow_strength":  2.5,
-		"glow_threshold": 0.10,
-		"glow_cap":       3.0,
+		"exposure":       0.65,
+		"white":          6.0,
+		"glow_intensity": 0.6,
+		"glow_bloom":     0.08,
+		"glow_strength":  0.7,
+		"glow_threshold": 0.65,
+		"glow_cap":       5.0,
 		"ssao_radius":    2.0,
 		"ssao_intensity": 2.8,
 		"ssao_power":     2.0,
 		"ssil_intensity": 0.5,
-		"saturation":     0.55,
-		"contrast":       1.08,
-		"brightness":     0.85,
+		"saturation":     0.70,
+		"contrast":       1.12,
+		"brightness":     0.78,
 		"fog_color":      Color(0.12, 0.10, 0.14),
 		"fog_energy":     0.15,
 		"fog_scatter":    0.05,
-		"fog_density":    0.0020,
-		"fog_aerial":     0.50,
+		"fog_density":    0.0005,
+		"fog_aerial":     0.20,
 		"fog_sky_affect": 0.6,
 		"sun_energy":     0.05,
 		"sun_color":      Color(0.65, 0.72, 0.95),
 		"sun_pitch":      -10.0,
 		"sun_yaw":        -100.0,
 		"shadow_dist":    180.0,
-		"lamp_emission":  2.0,
-		"vol_fog_density":    0.0010,
-		"vol_fog_anisotropy": 0.15,
-		"cloud_coverage":     0.30,
-		"cloud_density":      0.55,
+		"lamp_emission":  3.0,
+		"vol_fog_density":    0.0004,
+		"vol_fog_anisotropy": 0.45,
+		"cloud_coverage":     0.50,
+		"cloud_density":      0.60,
 		"cloud_color_top":    Color(0.42, 0.40, 0.44),
 		"cloud_color_bottom": Color(0.16, 0.14, 0.18),
 		"cloud_speed":        0.003,
@@ -624,25 +936,25 @@ func _build_keyframes() -> void:
 		"sun_curve":      0.08,
 		"ambient_color":  Color(0.50, 0.38, 0.30),
 		"ambient_energy": 0.60,
-		"exposure":       0.80,
-		"white":          5.0,
-		"glow_intensity": 0.75,
-		"glow_bloom":     0.20,
-		"glow_strength":  1.0,
-		"glow_threshold": 0.55,
-		"glow_cap":       5.0,
+		"exposure":       0.70,
+		"white":          6.0,
+		"glow_intensity": 0.7,
+		"glow_bloom":     0.10,
+		"glow_strength":  0.8,
+		"glow_threshold": 0.65,
+		"glow_cap":       8.0,
 		"ssao_radius":    1.5,
 		"ssao_intensity": 2.5,
 		"ssao_power":     1.8,
 		"ssil_intensity": 0.7,
-		"saturation":     0.94,
-		"contrast":       1.06,
-		"brightness":     1.0,
-		"fog_color":      Color(0.60, 0.48, 0.40),
+		"saturation":     1.10,
+		"contrast":       1.10,
+		"brightness":     0.88,
+		"fog_color":      Color(0.55, 0.42, 0.34),
 		"fog_energy":     0.6,
 		"fog_scatter":    0.20,
-		"fog_density":    0.0012,
-		"fog_aerial":     0.40,
+		"fog_density":    0.0003,
+		"fog_aerial":     0.15,
 		"fog_sky_affect": 0.3,
 		"sun_energy":     0.85,
 		"sun_color":      Color(1.0, 0.72, 0.38),
@@ -650,10 +962,10 @@ func _build_keyframes() -> void:
 		"sun_yaw":        -95.0,
 		"shadow_dist":    250.0,
 		"lamp_emission":  0.0,
-		"vol_fog_density":    0.0006,
-		"vol_fog_anisotropy": 0.75,
-		"cloud_coverage":     0.40,
-		"cloud_density":      0.55,
+		"vol_fog_density":    0.0003,
+		"vol_fog_anisotropy": 0.85,
+		"cloud_coverage":     0.55,
+		"cloud_density":      0.60,
 		"cloud_color_top":    Color(0.92, 0.88, 0.78),
 		"cloud_color_bottom": Color(0.48, 0.40, 0.32),
 		"cloud_speed":        0.004,
@@ -670,25 +982,25 @@ func _build_keyframes() -> void:
 		"sun_curve":      0.15,
 		"ambient_color":  Color(0.52, 0.48, 0.42),
 		"ambient_energy": 0.75,
-		"exposure":       0.80,
+		"exposure":       0.68,
 		"white":          6.0,
-		"glow_intensity": 0.50,
-		"glow_bloom":     0.15,
-		"glow_strength":  0.70,
-		"glow_threshold": 0.60,
-		"glow_cap":       8.0,
+		"glow_intensity": 0.5,
+		"glow_bloom":     0.06,
+		"glow_strength":  0.6,
+		"glow_threshold": 0.75,
+		"glow_cap":       10.0,
 		"ssao_radius":    2.0,
 		"ssao_intensity": 2.5,
 		"ssao_power":     2.0,
 		"ssil_intensity": 1.0,
-		"saturation":     0.95,
-		"contrast":       1.06,
-		"brightness":     1.00,
-		"fog_color":      Color(0.58, 0.55, 0.52),
+		"saturation":     1.10,
+		"contrast":       1.10,
+		"brightness":     0.85,
+		"fog_color":      Color(0.55, 0.52, 0.48),
 		"fog_energy":     0.6,
 		"fog_scatter":    0.05,
-		"fog_density":    0.0008,
-		"fog_aerial":     0.35,
+		"fog_density":    0.0002,
+		"fog_aerial":     0.10,
 		"fog_sky_affect": 0.30,
 		"sun_energy":     0.75,
 		"sun_color":      Color(0.95, 0.92, 0.85),
@@ -696,10 +1008,10 @@ func _build_keyframes() -> void:
 		"sun_yaw":        -20.0,
 		"shadow_dist":    300.0,
 		"lamp_emission":  0.0,
-		"vol_fog_density":    0.0004,
-		"vol_fog_anisotropy": 0.18,
-		"cloud_coverage":     0.35,
-		"cloud_density":      0.50,
+		"vol_fog_density":    0.0002,
+		"vol_fog_anisotropy": 0.50,
+		"cloud_coverage":     0.60,
+		"cloud_density":      0.55,
 		"cloud_color_top":    Color(0.95, 0.95, 0.93),
 		"cloud_color_bottom": Color(0.68, 0.68, 0.66),
 		"cloud_speed":        0.005,
@@ -714,38 +1026,38 @@ func _build_keyframes() -> void:
 		"gnd_horizon":    Color(0.42, 0.32, 0.20),
 		"sun_angle_max":  5.0,
 		"sun_curve":      0.08,
-		"ambient_color":  Color(0.42, 0.32, 0.22),
-		"ambient_energy": 0.55,
-		"exposure":       0.80,
-		"white":          5.0,
-		"glow_intensity": 0.85,
-		"glow_bloom":     0.25,
-		"glow_strength":  1.2,
-		"glow_threshold": 0.48,
+		"ambient_color":  Color(0.48, 0.38, 0.26),
+		"ambient_energy": 0.80,
+		"exposure":       0.70,
+		"white":          6.0,
+		"glow_intensity": 0.7,
+		"glow_bloom":     0.10,
+		"glow_strength":  0.8,
+		"glow_threshold": 0.65,
 		"glow_cap":       5.0,
 		"ssao_radius":    2.0,
-		"ssao_intensity": 2.5,
+		"ssao_intensity": 1.8,
 		"ssao_power":     1.9,
-		"ssil_intensity": 0.6,
-		"saturation":     0.94,
-		"contrast":       1.05,
-		"brightness":     1.0,
-		"fog_color":      Color(0.72, 0.52, 0.42),
+		"ssil_intensity": 0.8,
+		"saturation":     1.10,
+		"contrast":       1.08,
+		"brightness":     0.92,
+		"fog_color":      Color(0.68, 0.52, 0.38),
 		"fog_energy":     0.6,
 		"fog_scatter":    0.25,
-		"fog_density":    0.0014,
-		"fog_aerial":     0.40,
+		"fog_density":    0.0004,
+		"fog_aerial":     0.18,
 		"fog_sky_affect": 0.3,
 		"sun_energy":     0.80,
 		"sun_color":      Color(1.0, 0.65, 0.30),
 		"sun_pitch":      -12.0,
 		"sun_yaw":        95.0,
 		"shadow_dist":    220.0,
-		"lamp_emission":  0.5,
-		"vol_fog_density":    0.0008,
-		"vol_fog_anisotropy": 0.78,
-		"cloud_coverage":     0.45,
-		"cloud_density":      0.55,
+		"lamp_emission":  0.0,  # lamps off until after sunset (ramp 19h→21h)
+		"vol_fog_density":    0.0004,
+		"vol_fog_anisotropy": 0.88,
+		"cloud_coverage":     0.65,
+		"cloud_density":      0.60,
 		"cloud_color_top":    Color(0.78, 0.55, 0.42),
 		"cloud_color_bottom": Color(0.50, 0.28, 0.18),
 		"cloud_speed":        0.004,
@@ -762,36 +1074,36 @@ func _build_keyframes() -> void:
 		"sun_curve":      0.01,
 		"ambient_color":  Color(0.10, 0.10, 0.18),
 		"ambient_energy": 0.15,
-		"exposure":       0.75,
-		"white":          5.0,
-		"glow_intensity": 0.7,
-		"glow_bloom":     0.25,
-		"glow_strength":  2.5,
-		"glow_threshold": 0.10,
-		"glow_cap":       3.0,
+		"exposure":       0.60,
+		"white":          6.0,
+		"glow_intensity": 0.6,
+		"glow_bloom":     0.08,
+		"glow_strength":  0.7,
+		"glow_threshold": 0.60,
+		"glow_cap":       5.0,
 		"ssao_radius":    2.0,
 		"ssao_intensity": 3.0,
 		"ssao_power":     2.0,
 		"ssil_intensity": 0.6,
-		"saturation":     0.55,
-		"contrast":       1.08,
-		"brightness":     0.85,
+		"saturation":     0.70,
+		"contrast":       1.14,
+		"brightness":     0.75,
 		"fog_color":      Color(0.08, 0.08, 0.12),
 		"fog_energy":     0.15,
 		"fog_scatter":    0.05,
-		"fog_density":    0.0020,
-		"fog_aerial":     0.50,
+		"fog_density":    0.0005,
+		"fog_aerial":     0.20,
 		"fog_sky_affect": 0.6,
 		"sun_energy":     0.05,
 		"sun_color":      Color(0.70, 0.78, 1.00),
 		"sun_pitch":      -65.0,
 		"sun_yaw":        40.0,
 		"shadow_dist":    200.0,
-		"lamp_emission":  2.0,
-		"vol_fog_density":    0.0010,
-		"vol_fog_anisotropy": 0.10,
-		"cloud_coverage":     0.25,
-		"cloud_density":      0.50,
+		"lamp_emission":  3.0,
+		"vol_fog_density":    0.0004,
+		"vol_fog_anisotropy": 0.35,
+		"cloud_coverage":     0.45,
+		"cloud_density":      0.55,
 		"cloud_color_top":    Color(0.12, 0.12, 0.18),
 		"cloud_color_bottom": Color(0.05, 0.05, 0.08),
 		"cloud_speed":        0.003,
@@ -886,7 +1198,7 @@ func _apply_time_of_day() -> void:
 	# Colour grading
 	_env.adjustment_saturation = _lerp_kf("saturation", a, b, t)
 	_env.adjustment_contrast   = _lerp_kf("contrast", a, b, t)
-	_env.adjustment_brightness = _lerp_kf("brightness", a, b, t)
+	_env.adjustment_brightness = _lerp_kf("brightness", a, b, t) * _user_gamma
 
 	# Fog
 	_env.fog_light_color       = _lerp_kf("fog_color", a, b, t)
@@ -900,6 +1212,79 @@ func _apply_time_of_day() -> void:
 	_env.volumetric_fog_density    = _lerp_kf("vol_fog_density", a, b, t)
 	_env.volumetric_fog_anisotropy = _lerp_kf("vol_fog_anisotropy", a, b, t)
 
+	# Weather overrides — use absolute values for fog/clouds so the effect
+	# is clearly visible regardless of time-of-day keyframe base values.
+	if _weather_mode == "fog":
+		_env.fog_density = 0.035  # heavy fade: ~50% at 20m, ~90% at 65m
+		_env.fog_light_energy = 0.6
+		_env.fog_light_color = Color(0.78, 0.80, 0.82)
+		_env.fog_sun_scatter = 0.05
+		if _env.volumetric_fog_enabled:
+			_env.volumetric_fog_density = 0.015
+		_env.adjustment_saturation = 0.45
+		_env.adjustment_brightness = 0.90
+		_sky_mat.set_shader_parameter("cloud_coverage", 0.99)
+		_sky_mat.set_shader_parameter("cloud_density", 0.95)
+	elif _weather_mode == "rain":
+		_env.fog_density = 0.012
+		_env.fog_light_energy *= 0.7
+		if _env.volumetric_fog_enabled:
+			_env.volumetric_fog_density = 0.006
+		_env.adjustment_saturation *= 0.7
+		_sky_mat.set_shader_parameter("cloud_coverage", 0.95)
+		_sky_mat.set_shader_parameter("cloud_density", 0.85)
+	elif _weather_mode == "thunderstorm":
+		_env.fog_density = 0.018
+		_env.fog_light_energy *= 0.5
+		if _env.volumetric_fog_enabled:
+			_env.volumetric_fog_density = 0.010
+		_env.adjustment_saturation *= 0.55
+		_env.adjustment_brightness *= 0.85
+		_sky_mat.set_shader_parameter("cloud_coverage", 0.98)
+		_sky_mat.set_shader_parameter("cloud_density", 0.92)
+	elif _weather_mode == "snow":
+		_env.fog_density = 0.008
+		_env.adjustment_saturation *= 0.75
+		_sky_mat.set_shader_parameter("cloud_coverage", 0.92)
+		_sky_mat.set_shader_parameter("cloud_density", 0.80)
+
+	# Sky reflection color for water surfaces — tracks time-of-day sky tone
+	var sky_r: Color = _lerp_kf("fog_color", a, b, t)
+	var sun_c: Color = _lerp_kf("sun_color", a, b, t)
+	# Blend fog color (ambient sky) with sun color for water reflection
+	var reflect := sky_r.lerp(sun_c, 0.3)
+	# Boost luminance slightly for specular reflection
+	reflect = reflect * 1.2
+	RenderingServer.global_shader_parameter_set("sky_reflect_color",
+		Vector3(reflect.r, reflect.g, reflect.b))
+
+	# Morning dew — specular on grass surfaces at dawn (4:30-8:30 AM)
+	var dew := 0.0
+	if _time_of_day >= 4.5 and _time_of_day <= 8.5:
+		if _time_of_day <= 6.0:
+			dew = smoothstep(4.5, 6.0, _time_of_day)
+		else:
+			dew = 1.0 - smoothstep(6.0, 8.5, _time_of_day)
+	if _weather_mode != "clear":
+		dew = 0.0  # no visible dew in rain/snow
+	if _terrain_mat:
+		_terrain_mat.set_shader_parameter("dew_amount", dew)
+
+	# Dawn mist — natural morning fog that lifts with sunrise (5-7:30 AM)
+	# Common phenomenon in Central Park near water bodies and in wooded areas
+	if _weather_mode == "clear":
+		var dawn_mist := 0.0
+		if _time_of_day >= 4.5 and _time_of_day <= 7.5:
+			# Peak at 5:30, fading by 7:30
+			if _time_of_day <= 5.5:
+				dawn_mist = smoothstep(4.5, 5.5, _time_of_day)
+			else:
+				dawn_mist = 1.0 - smoothstep(5.5, 7.5, _time_of_day)
+			_env.fog_density += dawn_mist * 0.008  # subtle ground fog
+			if _env.volumetric_fog_enabled:
+				_env.volumetric_fog_density += dawn_mist * 0.003
+			_env.adjustment_saturation *= (1.0 - dawn_mist * 0.15)  # slightly desaturated mist
+
 	# Sun / moon directional light
 	_sun.light_energy    = _lerp_kf("sun_energy", a, b, t)
 	_sun.light_color     = _lerp_kf("sun_color", a, b, t)
@@ -908,33 +1293,30 @@ func _apply_time_of_day() -> void:
 	_sun.rotation_degrees = Vector3(pitch, yaw, 0.0)
 	_sun.directional_shadow_max_distance = _lerp_kf("shadow_dist", a, b, t)
 
-	# --- Weather state modifiers ---
-	if _weather_state == 0:  # Clear
-		# Reduce clouds, boost sun, less fog
-		var cc: float = _sky_mat.get_shader_parameter("cloud_coverage")
-		_sky_mat.set_shader_parameter("cloud_coverage", cc * 0.5)
-		_sun.light_energy *= 1.2
-		_env.fog_density *= 0.7
-		_env.volumetric_fog_density *= 0.7
-	elif _weather_state == 2:  # Overcast
-		# Dense clouds, dim sun, more fog, muted colors
-		var cc2: float = _sky_mat.get_shader_parameter("cloud_coverage")
-		_sky_mat.set_shader_parameter("cloud_coverage", minf(cc2 * 1.3, 0.95))
-		_sun.light_energy *= 0.5
-		_env.fog_density *= 1.5
-		_env.volumetric_fog_density *= 1.5
-		_env.ambient_light_energy *= 1.3
-		_env.adjustment_saturation *= 0.85
-
-	# Lamppost emission
+	# Lamppost bulb emission — also dim albedo during day to prevent glow bloom
 	if _lamp_mat:
-		var em: float = _lerp_kf("lamp_emission", a, b, t)
-		_lamp_mat.emission_energy_multiplier = em
-		# Fade albedo brightness slightly when lamps are off (daytime)
-		if em < 0.01:
+		_lamp_emission = _lerp_kf("lamp_emission", a, b, t)
+		_lamp_mat.emission_energy_multiplier = _lamp_emission
+		if _lamp_emission < 0.01:
 			_lamp_mat.emission = Color(0.0, 0.0, 0.0)
+			_lamp_mat.albedo_color = Color(0.25, 0.22, 0.18)  # dark glass during day
 		else:
-			_lamp_mat.emission = Color(1.0, 0.45, 0.08) * em
+			_lamp_mat.emission = Color(1.0, 0.72, 0.32) * _lamp_emission
+			_lamp_mat.albedo_color = Color(1.0, 0.72, 0.32)  # warm amber when lit
+
+	# Building window emission — smooth night_factor curve
+	# 0.0 during day (7h-18h), ramps to 1.0 at night (21h-5h)
+	var nf: float = 0.0
+	if _time_of_day >= 18.0 and _time_of_day < 21.0:
+		nf = (_time_of_day - 18.0) / 3.0  # sunset ramp
+	elif _time_of_day >= 21.0 or _time_of_day < 5.0:
+		nf = 1.0  # full night
+	elif _time_of_day >= 5.0 and _time_of_day < 7.0:
+		nf = 1.0 - (_time_of_day - 5.0) / 2.0  # dawn ramp
+	if _park_loader:
+		for fm in _park_loader.facade_materials:
+			if fm is ShaderMaterial:
+				fm.set_shader_parameter("night_factor", nf)
 
 	# Tunnel portal lights: proportional to sun energy (bright at night, dim at day)
 	if _park_loader:
@@ -946,17 +1328,15 @@ func _apply_time_of_day() -> void:
 
 	# Day/night audio modulation
 	if _audio_birds and _audio_birds.stream:
-		# Birds: loud dawn/day, quiet night
 		var bird_energy := 1.0
 		if _time_of_day < 5.0 or _time_of_day > 21.0:
-			bird_energy = 0.1  # night — near silence
+			bird_energy = 0.1
 		elif _time_of_day < 7.0:
-			bird_energy = lerpf(0.1, 1.2, (_time_of_day - 5.0) / 2.0)  # dawn chorus
+			bird_energy = lerpf(0.1, 1.2, (_time_of_day - 5.0) / 2.0)
 		elif _time_of_day > 19.0:
 			bird_energy = lerpf(1.0, 0.1, (_time_of_day - 19.0) / 2.0)
 		_audio_birds.volume_db = lerpf(-25.0, -6.0, bird_energy)
 	if _audio_wind and _audio_wind.stream:
-		# Wind: slightly stronger at dawn/dusk
 		var wind_vol := -14.0
 		if _time_of_day > 18.0 or _time_of_day < 6.0:
 			wind_vol = -10.0
@@ -1080,9 +1460,15 @@ func _perturb_heightmap() -> void:
 # Falls back to a flat plane when heightmap.json is absent.
 # ---------------------------------------------------------------------------
 func _setup_ground() -> void:
-	var tex_alb := _load_img_tex("res://textures/grass_albedo.jpg")
-	var tex_nrm := _load_img_tex("res://textures/grass_normal.jpg")
-	var tex_rgh := _load_img_tex("res://textures/grass_rough.jpg")
+	var tex_alb := _load_img_tex("res://textures/lawn_grass_Color.jpg")
+	if tex_alb == null:
+		tex_alb = _load_img_tex("res://textures/grass_albedo.jpg")
+	var tex_nrm := _load_img_tex("res://textures/lawn_grass_NormalGL.jpg")
+	if tex_nrm == null:
+		tex_nrm = _load_img_tex("res://textures/grass_normal.jpg")
+	var tex_rgh := _load_img_tex("res://textures/lawn_grass_Roughness.jpg")
+	if tex_rgh == null:
+		tex_rgh = _load_img_tex("res://textures/grass_rough.jpg")
 	var shader  := Shader.new()
 	shader.code  = _terrain_shader_textured() if tex_alb != null else _terrain_shader_code()
 	_terrain_mat = ShaderMaterial.new()
@@ -1091,21 +1477,60 @@ func _setup_ground() -> void:
 		_terrain_mat.set_shader_parameter("grass_albedo", tex_alb)
 		_terrain_mat.set_shader_parameter("grass_normal", tex_nrm)
 		_terrain_mat.set_shader_parameter("grass_rough",  tex_rgh)
-		_terrain_mat.set_shader_parameter("tile_m",       5.0)
+		_terrain_mat.set_shader_parameter("tile_m",       6.0)
 		# Anti-tiling noise texture
 		var noise_tex := _load_img_tex("res://textures/tile_noise.png")
 		if noise_tex:
 			_terrain_mat.set_shader_parameter("tile_noise", noise_tex)
 		# Meadow/wild grass blend
-		var m_alb := _load_img_tex("res://textures/Ground037_2K-JPG_Color.jpg")
-		var m_nrm := _load_img_tex("res://textures/Ground037_2K-JPG_NormalGL.jpg")
-		var m_rgh := _load_img_tex("res://textures/Ground037_2K-JPG_Roughness.jpg")
+		var m_alb := _load_img_tex("res://textures/leaf_litter_Color.jpg")
+		if m_alb == null:
+			m_alb = _load_img_tex("res://textures/forrest_ground_01_Color.jpg")
+		var m_nrm := _load_img_tex("res://textures/leaf_litter_NormalGL.jpg")
+		if m_nrm == null:
+			m_nrm = _load_img_tex("res://textures/forrest_ground_01_NormalGL.jpg")
+		var m_rgh := _load_img_tex("res://textures/leaf_litter_Roughness.jpg")
+		if m_rgh == null:
+			m_rgh = _load_img_tex("res://textures/forrest_ground_01_Roughness.jpg")
 		if m_alb:
 			_terrain_mat.set_shader_parameter("meadow_albedo", m_alb)
 			_terrain_mat.set_shader_parameter("meadow_normal", m_nrm)
 			_terrain_mat.set_shader_parameter("meadow_rough",  m_rgh)
 			_terrain_mat.set_shader_parameter("meadow_tile_m", 4.0)
-		print("Ground: textured grass shader + meadow blend")
+		# Rock texture for steep slopes
+		var r_alb := _load_img_tex("res://textures/schist_rock_Color.jpg")
+		if r_alb == null:
+			r_alb = _load_img_tex("res://textures/rock_wall_diff.jpg")
+		var r_nrm := _load_img_tex("res://textures/schist_rock_NormalGL.jpg")
+		if r_nrm == null:
+			r_nrm = _load_img_tex("res://textures/rock_wall_nrm.jpg")
+		var r_rgh := _load_img_tex("res://textures/schist_rock_Roughness.jpg")
+		if r_rgh == null:
+			r_rgh = _load_img_tex("res://textures/rock_wall_rgh.jpg")
+		if r_alb:
+			_terrain_mat.set_shader_parameter("rock_albedo", r_alb)
+			_terrain_mat.set_shader_parameter("rock_normal", r_nrm)
+			_terrain_mat.set_shader_parameter("rock_rough",  r_rgh)
+			_terrain_mat.set_shader_parameter("rock_tile_m", 3.0)
+		# Dirt texture for playgrounds, dog parks, tracks
+		var d_alb := _load_img_tex("res://textures/park_dirt_Color.jpg")
+		var d_nrm := _load_img_tex("res://textures/park_dirt_NormalGL.jpg")
+		var d_rgh := _load_img_tex("res://textures/park_dirt_Roughness.jpg")
+		if d_alb:
+			_terrain_mat.set_shader_parameter("dirt_albedo", d_alb)
+			_terrain_mat.set_shader_parameter("dirt_normal", d_nrm)
+			_terrain_mat.set_shader_parameter("dirt_rough",  d_rgh)
+			_terrain_mat.set_shader_parameter("dirt_tile_m", 2.0)
+		# Shore/mud texture for water edges
+		var s_alb := _load_img_tex("res://textures/shore_mud_Color.jpg")
+		var s_nrm := _load_img_tex("res://textures/shore_mud_NormalGL.jpg")
+		var s_rgh := _load_img_tex("res://textures/shore_mud_Roughness.jpg")
+		if s_alb:
+			_terrain_mat.set_shader_parameter("shore_albedo", s_alb)
+			_terrain_mat.set_shader_parameter("shore_normal", s_nrm)
+			_terrain_mat.set_shader_parameter("shore_rough",  s_rgh)
+			_terrain_mat.set_shader_parameter("shore_tile_m", 3.0)
+		print("Ground: textured grass shader + meadow blend + rock slopes + dirt zones + shore")
 
 	if _hm_data.is_empty():
 		# Flat fallback
@@ -1125,69 +1550,53 @@ func _setup_ground() -> void:
 		return
 
 	# ---- Build terrain ArrayMesh ----
-	var W         := _hm_width
-	var H         := _hm_depth
+	# Mesh at MW×MH (capped at 4096); shader computes per-pixel normals
+	# from the full-res heightmap texture, so we skip mesh normals/tangents.
+	var MW        := _mesh_width
+	var MH        := _mesh_depth
+	var HW        := _hm_width   # full heightmap resolution
 	var half      := _hm_world_size * 0.5
-	var cell      := _hm_world_size / float(W - 1)
-	var V         := W * H
+	var cell      := _hm_world_size / float(MW - 1)
+	var V         := MW * MH
+	var inv_mw    := 1.0 / float(MW - 1)
+	var inv_mh    := 1.0 / float(MH - 1)
+	# Step for subsampling full-res heightmap into mesh vertices
+	var hm_step_x := float(HW - 1) / float(MW - 1)
+	var hm_step_z := float(_hm_depth - 1) / float(MH - 1)
 
 	var verts    := PackedVector3Array(); verts.resize(V)
-	var normals  := PackedVector3Array(); normals.resize(V)
 	var uvs      := PackedVector2Array(); uvs.resize(V)
-	var tangents := PackedFloat32Array(); tangents.resize(V * 4)
 
-	for zi in H:
-		for xi in W:
-			var idx := zi * W + xi
-			var xw  := -half + xi * cell
-			var zw  := -half + zi * cell
-			var h   := float(_hm_data[idx])
-			verts[idx]   = Vector3(xw, h, zw)
-			uvs[idx]     = Vector2(float(xi) / float(W - 1), float(zi) / float(H - 1))
-			# Slope-based normal using central differences
-			var hL := float(_hm_data[zi * W + max(xi - 1, 0)    ])
-			var hR := float(_hm_data[zi * W + min(xi + 1, W - 1)])
-			var hU := float(_hm_data[max(zi - 1, 0)     * W + xi])
-			var hD := float(_hm_data[min(zi + 1, H - 1) * W + xi])
-			normals[idx] = Vector3(hL - hR, 2.0 * cell, hU - hD).normalized()
-			tangents[idx*4] = 1.0; tangents[idx*4+3] = 1.0
+	for zi in MH:
+		var zw  := -half + zi * cell
+		var uzv := float(zi) * inv_mh
+		var row := zi * MW
+		var hzi := mini(int(zi * hm_step_z + 0.5), _hm_depth - 1)
+		var hm_row := hzi * HW
+		for xi in MW:
+			var idx := row + xi
+			var hxi := mini(int(xi * hm_step_x + 0.5), HW - 1)
+			verts[idx] = Vector3(-half + xi * cell, _hm_data[hm_row + hxi], zw)
+			uvs[idx]   = Vector2(float(xi) * inv_mw, uzv)
 
-	var T       := (W - 1) * (H - 1) * 6
+	var T       := (MW - 1) * (MH - 1) * 6
 	var indices := PackedInt32Array(); indices.resize(T)
 	var t       := 0
-	for zi in (H - 1):
-		for xi in (W - 1):
-			var i00 := zi * W + xi
-			var i10 := zi * W + xi + 1
-			var i01 := (zi + 1) * W + xi
-			var i11 := (zi + 1) * W + xi + 1
-			# Adaptive diagonal on slopes, checkerboard on flat — eliminates plowed-row artifacts
-			var h00_v := float(_hm_data[i00])
-			var h11_v := float(_hm_data[i11])
-			var h10_v := float(_hm_data[i10])
-			var h01_v := float(_hm_data[i01])
-			var d1 := absf(h00_v - h11_v)
-			var d2 := absf(h10_v - h01_v)
-			var use_alt: bool
-			if absf(d1 - d2) < 0.02:
-				# Nearly flat — checkerboard breaks visible diagonal pattern
-				use_alt = (xi + zi) % 2 == 1
-			else:
-				# Sloped — pick flatter diagonal
-				use_alt = d2 < d1
-			if not use_alt:
-				indices[t]     = i00; indices[t + 1] = i10; indices[t + 2] = i11
-				indices[t + 3] = i00; indices[t + 4] = i11; indices[t + 5] = i01
-			else:
-				indices[t]     = i00; indices[t + 1] = i10; indices[t + 2] = i01
-				indices[t + 3] = i10; indices[t + 4] = i11; indices[t + 5] = i01
+	for zi in (MH - 1):
+		var row0 := zi * MW
+		var row1 := row0 + MW
+		for xi in (MW - 1):
+			var i00 := row0 + xi
+			var i10 := i00 + 1
+			var i01 := row1 + xi
+			var i11 := i01 + 1
+			indices[t]     = i00; indices[t + 1] = i10; indices[t + 2] = i11
+			indices[t + 3] = i00; indices[t + 4] = i11; indices[t + 5] = i01
 			t += 6
 
 	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
 	arrays[Mesh.ARRAY_VERTEX]  = verts
-	arrays[Mesh.ARRAY_NORMAL]  = normals
 	arrays[Mesh.ARRAY_TEX_UV]  = uvs
-	arrays[Mesh.ARRAY_TANGENT] = tangents
 	arrays[Mesh.ARRAY_INDEX]   = indices
 	var mesh := ArrayMesh.new()
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
@@ -1198,23 +1607,30 @@ func _setup_ground() -> void:
 	mi.name       = "Terrain"
 	add_child(mi)
 
-	# ---- HeightMapShape3D collision ----
+	# ---- HeightMapShape3D collision (subsampled from full-res heightmap) ----
+	var COL_RES := 1024
+	var col_cell := _hm_world_size / float(COL_RES - 1)
+	var col_step_x := float(HW - 1) / float(COL_RES - 1)
+	var col_step_z := float(_hm_depth - 1) / float(COL_RES - 1)
 	var hm_shape          := HeightMapShape3D.new()
-	hm_shape.map_width     = W
-	hm_shape.map_depth     = H
-	var pf                := PackedFloat32Array(); pf.resize(V)
-	for i in V:
-		pf[i] = float(_hm_data[i])
+	hm_shape.map_width     = COL_RES
+	hm_shape.map_depth     = COL_RES
+	var pf                := PackedFloat32Array(); pf.resize(COL_RES * COL_RES)
+	for czi in COL_RES:
+		var src_row := mini(int(czi * col_step_z + 0.5), _hm_depth - 1) * HW
+		for cxi in COL_RES:
+			pf[czi * COL_RES + cxi] = _hm_data[src_row + mini(int(cxi * col_step_x + 0.5), HW - 1)]
 	hm_shape.map_data      = pf
 
-	# Heightmap texture for per-pixel fragment normals (decouples lighting from mesh topology)
-	var hm_img := Image.create_from_data(W, H, false, Image.FORMAT_RF, pf.to_byte_array())
+	# Heightmap texture for per-pixel fragment normals — full-res data
+	var hm_img := Image.create(_hm_width, _hm_depth, false, Image.FORMAT_RF)
+	hm_img.set_data(_hm_width, _hm_depth, false, Image.FORMAT_RF, _hm_data.to_byte_array())
 	var hm_tex := ImageTexture.create_from_image(hm_img)
 	_terrain_mat.set_shader_parameter("heightmap_tex", hm_tex)
 
 	var col               := CollisionShape3D.new()
 	col.shape              = hm_shape
-	col.scale              = Vector3(cell, 1.0, cell)
+	col.scale              = Vector3(col_cell, 1.0, col_cell)
 
 	var body              := StaticBody3D.new()
 	body.name              = "TerrainBody"
@@ -1238,6 +1654,24 @@ uniform sampler2D meadow_normal : hint_normal,        filter_linear_mipmap_aniso
 uniform sampler2D meadow_rough  : hint_default_white, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform float meadow_tile_m = 2.5;
 
+// Rock texture for steep slopes (Manhattan schist outcrops)
+uniform sampler2D rock_albedo : source_color,      filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D rock_normal : hint_normal,        filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D rock_rough  : hint_default_white, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform float rock_tile_m = 3.0;
+
+// Dirt texture for playgrounds, dog parks, tracks
+uniform sampler2D dirt_albedo : source_color,      filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D dirt_normal : hint_normal,        filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D dirt_rough  : hint_default_white, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform float dirt_tile_m = 2.0;
+
+// Shore/mud texture for water body edges
+uniform sampler2D shore_albedo : source_color,      filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D shore_normal : hint_normal,        filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D shore_rough  : hint_default_white, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform float shore_tile_m = 3.0;
+
 // Anti-tiling noise texture (256x256 white noise)
 uniform sampler2D tile_noise : filter_linear_mipmap, repeat_enable;
 
@@ -1245,7 +1679,7 @@ uniform sampler2D tile_noise : filter_linear_mipmap, repeat_enable;
 uniform sampler2D heightmap_tex : filter_linear, repeat_disable;
 
 // Splat map + path texture arrays
-uniform sampler2D splat_map : filter_linear_mipmap, repeat_disable;
+uniform sampler2D splat_map : filter_linear, repeat_disable;
 uniform sampler2DArray path_alb_arr : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2DArray path_nrm_arr : hint_normal, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2DArray path_rgh_arr : hint_default_white, filter_linear_mipmap_anisotropic, repeat_enable;
@@ -1264,11 +1698,20 @@ uniform int list_tex_w = 512;
 // Park boundary mask: white = inside park, black = outside
 uniform sampler2D park_mask : filter_linear, repeat_disable;
 
-// Water proximity: 1.0 at water edge, 0.0 beyond 20m
-uniform sampler2D water_prox_map : filter_linear, repeat_disable;
+// Snow accumulation
+uniform float snow_cover : hint_range(0.0, 1.0) = 0.0;
+// Rain wetness — darkens surfaces, lowers roughness
+uniform float rain_wetness : hint_range(0.0, 1.0) = 0.0;
+// Morning dew — subtle specular on grass at dawn
+uniform float dew_amount : hint_range(0.0, 1.0) = 0.0;
 
-// Landuse zones: 0=default, 1/255=mowed lawn, 2/255=garden, 3/255=woodland
+// Landuse zone map: encodes zone type per pixel
+// 0=unzoned (default mowed lawn), 1=garden, 2=grass, 3=pitch, 4=playground,
+// 5=nature_reserve, 6=dog_park, 7=sports, 8=pool, 9=track, 10=wood, 11=forest
 uniform sampler2D landuse_map : filter_nearest, repeat_disable;
+
+// Structure mask from LiDAR (HH - BE difference): 0=ground, 1-254=height in half-feet
+uniform sampler2D structure_mask : filter_linear, repeat_disable;
 
 varying vec3 world_pos;
 
@@ -1335,53 +1778,42 @@ float point_segment_dist(vec2 p, vec2 a, vec2 b) {
 // Returns vec4(tex_set_index, tint_r, tint_g, tint_b) for material indices 1-30
 vec4 mat_lookup(int idx) {
 	// tex_set: 0=Asphalt, 1=Concrete, 2=PavingStones, 3=Gravel, 4=Wood
-	if (idx == 1)  return vec4(0.0, 0.32, 0.30, 0.26);   // asphalt
-	if (idx == 2)  return vec4(1.0, 0.85, 0.80, 0.72);   // concrete
-	if (idx == 3)  return vec4(1.0, 0.65, 0.65, 0.63);   // concrete:plates
-	if (idx == 4)  return vec4(2.0, 0.80, 0.74, 0.62);   // paving_stones
-	if (idx == 5)  return vec4(2.0, 0.54, 0.52, 0.48);   // sett
-	if (idx == 6)  return vec4(2.0, 0.52, 0.50, 0.44);   // unhewn_cobblestone
-	if (idx == 7)  return vec4(3.0, 0.60, 0.57, 0.50);   // pebblestone
-	if (idx == 8)  return vec4(2.0, 0.60, 0.58, 0.54);   // stone
-	if (idx == 9)  return vec4(2.0, 0.56, 0.54, 0.50);   // rock
-	if (idx == 10) return vec4(2.0, 0.68, 0.38, 0.26);   // brick
-	if (idx == 11) return vec4(1.0, 0.62, 0.63, 0.66);   // metal
-	if (idx == 12) return vec4(4.0, 0.50, 0.34, 0.16);   // wood
-	if (idx == 13) return vec4(1.0, 0.64, 0.60, 0.52);   // paved
-	if (idx == 14) return vec4(3.0, 0.52, 0.42, 0.28);   // compacted
-	if (idx == 15) return vec4(3.0, 0.64, 0.57, 0.44);   // fine_gravel
-	if (idx == 16) return vec4(3.0, 0.60, 0.53, 0.40);   // gravel
-	if (idx == 17) return vec4(3.0, 0.54, 0.43, 0.28);   // unpaved
-	if (idx == 18) return vec4(3.0, 0.50, 0.38, 0.22);   // dirt
-	if (idx == 19) return vec4(3.0, 0.46, 0.38, 0.26);   // ground
-	if (idx == 20) return vec4(3.0, 0.28, 0.52, 0.18);   // grass
-	if (idx == 21) return vec4(3.0, 0.46, 0.32, 0.14);   // woodchips
-	if (idx == 22) return vec4(3.0, 0.40, 0.28, 0.12);   // mulch
-	if (idx == 23) return vec4(3.0, 0.76, 0.70, 0.52);   // sand
-	if (idx == 24) return vec4(1.0, 0.90, 0.86, 0.80);   // hw:footway → concrete sidewalk
-	if (idx == 25) return vec4(0.0, 0.30, 0.30, 0.32);   // hw:cycleway
-	if (idx == 26) return vec4(1.0, 0.92, 0.88, 0.82);   // hw:pedestrian → concrete plaza
-	if (idx == 27) return vec4(3.0, 0.54, 0.44, 0.30);   // hw:path
-	if (idx == 28) return vec4(1.0, 0.78, 0.72, 0.62);   // hw:steps
-	if (idx == 29) return vec4(3.0, 0.48, 0.40, 0.26);   // hw:track
-	return vec4(3.0, 0.65, 0.60, 0.48);                   // catchall (30)
+	if (idx == 1)  return vec4(0.0, 0.48, 0.46, 0.42);   // asphalt (aged, lighter)
+	if (idx == 2)  return vec4(1.0, 0.72, 0.70, 0.64);   // concrete
+	if (idx == 3)  return vec4(1.0, 0.65, 0.64, 0.60);   // concrete:plates
+	if (idx == 4)  return vec4(2.0, 0.85, 0.80, 0.70);   // paving_stones
+	if (idx == 5)  return vec4(2.0, 0.65, 0.62, 0.56);   // sett
+	if (idx == 6)  return vec4(2.0, 0.62, 0.60, 0.54);   // unhewn_cobblestone
+	if (idx == 7)  return vec4(3.0, 0.70, 0.66, 0.58);   // pebblestone
+	if (idx == 8)  return vec4(2.0, 0.70, 0.68, 0.62);   // stone
+	if (idx == 9)  return vec4(2.0, 0.65, 0.62, 0.56);   // rock
+	if (idx == 10) return vec4(2.0, 0.72, 0.45, 0.32);   // brick
+	if (idx == 11) return vec4(1.0, 0.70, 0.70, 0.72);   // metal
+	if (idx == 12) return vec4(4.0, 0.58, 0.42, 0.22);   // wood
+	if (idx == 13) return vec4(1.0, 0.72, 0.68, 0.60);   // paved
+	if (idx == 14) return vec4(3.0, 0.62, 0.52, 0.36);   // compacted
+	if (idx == 15) return vec4(3.0, 0.72, 0.65, 0.52);   // fine_gravel
+	if (idx == 16) return vec4(3.0, 0.68, 0.62, 0.48);   // gravel
+	if (idx == 17) return vec4(3.0, 0.62, 0.52, 0.36);   // unpaved
+	if (idx == 18) return vec4(3.0, 0.58, 0.46, 0.30);   // dirt
+	if (idx == 19) return vec4(3.0, 0.55, 0.46, 0.34);   // ground
+	if (idx == 20) return vec4(3.0, 0.35, 0.58, 0.24);   // grass
+	if (idx == 21) return vec4(3.0, 0.54, 0.40, 0.22);   // woodchips
+	if (idx == 22) return vec4(3.0, 0.48, 0.36, 0.20);   // mulch
+	if (idx == 23) return vec4(3.0, 0.82, 0.76, 0.58);   // sand
+	if (idx == 24) return vec4(3.0, 0.64, 0.38, 0.28);   // tartan — reddish-brown cinder track
+	if (idx == 25) return vec4(0.0, 0.42, 0.42, 0.44);   // hw:cycleway
+	if (idx == 26) return vec4(0.0, 0.50, 0.48, 0.44);   // hw:pedestrian → asphalt plaza
+	if (idx == 27) return vec4(3.0, 0.62, 0.52, 0.38);   // hw:path
+	if (idx == 28) return vec4(1.0, 0.82, 0.78, 0.68);   // hw:steps
+	if (idx == 29) return vec4(3.0, 0.56, 0.48, 0.34);   // hw:track
+	return vec4(3.0, 0.72, 0.66, 0.54);                   // catchall (30)
 }
 
 void vertex() {
 	world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
-	float half_ws = world_size * 0.5;
-	float cell = world_size / float(textureSize(heightmap_tex, 0).x - 1);
-	vec2 grid_pos = (world_pos.xz + half_ws) / cell;
-	vec2 frac_pos = fract(grid_pos);
-	float envelope = sin(frac_pos.x * 3.14159) * sin(frac_pos.y * 3.14159);
-	float n = vnoise(world_pos.xz * 0.8 + vec2(17.3, 41.7)) * 0.65
-	        + vnoise(world_pos.xz * 2.3 + vec2(93.1, 27.5)) * 0.35;
-	vec2 splat_uv_v = (world_pos.xz + half_ws) / world_size;
-	float path_mask = texture(splat_map, splat_uv_v).g;
-	float suppress = 1.0 - smoothstep(0.0, 0.15, path_mask);
-	float disp = (n - 0.3) * envelope * 0.18 * suppress;
-	VERTEX.y += max(disp, 0.0);
-	world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+	// No vertex displacement — LiDAR heightmap provides natural terrain variation.
+	// Previous noise displacement created visible grid-square artifacts at 2.4m cell size.
 }
 
 void fragment() {
@@ -1403,9 +1835,9 @@ void fragment() {
 	float park_inside = texture(park_mask, mask_uv).r;
 	if (park_inside < 0.1) {
 		// Outside park — city sidewalk / street
-		float street_noise = hash2(floor(world_pos.xz * 0.3)) * 0.06;
-		ALBEDO    = vec3(0.25 + street_noise, 0.23 + street_noise, 0.21 + street_noise);
-		ROUGHNESS = 0.92;
+		float street_noise = hash2(floor(world_pos.xz * 0.3)) * 0.04;
+		ALBEDO    = vec3(0.18 + street_noise, 0.17 + street_noise, 0.16 + street_noise);
+		ROUGHNESS = 0.95;
 		SPECULAR  = 0.0;
 		METALLIC  = 0.0;
 		NORMAL = normalize((VIEW_MATRIX * vec4(terrain_n, 0.0)).xyz);
@@ -1424,8 +1856,11 @@ void fragment() {
 	int gstart = int(gd.r);
 	int gcount = min(int(gd.g), 48);
 
+	// Simple priority: wider path wins completely. No blending.
 	float best_cov = 0.0;
-	int best_mat = 0;
+	float best_hw  = 0.0;
+	int   best_mat = 0;
+	float nearest_path_dist = 999.0;  // distance to closest path edge
 
 	for (int gi = 0; gi < gcount; gi++) {
 		int li = gstart + gi;
@@ -1439,21 +1874,28 @@ void fragment() {
 
 		float d = point_segment_dist(world_pos.xz, ep.xy, ep.zw);
 		float hw = pr.x;
-		float cov = 1.0 - smoothstep(hw - feather * 0.3, hw + feather, d);
+		float cov = d < hw ? 1.0 : 0.0;
 
-		if (cov > best_cov) {
+		// Track distance to nearest path edge (for erosion/wear effects)
+		float edge_dist = d - hw;
+		if (edge_dist < nearest_path_dist) {
+			nearest_path_dist = edge_dist;
+		}
+
+		// Priority: wider path wins at intersections.
+		if (cov > 0.5 && hw > best_hw) {
 			best_cov = cov;
+			best_hw  = hw;
+			best_mat = int(pr.y);
+		} else if (cov > best_cov) {
+			best_cov = cov;
+			best_hw  = hw;
 			best_mat = int(pr.y);
 		}
 	}
 
-	// Raster fallback for closed polygons + dense areas exceeding loop cap
-	float raster_cov = texture(splat_map, splat_uv).g;
-	int raster_mat = int(texture(splat_map, splat_uv).r * 255.0 + 0.5);
-
-	// Combine: analytical wins where it has coverage, raster fills polygons
-	float path_weight = max(best_cov, raster_cov);
-	int mat_idx = best_cov > raster_cov ? best_mat : raster_mat;
+	float path_weight = best_cov;
+	int mat_idx = best_mat;
 
 	// --- Simple parallax offset on grass/meadow UV only (2.5cm depth) ---
 	vec3 view_ws = normalize(INV_VIEW_MATRIX[3].xyz - world_pos);
@@ -1462,208 +1904,310 @@ void fragment() {
 	// --- Grass shading (textureNoTile — Inigo Quilez anti-tiling) ---
 	vec2 uv  = (world_pos.xz + parallax_off) / tile_m;
 	vec3 grass_alb = textureNoTile_c(grass_albedo, uv);
+	// Natural grass: moderate color correction (texture is quite saturated)
+	float grass_lum = dot(grass_alb, vec3(0.299, 0.587, 0.114));
+	grass_alb = mix(vec3(grass_lum), grass_alb, 0.88);  // 12% desaturation
+	grass_alb.g *= 1.02;  // very mild green boost (was 1.12 — too neon)
+	// Large-scale color variation: breaks up uniformity across wide lawns
+	float lawn_noise = fbm(world_pos.xz * 0.006, 2);
+	float lawn_warm  = fbm(world_pos.xz * 0.003 + vec2(100.0), 2);
+	grass_alb *= 0.94 + lawn_noise * 0.12;  // ±6% brightness variation
+	grass_alb.r += lawn_warm * 0.015;       // subtle warm/cool patches
+	grass_alb.b -= lawn_warm * 0.01;
 	vec3 grass_nrm = textureNoTile_n(grass_normal, uv);
-	float grass_rgh = clamp(textureNoTile_r(grass_rough, uv) * 0.15 + 0.72, 0.0, 1.0);
-	// Roughness micro-variation — wet/dry patches at ~8m scale
-	float rgh_var = vnoise(world_pos.xz * 0.125) * 0.16 - 0.08;
-	grass_rgh = clamp(grass_rgh + rgh_var, 0.0, 1.0);
-	float f = clamp(fbm(world_pos.xz * 0.004, 4) * 0.45
-	              + fbm(world_pos.xz * 0.025, 3) * 0.35 + 0.30, 0.48, 1.1);
-	vec3 dirt = vec3(0.22, 0.16, 0.08);
-	float wear = smoothstep(0.60, 0.50, f);
-	grass_alb = mix(grass_alb * f, dirt, wear * 0.6);
-	// Macro color variation — warm vs cool patches at ~20m scale
-	float color_var = vnoise(world_pos.xz * 0.05 + vec2(17.3, 41.7));
-	vec3 warm_tint = grass_alb * vec3(1.12, 0.98, 0.82);  // golden-peach
-	vec3 cool_tint = grass_alb * vec3(0.90, 1.00, 0.85);  // sage
-	grass_alb = mix(cool_tint, warm_tint, color_var);
+	float grass_rgh = clamp(textureNoTile_r(grass_rough, uv) * 0.20 + 0.65, 0.0, 1.0);
 
-	// Meadow/wild grass blend — large-scale FBM patches
-	vec2 muv = (world_pos.xz + parallax_off) / meadow_tile_m;
-	// Rotate meadow UV 60° to break alignment with grass striations
+	// Meadow/wild grass blend — driven by landuse zones from OSM
+	// Unzoned areas (0) = woodland/meadow, zoned (garden/grass/pitch) = mowed lawn
+	vec2 muv = world_pos.xz / meadow_tile_m;
 	float s60 = 0.866; float c60 = 0.5;
 	vec2 muv_rot = vec2(muv.x * c60 + muv.y * s60, -muv.x * s60 + muv.y * c60);
 	vec3 m_alb = texture(meadow_albedo, muv_rot).rgb;
 	vec3 m_nrm_raw = texture(meadow_normal, muv_rot).rgb;
-	// Un-rotate normal back to world alignment
 	vec3 m_nrm = vec3(
 		(m_nrm_raw.r - 0.5) * c60 + (m_nrm_raw.g - 0.5) * s60 + 0.5,
 		-(m_nrm_raw.r - 0.5) * s60 + (m_nrm_raw.g - 0.5) * c60 + 0.5,
 		m_nrm_raw.b);
-	float m_rgh = clamp(texture(meadow_rough, muv).r * 0.15 + 0.72, 0.0, 1.0);
-	float meadow_noise = fbm(world_pos.xz * 0.003, 3) * 0.6
-	                    + fbm(world_pos.xz * 0.018, 2) * 0.4;
-	float meadow_blend = smoothstep(0.42, 0.58, meadow_noise);
-	grass_alb = mix(grass_alb, m_alb * f, meadow_blend);
+	float m_rgh = clamp(texture(meadow_rough, muv).r * 0.20 + 0.65, 0.0, 1.0);
+
+	// Landuse lookup: woodland zones get meadow texture, everything else is mowed lawn
+	// Most of Central Park is maintained lawn — only marked woodland areas get wild texture
+	float zone_val = texture(landuse_map, splat_uv).r * 255.0;
+	int zone_id = int(zone_val + 0.5);
+	// Woodland zones: nature_reserve(5), wood(10), forest(11) → meadow texture
+	bool is_woodland = (zone_id == 5 || zone_id == 10 || zone_id == 11);
+	float meadow_base = is_woodland ? 1.0 : 0.0;
+	// Add FBM edge softening so zone boundaries don't look razor-sharp
+	float edge_noise = fbm(world_pos.xz * 0.012, 2) * 0.15;
+	float meadow_blend = clamp(meadow_base + edge_noise - 0.07, 0.0, 1.0);
+	grass_alb = mix(grass_alb, m_alb, meadow_blend);
 	grass_nrm = mix(grass_nrm, m_nrm, meadow_blend);
 	grass_rgh = mix(grass_rgh, m_rgh, meadow_blend);
 
-	// Mud puddles where wear patches exist
-	float mud = smoothstep(0.25, 0.45, wear);
-	grass_alb = mix(grass_alb, vec3(0.15, 0.10, 0.06), mud * 0.5);
-	grass_rgh = mix(grass_rgh, 0.30, mud * 0.6);
-
-	// Micro-normal bumps — uneven ground feel
-	float bump_dx = (vnoise(vec2(world_pos.x + 0.1, world_pos.z) * 0.8) - vnoise(vec2(world_pos.x - 0.1, world_pos.z) * 0.8)) * 2.5;
-	float bump_dz = (vnoise(vec2(world_pos.x, world_pos.z + 0.1) * 0.8) - vnoise(vec2(world_pos.x, world_pos.z - 0.1) * 0.8)) * 2.5;
-	grass_nrm.rg += vec2(bump_dx, bump_dz) * 0.15;
-	// High-freq micro-detail normals — distance-attenuated to prevent aliasing
-	float cam_dist = length(world_pos - INV_VIEW_MATRIX[3].xyz);
-	float micro_fade = 1.0 - smoothstep(10.0, 25.0, cam_dist);
-	float micro_dx = (vnoise(vec2(world_pos.x + 0.05, world_pos.z) * 4.0) - vnoise(vec2(world_pos.x - 0.05, world_pos.z) * 4.0)) * 5.0;
-	float micro_dz = (vnoise(vec2(world_pos.x, world_pos.z + 0.05) * 4.0) - vnoise(vec2(world_pos.x, world_pos.z - 0.05) * 4.0)) * 5.0;
-	grass_nrm.rg += vec2(micro_dx, micro_dz) * 0.10 * micro_fade;
-	grass_nrm = normalize(grass_nrm);
-
-	// Wet terrain near water — darkened, mossy, lower roughness
-	float water_prox = texture(water_prox_map, splat_uv).r;
-	grass_alb *= mix(1.0, 0.65, water_prox * 0.5);   // darken near water
-	grass_rgh = mix(grass_rgh, 0.25, water_prox * 0.7); // wet sheen
-	grass_alb.g += water_prox * 0.04;                 // moss/algae tint
-
-	// Landuse zone adjustments
-	int lu_zone = int(texture(landuse_map, splat_uv).r * 255.0 + 0.5);
-	if (lu_zone == 1) {
-		// Mowed lawn: brighter, suppress meadow, cleaner grass
-		grass_alb *= 1.08;
-		grass_rgh = min(grass_rgh + 0.05, 1.0);
-	} else if (lu_zone == 2) {
-		// Garden: darker richer soil, enhanced flower carpet areas
-		grass_alb *= 0.90;
-		grass_alb.g += 0.02;
-	} else if (lu_zone == 3) {
-		// Woodland: darker, more undergrowth feel
-		grass_alb *= 0.82;
-		grass_alb.g -= 0.02;
+	// --- Olmsted Landscape Modes: subtle color modulation by design intent ---
+	// Pastoral (open meadows): warm golden-green, brighter — "soothe and restore"
+	// Picturesque (Ramble, North Woods): cool blue-green, deeper shade — "sense of mystery"
+	// Formal (Mall, Bethesda, Conservatory Garden): crisp, slightly desaturated
+	if (is_woodland) {
+		// Picturesque: cooler, deeper, more mysterious
+		grass_alb.r *= 0.88;
+		grass_alb.g *= 1.04;
+		grass_alb.b *= 1.10;
+		grass_alb *= 0.88;  // deeper shade under canopy
+	} else if (zone_id == 1) {
+		// Garden zones → Formal: crisp, slightly desaturated manicured look
+		float sat = dot(grass_alb, vec3(0.299, 0.587, 0.114));
+		grass_alb = mix(vec3(sat), grass_alb, 0.85);  // 15% desaturation
+		grass_alb *= 1.05;  // slightly brighter, well-maintained
+	} else if (zone_id == 3 || zone_id == 8) {
+		// Grass/pitch → Pastoral: warm, golden Kentucky bluegrass
+		grass_alb.r *= 1.06;
+		grass_alb.g *= 1.02;
+		grass_alb.b *= 0.90;
 	}
 
-	// Autumn lawn push — warm but still alive (not dead brown)
-	grass_alb.r *= 1.02;
-	grass_alb.g *= 0.95;
-	grass_alb.b *= 0.82;
-	// (Removed: vnoise at 50.0 freq aliased with mesh grid → plowed-row artifacts)
-
-	// Canopy shadow pools — subtle dark patches under/between trees
-	// Suppress near paths to avoid spotted bleed-through at edges
-	float near_path_fade = 1.0 - smoothstep(0.0, 0.10, path_weight);
-	float shade_noise = fbm(world_pos.xz * 0.05, 4);
-	float canopy_dark = smoothstep(0.35, 0.70, shade_noise);
-	grass_alb *= mix(0.72, 1.0, mix(1.0, canopy_dark, near_path_fade));
-
-	// Flower carpet — per-pixel flower dots for bluebell carpet illusion
-	// Large-scale patch mask matches CPU wildflower placement noise
-	float flower_n = fbm(world_pos.xz * 0.007, 3);
-	float carpet_mask = smoothstep(0.25, 0.50, flower_n);
-	carpet_mask *= (1.0 - wear * 0.8);
-	float canopy_shade = 1.0 - smoothstep(0.35, 0.65, fbm(world_pos.xz * 0.15, 3));
-	carpet_mask *= mix(0.15, 1.0, canopy_shade);
-	// Domain-warped flower dots — breaks lattice grid artifacts
-	vec2 warp = vec2(vnoise(world_pos.xz * 2.3 + vec2(41.0, 73.0)),
-	                 vnoise(world_pos.xz * 2.7 + vec2(91.0, 37.0))) * 0.4;
-	vec2 warped = world_pos.xz + warp;
-	float dot_n1 = vnoise(warped * 7.3);
-	float dot_n2 = vnoise(warped * 31.7 + vec2(33.7, 17.1));
-	float dot_combined = dot_n1 * 0.65 + dot_n2 * 0.35;
-	// Dot size varies with secondary noise — some tight, some diffuse
-	float size_var = vnoise(warped * 5.1 + vec2(7.1, 19.3));
-	float dot_lo = 0.40 + size_var * 0.06;  // 0.40–0.46
-	float dot_hi = dot_lo + 0.10;
-	float dot_mask = smoothstep(dot_lo, dot_hi, dot_combined);
-	// 3 pastel bands: lavender (10%), coral-gold (20%), soft rose (70%)
-	float hue_var = vnoise(warped * 4.0);
-	float band_sel = vnoise(warped * 7.5 + vec2(42.0, 13.0));
-	vec3 flower_col;
-	if (band_sel > 0.90) {
-		// Lavender (10%)
-		flower_col = mix(vec3(0.62, 0.55, 0.72), vec3(0.68, 0.60, 0.75), hue_var);
-	} else if (band_sel > 0.70) {
-		// Coral-gold (20%)
-		flower_col = mix(vec3(0.78, 0.62, 0.30), vec3(0.82, 0.68, 0.35), hue_var);
-	} else {
-		// Soft rose (dominant)
-		flower_col = mix(vec3(0.72, 0.48, 0.42), vec3(0.78, 0.52, 0.48), hue_var);
+	// Dirt/mulch for playgrounds(4), dog_parks(6), tracks(9)
+	bool is_dirt = (zone_id == 4 || zone_id == 6 || zone_id == 9);
+	if (is_dirt) {
+		vec2 duv = world_pos.xz / dirt_tile_m;
+		vec3 d_alb = textureNoTile_c(dirt_albedo, duv);
+		vec3 d_nrm = textureNoTile_n(dirt_normal, duv);
+		float d_rgh = clamp(textureNoTile_r(dirt_rough, duv) * 0.15 + 0.80, 0.0, 1.0);
+		float dirt_blend = clamp(0.85 + edge_noise, 0.0, 1.0);
+		grass_alb = mix(grass_alb, d_alb, dirt_blend);
+		grass_nrm = mix(grass_nrm, d_nrm, dirt_blend);
+		grass_rgh = mix(grass_rgh, d_rgh, dirt_blend);
 	}
-	// Vary density: denser near canopy shade → more saturated
-	float density_boost = canopy_shade * 0.3;
-	// Darken grass between flower dots for depth
-	vec3 carpet_ground = mix(grass_alb * 0.70, flower_col, dot_mask + density_boost * dot_mask);
-	grass_alb = mix(grass_alb, carpet_ground, carpet_mask * 0.15);
 
-	// Dappled sunlight — simulates light filtering through tree canopy
-	// Suppress near paths to avoid spotted bleed-through at edges
-	float dapple = fbm(world_pos.xz * 0.15, 3) * 0.5
-	             + fbm(world_pos.xz * 0.4, 2) * 0.3
-	             + fbm(world_pos.xz * 1.2, 2) * 0.2;
-	float sun_patch = smoothstep(0.38, 0.62, dapple);
-	vec3 sun_tint = vec3(1.15, 1.02, 0.75); // warmer amber highlight
-	grass_alb *= mix(vec3(1.0), sun_tint, sun_patch * 0.32 * near_path_fade);
+	// Shore zone (13) — muddy/sandy edges near water bodies
+	if (zone_id == 13) {
+		vec2 suv = world_pos.xz / shore_tile_m;
+		vec3 sh_alb = textureNoTile_c(shore_albedo, suv);
+		vec3 sh_nrm = textureNoTile_n(shore_normal, suv);
+		float sh_rgh = clamp(textureNoTile_r(shore_rough, suv) * 0.15 + 0.80, 0.0, 1.0);
+		float shore_blend = clamp(0.80 + edge_noise, 0.0, 1.0);
+		grass_alb = mix(grass_alb, sh_alb, shore_blend);
+		grass_nrm = mix(grass_nrm, sh_nrm, shore_blend);
+		grass_rgh = mix(grass_rgh, sh_rgh, shore_blend);
+	}
 
-	// --- Procedural grass blade overlay — dual rotated grids (breaks Moiré) ---
-	float blade_suppress = max(path_weight, wear);
-	float blade_shape_combined = 0.0;
-	vec3 blade_tint_combined = vec3(1.0);
-	float blade_h_combined = 0.5;
-	float blade_h2_combined = 0.5;
-	// Grid A: original scale 25
-	{
-		vec2 bc = floor(world_pos.xz * 25.0);
-		float bh = hash2(bc); float bh2 = hash2(bc + vec2(71.3, 13.7)); float bh3 = hash2(bc + vec2(37.1, 89.3));
-		vec2 bf = fract(world_pos.xz * 25.0);
-		float ba = bh * 6.283; vec2 bd = vec2(cos(ba), sin(ba));
-		vec2 bcen = vec2(0.5) + (vec2(bh2, bh3) - 0.5) * 0.3;
-		vec2 dd = bf - bcen;
-		float al = dot(dd, bd); float ac = abs(dot(dd, vec2(-bd.y, bd.x)));
-		float bs = smoothstep(0.22, 0.0, ac) * smoothstep(0.48, 0.15, abs(al));
-		if (bs > blade_shape_combined) {
-			blade_shape_combined = bs; blade_h_combined = bh; blade_h2_combined = bh2;
-			float bb = 0.88 + bh * 0.24; float bw = (bh2 - 0.5) * 0.12;
-			blade_tint_combined = vec3(bb + bw, bb, bb - bw * 0.5);
+	// Water zone (12) — dark muddy ground under water surface
+	if (zone_id == 12) {
+		grass_alb = vec3(0.12, 0.11, 0.08);
+		grass_rgh = 0.95;
+	}
+
+	// Rock on steep slopes — Manhattan schist outcrops
+	// Schist: gray base + mica sparkle (slight specular) + rusty weathering patches
+	// LiDAR at 2.4m/cell smooths real slopes significantly, so use low thresholds.
+	float slope = 1.0 - terrain_n.y;  // 0=flat, 1=vertical
+	float rock_noise = fbm(world_pos.xz * 0.05, 2) * 0.06;
+	float rock_blend = smoothstep(0.10, 0.25, slope + rock_noise);
+	float rock_specular = 0.0;
+	if (rock_blend > 0.01) {
+		vec2 ruv = world_pos.xz / rock_tile_m;
+		vec3 r_alb = textureNoTile_c(rock_albedo, ruv);
+		// Add rusty weathering patches to match Manhattan schist appearance
+		float rust_noise = fbm(world_pos.xz * 0.08, 2);
+		vec3 rust_tint = mix(r_alb, r_alb * vec3(1.15, 0.85, 0.70), smoothstep(0.5, 0.7, rust_noise) * 0.3);
+		r_alb = rust_tint;
+		vec3 r_nrm = textureNoTile_n(rock_normal, ruv);
+		float r_rgh = clamp(textureNoTile_r(rock_rough, ruv) * 0.15 + 0.70, 0.0, 1.0);
+		grass_alb = mix(grass_alb, r_alb, rock_blend);
+		grass_nrm = mix(grass_nrm, r_nrm, rock_blend);
+		grass_rgh = mix(grass_rgh, r_rgh, rock_blend);
+		// Mica sparkle: slight specular on rock surfaces
+		rock_specular = rock_blend * 0.25;
+	}
+
+	// --- Structure mask: LiDAR-detected built features get stone/concrete texture ---
+	float struct_val = texture(structure_mask, splat_uv).r * 254.0;
+	if (struct_val > 0.5) {
+		vec2 stuv = world_pos.xz / path_tile_m;
+		float struct_h = struct_val;  // half-feet (val 2 = 1ft, val 20 = 10ft)
+		// Use terrain slope to pick material: steep = wall stone, flat = pavement/deck
+		float struct_slope = 1.0 - terrain_n.y;  // 0=flat, 1=vertical
+		// Large-scale warm/cool variation — some areas sandstone-warm, others schist-gray
+		float warmth = fbm(world_pos.xz * 0.004, 2);
+		// Named structure overrides — force warmth for known materials
+		// Bethesda Terrace: New Brunswick sandstone (warm mustard-olive)
+		float d_beth_s = length(world_pos.xz - vec2(-458.0, 949.0));
+		if (d_beth_s < 60.0) warmth = 0.85;
+		// Belvedere Castle / Vista Rock: Manhattan schist (cool gray)
+		float d_belv = length(world_pos.xz - vec2(-215.0, 372.0));
+		if (d_belv < 50.0) warmth = 0.15;
+		// Gapstow Bridge area: Manhattan schist (cool gray stone bridge)
+		float d_gap = length(world_pos.xz - vec2(-355.0, 1640.0));
+		if (d_gap < 25.0) warmth = 0.18;
+		// Huddlestone Arch: massive schist boulders (cool gray, no mortar)
+		float d_hudd = length(world_pos.xz - vec2(300.0, -1050.0));
+		if (d_hudd < 20.0) warmth = 0.10;
+		// The Dairy: Victorian Gothic, warm stone + slate
+		float d_dairy = length(world_pos.xz - vec2(-500.0, 1425.0));
+		if (d_dairy < 25.0) warmth = 0.65;
+		// Dana Discovery Center: warm brick + stone (Victorian)
+		float d_dana = length(world_pos.xz - vec2(400.0, -1800.0));
+		if (d_dana < 20.0) warmth = 0.70;
+		// Naumburg Bandshell: warm limestone
+		float d_naum = length(world_pos.xz - vec2(-600.0, 1500.0));
+		if (d_naum < 15.0) warmth = 0.75;
+		vec3 s_tint;
+		float tex_layer;
+		if (struct_slope > 0.35) {
+			// Steep face: stone walls
+			tex_layer = 2.0;  // PavingStones as base
+			float weather = fbm(world_pos.xz * 0.15, 2);
+			vec3 cool_base = mix(vec3(0.42, 0.40, 0.38),  // gray schist
+			                     vec3(0.48, 0.36, 0.28),   // rusty weathering
+			                     smoothstep(0.35, 0.65, weather));
+			vec3 warm_base = mix(vec3(0.52, 0.47, 0.35),  // New Brunswick sandstone
+			                     vec3(0.56, 0.44, 0.30),   // weathered sandstone
+			                     smoothstep(0.35, 0.65, weather));
+			s_tint = mix(cool_base, warm_base, smoothstep(0.4, 0.6, warmth));
+		} else if (struct_slope > 0.08) {
+			// Moderate slope: dressed stone / granite steps
+			tex_layer = 2.0;  // PavingStones
+			vec3 cool_step = vec3(0.58, 0.56, 0.52);  // gray granite
+			vec3 warm_step = vec3(0.62, 0.56, 0.46);  // warm granite
+			s_tint = mix(cool_step, warm_step, smoothstep(0.4, 0.6, warmth));
+		} else {
+			// Flat top: road deck, plaza, terrace top
+			if (struct_h > 16.0) {
+				tex_layer = 0.0;  // Asphalt for road decks
+				s_tint = vec3(0.44, 0.42, 0.40);
+			} else {
+				tex_layer = 1.0;  // Concrete for plazas/platforms
+				s_tint = vec3(0.66, 0.63, 0.58);  // warm gray granite
+			}
 		}
+		vec3 s_alb = texture(path_alb_arr, vec3(stuv, tex_layer)).rgb * s_tint;
+		vec3 s_nrm = texture(path_nrm_arr, vec3(stuv, tex_layer)).rgb;
+		float s_rgh = clamp(texture(path_rgh_arr, vec3(stuv, tex_layer)).r + 0.08, 0.0, 1.0);
+		// Hard blend — structures should look solid
+		float s_blend = smoothstep(0.5, 2.0, struct_val);
+		grass_alb = mix(grass_alb, s_alb, s_blend);
+		grass_nrm = mix(grass_nrm, s_nrm, s_blend);
+		grass_rgh = mix(grass_rgh, s_rgh, s_blend);
 	}
-	// Grid B: rotated 37°, scale 29 (different freq breaks alignment)
-	{
-		float rot_s = sin(0.6458); float rot_c = cos(0.6458); // 37 degrees
-		vec2 rp = vec2(world_pos.x * rot_c - world_pos.z * rot_s, world_pos.x * rot_s + world_pos.z * rot_c);
-		vec2 bc = floor(rp * 29.0);
-		float bh = hash2(bc + vec2(53.7, 97.1)); float bh2 = hash2(bc + vec2(19.3, 61.7)); float bh3 = hash2(bc + vec2(83.1, 27.9));
-		vec2 bf = fract(rp * 29.0);
-		float ba = bh * 6.283; vec2 bd = vec2(cos(ba), sin(ba));
-		vec2 bcen = vec2(0.5) + (vec2(bh2, bh3) - 0.5) * 0.3;
-		vec2 dd = bf - bcen;
-		float al = dot(dd, bd); float ac = abs(dot(dd, vec2(-bd.y, bd.x)));
-		float bs = smoothstep(0.22, 0.0, ac) * smoothstep(0.48, 0.15, abs(al));
-		if (bs > blade_shape_combined) {
-			blade_shape_combined = bs; blade_h_combined = bh; blade_h2_combined = bh2;
-			float bb = 0.88 + bh * 0.24; float bw = (bh2 - 0.5) * 0.12;
-			blade_tint_combined = vec3(bb + bw, bb, bb - bw * 0.5);
-		}
+
+	// --- Named plaza overrides: herringbone brick at Bethesda Terrace ---
+	// Bethesda lower plaza: ~30m radius around fountain at (-458, 949)
+	float d_beth = length(world_pos.xz - vec2(-458.0, 949.0));
+	if (d_beth < 35.0 && slope < 0.15) {
+		// Herringbone Roman brick pattern — terracotta red-brown (#A0522D)
+		vec2 brick_uv = world_pos.xz * 4.0;  // ~25cm brick scale
+		// Herringbone: alternating 45-degree bricks
+		float bx = fract(brick_uv.x * 0.707 + brick_uv.y * 0.707);
+		float bz = fract(brick_uv.x * 0.707 - brick_uv.y * 0.707);
+		float herring = step(0.5, bx) * step(0.5, bz) + (1.0 - step(0.5, bx)) * (1.0 - step(0.5, bz));
+		float mortar = smoothstep(0.02, 0.04, min(fract(bx * 2.0), fract(bz * 2.0)));
+		vec3 brick_col = mix(vec3(0.63, 0.32, 0.18), vec3(0.55, 0.28, 0.15), herring);
+		// Mortar lines: lighter
+		brick_col = mix(vec3(0.72, 0.68, 0.62), brick_col, mortar);
+		// Weathering variation
+		float wear = fbm(world_pos.xz * 0.3, 2) * 0.15;
+		brick_col *= (0.9 + wear);
+		float beth_blend = smoothstep(35.0, 28.0, d_beth);
+		grass_alb = mix(grass_alb, brick_col, beth_blend);
+		grass_rgh = mix(grass_rgh, 0.78, beth_blend);
 	}
-	float blade_intensity = 0.35 * (1.0 - blade_suppress);
-	grass_alb = mix(grass_alb, grass_alb * blade_tint_combined, blade_shape_combined * blade_intensity);
-	// Per-blade normal perturbation
-	grass_nrm.r += (blade_h_combined - 0.5) * blade_shape_combined * blade_intensity * 0.3;
-	grass_nrm.g += (blade_h2_combined - 0.5) * blade_shape_combined * blade_intensity * 0.3;
 
-	// --- Anisotropic flow direction for grass shimmer ---
-	float aniso_flow = vnoise(world_pos.xz * 0.5 + TIME * 0.08);
+	// --- Conservatory Garden: formal gravel paths, manicured lawn ---
+	// Center of entire garden complex at (1080, -1195), ~80m radius
+	float d_cg = length(world_pos.xz - vec2(1080.0, -1195.0));
+	if (d_cg < 100.0 && slope < 0.10) {
+		// Formal garden lawn: exceptionally green, uniform, desaturated slightly
+		float cg_blend = smoothstep(100.0, 70.0, d_cg);
+		float sat = dot(grass_alb, vec3(0.299, 0.587, 0.114));
+		vec3 formal_green = mix(vec3(sat), grass_alb, 0.80);  // slight desaturation
+		formal_green *= 1.08;  // bright, well-maintained
+		grass_alb = mix(grass_alb, formal_green, cg_blend);
+	}
 
-	if (mat_idx > 0 && path_weight > 0.001) {
-		// --- Path shading ---
+	// --- Shakespeare Garden: rustic earth tones, wilder character ---
+	// Center at (-389, 343), ~40m radius — 4-acre terraced hillside
+	float d_shk = length(world_pos.xz - vec2(-389.0, 343.0));
+	if (d_shk < 55.0) {
+		// Warmer, earthier ground — rustic cottage garden
+		float shk_blend = smoothstep(55.0, 35.0, d_shk);
+		grass_alb = mix(grass_alb, grass_alb * vec3(1.08, 0.98, 0.85), shk_blend);
+		grass_rgh = mix(grass_rgh, grass_rgh + 0.05, shk_blend);
+	}
+
+	// --- Cherry Hill: warm earth near Cherry Hill Fountain ---
+	// Cherry Hill circular plaza at (-580, 920), ~25m radius
+	float d_ch = length(world_pos.xz - vec2(-580.0, 920.0));
+	if (d_ch < 30.0 && slope < 0.12) {
+		float ch_blend = smoothstep(30.0, 18.0, d_ch);
+		vec3 bluestone = vec3(0.42, 0.46, 0.50);  // bluestone paving
+		grass_alb = mix(grass_alb, bluestone, ch_blend);
+		grass_rgh = mix(grass_rgh, 0.72, ch_blend);
+	}
+
+	// Naumburg Bandshell plaza — formal paving around bandshell
+	float d_naum_p = length(world_pos.xz - vec2(-600.0, 1500.0));
+	if (d_naum_p < 20.0 && slope < 0.10) {
+		float naum_blend = smoothstep(20.0, 12.0, d_naum_p);
+		vec3 naum_pave = vec3(0.50, 0.48, 0.45);  // light gray stone paving
+		grass_alb = mix(grass_alb, naum_pave, naum_blend);
+		grass_rgh = mix(grass_rgh, 0.65, naum_blend);
+	}
+
+	// Great Lawn: Kentucky bluegrass — rich maintained green
+	float d_gl = length(world_pos.xz - vec2(0.0, 100.0));
+	if (d_gl < 200.0 && slope < 0.08 && mat_idx == 0) {
+		float gl_blend = smoothstep(200.0, 150.0, d_gl);
+		// Kentucky bluegrass: rich green, well-maintained
+		vec3 bluegrass = vec3(0.23, 0.49, 0.23);
+		grass_alb = mix(grass_alb, bluegrass, gl_blend * 0.4);
+	}
+
+	// Harlem Meer shoreline: naturalistic, darker water-influenced ground
+	float d_hm = length(world_pos.xz - vec2(350.0, -1750.0));
+	if (d_hm < 80.0 && mat_idx == 0) {
+		float hm_blend = smoothstep(80.0, 40.0, d_hm);
+		grass_alb = mix(grass_alb, grass_alb * vec3(0.92, 1.06, 0.90), hm_blend);
+	}
+
+	// Conservatory Water: formal paving surround (flagstone/concrete)
+	float d_cw = length(world_pos.xz - vec2(-152.0, 958.0));
+	if (d_cw < 45.0 && d_cw > 20.0 && slope < 0.10 && mat_idx == 0) {
+		float cw_blend = smoothstep(45.0, 35.0, d_cw) * smoothstep(20.0, 28.0, d_cw);
+		vec3 flagstone = vec3(0.55, 0.53, 0.50);  // light gray flagstone paving
+		grass_alb = mix(grass_alb, flagstone, cw_blend * 0.6);
+		grass_rgh = mix(grass_rgh, 0.60, cw_blend * 0.5);
+	}
+
+	// Sheep Meadow: well-maintained turf, slightly warmer green
+	float d_sm = length(world_pos.xz - vec2(-750.0, 1800.0));
+	if (d_sm < 200.0 && slope < 0.06 && mat_idx == 0) {
+		float sm_blend = smoothstep(200.0, 120.0, d_sm);
+		grass_alb = mix(grass_alb, grass_alb * vec3(1.04, 1.02, 0.92), sm_blend);
+	}
+
+	// North Woods / The Ramble: deeper shade, earthy woodland floor
+	float d_ramble = length(world_pos.xz - vec2(-400.0, 600.0));
+	float d_nwoods = length(world_pos.xz - vec2(100.0, -1200.0));
+	float woodland_prox = min(
+		smoothstep(250.0, 100.0, d_ramble),
+		1.0
+	);
+	woodland_prox = max(woodland_prox, smoothstep(300.0, 100.0, d_nwoods));
+	if (woodland_prox > 0.01 && mat_idx == 0) {
+		// Deeper, cooler woodland floor per Olmsted "Picturesque" design
+		grass_alb = mix(grass_alb, grass_alb * vec3(0.90, 0.98, 0.95), woodland_prox * 0.5);
+		grass_alb *= mix(1.0, 0.88, woodland_prox);  // darker in deep woods
+	}
+
+	if (mat_idx > 0 && path_weight > 0.5) {
+		// --- Path shading — winner-takes-all, no blending ---
 		vec4 ml = mat_lookup(mat_idx);
-		float tex_set = ml.x;
-		vec3 tint = ml.yzw;
 		vec2 path_uv = world_pos.xz / path_tile_m;
-		vec3 p_alb = texture(path_alb_arr, vec3(path_uv, tex_set)).rgb * tint;
-		vec3 p_nrm = texture(path_nrm_arr, vec3(path_uv, tex_set)).rgb;
-		float p_rgh = clamp(texture(path_rgh_arr, vec3(path_uv, tex_set)).r + 0.10, 0.0, 1.0);
+		vec3 p_alb = texture(path_alb_arr, vec3(path_uv, ml.x)).rgb * ml.yzw;
+		vec3 p_nrm = texture(path_nrm_arr, vec3(path_uv, ml.x)).rgb;
+		float p_rgh = clamp(texture(path_rgh_arr, vec3(path_uv, ml.x)).r + 0.10, 0.0, 1.0);
 
-		// Path center wear — polished stone effect where foot traffic is heaviest
-		float center_weight = smoothstep(0.3, 0.9, best_cov) * (0.8 + vnoise(world_pos.xz * 0.3) * 0.4);
-		p_alb *= mix(1.0, 0.85, center_weight);  // darken 15% at center
-		p_rgh *= mix(1.0, 0.70, center_weight);   // reduce roughness 30% (polished)
-
-		// Smooth path-grass transition — tight crisp edge
-		float soft_weight = smoothstep(0.05, 0.65, path_weight);
+		float soft_weight = 1.0;
 
 		ALBEDO          = mix(grass_alb, p_alb, soft_weight);
 		vec3 _cn = mix(grass_nrm, p_nrm, soft_weight) * 2.0 - 1.0;
@@ -1680,11 +2224,77 @@ void fragment() {
 		vec3 _gfn = normalize(terr_T * _gn.x + terr_B * _gn.y + terrain_n * _gn.z);
 		NORMAL = normalize((VIEW_MATRIX * vec4(_gfn, 0.0)).xyz);
 		ROUGHNESS       = grass_rgh;
-		SPECULAR        = 0.15;
+		// Rock surfaces get mica sparkle (higher specular), grass stays subtle
+		SPECULAR        = max(0.15, rock_specular);
 		METALLIC        = 0.0;
 		// Anisotropic specular — directional sheen mimics wind shimmer
 		ANISOTROPY = 0.35;
 		ANISOTROPY_FLOW = vec2(cos(aniso_flow * 6.283), sin(aniso_flow * 6.283));
+	}
+
+	// --- Path edge wear: muddy/worn margins near paths in woodland zones ---
+	if (nearest_path_dist > 0.0 && nearest_path_dist < 1.8 && is_woodland && mat_idx == 0) {
+		// Foot traffic wears ground near paths — exposed earth/mud at edges
+		float wear_noise = fbm(world_pos.xz * 0.4, 2) * 0.5;
+		float wear = smoothstep(1.8, 0.2, nearest_path_dist + wear_noise);
+		vec3 worn_earth = vec3(0.32, 0.26, 0.18);  // dark exposed earth
+		grass_alb = mix(grass_alb, worn_earth, wear * 0.5);
+		grass_rgh = mix(grass_rgh, 0.85, wear * 0.4);
+	}
+
+	// --- Morning dew: subtle sparkle on grass surfaces at dawn ---
+	if (dew_amount > 0.01 && mat_idx == 0) {
+		// Dew on grass: tiny water droplets create scattered specular highlights
+		float dew_noise = hash2(floor(world_pos.xz * 12.0));
+		float dew_sparkle = step(0.7, dew_noise) * dew_amount;
+		ROUGHNESS = mix(ROUGHNESS, 0.15, dew_sparkle * 0.6);
+		SPECULAR = mix(SPECULAR, 0.6, dew_sparkle * 0.5);
+		// Slightly brighter green from moisture
+		ALBEDO *= mix(1.0, 1.08, dew_amount * 0.5);
+	}
+
+	// --- Rain wetness: darken surfaces, lower roughness, increase specular ---
+	if (rain_wetness > 0.01) {
+		// Wet surfaces are darker (water absorption) and glossier
+		float wet = rain_wetness;
+		// Darken albedo — wet surfaces absorb ~30% more light
+		ALBEDO *= mix(1.0, 0.65, wet);
+		// Roughness drops dramatically on wet surfaces (puddle-like specular)
+		ROUGHNESS = mix(ROUGHNESS, max(ROUGHNESS * 0.3, 0.08), wet);
+		// Specular increases — wet surfaces are highly reflective
+		SPECULAR = mix(SPECULAR, 0.5, wet);
+
+		// Puddle pooling — standing water collects on flat surfaces
+		float flatness = terrain_n.y;
+		if (flatness > 0.95) {
+			// Procedural puddle mask: low-frequency noise determines puddle locations
+			float puddle_noise = fbm(world_pos.xz * 0.06, 3);
+			// Puddles form in noise "valleys" — threshold rises with rain intensity
+			float puddle_threshold = mix(0.6, 0.25, wet);
+			float puddle = smoothstep(puddle_threshold, puddle_threshold - 0.08, puddle_noise);
+			puddle *= flatness;  // only on truly flat ground
+			if (puddle > 0.01) {
+				// Puddle: very dark, very smooth, highly reflective
+				ALBEDO = mix(ALBEDO, ALBEDO * 0.3, puddle);
+				ROUGHNESS = mix(ROUGHNESS, 0.02, puddle);
+				SPECULAR = mix(SPECULAR, 0.8, puddle);
+				METALLIC = mix(METALLIC, 0.0, puddle);
+				// Flatten normal in puddle areas (still water)
+				vec3 puddle_n = normalize((VIEW_MATRIX * vec4(vec3(0.0, 1.0, 0.0), 0.0)).xyz);
+				NORMAL = mix(NORMAL, puddle_n, puddle * 0.9);
+			}
+		}
+	}
+
+	// --- Snow accumulation on flat surfaces ---
+	if (snow_cover > 0.01) {
+		float flatness = terrain_n.y;  // 1.0=flat, 0.0=vertical
+		float snow_noise = fbm(world_pos.xz * 0.08, 2) * 0.25;
+		float snow_amt = smoothstep(0.3, 0.7, flatness + snow_noise - 0.2) * snow_cover;
+		vec3 snow_col = vec3(0.92, 0.93, 0.96);
+		ALBEDO = mix(ALBEDO, snow_col, snow_amt);
+		ROUGHNESS = mix(ROUGHNESS, 0.90, snow_amt);
+		SPECULAR = mix(SPECULAR, 0.3, snow_amt);
 	}
 
 	} // end park_inside else
@@ -1869,15 +2479,146 @@ func _apply_boundary_mask(poly: PackedVector2Array) -> void:
 	print("Terrain: boundary mask applied (%dx%d)" % [sz, sz])
 
 
+func _apply_landuse_map(zones: Array, water: Array = []) -> void:
+	## Rasterize landuse zone polygons + water bodies into a texture for the terrain shader.
+	## Zone encoding: 0=unzoned (woodland/meadow), 1=garden, 2=grass, 3=pitch,
+	## 4=playground, 5=nature_reserve, 6=dog_park, 7=sports, 8=pool, 9=track,
+	## 10=wood, 11=forest, 12=water, 13=shore
+	var sz := 1024
+	var img := Image.create(sz, sz, false, Image.FORMAT_R8)
+	img.fill(Color(0, 0, 0))  # 0 = unzoned (meadow/woodland)
+	var half := _hm_world_size * 0.5
+
+	var type_to_id: Dictionary = {
+		"garden": 1, "grass": 2, "pitch": 3, "playground": 4,
+		"nature_reserve": 5, "dog_park": 6, "sports": 7, "pool": 8, "track": 9,
+		"wood": 10, "forest": 11,
+	}
+
+	# Helper: scanline-fill polygon into image
+	var _scanline_fill := func(pts: Array, zone_id: int) -> void:
+		var min_row := sz
+		var max_row := 0
+		var poly_x := PackedFloat64Array()
+		var poly_z := PackedFloat64Array()
+		for pt in pts:
+			poly_x.append(float(pt[0]))
+			poly_z.append(float(pt[1]))
+			var row := int((float(pt[1]) + half) / _hm_world_size * float(sz))
+			min_row = min(min_row, row)
+			max_row = max(max_row, row)
+		min_row = clampi(min_row - 1, 0, sz - 1)
+		max_row = clampi(max_row + 1, 0, sz - 1)
+		var n := poly_x.size()
+		var zone_color := Color(float(zone_id) / 255.0, 0, 0)
+		for y in range(min_row, max_row + 1):
+			var wz := (float(y) / float(sz)) * _hm_world_size - half
+			var crossings := PackedFloat64Array()
+			for i in range(n):
+				var j := (i + 1) % n
+				var zi := poly_z[i]
+				var zj := poly_z[j]
+				if (zi > wz) != (zj > wz):
+					var t := (wz - zi) / (zj - zi)
+					crossings.append(poly_x[i] + t * (poly_x[j] - poly_x[i]))
+			var arr: Array = Array(crossings)
+			arr.sort()
+			for k in range(0, arr.size() - 1, 2):
+				var px0 := int(clampf((float(arr[k]) + half) / _hm_world_size * float(sz), 0.0, float(sz - 1)))
+				var px1 := int(clampf((float(arr[k + 1]) + half) / _hm_world_size * float(sz), 0.0, float(sz - 1)))
+				for px in range(px0, px1 + 1):
+					img.set_pixel(px, y, zone_color)
+
+	# Rasterize landuse zones
+	var filled := 0
+	for zone in zones:
+		var zone_type: String = zone.get("type", "")
+		var zone_id: int = type_to_id.get(zone_type, 0)
+		if zone_id == 0:
+			continue
+		var pts: Array = zone.get("points", [])
+		if pts.size() < 3:
+			continue
+		_scanline_fill.call(pts, zone_id)
+		filled += 1
+
+	# Rasterize water bodies (zone 12)
+	var water_count := 0
+	for body in water:
+		var pts: Array = body.get("points", [])
+		if pts.size() < 3:
+			continue
+		_scanline_fill.call(pts, 12)
+		water_count += 1
+
+	# Dilate water pixels to create shore zone (13) — 3-pixel radius (~15m)
+	if water_count > 0:
+		var shore_pixels := PackedVector2Array()
+		var SHORE_R := 3
+		for y in range(sz):
+			for x in range(sz):
+				var v := int(img.get_pixel(x, y).r * 255.0 + 0.5)
+				if v == 12:  # water pixel
+					for dy in range(-SHORE_R, SHORE_R + 1):
+						for dx in range(-SHORE_R, SHORE_R + 1):
+							if dx * dx + dy * dy > SHORE_R * SHORE_R:
+								continue
+							var nx := x + dx
+							var ny := y + dy
+							if nx < 0 or nx >= sz or ny < 0 or ny >= sz:
+								continue
+							var nv := int(img.get_pixel(nx, ny).r * 255.0 + 0.5)
+							if nv != 12 and nv != 13:  # not water or shore
+								shore_pixels.append(Vector2(nx, ny))
+		var shore_color := Color(13.0 / 255.0, 0, 0)
+		for sp in shore_pixels:
+			img.set_pixel(int(sp.x), int(sp.y), shore_color)
+		print("Terrain: water shore zones — %d water bodies, %d shore pixels" % [water_count, shore_pixels.size()])
+
+	var tex := ImageTexture.create_from_image(img)
+	_terrain_mat.set_shader_parameter("landuse_map", tex)
+	print("Terrain: landuse map applied (%d zones + %d water bodies into %dx%d)" % [filled, water_count, sz, sz])
+
+
+func _apply_structure_mask() -> void:
+	## Load the LiDAR structure mask (HH-BE difference) and apply it to the terrain shader.
+	## Structure pixels get stone/concrete textures instead of grass.
+	var mask_path := "res://lidar_data/structure_mask.png"
+	var global_path := ProjectSettings.globalize_path(mask_path)
+	if not FileAccess.file_exists(mask_path) and not FileAccess.file_exists(global_path):
+		print("Terrain: no structure mask found at %s" % mask_path)
+		return
+	var img := Image.load_from_file(mask_path)
+	if not img:
+		img = Image.load_from_file(global_path)
+	if not img:
+		print("Terrain: failed to load structure mask")
+		return
+	var tex := ImageTexture.create_from_image(img)
+	_terrain_mat.set_shader_parameter("structure_mask", tex)
+	print("Terrain: structure mask applied (%dx%d)" % [img.get_width(), img.get_height()])
+
+
 # ---------------------------------------------------------------------------
 # Player
 # ---------------------------------------------------------------------------
 func _setup_player() -> CharacterBody3D:
 	var p: CharacterBody3D = load("res://player.gd").new()
 	p.name       = "Player"
-	p.position = Vector3(-600.0, _terrain_height(-600.0, 1420.0) + 2.0, 1420.0)  # Literary Walk
-	p.rotation_degrees.y = 30.0
+	if _terrain_only:
+		p.position = Vector3(-300.0, _terrain_height(-300.0, 200.0) + 200.0, 200.0)
+		p.rotation_degrees.y = 0.0
+		p.set_physics_process(false)
+	elif _cli_pos_set:
+		p.position = Vector3(_cli_pos.x, _terrain_height(_cli_pos.x, _cli_pos.z) + 1.8, _cli_pos.z)
+		p.rotation_degrees.y = _cli_pos.y if _cli_pos.y != 0.0 else 30.0
+	else:
+		p.position = Vector3(-400.0, _terrain_height(-400.0, 600.0) + 1.8, 600.0)
+	if not _cli_pos_set:
+		p.rotation_degrees.y = 30.0
 	add_child(p)
+	if _terrain_only and p.head:
+		p.head.rotation_degrees.x = -55.0  # look down at terrain
 	return p
 
 
@@ -1890,7 +2631,7 @@ func _setup_lamp_lights() -> void:
 	for child in _park_loader.get_children():
 		if not (child is MultiMeshInstance3D):
 			continue
-		if not child.name.begins_with("Lampposts_"):
+		if not child.name.begins_with("Lampposts"):
 			continue
 		var mmi: MultiMeshInstance3D = child as MultiMeshInstance3D
 		var mm: MultiMesh = mmi.multimesh
@@ -1904,11 +2645,11 @@ func _setup_lamp_lights() -> void:
 	# Create light pool — SpotLight3D pointing downward (lamppost shade)
 	for i in LAMP_LIGHT_COUNT:
 		var light := SpotLight3D.new()
-		light.light_color = Color(1.0, 0.45, 0.08)  # deep sodium vapor
+		light.light_color = Color(1.0, 0.55, 0.18)  # warm sodium vapor, softened
 		light.light_energy = 0.0  # off until positioned
-		light.spot_range = 18.0
-		light.spot_angle = 70.0  # ~140° cone — wide pool below
-		light.spot_attenuation = 0.8
+		light.spot_range = 22.0
+		light.spot_angle = 75.0  # ~150° cone — wide soft pool below
+		light.spot_attenuation = 1.2  # softer falloff
 		light.shadow_enabled = false  # too expensive for 24 lights
 		light.light_bake_mode = Light3D.BAKE_DISABLED
 		light.rotation_degrees = Vector3(-90, 0, 0)  # point straight down
@@ -1923,22 +2664,23 @@ func _update_lamp_lights() -> void:
 	var player_pos := _player.global_position
 	# Find closest lamps within 30m
 	var dists: Array = []
+	var pool_size: int = _lamp_lights.size()
 	for i in _lamp_positions.size():
 		var d := player_pos.distance_squared_to(_lamp_positions[i])
 		if d < 900.0:  # within 30m
 			dists.append([d, i])
-	dists.sort_custom(func(a, b): return a[0] < b[0])
+	# Only sort if we have more candidates than light slots
+	if dists.size() > pool_size:
+		dists.sort_custom(func(a, b): return a[0] < b[0])
 
 	# Get current lamp emission energy from day/night cycle
-	var night_energy: float = 0.0
-	if _lamp_mat:
-		night_energy = _lamp_mat.emission_energy_multiplier
+	var night_energy: float = _lamp_emission
 
 	for li in _lamp_lights.size():
 		if li < dists.size() and night_energy > 0.1:
 			var idx: int = dists[li][1]
 			_lamp_lights[li].global_position = _lamp_positions[idx]
-			_lamp_lights[li].light_energy = night_energy * 8.0
+			_lamp_lights[li].light_energy = night_energy * 5.5
 		else:
 			_lamp_lights[li].light_energy = 0.0
 
@@ -1947,7 +2689,7 @@ func _update_lamp_lights() -> void:
 # HUD: semi-transparent panel, top-left corner
 # ---------------------------------------------------------------------------
 func _setup_color_grade() -> void:
-	## Fullscreen post-process color grading — autumn tones, lifted blacks, warm highlights
+	## Fullscreen color grade — glowing in the dark: deep darks, luminous color
 	var grade_shader := Shader.new()
 	grade_shader.code = """shader_type canvas_item;
 
@@ -1956,24 +2698,43 @@ uniform sampler2D SCREEN_TEXTURE : hint_screen_texture, filter_linear;
 void fragment() {
 	vec3 c = texture(SCREEN_TEXTURE, SCREEN_UV).rgb;
 
-	// Lift blacks slightly (prevents crushing, adds atmosphere)
-	c = max(c, vec3(0.015, 0.012, 0.018));
+	// Warm dark floor — keep some shadow detail
+	c = max(c, vec3(0.012, 0.009, 0.007));
+	// Gentle shadow shaping
+	c = pow(c, vec3(1.06));
 
-	// Split-tone: warm highlights, cool shadows
 	float lum = dot(c, vec3(0.2126, 0.7152, 0.0722));
-	vec3 shadow_tint = vec3(0.94, 0.92, 1.06);   // cool lavender shadows
-	vec3 highlight_tint = vec3(1.08, 1.00, 0.94); // warm peach highlights
-	float shadow_blend = 1.0 - smoothstep(0.0, 0.35, lum);
-	float highlight_blend = smoothstep(0.5, 0.85, lum);
-	c *= mix(vec3(1.0), shadow_tint, shadow_blend * 0.3);
-	c *= mix(vec3(1.0), highlight_tint, highlight_blend * 0.25);
 
-	// Subtle S-curve for contrast without crushing
-	c = c / (c + 0.15) * 1.15;
+	// Split-tone: deep teal-blue shadows, toasty amber highlights
+	vec3 shadow_tint = vec3(0.85, 0.92, 1.10);
+	vec3 highlight_tint = vec3(1.12, 1.04, 0.86);
+	float shadow_blend = 1.0 - smoothstep(0.0, 0.25, lum);
+	float highlight_blend = smoothstep(0.40, 0.75, lum);
+	c *= mix(vec3(1.0), shadow_tint, shadow_blend * 0.45);
+	c *= mix(vec3(1.0), highlight_tint, highlight_blend * 0.40);
 
-	// Very slight vignette — darken edges
+	// Enrich greens — lush summer foliage
+	c.g *= 1.0 + 0.14 * smoothstep(0.08, 0.4, c.g);
+	// Deepen blues — rich sky and shadows
+	c.b *= 1.0 + 0.12 * smoothstep(0.06, 0.35, c.b);
+	// Soften reds toward warm brown
+	float red_excess = max(c.r - (c.g + c.b) * 0.5, 0.0);
+	c.r -= red_excess * 0.20;
+	c.g += red_excess * 0.05;
+
+	// Softer S-curve — luminous midtones, visible shadows
+	c = c * c / (c * c + 0.12) * 1.12;
+
+	// Saturate — colors glow against the dark background
+	float lum2 = dot(c, vec3(0.2126, 0.7152, 0.0722));
+	c = mix(vec3(lum2), c, 1.35);
+
+	// Warm amber cast
+	c *= vec3(1.05, 1.01, 0.92);
+
+	// Vignette — darker edges deepen the tunnel-vision glow
 	vec2 vig_uv = SCREEN_UV * 2.0 - 1.0;
-	float vig = 1.0 - dot(vig_uv, vig_uv) * 0.12;
+	float vig = 1.0 - dot(vig_uv, vig_uv) * 0.20;
 	c *= vig;
 
 	COLOR = vec4(c, 1.0);
@@ -1993,9 +2754,669 @@ void fragment() {
 	print("Post-process: color grade shader applied")
 
 
+# ---------------------------------------------------------------------------
+# Wind — layered crossing breezes that vary with time of day and weather
+# ---------------------------------------------------------------------------
+
+func _update_wind(delta: float) -> void:
+	_wind_time += delta
+	var t := _wind_time
+
+	# Time-of-day strength: calm 17-22h so fireflies aren't blown away
+	var tod_mult := 1.0
+	if _time_of_day >= 17.0 and _time_of_day < 18.0:
+		tod_mult = lerpf(1.0, 0.12, (_time_of_day - 17.0))
+	elif _time_of_day >= 18.0 and _time_of_day < 21.0:
+		tod_mult = 0.12
+	elif _time_of_day >= 21.0 and _time_of_day < 22.0:
+		tod_mult = lerpf(0.12, 1.0, (_time_of_day - 21.0))
+
+	# Weather multiplier
+	var wx := 1.0
+	if _weather_mode == "rain":
+		wx = 1.8
+	elif _weather_mode == "thunderstorm":
+		wx = 2.8
+	elif _weather_mode == "snow":
+		wx = 0.5
+	elif _weather_mode == "fog":
+		wx = 0.3
+
+	# Layer 1: slow broad wind — base direction rotates over ~3.5 min
+	var a1 := t * 0.03
+	var s1 := sin(t * 0.21) * 0.25 + 0.30
+	var w1 := Vector2(cos(a1), sin(a1)) * s1
+
+	# Layer 2: crossing gust from a different angle (~18s period)
+	var a2 := t * 0.03 + 2.1 + sin(t * 0.07) * 0.8
+	var s2 := sin(t * 0.35 + 1.7) * 0.20
+	var w2 := Vector2(cos(a2), sin(a2)) * s2
+
+	# Layer 3: quick turbulence (~4s puffs, smaller amplitude)
+	var s3 := sin(t * 1.3 + 3.1) * 0.10
+	var w3 := Vector2(sin(t * 1.7 + 0.5), cos(t * 2.1 + 1.3)) * s3
+
+	_wind_vec = (w1 + w2 + w3) * tod_mult * wx
+
+	# Manual override (- / = keys)
+	if _wind_override >= 0.0:
+		_wind_vec = (w1 + w2 + w3).normalized() * _wind_override * 0.55
+
+	# Push to global shader uniform
+	RenderingServer.global_shader_parameter_set("wind_vec", _wind_vec)
+
+
+const WEATHER_MODES: Array = ["clear", "rain", "thunderstorm", "snow", "fog"]
+
+func _cycle_weather() -> void:
+	# Tear down current weather effects
+	if _rain_particles:
+		_rain_particles.queue_free()
+		_rain_particles = null
+	if _snow_particles:
+		_snow_particles.queue_free()
+		_snow_particles = null
+	if _rain_overlay:
+		_rain_overlay.queue_free()
+		_rain_overlay = null
+	_lightning_flash = 0.0
+	_lightning_timer = 0.0
+	_thunder_queue.clear()
+	# Advance to next mode
+	var idx := WEATHER_MODES.find(_weather_mode)
+	if idx < 0:
+		idx = 0
+	_weather_mode = WEATHER_MODES[(idx + 1) % WEATHER_MODES.size()]
+	_setup_weather()
+	# Force re-apply time-of-day so keyframe values override stale weather fog/clouds
+	_last_applied_tod = -999.0
+	_apply_time_of_day()
+	print("Weather: %s" % _weather_mode)
+
+
+func _setup_weather() -> void:
+	if _weather_mode == "rain":
+		_setup_rain()
+	elif _weather_mode == "thunderstorm":
+		_setup_thunderstorm()
+	elif _weather_mode == "snow":
+		_setup_snow()
+	elif _weather_mode == "fog":
+		_setup_fog_weather()
+	elif _weather_mode == "lens":
+		_setup_lens_distortion()
+
+
+func _setup_rain() -> void:
+	# Gentle rain — soft, slow, soothing
+	_rain_particles = GPUParticles3D.new()
+	_rain_particles.amount = 6000
+	_rain_particles.lifetime = 4.0
+	_rain_particles.visibility_aabb = AABB(Vector3(-25, -15, -25), Vector3(50, 30, 50))
+
+	var pm := ParticleProcessMaterial.new()
+	pm.direction = Vector3(0, -1, 0)
+	pm.spread = 8.0
+	pm.initial_velocity_min = 1.5
+	pm.initial_velocity_max = 2.2
+	pm.gravity = Vector3(0, -1.0, 0)
+	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
+	pm.emission_box_extents = Vector3(25.0, 0.5, 25.0)
+	_rain_particles.process_material = pm
+
+	var mesh := QuadMesh.new()
+	mesh.size = Vector2(0.006, 0.10)
+	_rain_particles.draw_pass_1 = mesh
+
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(0.7, 0.75, 0.85, 0.25)
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.billboard_mode = BaseMaterial3D.BILLBOARD_PARTICLES
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.no_depth_test = true
+	mat.emission_enabled = true
+	mat.emission = Color(0.4, 0.45, 0.55)
+	mat.emission_energy_multiplier = 0.2
+	_rain_particles.material_override = mat
+
+	add_child(_rain_particles)
+	print("Rain: 6000 gentle particles")
+
+
+func _setup_thunderstorm() -> void:
+	# Heavy downpour — dense, fast, thick drops
+	_rain_particles = GPUParticles3D.new()
+	_rain_particles.amount = 30000
+	_rain_particles.lifetime = 2.5
+	_rain_particles.visibility_aabb = AABB(Vector3(-25, -15, -25), Vector3(50, 30, 50))
+
+	var pm := ParticleProcessMaterial.new()
+	pm.direction = Vector3(0, -1, 0)
+	pm.spread = 12.0
+	pm.initial_velocity_min = 5.0
+	pm.initial_velocity_max = 7.5
+	pm.gravity = Vector3(0, -3.0, 0)
+	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
+	pm.emission_box_extents = Vector3(25.0, 0.5, 25.0)
+	_rain_particles.process_material = pm
+
+	var mesh := QuadMesh.new()
+	mesh.size = Vector2(0.012, 0.22)
+	_rain_particles.draw_pass_1 = mesh
+
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(0.6, 0.65, 0.75, 0.4)
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.billboard_mode = BaseMaterial3D.BILLBOARD_PARTICLES
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.no_depth_test = true
+	mat.emission_enabled = true
+	mat.emission = Color(0.35, 0.40, 0.50)
+	mat.emission_energy_multiplier = 0.25
+	_rain_particles.material_override = mat
+
+	add_child(_rain_particles)
+	_lightning_timer = randf_range(3.0, 8.0)  # first strike soon
+	print("Thunderstorm: 30000 heavy rain + lightning")
+
+
+func _setup_snow() -> void:
+	_snow_particles = GPUParticles3D.new()
+	_snow_particles.amount = 3000
+	_snow_particles.lifetime = 4.0
+	_snow_particles.visibility_aabb = AABB(Vector3(-25, -20, -25), Vector3(50, 40, 50))
+
+	var pm := ParticleProcessMaterial.new()
+	pm.direction = Vector3(0, -1, 0)
+	pm.spread = 15.0
+	pm.initial_velocity_min = 1.0
+	pm.initial_velocity_max = 2.5
+	pm.gravity = Vector3(0, -1.5, 0)
+	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
+	pm.emission_box_extents = Vector3(25.0, 0.5, 25.0)
+	# Gentle drift
+	pm.orbit_velocity_min = 0.1
+	pm.orbit_velocity_max = 0.3
+	_snow_particles.process_material = pm
+
+	var mesh := QuadMesh.new()
+	mesh.size = Vector2(0.04, 0.04)
+	_snow_particles.draw_pass_1 = mesh
+
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(0.95, 0.95, 1.0, 0.8)
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	_snow_particles.material_override = mat
+
+	add_child(_snow_particles)
+
+	print("Snow: 3000 particles")
+
+
+func _setup_fireflies() -> void:
+	# Extract tree XZ positions for attraction targets
+	_firefly_tree_xz = PackedVector2Array()
+	if _park_loader:
+		for child in _park_loader.get_children():
+			if not (child is MultiMeshInstance3D):
+				continue
+			if not child.name.begins_with("TrL0_"):
+				continue
+			var mmi: MultiMeshInstance3D = child as MultiMeshInstance3D
+			var chunk_pos: Vector3 = mmi.position
+			var mm: MultiMesh = mmi.multimesh
+			for i in mm.instance_count:
+				var xf: Transform3D = mm.get_instance_transform(i)
+				var wx: float = xf.origin.x + chunk_pos.x
+				var wz: float = xf.origin.z + chunk_pos.z
+				_firefly_tree_xz.append(Vector2(wx, wz))
+
+	# Shared mesh + material for all fireflies — soft oval, warm gold
+	var mesh := QuadMesh.new()
+	mesh.size = Vector2(0.07, 0.04)  # small, consistent
+
+	# Generate soft oval alpha texture so they look round, not rectangular
+	var oval_img := Image.create(32, 32, false, Image.FORMAT_RGBA8)
+	for py in 32:
+		for px2 in 32:
+			var u: float = (float(px2) - 15.5) / 15.5  # -1..1
+			var v: float = (float(py) - 15.5) / 15.5
+			# Ellipse: wider than tall (1.0 x 0.7 aspect in UV)
+			var d: float = u * u + v * v * 2.0
+			var a: float = clampf(1.0 - d * 1.5, 0.0, 1.0)
+			a = a * a  # softer falloff
+			oval_img.set_pixel(px2, py, Color(1.0, 1.0, 1.0, a))
+	var oval_tex := ImageTexture.create_from_image(oval_img)
+
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(1.0, 0.82, 0.2, 1.0)
+	mat.albedo_texture = oval_tex
+	mat.emission_enabled = true
+	mat.emission = Color(1.0, 0.75, 0.08)
+	mat.emission_energy_multiplier = 6.0
+	mat.emission_texture = oval_tex
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.no_depth_test = true
+
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 42
+
+	for i in FIREFLY_COUNT:
+		var mi := MeshInstance3D.new()
+		var s: float = rng.randf_range(0.7, 1.4)
+		var imesh := QuadMesh.new()
+		imesh.size = Vector2(0.04 * s, 0.02 * s)
+		mi.mesh = imesh
+		mi.material_override = mat.duplicate()
+		mi.visible = false
+		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		add_child(mi)
+		_firefly_nodes.append({
+			"node": mi,
+			"target": Vector3.ZERO,
+			"vel": Vector3.ZERO,
+			"pulse_timer": rng.randf_range(0.0, 4.0),
+			"pulse_period": rng.randf_range(4.0, 5.5),
+			"pulse_on_frac": 0.0,  # computed from fixed glow duration
+			"spawned": false,
+		})
+
+	print("Fireflies: %d agents, %d tree attractors" % [FIREFLY_COUNT, _firefly_tree_xz.size()])
+
+
+func _find_near_tree(pos: Vector3) -> Vector3:
+	## Find a random tree within 25m, biased toward denser clusters.
+	var candidates: Array = []
+	var px := pos.x; var pz := pos.z
+	for t in _firefly_tree_xz:
+		var dx := t.x - px; var dz := t.y - pz
+		var d := dx * dx + dz * dz
+		if d < 625.0:  # 25m radius
+			candidates.append(t)
+			if candidates.size() >= 20:
+				break
+	if candidates.is_empty():
+		# No trees nearby — wander randomly near ground
+		return pos + Vector3(randf_range(-5, 5), randf_range(-0.3, 0.5), randf_range(-5, 5))
+	# Weight by local density: pick a tree, then bias toward ones with neighbors
+	var best_pick: Vector2 = candidates[0]
+	var best_score: float = 0.0
+	for c in candidates:
+		var score: float = 0.0
+		for c2 in candidates:
+			var dd: float = c.distance_squared_to(c2)
+			if dd < 100.0 and dd > 0.01:  # neighbors within 10m
+				score += 1.0
+		score += randf_range(0.0, 2.0)  # some randomness
+		if score > best_score:
+			best_score = score
+			best_pick = c
+	# Target: near tree base, low to ground
+	return Vector3(
+		best_pick.x + randf_range(-2.5, 2.5),
+		_terrain_height(best_pick.x, best_pick.y) + randf_range(0.3, 1.5),
+		best_pick.y + randf_range(-2.5, 2.5))
+
+
+func _update_fireflies(delta: float, active: bool) -> void:
+	var ppos := _player.global_position
+	for ff in _firefly_nodes:
+		var node: MeshInstance3D = ff["node"]
+		if not active:
+			node.visible = false
+			ff["spawned"] = false
+			continue
+
+		# Spawn / respawn — always cluster around player
+		var dist_to_player: float = node.global_position.distance_to(ppos)
+		if not ff["spawned"] or dist_to_player > FIREFLY_RANGE:
+			# Spawn in a ring around the player (2m–15m away)
+			var angle: float = randf() * TAU
+			var radius: float = randf_range(3.0, 15.0)
+			var sx: float = ppos.x + cos(angle) * radius
+			var sz: float = ppos.z + sin(angle) * radius
+			var sy: float = _terrain_height(sx, sz) + randf_range(0.4, 1.5)
+			node.global_position = Vector3(sx, sy, sz)
+			ff["target"] = _find_near_tree(node.global_position)
+			ff["vel"] = Vector3.ZERO
+			ff["spawned"] = true
+			node.visible = true
+
+		var pos: Vector3 = node.global_position
+
+		# Steer toward target — lazy, drifting flight
+		var tgt: Vector3 = ff["target"]
+		var to_target: Vector3 = tgt - pos
+		var dist_to_target: float = to_target.length()
+		if dist_to_target < 1.5:
+			# New target: wander near current player position
+			ff["target"] = _find_near_tree(ppos)
+		elif dist_to_target > 0.01:
+			var vel: Vector3 = ff["vel"]
+			ff["vel"] = vel + to_target.normalized() * 0.04 * delta
+
+		# Gentle pull toward player — follow them everywhere
+		var to_pp: Vector3 = ppos - pos
+		var pp_dist: float = to_pp.length()
+		if pp_dist > 5.0:
+			var vel2: Vector3 = ff["vel"]
+			ff["vel"] = vel2 + to_pp.normalized() * 0.03 * delta * clampf((pp_dist - 5.0) * 0.2, 0.0, 1.0)
+
+		# Keep height reasonable (1–5m above terrain)
+		var terrain_y: float = _terrain_height(pos.x, pos.z)
+		var above: float = pos.y - terrain_y
+		var cur_vel: Vector3 = ff["vel"]
+
+		# Repel from nearby lamps (check squared distance first)
+		var repel := Vector3.ZERO
+		for lp in _lamp_positions:
+			var dx: float = pos.x - lp.x
+			var dz: float = pos.z - lp.z
+			var d2: float = dx * dx + dz * dz
+			if d2 < 100.0 and d2 > 0.01:  # 10m radius
+				var to_lamp: Vector3 = pos - lp
+				var ld: float = sqrt(d2 + (pos.y - lp.y) * (pos.y - lp.y))
+				if ld > 0.1:
+					repel += to_lamp / ld * (1.0 / (ld * ld))
+		cur_vel += repel * delta
+
+		# Repel from player — hard 1m minimum distance
+		var to_player: Vector3 = pos - ppos
+		var player_d2: float = to_player.length_squared()
+		if player_d2 < 1.0 and player_d2 > 0.001:  # within 1m — push away hard
+			var pd: float = sqrt(player_d2)
+			cur_vel = to_player / pd * 0.15
+		elif player_d2 < 9.0 and player_d2 > 0.01:  # 1-3m — gentle drift away
+			var pd: float = sqrt(player_d2)
+			cur_vel += to_player / pd * (0.3 / (pd * pd)) * delta
+
+		if above < 0.3:
+			cur_vel.y += 0.3 * delta
+		elif above > 1.8:
+			cur_vel.y -= 0.5 * delta
+
+		# Heavy damping — barely drifting
+		cur_vel *= 0.85
+		# Clamp speed
+		var spd: float = cur_vel.length()
+		if spd > 0.05:
+			cur_vel = cur_vel / spd * 0.05
+
+		# Erratic jitter — more vertical bobbing, random direction changes
+		cur_vel += Vector3(randf_range(-0.04, 0.04), randf_range(-0.06, 0.06), randf_range(-0.04, 0.04)) * delta
+		ff["vel"] = cur_vel
+
+		node.global_position = pos + cur_vel
+
+		# Pulse glow — ~2s on, 2-3s off (realistic firefly flash)
+		var pt: float = float(ff["pulse_timer"]) + delta
+		ff["pulse_timer"] = pt
+		var period: float = ff["pulse_period"]
+		var cycle_t: float = fmod(pt, period)
+		var glow_dur := 1.8  # seconds of glow
+		var glow: float
+		if cycle_t < glow_dur:
+			var t: float = cycle_t / glow_dur
+			glow = sin(t * PI)  # smooth fade in/out over 1.8s
+		else:
+			glow = 0.0
+		var m: StandardMaterial3D = node.material_override
+		m.albedo_color.a = glow * 0.9
+		m.emission_energy_multiplier = glow * 6.0
+
+
+func _setup_fog_weather() -> void:
+	# Fog multipliers are applied per-frame in the day/night cycle update
+	print("Fog: heavy atmospheric fog")
+
+
+# ---------------------------------------------------------------------------
+# Weather audio — procedural rain, wind, and thunder
+# ---------------------------------------------------------------------------
+
+func _setup_weather_audio() -> void:
+	_audio_rng.seed = 42
+
+	# Rain — procedural pink noise, always running (volume controlled per-weather)
+	_rain_audio_player = AudioStreamPlayer.new()
+	var rain_gen := AudioStreamGenerator.new()
+	rain_gen.mix_rate = AUDIO_RATE
+	rain_gen.buffer_length = 0.5
+	_rain_audio_player.stream = rain_gen
+	_rain_audio_player.volume_db = -80.0
+	_rain_audio_player.name = "RainAudio"
+	add_child(_rain_audio_player)
+	_rain_audio_player.play()
+
+	# Wind — procedural filtered noise, always running
+	_wind_audio_player = AudioStreamPlayer.new()
+	var wind_gen := AudioStreamGenerator.new()
+	wind_gen.mix_rate = AUDIO_RATE
+	wind_gen.buffer_length = 0.5
+	_wind_audio_player.stream = wind_gen
+	_wind_audio_player.volume_db = -80.0
+	_wind_audio_player.name = "WindAudio"
+	add_child(_wind_audio_player)
+	_wind_audio_player.play()
+
+	# Thunder — one-shot player, pre-generated WAVs
+	_thunder_audio_player = AudioStreamPlayer.new()
+	_thunder_audio_player.volume_db = -4.0
+	_thunder_audio_player.name = "ThunderAudio"
+	add_child(_thunder_audio_player)
+	_generate_thunder_wavs()
+
+
+func _generate_thunder_wavs() -> void:
+	for i in 4:
+		_thunder_wavs.append(_make_thunder_wav(i * 7919 + 12345))
+
+
+func _make_thunder_wav(seed_val: int) -> AudioStreamWAV:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = seed_val
+	var dur := 4.0
+	var samples := int(AUDIO_RATE * dur)
+	var data := PackedByteArray()
+	data.resize(samples * 2)
+	var lp := 0.0
+	var lp2 := 0.0
+	for i in samples:
+		var t := float(i) / float(AUDIO_RATE)
+		var white := rng.randf() * 2.0 - 1.0
+		# Envelope: sharp initial crack + long rumbling decay
+		var env := exp(-t * 1.2) * (1.0 + 0.3 * sin(t * 2.5 + rng.randf() * 0.01))
+		if t < 0.06:
+			env += (1.0 - t / 0.06) * 2.5  # sharp crack
+		# Two-stage lowpass for deep rumble
+		lp += 0.04 * (white * env - lp)
+		lp2 += 0.07 * (lp - lp2)
+		var s := clampf(lp2 * 2.8, -1.0, 1.0)
+		var s16 := int(s * 32767.0)
+		data[i * 2] = s16 & 0xFF
+		data[i * 2 + 1] = (s16 >> 8) & 0xFF
+	var wav := AudioStreamWAV.new()
+	wav.data = data
+	wav.format = AudioStreamWAV.FORMAT_16_BITS
+	wav.mix_rate = AUDIO_RATE
+	wav.stereo = false
+	wav.loop_mode = AudioStreamWAV.LOOP_DISABLED
+	return wav
+
+
+func _update_weather_audio(delta: float) -> void:
+	# --- Target volumes ---
+	var rain_target_db := -80.0
+	var wind_target_db := -80.0
+	var wind_str := _wind_vec.length()
+
+	if _weather_mode == "rain":
+		rain_target_db = -18.0  # soft, soothing
+	elif _weather_mode == "thunderstorm":
+		rain_target_db = -8.0   # heavy downpour
+
+	# Wind always audible when blowing, louder in storms
+	if wind_str > 0.02:
+		wind_target_db = lerpf(-40.0, -10.0, clampf(wind_str * 2.5, 0.0, 1.0))
+
+	# Smooth volume transitions
+	if _rain_audio_player:
+		_rain_audio_player.volume_db = lerpf(_rain_audio_player.volume_db, rain_target_db, clampf(delta * 2.0, 0.0, 1.0))
+	if _wind_audio_player:
+		_wind_audio_player.volume_db = lerpf(_wind_audio_player.volume_db, wind_target_db, clampf(delta * 3.0, 0.0, 1.0))
+
+	# Push audio frames
+	_push_rain_frames()
+	_push_wind_frames()
+
+	# --- Lightning / thunder ---
+	if _weather_mode == "thunderstorm":
+		_lightning_timer -= delta
+		if _lightning_timer <= 0.0:
+			_lightning_flash = 1.0
+			var delay := randf_range(0.8, 4.0)
+			var vol := randf_range(0.5, 1.0)
+			_thunder_queue.append({"time": delay, "vol": vol})
+			_lightning_timer = randf_range(8.0, 25.0)
+
+	# Process thunder queue
+	var i := 0
+	while i < _thunder_queue.size():
+		_thunder_queue[i]["time"] -= delta
+		if float(_thunder_queue[i]["time"]) <= 0.0:
+			if not _thunder_wavs.is_empty():
+				_thunder_audio_player.stream = _thunder_wavs[randi() % _thunder_wavs.size()]
+				_thunder_audio_player.volume_db = linear_to_db(float(_thunder_queue[i]["vol"]))
+				_thunder_audio_player.play()
+			_thunder_queue.remove_at(i)
+		else:
+			i += 1
+
+
+func _push_rain_frames() -> void:
+	if not _rain_audio_player or not _rain_audio_player.playing:
+		return
+	if _rain_audio_player.volume_db < -60.0:
+		return
+	var playback = _rain_audio_player.get_stream_playback()
+	if playback == null:
+		return
+	var frames: int = playback.get_frames_available()
+	if frames <= 0:
+		return
+
+	# Pink noise — warm, soothing patter
+	for fi in frames:
+		var white := _audio_rng.randf() * 2.0 - 1.0
+		_rain_b0 = 0.99765 * _rain_b0 + white * 0.0990460
+		_rain_b1 = 0.96300 * _rain_b1 + white * 0.2965164
+		_rain_b2 = 0.57000 * _rain_b2 + white * 1.0526913
+		var pink := (_rain_b0 + _rain_b1 + _rain_b2 + white * 0.1848) * 0.11
+		pink *= 0.7
+		playback.push_frame(Vector2(pink, pink))
+
+
+func _push_wind_frames() -> void:
+	if not _wind_audio_player or not _wind_audio_player.playing:
+		return
+	if _wind_audio_player.volume_db < -60.0:
+		return
+	var playback = _wind_audio_player.get_stream_playback()
+	if playback == null:
+		return
+	var frames: int = playback.get_frames_available()
+	if frames <= 0:
+		return
+
+	var wind_str := _wind_vec.length()
+	# Character: low wind = airy whisper, high wind = deep rushing howl
+	var howl := clampf((wind_str - 0.05) * 3.0, 0.0, 1.0)
+	var cutoff := lerpf(3000.0, 400.0, howl)
+	var alpha := 1.0 - exp(-TAU * cutoff / float(AUDIO_RATE))
+	# Slow gusting modulation
+	var gust := sin(_wind_time * 0.4) * 0.15 + 0.85
+
+	for fi in frames:
+		var white := _audio_rng.randf() * 2.0 - 1.0
+		# Lowpass — shifts from bright whisper to deep howl
+		_wind_lp_state += alpha * (white - _wind_lp_state)
+		# Blend: whisper (raw high-freq) + howl (filtered low-freq)
+		var whisper := white * 0.25 * (1.0 - howl * 0.7)
+		var deep := _wind_lp_state * 0.55 * howl
+		var sample := (whisper + deep) * gust
+		playback.push_frame(Vector2(sample, sample))
+
+
+func _setup_lens_distortion() -> void:
+	# Barrel distortion + chromatic aberration
+	_lens_canvas = CanvasLayer.new()
+	_lens_canvas.layer = 98  # below color grade
+	var lens_rect := ColorRect.new()
+	lens_rect.set_anchors_preset(Control.PRESET_FULL_RECT)
+	lens_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var lens_shader := Shader.new()
+	lens_shader.code = """shader_type canvas_item;
+
+uniform sampler2D screen_tex : hint_screen_texture, filter_linear_mipmap;
+uniform float barrel_strength = 0.025;
+uniform float chroma_strength = 0.0008;
+
+void fragment() {
+	vec2 uv = SCREEN_UV - 0.5;
+	float dist2 = dot(uv, uv);
+	vec2 warped = uv * (1.0 + barrel_strength * dist2);
+	vec2 uv_r = warped * (1.0 + chroma_strength) + 0.5;
+	vec2 uv_g = warped + 0.5;
+	vec2 uv_b = warped * (1.0 - chroma_strength) + 0.5;
+	float r = texture(screen_tex, uv_r).r;
+	float g = texture(screen_tex, uv_g).g;
+	float b = texture(screen_tex, uv_b).b;
+	COLOR = vec4(r, g, b, 1.0);
+}
+"""
+	var lens_mat := ShaderMaterial.new()
+	lens_mat.shader = lens_shader
+	lens_rect.material = lens_mat
+	_lens_canvas.add_child(lens_rect)
+	add_child(_lens_canvas)
+	print("Lens: barrel distortion + chromatic aberration")
+
+
+func _setup_letterbox() -> void:
+	# Cinematic 2.35:1 letterbox — black bars top and bottom, toggled with L key.
+	# Bar height = (viewport_h - viewport_w / 2.35) / 2
+	_letterbox_canvas = CanvasLayer.new()
+	_letterbox_canvas.name = "Letterbox"
+	_letterbox_canvas.layer = 101  # above color grade
+	_letterbox_canvas.visible = false
+
+	_letterbox_top = ColorRect.new()
+	_letterbox_top.color = Color.BLACK
+	_letterbox_top.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_letterbox_top.set_anchors_preset(Control.PRESET_TOP_WIDE)
+	_letterbox_top.anchor_bottom = 0.0
+	_letterbox_top.offset_bottom = 1.0  # will be resized in _process
+	_letterbox_canvas.add_child(_letterbox_top)
+
+	_letterbox_bot = ColorRect.new()
+	_letterbox_bot.color = Color.BLACK
+	_letterbox_bot.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_letterbox_bot.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
+	_letterbox_bot.anchor_top = 1.0
+	_letterbox_bot.offset_top = -1.0  # will be resized in _process
+	_letterbox_canvas.add_child(_letterbox_bot)
+
+	add_child(_letterbox_canvas)
+
+
 func _setup_hud() -> void:
 	var canvas := CanvasLayer.new()
 	canvas.name = "HUD"
+	_hud_canvas = canvas
 	add_child(canvas)
 
 	var style := StyleBoxFlat.new()
@@ -2042,8 +3463,21 @@ func _setup_hud() -> void:
 	_time_label.add_theme_color_override("font_color", Color(1.0, 0.88, 0.55))
 	vbox.add_child(_time_label)
 
+	_speed_label = Label.new()
+	_speed_label.text = "Stroll (0.4 m/s)"
+	_speed_label.add_theme_font_size_override("font_size", 22)
+	_speed_label.add_theme_color_override("font_color", Color(0.75, 0.90, 1.0))
+	vbox.add_child(_speed_label)
+
+	_location_label = Label.new()
+	_location_label.text = ""
+	_location_label.add_theme_font_size_override("font_size", 26)
+	_location_label.add_theme_color_override("font_color", Color(1.0, 1.0, 1.0, 0.95))
+	_location_label.visible = false
+	vbox.add_child(_location_label)
+
 	var hint := Label.new()
-	hint.text = "Left stick: walk   Right stick: look   T: time speed   [/]: +/-1 hour"
+	hint.text = "WASD: move   Mouse+RMB: look   Scroll/+/-: speed   9/0: wind   T: time   [/]: ±1h   P: weather   H: HUD"
 	hint.add_theme_font_size_override("font_size", 15)
 	hint.add_theme_color_override("font_color", Color(0.55, 0.55, 0.55))
 	vbox.add_child(hint)
@@ -2073,9 +3507,9 @@ func _setup_falling_leaves() -> void:
 	mat.scale_max = 1.4
 	particles.process_material = mat
 
-	# Draw pass — small leaf quad
+	# Draw pass — leaf quad
 	var quad := QuadMesh.new()
-	quad.size = Vector2(0.08, 0.08)
+	quad.size = Vector2(0.4, 0.4)
 	var leaf_mat := StandardMaterial3D.new()
 	leaf_mat.albedo_color = Color(0.55, 0.35, 0.12, 0.8)
 	leaf_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
@@ -2149,27 +3583,26 @@ func _setup_pigeons() -> void:
 
 		var mat := ParticleProcessMaterial.new()
 		mat.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
-		mat.emission_box_extents = Vector3(8, 0.2, 8)
-		mat.gravity = Vector3(0, 0, 0)
+		mat.emission_box_extents = Vector3(6, 0.1, 6)
+		mat.gravity = Vector3(0, -0.05, 0)  # very slight settling
 		mat.initial_velocity_min = 0.0
-		mat.initial_velocity_max = 0.5
+		mat.initial_velocity_max = 0.3
 		mat.direction = Vector3(0.1, 0, 0.1)
 		mat.spread = 180.0
-		mat.damping_min = 2.0
-		mat.damping_max = 4.0
+		mat.damping_min = 3.0
+		mat.damping_max = 5.0
 		mat.scale_min = 0.8
 		mat.scale_max = 1.2
-		mat.color = Color(0.45, 0.42, 0.48)
+		mat.color = Color(1.0, 1.0, 1.0)  # white — let draw material control color
 		particles.process_material = mat
 
 		var quad := QuadMesh.new()
-		quad.size = Vector2(0.15, 0.12)
+		quad.size = Vector2(0.14, 0.10)  # pigeon body ~14cm × 10cm
 		var pigeon_mat := StandardMaterial3D.new()
-		pigeon_mat.albedo_color = Color(0.10, 0.09, 0.11)
+		pigeon_mat.albedo_color = Color(0.38, 0.36, 0.40)  # rock pigeon gray
 		pigeon_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
 		pigeon_mat.billboard_mode = BaseMaterial3D.BILLBOARD_PARTICLES
-		pigeon_mat.roughness = 0.90
-		pigeon_mat.specular = 0.0
+		pigeon_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 		quad.material = pigeon_mat
 		particles.draw_pass_1 = quad
 
@@ -2198,50 +3631,111 @@ var _zone_target: int = 0
 func _setup_audio() -> void:
 	## Initialize layered ambient soundscape.
 	# Background layers (non-spatial)
-	_audio_birds = _make_audio_player("res://sounds/birds_daytime.ogg", -8.0)
-	_audio_wind = _make_audio_player("res://sounds/wind_trees.ogg", -14.0)
-	_audio_city = _make_audio_player("res://sounds/city_distant.ogg", -18.0)
+	_audio_birds = _make_audio_player("res://sounds/birds_daytime.wav", -8.0)
+	_audio_wind = _make_audio_player("res://sounds/wind_trees.wav", -14.0)
+	_audio_city = _make_audio_player("res://sounds/city_distant.wav", -18.0)
 	# Spatial water
 	_audio_water = AudioStreamPlayer3D.new()
 	_audio_water.name = "AudioWater"
-	if ResourceLoader.exists("res://sounds/water_lake.ogg"):
-		var wstream = ResourceLoader.load("res://sounds/water_lake.ogg")
-		if wstream is AudioStream:
-			_audio_water.stream = wstream
-			_audio_water.volume_db = -10.0
-			_audio_water.max_distance = 60.0
-			_audio_water.autoplay = true
-			add_child(_audio_water)
+	var wstream: AudioStream = _load_audio_stream("res://sounds/water_lake.wav")
+	if wstream:
+		_audio_water.stream = wstream
+		_audio_water.volume_db = -10.0
+		_audio_water.max_distance = 60.0
+		_audio_water.autoplay = true
+		add_child(_audio_water)
 	# Footsteps
-	_audio_footstep_grass = _make_audio_player("res://sounds/footstep_grass.ogg", -6.0, false)
-	_audio_footstep_stone = _make_audio_player("res://sounds/footstep_stone.ogg", -6.0, false)
+	_audio_footstep_grass = _make_audio_player("res://sounds/footstep_grass.wav", -6.0, false)
+	_audio_footstep_stone = _make_audio_player("res://sounds/footstep_stone.wav", -6.0, false)
 
 func _make_audio_player(path: String, vol_db: float, autoplay: bool = true) -> AudioStreamPlayer:
 	var player := AudioStreamPlayer.new()
 	player.name = path.get_file().get_basename()
+	var stream: AudioStream = _load_audio_stream(path)
+	if stream:
+		player.stream = stream
+		player.volume_db = vol_db
+		player.autoplay = autoplay
+		add_child(player)
+	return player
+
+func _load_audio_stream(path: String) -> AudioStream:
+	## Load audio — try ResourceLoader first, then runtime WAV parsing.
 	if ResourceLoader.exists(path):
 		var stream = ResourceLoader.load(path)
 		if stream is AudioStream:
-			player.stream = stream
-			player.volume_db = vol_db
-			player.autoplay = autoplay
-			add_child(player)
-	return player
+			return stream as AudioStream
+	# Runtime WAV loader for files not imported by editor
+	var abs_path := ProjectSettings.globalize_path(path)
+	if not FileAccess.file_exists(abs_path):
+		return null
+	var fa := FileAccess.open(abs_path, FileAccess.READ)
+	if not fa:
+		return null
+	# Read WAV header
+	var riff := fa.get_buffer(4)
+	if riff != PackedByteArray([0x52, 0x49, 0x46, 0x46]):  # "RIFF"
+		return null
+	fa.get_32()  # file size
+	var wave := fa.get_buffer(4)
+	if wave != PackedByteArray([0x57, 0x41, 0x56, 0x45]):  # "WAVE"
+		return null
+	# Find fmt and data chunks
+	var fmt_found := false
+	var channels := 1
+	var sample_rate := 44100
+	var bits_per_sample := 16
+	var audio_data := PackedByteArray()
+	while fa.get_position() < fa.get_length() - 8:
+		var chunk_id := fa.get_buffer(4).get_string_from_ascii()
+		var chunk_size: int = fa.get_32()
+		if chunk_id == "fmt ":
+			var audio_fmt := fa.get_16()  # 1 = PCM
+			channels = fa.get_16()
+			sample_rate = fa.get_32()
+			fa.get_32()  # byte rate
+			fa.get_16()  # block align
+			bits_per_sample = fa.get_16()
+			if chunk_size > 16:
+				fa.get_buffer(chunk_size - 16)
+			fmt_found = true
+		elif chunk_id == "data":
+			audio_data = fa.get_buffer(chunk_size)
+		else:
+			fa.get_buffer(chunk_size)
+	fa.close()
+	if not fmt_found or audio_data.is_empty():
+		return null
+	var stream := AudioStreamWAV.new()
+	stream.data = audio_data
+	stream.format = AudioStreamWAV.FORMAT_16_BITS if bits_per_sample == 16 else AudioStreamWAV.FORMAT_8_BITS
+	stream.mix_rate = sample_rate
+	stream.stereo = channels == 2
+	stream.loop_mode = AudioStreamWAV.LOOP_FORWARD
+	stream.loop_end = audio_data.size() / (bits_per_sample / 8) / channels
+	print("Audio: loaded %s (%ds)" % [path.get_file(), audio_data.size() / sample_rate / (bits_per_sample / 8) / channels])
+	return stream
+
+var _boundary_dist_timer: float = 0.0
+var _cached_boundary_dist: float = 999999.0
 
 func _update_audio(delta: float) -> void:
 	if not _player:
 		return
 	var ppos := _player.global_position
 
-	# City hum louder near boundary
+	# City hum louder near boundary — throttle expensive polygon scan to every 0.2s
 	if _audio_city and _audio_city.stream:
-		var min_dist := 999999.0
-		if _park_loader and _park_loader.boundary_polygon.size() > 2:
-			for pt in _park_loader.boundary_polygon:
-				var d := Vector2(ppos.x - pt.x, ppos.z - pt.y).length()
-				if d < min_dist:
-					min_dist = d
-		var city_vol := lerpf(-12.0, -22.0, clampf(min_dist / 200.0, 0.0, 1.0))
+		_boundary_dist_timer += delta
+		if _boundary_dist_timer >= 0.2:
+			_boundary_dist_timer = 0.0
+			_cached_boundary_dist = 999999.0
+			if _park_loader and _park_loader.boundary_polygon.size() > 2:
+				for pt in _park_loader.boundary_polygon:
+					var d := Vector2(ppos.x - pt.x, ppos.z - pt.y).length()
+					if d < _cached_boundary_dist:
+						_cached_boundary_dist = d
+		var city_vol := lerpf(-12.0, -22.0, clampf(_cached_boundary_dist / 200.0, 0.0, 1.0))
 		_audio_city.volume_db = city_vol
 
 	# Audio zone detection

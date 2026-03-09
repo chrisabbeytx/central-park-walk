@@ -1,54 +1,52 @@
 extends CharacterBody3D
 
 # Comfortable stroll: ~8 km/h ≈ 2.25 m/s — leisurely park pace.
-const WALK_SPEED    := 2.25  # m/s
 const LOOK_SPEED    := 100.0  # degrees/second at full stick deflection
 const DEADZONE      := 0.15   # ignore stick values below this
 const STEP_HEIGHT   := 0.25  # max step-up height (> 0.17m stair rise)
+const SPEED_STEPS: Array = [0.35, 1.0, 3.0, 10.0, 30.0, 100.0]
+const SPEED_NAMES: Array = ["Stroll", "Walk", "Jog", "Bike", "Drive", "Fly"]
 
+var walk_speed: float = 0.35
+var _speed_idx: int = 0
 var head: Node3D    # pitch pivot at eye height
 var _stair_offset: float = 0.0  # camera smoothing for stair steps
-var boundary: PackedVector2Array  # XZ park boundary polygon
-
-# Hardcoded park rectangle (same as park_loader) — OSM polygon doesn't close properly
-var _park_rect: PackedVector2Array = PackedVector2Array([
-	Vector2(-1211.0, 1774.0),   # SW
-	Vector2(-74.6, 2159.4),     # SE
-	Vector2(1217.0, -1649.5),   # NE
-	Vector2(80.6, -2034.9),     # NW
-])
+var boundary_polygon: PackedVector2Array  # XZ park boundary (set by main.gd)
 
 
 func _ready() -> void:
-	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	floor_snap_length = 0.3  # snap down stairs (STEP_RISE = 0.17m)
 
 	# Capsule collider
 	var col := CollisionShape3D.new()
 	var cap := CapsuleShape3D.new()
-	cap.radius = 0.35
-	cap.height = 1.7
+	cap.radius = 0.30
+	cap.height = 1.66
 	col.shape   = cap
-	col.position = Vector3(0.0, 0.85, 0.0)
+	col.position = Vector3(0.0, 0.83, 0.0)
 	add_child(col)
 
 	# Head node – only rotates on X (pitch)
 	head = Node3D.new()
 	head.name     = "Head"
-	head.position = Vector3(0.0, 1.65, 0.0)
+	head.position = Vector3(0.0, 1.58, 0.0)
 	add_child(head)
 
 	# Camera attached to head
 	var cam := Camera3D.new()
 	cam.name    = "Camera"
 	cam.current = true
-	cam.fov     = 90.0
-	# Depth of field — subtle far blur for atmospheric depth
+	cam.fov     = 110.0
+	# Depth of field — far blur for atmospheric depth
 	var cam_attr := CameraAttributesPractical.new()
 	cam_attr.dof_blur_far_enabled    = true
-	cam_attr.dof_blur_far_distance   = 80.0
-	cam_attr.dof_blur_far_transition = 40.0
-	cam_attr.dof_blur_amount         = 0.03
+	cam_attr.dof_blur_far_distance   = 20.0
+	cam_attr.dof_blur_far_transition = 120.0
+	cam_attr.dof_blur_amount         = 0.025
+	cam_attr.dof_blur_near_enabled   = true
+	cam_attr.dof_blur_near_distance  = 1.2
+	cam_attr.dof_blur_near_transition = 0.7
 	cam.attributes = cam_attr
 	head.add_child(cam)
 
@@ -59,27 +57,42 @@ func _physics_process(delta: float) -> void:
 	var pre_y := position.y
 	_handle_movement(delta)
 	# Clamp to park boundary
-	if not _point_in_polygon(position.x, position.z):
+	if boundary_polygon.size() > 2 and not _point_in_polygon(position.x, position.z):
 		position.x = pre_pos.x
 		position.z = pre_pos.z
 	# Smooth camera on stair step teleports
 	var dy := position.y - pre_y
-	if absf(dy) > 0.1:  # sudden jump = stair step, not normal movement
+	if absf(dy) > 0.08:  # sudden jump = stair step, not normal movement
 		_stair_offset += dy
-	_stair_offset = lerpf(_stair_offset, 0.0, clampf(15.0 * delta, 0.0, 1.0))
-	head.position.y = 1.65 - _stair_offset
+	_stair_offset = lerpf(_stair_offset, 0.0, clampf(10.0 * delta, 0.0, 1.0))
+	head.position.y = 1.58 - _stair_offset
 
 
 func _unhandled_input(event: InputEvent) -> void:
-	if event is InputEventMouseMotion:
+	if event is InputEventMouseMotion and Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT):
 		rotation_degrees.y      -= event.relative.x * 0.15
 		head.rotation_degrees.x -= event.relative.y * 0.15
 		head.rotation_degrees.x  = clampf(head.rotation_degrees.x, -80.0, 80.0)
-	elif event is InputEventKey and event.pressed:
-		if event.keycode == KEY_ESCAPE:
-			Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
-		elif event.keycode == KEY_F:
-			Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+	if event is InputEventMouseButton and event.pressed:
+		if event.button_index == MOUSE_BUTTON_WHEEL_UP:
+			_change_speed(1)
+		elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
+			_change_speed(-1)
+	if event is InputEventKey and event.pressed:
+		if event.keycode == KEY_EQUAL or event.keycode == KEY_KP_ADD:
+			_change_speed(1)
+		elif event.keycode == KEY_MINUS or event.keycode == KEY_KP_SUBTRACT:
+			_change_speed(-1)
+
+
+func _change_speed(dir: int) -> void:
+	var old_idx := _speed_idx
+	_speed_idx = clampi(_speed_idx + dir, 0, SPEED_STEPS.size() - 1)
+	walk_speed = SPEED_STEPS[_speed_idx]
+	if _speed_idx == old_idx:
+		print("Speed: %s (%.1f m/s) [already at %s]" % [SPEED_NAMES[_speed_idx], walk_speed, "min" if dir < 0 else "max"])
+	else:
+		print("Speed: %s (%.1f m/s)" % [SPEED_NAMES[_speed_idx], walk_speed])
 
 
 func _handle_look(delta: float) -> void:
@@ -114,7 +127,7 @@ func _handle_movement(delta: float) -> void:
 	# Right trigger: fly mode (5x–20x), bypasses collision
 	var rt := clampf(Input.get_joy_axis(0, JOY_AXIS_TRIGGER_RIGHT), 0.0, 1.0)
 	if rt > 0.1:
-		var speed := WALK_SPEED * lerpf(5.0, 20.0, rt)
+		var speed := walk_speed * lerpf(5.0, 20.0, rt)
 		# Move in camera look direction (head pitch + body yaw)
 		var cam_basis := head.global_transform.basis
 		var fly_dir := cam_basis * wish
@@ -126,8 +139,8 @@ func _handle_movement(delta: float) -> void:
 			velocity.y -= 9.8 * delta
 		wish = transform.basis * wish
 		wish.y = 0.0
-		velocity.x = wish.x * WALK_SPEED
-		velocity.z = wish.z * WALK_SPEED
+		velocity.x = wish.x * walk_speed
+		velocity.z = wish.z * walk_speed
 
 		# Stair stepping: if blocked horizontally on floor, try stepping up
 		if is_on_floor() and wish.length_squared() > 0.001:
@@ -146,16 +159,16 @@ func _handle_movement(delta: float) -> void:
 
 
 func _point_in_polygon(px: float, pz: float) -> bool:
-	## Ray-casting algorithm on the hardcoded park rectangle.
+	## Ray-casting algorithm on the OSM park boundary polygon.
 	var inside := false
-	var n := _park_rect.size()
+	var n := boundary_polygon.size()
 	var j := n - 1
 	for i in range(n):
-		var zi := _park_rect[i].y
-		var zj := _park_rect[j].y
+		var zi := boundary_polygon[i].y
+		var zj := boundary_polygon[j].y
 		if (zi > pz) != (zj > pz):
-			var xi := _park_rect[i].x
-			var xj := _park_rect[j].x
+			var xi := boundary_polygon[i].x
+			var xj := boundary_polygon[j].x
 			var x_cross := xi + (pz - zi) / (zj - zi) * (xj - xi)
 			if px < x_cross:
 				inside = not inside

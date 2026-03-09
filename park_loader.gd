@@ -19,6 +19,12 @@ var _hm_texture:    ImageTexture  # GPU-side heightmap for vertex shader snappin
 var _hm_min_h:      float   = 0.0
 var _hm_max_h:      float   = 1.0
 
+# Cached furniture GLB meshes — loaded once, shared by _build_furniture + _build_trash_cans
+var _furn_glb_meshes: Dictionary = {}
+
+# Cached vegetation meshes — Quaternius Stylized Nature MegaKit (CC0)
+var _veg_meshes: Dictionary = {}  # name -> Mesh
+
 # Spatial hash of bench positions — used to keep undergrowth clear in front
 var _bench_grid:    Dictionary = {}  # Vector2i → true
 const BENCH_GRID_CELL := 4.0
@@ -45,9 +51,10 @@ const BENCH_MAX_SLOPE := 0.27  # tan(~15°) — skip benches on steeper terrain
 
 # Exposed for day/night cycle (main.gd writes emission at runtime)
 var lamppost_material: StandardMaterial3D
+var facade_materials: Array = []  # ShaderMaterial list for night window emission
 
 # Splat map: 4096×4096 RG8 — R=material index, G=coverage alpha (smooth edges)
-const SPLAT_RES := 2048
+const SPLAT_RES := 4096
 const SPLAT_FEATHER := 1.2  # metres — soft edge transition width
 var splat_texture: ImageTexture
 var _splat_data: PackedByteArray  # raw RG8 bytes for path coverage queries
@@ -62,10 +69,12 @@ var gpu_path_seg_tex_w: int = 256
 var gpu_path_list_tex_w: int = 512
 var tunnel_depressions: Array = []  # stairwell depressions for terrain carving
 var boundary_polygon: PackedVector2Array  # XZ boundary for player clamping
-var water_proximity_texture: ImageTexture  # 1024×1024 R8 — distance to water edges
-var _water_polygons: Array = []  # stored water polygon edges for proximity baking
-var _portal_lights: Array = []  # OmniLight3D refs for day/night modulation
-var landuse_texture: ImageTexture  # 1024×1024 R8 — zone type enum
+var landuse_zones: Array = []             # from park_data.json: type, name, points
+var _bridge_outlines: Array = []          # bridge outline polygons for deck shapes
+var _tunnel_outlines: Array = []          # tunnel outline polygons for labels
+var _foliage_zones: Array = []            # per-area species composition
+var _perimeter_heights: Array = []        # NYC real building heights [x, z, h_m, ?name]
+var water_bodies: Array = []              # water body polygons for shore blending
 
 
 # ---------------------------------------------------------------------------
@@ -89,12 +98,29 @@ func _is_on_path(wx: float, wz: float) -> bool:
 # ---------------------------------------------------------------------------
 func _hw_width(hw: String) -> float:
 	match hw:
-		"pedestrian": return 6.0
-		"footway":    return 3.0
+		"pedestrian": return 12.0  # Mall / Literary Walk ~40ft
+		"footway":    return 3.5
 		"cycleway":   return 3.5
-		"steps":      return 2.5
+		"steps":      return 3.0
 		"track":      return 3.0
+		"service":    return 8.0   # Park loop drives
+		"secondary":  return 10.0  # Transverse roads
+		"bridleway":  return 3.5   # Bridle paths
 		_:            return 2.5   # "path" and unknowns
+
+
+func _path_width(path: Dictionary) -> float:
+	## Returns path width using: explicit OSM width > named overrides > highway default.
+	var w = path.get("width", 0)
+	if w is float and w > 0.0:
+		return w
+	if w is int and w > 0:
+		return float(w)
+	if w is String and w != "":
+		var wf := float(w)
+		if wf > 0.0:
+			return wf
+	return _hw_width(str(path.get("highway", "path")))
 
 
 func _hw_y_priority(hw: String) -> float:
@@ -146,15 +172,19 @@ func _path_color(hw: String, surface: String) -> Color:
 		"woodchips":          return Color(0.46, 0.32, 0.14)   # woodchip mulch
 		"mulch":              return Color(0.40, 0.28, 0.12)   # dark mulch
 		"sand":               return Color(0.76, 0.70, 0.52)   # sand
+		"tartan":             return Color(0.58, 0.32, 0.22)   # reddish-brown cinder track
 	# Fallback to highway type
 	match hw:
-		"footway":    return Color(0.70, 0.64, 0.52)   # warm tan / gravel
-		"cycleway":   return Color(0.30, 0.30, 0.32)   # asphalt (cycleways are almost always asphalt)
-		"pedestrian": return Color(0.78, 0.74, 0.65)   # pale cream stone
-		"path":       return Color(0.54, 0.44, 0.30)   # earthy dirt
+		"footway":    return Color(0.72, 0.68, 0.58)   # buff paving stone
+		"cycleway":   return Color(0.30, 0.30, 0.32)   # asphalt
+		"pedestrian": return Color(0.24, 0.24, 0.25)   # dark gray asphalt (Mall promenade per Wikimedia)
+		"path":       return Color(0.60, 0.53, 0.40)   # gravel trail
 		"steps":      return Color(0.60, 0.58, 0.54)   # grey stone
 		"track":      return Color(0.48, 0.40, 0.26)   # brown dirt track
-		_:            return Color(0.65, 0.60, 0.48)
+		"bridleway":  return Color(0.52, 0.42, 0.28)   # compacted earth
+		"service":    return Color(0.26, 0.26, 0.28)   # dark asphalt (park drives)
+		"secondary":  return Color(0.28, 0.28, 0.30)   # dark grey asphalt (streets)
+		_:            return Color(0.60, 0.53, 0.40)   # gravel
 
 
 # ---------------------------------------------------------------------------
@@ -194,13 +224,15 @@ func _path_tex_prefix(hw: String, surface: String) -> String:
 		"stone", "brick":                       return "res://textures/PavingStones130_2K-JPG"
 		"gravel", "fine_gravel", "compacted", "pebblestone", \
 		"unpaved", "dirt", "ground", "woodchips", \
-		"mulch", "sand":                        return "res://textures/Gravel021_2K-JPG"
+		"mulch", "sand", "tartan":              return "res://textures/Gravel021_2K-JPG"
 		"wood":                                 return "res://textures/WoodFloor041_2K-JPG"
 	match hw:
 		"cycleway":   return "res://textures/Asphalt012_2K-JPG"
 		"steps":      return "res://textures/Concrete034_2K-JPG"
-		"pedestrian": return "res://textures/PavingStones130_2K-JPG"
+		"pedestrian": return "res://textures/Asphalt012_2K-JPG"  # Mall promenade
 		"footway":    return "res://textures/PavingStones130_2K-JPG"
+		"service":    return "res://textures/Asphalt012_2K-JPG"
+		"secondary":  return "res://textures/Asphalt012_2K-JPG"
 		_:            return "res://textures/Gravel021_2K-JPG"
 
 
@@ -247,7 +279,7 @@ func _make_path_material(hw: String, surface: String) -> Material:
 		mat.set_shader_parameter("hm_world_size", _hm_world_size)
 		mat.set_shader_parameter("hm_min_h",      _hm_min_h)
 		mat.set_shader_parameter("hm_range",      _hm_max_h - _hm_min_h)
-		mat.set_shader_parameter("hm_res",        float(_hm_width))
+		mat.set_shader_parameter("hm_res",        float(mini(_hm_width, 4096)))
 	return mat
 
 
@@ -342,6 +374,7 @@ func set_heightmap(data: Array, width: int, depth: int, world_size: float) -> vo
 func _build_hm_gpu_texture() -> void:
 	## Build GPU texture for vertex-shader terrain snapping.
 	## Encode heights as 16-bit (RG8) for precision: R = high byte, G = low byte.
+	## Capped at 4096 for GPU texture (sufficient for vertex snapping).
 	if _hm_data.is_empty():
 		return
 	_hm_min_h = INF; _hm_max_h = -INF
@@ -350,17 +383,25 @@ func _build_hm_gpu_texture() -> void:
 		_hm_min_h = minf(_hm_min_h, fv)
 		_hm_max_h = maxf(_hm_max_h, fv)
 	var h_range := maxf(_hm_max_h - _hm_min_h, 0.01)
-	var img := Image.create(_hm_width, _hm_depth, false, Image.FORMAT_RG8)
-	for zi in _hm_depth:
-		for xi in _hm_width:
-			var h := (float(_hm_data[zi * _hm_width + xi]) - _hm_min_h) / h_range
+	var tex_w := mini(_hm_width, 4096)
+	var tex_h := mini(_hm_depth, 4096)
+	var sx := float(_hm_width - 1) / float(tex_w - 1)
+	var sz := float(_hm_depth - 1) / float(tex_h - 1)
+	var data := PackedByteArray()
+	data.resize(tex_w * tex_h * 2)
+	for zi in tex_h:
+		var hzi := mini(int(zi * sz + 0.5), _hm_depth - 1)
+		for xi in tex_w:
+			var hxi := mini(int(xi * sx + 0.5), _hm_width - 1)
+			var h := (float(_hm_data[hzi * _hm_width + hxi]) - _hm_min_h) / h_range
 			var h16 := int(clampf(h, 0.0, 1.0) * 65535.0)
-			var hi := h16 >> 8        # high byte → R
-			var lo := h16 & 0xFF      # low byte → G
-			img.set_pixel(xi, zi, Color(float(hi) / 255.0, float(lo) / 255.0, 0.0, 1.0))
+			var off := (zi * tex_w + xi) * 2
+			data[off]     = h16 >> 8     # high byte → R
+			data[off + 1] = h16 & 0xFF   # low byte → G
+	var img := Image.create_from_data(tex_w, tex_h, false, Image.FORMAT_RG8, data)
 	_hm_texture = ImageTexture.create_from_image(img)
 	print("ParkLoader: heightmap GPU texture created %d×%d (h_range=%.1f)" % [
-		_hm_width, _hm_depth, h_range])
+		tex_w, tex_h, h_range])
 
 
 func _terrain_y(x: float, z: float) -> float:
@@ -391,6 +432,22 @@ func _terrain_y(x: float, z: float) -> float:
 	else:
 		# Upper-left triangle: i00(0,0), i11(1,1), i01(0,1)
 		return h00 + (h11 - h01) * fx + (h01 - h00) * fz
+
+
+func _lamp_zone(x: float, z: float) -> int:
+	## Returns lamp zone: 0=formal, 1=standard, 2=simple/recreational.
+	## Based on Central Park's real zone design.
+	# Formal areas: Mall/Literary Walk, Bethesda Terrace, Conservatory Garden
+	if x > -680.0 and x < -400.0 and z > 900.0 and z < 1700.0:
+		return 0  # Mall / Literary Walk / Bethesda corridor
+	if x > 300.0 and x < 700.0 and z > -700.0 and z < -400.0:
+		return 0  # Conservatory Garden area (NE)
+	# Recreational/open areas: Great Lawn, Sheep Meadow, fields
+	if x > -400.0 and x < 200.0 and z > -200.0 and z < 400.0:
+		return 2  # Great Lawn
+	if x > -800.0 and x < -300.0 and z > 1700.0 and z < 2100.0:
+		return 2  # Sheep Meadow area
+	return 1  # Default: standard
 
 
 func _terrain_slope(x: float, z: float) -> float:
@@ -456,35 +513,115 @@ func _is_excluded(x: float, z: float) -> bool:
 	return false
 
 
-# Park boundary rectangle — 4 corners of Central Park's tilted rectangle.
-# The OSM boundary polygon doesn't form a proper closed ring (assembly gap),
-# so we use a hardcoded rectangle derived from the park's known geometry:
-#   South center (-642.8, 1966.7) to North center (648.8, -1842.2)
-#   Length 4022m, perpendicular half-width 600m (generous, facades hide overshoot).
-var _park_rect: PackedVector2Array = PackedVector2Array([
-	Vector2(-1211.0, 1774.0),   # SW
-	Vector2(-74.6, 2159.4),     # SE
-	Vector2(1217.0, -1649.5),   # NE
-	Vector2(80.6, -2034.9),     # NW
-])
+# Rasterized boundary bitmap — populated from OSM boundary_polygon in _ready().
+# Each bit in the grid = 1 if inside park, 0 if outside.
+var _bnd_bitmap: PackedByteArray
+var _bnd_cell: float = 4.0  # metres per cell
+var _bnd_min_x: float = 0.0
+var _bnd_min_z: float = 0.0
+var _bnd_nx: int = 0
+var _bnd_nz: int = 0
+
+static func _tree_pos(entry) -> Array:
+	## Extract [x, h, z] from tree entry (dict or legacy array).
+	if typeof(entry) == TYPE_DICTIONARY:
+		return entry["pos"]
+	return entry
+
+
+static func _convex_hull(points: PackedVector2Array) -> PackedVector2Array:
+	## Andrew's monotone chain — returns convex hull in CCW order.
+	if points.size() < 3:
+		return points
+	var pts: Array = []
+	for p in points:
+		pts.append(p)
+	pts.sort_custom(func(a: Vector2, b: Vector2) -> bool:
+		return a.x < b.x or (a.x == b.x and a.y < b.y))
+	var lower: Array = []
+	for p in pts:
+		while lower.size() >= 2:
+			var a: Vector2 = lower[lower.size() - 2]
+			var b: Vector2 = lower[lower.size() - 1]
+			if (b - a).cross(p - a) <= 0.0:
+				lower.pop_back()
+			else:
+				break
+		lower.append(p)
+	var upper: Array = []
+	for i in range(pts.size() - 1, -1, -1):
+		var p: Vector2 = pts[i]
+		while upper.size() >= 2:
+			var a: Vector2 = upper[upper.size() - 2]
+			var b: Vector2 = upper[upper.size() - 1]
+			if (b - a).cross(p - a) <= 0.0:
+				upper.pop_back()
+			else:
+				break
+		upper.append(p)
+	# Remove last point of each half because it repeats
+	lower.pop_back()
+	upper.pop_back()
+	var result := PackedVector2Array()
+	for p in lower:
+		result.append(p)
+	for p in upper:
+		result.append(p)
+	return result
+
+
+func _rasterize_boundary() -> void:
+	## Scanline-rasterize boundary_polygon into _bnd_bitmap for O(1) lookups.
+	var poly := boundary_polygon
+	if poly.size() < 3:
+		return
+	# Compute AABB
+	var mn_x: float = poly[0].x; var mx_x: float = poly[0].x
+	var mn_z: float = poly[0].y; var mx_z: float = poly[0].y
+	for i in range(1, poly.size()):
+		mn_x = minf(mn_x, poly[i].x); mx_x = maxf(mx_x, poly[i].x)
+		mn_z = minf(mn_z, poly[i].y); mx_z = maxf(mx_z, poly[i].y)
+	# Pad by one cell
+	_bnd_min_x = mn_x - _bnd_cell
+	_bnd_min_z = mn_z - _bnd_cell
+	_bnd_nx = int(ceilf((mx_x - _bnd_min_x) / _bnd_cell)) + 2
+	_bnd_nz = int(ceilf((mx_z - _bnd_min_z) / _bnd_cell)) + 2
+	_bnd_bitmap.resize(_bnd_nx * _bnd_nz)
+	_bnd_bitmap.fill(0)
+	# Scanline fill: for each Z row, find X intersections with polygon edges
+	var n := poly.size()
+	for row in range(_bnd_nz):
+		var z := _bnd_min_z + (float(row) + 0.5) * _bnd_cell
+		var x_hits: Array = []
+		var j := n - 1
+		for i in range(n):
+			var zi := poly[i].y; var zj := poly[j].y
+			if (zi > z) != (zj > z):
+				var xi := poly[i].x; var xj := poly[j].x
+				x_hits.append(xi + (z - zi) / (zj - zi) * (xj - xi))
+			j = i
+		x_hits.sort()
+		# Fill between pairs of intersections
+		for hi in range(0, x_hits.size() - 1, 2):
+			var col0 := int(floorf((x_hits[hi] - _bnd_min_x) / _bnd_cell))
+			var col1 := int(floorf((x_hits[hi + 1] - _bnd_min_x) / _bnd_cell))
+			col0 = clampi(col0, 0, _bnd_nx - 1)
+			col1 = clampi(col1, 0, _bnd_nx - 1)
+			for col in range(col0, col1 + 1):
+				_bnd_bitmap[row * _bnd_nx + col] = 1
+	var inside_count := 0
+	for b in _bnd_bitmap:
+		if b: inside_count += 1
+	print("ParkLoader: boundary rasterized %dx%d grid, %d cells inside" % [_bnd_nx, _bnd_nz, inside_count])
+
 
 func _in_boundary(px: float, pz: float) -> bool:
-	## Point-in-rectangle test using the park's tilted rectangular boundary.
-	## Uses ray-casting for a 4-vertex convex polygon.
-	var inside := false
-	var n := _park_rect.size()
-	var j := n - 1
-	for i in range(n):
-		var zi := _park_rect[i].y
-		var zj := _park_rect[j].y
-		if (zi > pz) != (zj > pz):
-			var xi := _park_rect[i].x
-			var xj := _park_rect[j].x
-			var x_cross := xi + (pz - zi) / (zj - zi) * (xj - xi)
-			if px < x_cross:
-				inside = not inside
-		j = i
-	return inside
+	## O(1) bitmap lookup against rasterized OSM boundary polygon.
+	var col := int(floorf((px - _bnd_min_x) / _bnd_cell))
+	var row := int(floorf((pz - _bnd_min_z) / _bnd_cell))
+	if col < 0 or col >= _bnd_nx or row < 0 or row >= _bnd_nz:
+		return false
+	return _bnd_bitmap[row * _bnd_nx + col] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -506,45 +643,87 @@ func _ready() -> void:
 		push_error("ParkLoader: failed to parse park_data.json")
 		return
 
-	# Populate boundary polygon FIRST so all builders can clip to it
+	# Populate boundary polygon FIRST so all builders can clip to it.
+	# Use convex hull to eliminate transverse-road pinch points in OSM boundary.
 	var raw_boundary: Array = data.get("boundary", [])
 	if raw_boundary.size() >= 3:
-		boundary_polygon.resize(raw_boundary.size())
+		var raw_poly := PackedVector2Array()
+		raw_poly.resize(raw_boundary.size())
 		for i in range(raw_boundary.size()):
-			boundary_polygon[i] = Vector2(float(raw_boundary[i][0]), float(raw_boundary[i][1]))
+			raw_poly[i] = Vector2(float(raw_boundary[i][0]), float(raw_boundary[i][1]))
+		boundary_polygon = _convex_hull(raw_poly)
+		# Subdivide long segments so facades/walls get dense building blocks
+		var subdiv := PackedVector2Array()
+		var max_seg := 15.0  # metres — matches facade 30m block logic
+		for i in range(boundary_polygon.size()):
+			var p1 := boundary_polygon[i]
+			var p2 := boundary_polygon[(i + 1) % boundary_polygon.size()]
+			subdiv.append(p1)
+			var d := p1.distance_to(p2)
+			if d > max_seg:
+				var steps := int(ceilf(d / max_seg))
+				for s in range(1, steps):
+					subdiv.append(p1.lerp(p2, float(s) / float(steps)))
+		boundary_polygon = subdiv
+		print("ParkLoader: boundary convex hull %d -> %d points (subdivided)" % [raw_poly.size(), boundary_polygon.size()])
+	_rasterize_boundary()
+
+	# Cache data arrays once — avoids repeated Dictionary.get() calls
+	var paths: Array = data.get("paths", [])
+	var water: Array = data.get("water", [])
+	water_bodies = water
+	var trees: Array = data.get("trees", [])
+	var buildings: Array = data.get("buildings", [])
+	var barriers: Array = data.get("barriers", [])
+	var statues: Array = data.get("statues", [])
+	var benches: Array = data.get("benches", [])
+	var lampposts: Array = data.get("lampposts", [])
+	var trash_cans: Array = data.get("trash_cans", [])
+	# Build boundary array from subdivided hull for walls/perimeter
+	var boundary: Array = []
+	for p in boundary_polygon:
+		boundary.append([p.x, p.y])
+	landuse_zones = data.get("landuse", [])
+	_bridge_outlines = data.get("bridge_outlines", [])
+	_tunnel_outlines = data.get("tunnel_outlines", [])
+	_perimeter_heights = data.get("perimeter_heights", [])
+	_foliage_zones = data.get("foliage_zones", [])
+	var streams: Array = data.get("streams", [])
+	var amenities: Array = data.get("amenities", [])
 
 	print("ParkLoader: building path meshes…")
-	_build_buildings(data.get("buildings", []))
-	_build_paths(data.get("paths", []))
-	_build_water(data.get("water", []))
-	_bake_water_proximity()
-	_populate_water_grid(data.get("water", []))
-	_build_shore_vegetation(data.get("water", []))
-	_build_labels(data.get("water", []))
-	_build_trees(data.get("trees", []))
-	_build_furniture(data.get("paths", []))
-	_build_trash_cans(data.get("paths", []))
-	_build_undergrowth(data.get("trees", []), data.get("paths", []))
-	_build_rocks(data.get("trees", []), data.get("water", []))
-	_build_barriers(data.get("barriers", []))
-	_build_staircases(data.get("paths", []))
-	_build_statues(data.get("statues", []))
-	_build_tree_dirt(data.get("trees", []))
-	_build_blossoms(data.get("trees", []))
-	_build_wildflowers(data.get("trees", []), data.get("water", []))
-	_build_meadow_grass(data.get("trees", []))
-	_build_ground_cover(data.get("trees", []), data.get("water", []), data.get("buildings", []))
-	_build_leaf_litter(data.get("trees", []))
-	_build_grass_blades(data.get("trees", []))
-	_build_boats(data.get("water", []))
-	_build_waterfowl(data.get("water", []))
-	_build_pedestrians(data.get("paths", []))
-	_build_squirrels(data.get("trees", []))
-	_build_boundary(data.get("boundary", []))
-	_build_perimeter_wall(data.get("boundary", []))
+	var _t0 := Time.get_ticks_msec()
+	#_load_vegetation_meshes()  # disabled — terrain tiles will replace
+	_build_buildings(buildings)
+	_build_paths(paths)
+	_build_water(water)
+	_build_streams(streams)
+	_populate_water_grid(water)
+	_build_labels(water)
+	_build_trees(trees)
+	_build_furniture(benches, lampposts, paths)
+	_build_trash_cans(trash_cans, paths)
+	_build_barriers(barriers)
+	_build_staircases(paths)
+	_build_statues(statues)
+	#_build_bethesda_terrace()  # disabled — LiDAR DSM terrain provides the geometry
+	_build_amenities(amenities)
+	_build_boats(water)
+	#_build_waterfowl(water)    # procedural — defer to later
+	#_build_pedestrians(paths)  # procedural — defer to later
+	_build_boundary(boundary)
+	_build_perimeter_wall(boundary, paths)
 	_build_boundary_facades()
-	_bake_landuse_texture(data.get("landuse", []))
-	print("ParkLoader: done")
+	#_build_undergrowth(trees, paths)   # disabled — terrain tiles will replace
+	#_build_meadow_grass(trees)         # disabled — terrain tiles will replace
+	#_build_wildflowers(trees, water)   # disabled — terrain tiles will replace
+	#_build_squirrels(trees)    # procedural — defer to later
+	_build_field_markings()
+	_build_rocks(trees, water)
+	#_build_tree_dirt(trees)            # disabled — terrain tiles will replace
+	#_build_grass_blades(trees)         # disabled — terrain tiles will replace
+	#_build_shore_vegetation(water)     # disabled — terrain tiles will replace
+	print("ParkLoader: done in %d ms total" % (Time.get_ticks_msec() - _t0))
 
 
 
@@ -577,14 +756,18 @@ func _splat_mat_idx(hw: String, surface: String) -> int:
 		"woodchips":          return 21
 		"mulch":              return 22
 		"sand":               return 23
+		"tartan":             return 24
 	match hw:
-		"footway":    return 24
-		"cycleway":   return 25
-		"pedestrian": return 26
-		"path":       return 27
+		"footway":    return 4   # paving_stones (most CP footways are paved stone)
+		"cycleway":   return 1   # asphalt
+		"pedestrian": return 1   # asphalt (Mall promenade)
+		"path":       return 16  # gravel (Ramble trails, natural paths)
 		"steps":      return 28
 		"track":      return 29
-		_:            return 30
+		"bridleway":  return 14  # compacted (bridle paths are packed earth)
+		"service":    return 1   # asphalt (park drives)
+		"secondary":  return 1   # asphalt (city streets)
+		_:            return 16  # gravel
 
 
 func _raster_thick_line(data: PackedByteArray, x0: float, z0: float, x1: float, z1: float, hw2: float, mat_idx: int) -> void:
@@ -677,7 +860,8 @@ func _generate_splat_map(paths: Array, bridge_centroids: Array) -> ImageTexture:
 			"points": path["points"],
 			"hw": hw,
 			"surface": surf,
-			"priority": _hw_y_priority(hw)
+			"priority": _hw_y_priority(hw),
+			"pw": _path_width(path)
 		})
 
 	ground_segs.sort_custom(func(a, b): return a["priority"] < b["priority"])
@@ -686,35 +870,14 @@ func _generate_splat_map(paths: Array, bridge_centroids: Array) -> ImageTexture:
 		var hw: String = seg["hw"]
 		var surf: String = seg["surface"]
 		var mat_idx := _splat_mat_idx(hw, surf)
-		var hw2 := _hw_width(hw) * 0.5
+		var hw2: float = seg["pw"] * 0.5
 		var raw: Array = seg["points"]
 		var is_poly := _is_closed_polygon(raw)
 		if is_poly:
-			# Closed polygon — compute area
-			var poly_area := 0.0
-			for pi in range(raw.size() - 1):
-				poly_area += float(raw[pi][0]) * float(raw[pi+1][2]) - float(raw[pi+1][0]) * float(raw[pi][2])
-			poly_area = absf(poly_area) * 0.5
-			if poly_area < 20000.0:
-				# Expand polygon outward by hw2 from centroid, then scanline fill
-				# This covers the area thick-line strokes used to cover, without jagged edges
-				var cx := 0.0; var cz := 0.0
-				var nv := raw.size() - 1  # skip duplicate last point
-				for pi in nv:
-					cx += float(raw[pi][0]); cz += float(raw[pi][2])
-				cx /= float(nv); cz /= float(nv)
-				var expanded: Array = []
-				for pi in nv:
-					var px := float(raw[pi][0]); var pz := float(raw[pi][2])
-					var dx := px - cx; var dz := pz - cz
-					var dl := sqrt(dx * dx + dz * dz)
-					if dl > 0.1:
-						px += dx / dl * hw2
-						pz += dz / dl * hw2
-					expanded.append([px, 0.0, pz])
-				expanded.append(expanded[0])  # close polygon
-				_raster_scanline_fill(data, expanded, mat_idx)
-				continue
+			# Skip closed polygon fills — they create visible rectangle artifacts
+			# on paths. The analytical GPU path system handles all open polylines.
+			# Closed polygon outlines still get thick-line stroked below.
+			pass
 		var smoothed: Array = _smooth_path_catmull_rom(raw) if raw.size() >= 3 and hw != "steps" else raw
 		var pts: Array = _subdivide_pts(smoothed, 2.5)
 		for i in range(pts.size() - 1):
@@ -723,7 +886,7 @@ func _generate_splat_map(paths: Array, bridge_centroids: Array) -> ImageTexture:
 
 	_splat_data = data  # store for path coverage queries (dirt circles, leaf litter)
 	var img := Image.create_from_data(SPLAT_RES, SPLAT_RES, false, Image.FORMAT_RG8, data)
-	img.generate_mipmaps()
+	# No mipmaps — material indices are discrete values, filtering creates garbage
 	var tex := ImageTexture.create_from_image(img)
 	print("ParkLoader: splat map generated (%d×%d), %d ground paths" % [SPLAT_RES, SPLAT_RES, ground_segs.size()])
 	return tex
@@ -770,7 +933,7 @@ func _build_path_gpu_textures(paths: Array, bridge_centroids: Array) -> void:
 		# Skip closed polygons — handled by raster
 		if _is_closed_polygon(raw):
 			continue
-		var hw2 := _hw_width(hw) * 0.5
+		var hw2 := _path_width(path) * 0.5
 		var mat_idx := _splat_mat_idx(hw, surf)
 		var smoothed: Array = _smooth_path_catmull_rom(raw) if raw.size() >= 3 else raw
 		for si in range(smoothed.size() - 1):
@@ -981,17 +1144,52 @@ func _build_paths(paths: Array) -> void:
 		if not near_bridge:
 			_build_tunnel(tp)
 
+	# Add labels for named bridge/tunnel outlines not already labelled by bridge paths
+	var _labelled_names: Dictionary = {}
+	for bp in bridge_paths:
+		var bn: String = str(bp.get("bridge_name", ""))
+		if not bn.is_empty():
+			_labelled_names[bn] = true
+	for outlines in [_bridge_outlines, _tunnel_outlines]:
+		for bo in outlines:
+			var bname: String = bo.get("name", "")
+			if bname.is_empty() or _labelled_names.has(bname):
+				continue
+			var bpts: Array = bo.get("points", [])
+			if bpts.size() < 3:
+				continue
+			var lx := 0.0; var lz := 0.0
+			for pt in bpts:
+				lx += float(pt[0]); lz += float(pt[2])
+			lx /= bpts.size(); lz /= bpts.size()
+			if not _in_boundary(lx, lz):
+				continue
+			var ly := _terrain_y(lx, lz) + 4.0
+			var lbl := Label3D.new()
+			lbl.text = bname
+			lbl.font_size = 48
+			lbl.pixel_size = 0.01
+			lbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+
+			lbl.modulate = Color(0.75, 0.72, 0.68, 0.60)
+			lbl.outline_modulate = Color(0.1, 0.1, 0.1, 0.50)
+			lbl.outline_size = 8
+			lbl.position = Vector3(lx, ly, lz)
+			lbl.name = "Arch_Label"
+			add_child(lbl)
+			_labelled_names[bname] = true
+
 
 func _make_path_mesh(paths: Array, hw: String, surface: String) -> MeshInstance3D:
 	var verts   := PackedVector3Array()
 	var normals := PackedVector3Array()
 	var uvs     := PackedVector2Array()
 	var colors  := PackedColorArray()
-	var width   := _hw_width(hw)
-	var hw2     := width * 0.5
 	var skirt   := 0.18  # metres below terrain for edge skirts
 
 	for path in paths:
+		var width: float = _path_width(path)
+		var hw2: float = width * 0.5
 		# Per-path tint variation: hash first point for subtle color shift
 		var p0: Array = path["points"][0]
 		var ph := fmod(abs(float(p0[0]) * 127.1 + float(p0[2]) * 311.7), 1000.0) / 1000.0
@@ -1333,6 +1531,115 @@ func _smooth_path_catmull_rom(pts: Array, subdiv: int = 4) -> Array:
 	return out
 
 
+func _find_bridge_outline(cx: float, cz: float, bridge_name: String) -> Array:
+	## Find a matching bridge outline polygon by name or proximity.
+	## Returns the outline points array (3D: [x, y, z]) or empty array.
+	# First try name match
+	if not bridge_name.is_empty():
+		for bo in _bridge_outlines:
+			if bo.get("name", "") == bridge_name:
+				return bo.get("points", [])
+	# Fall back to proximity match (within 15m)
+	var best_dist := 15.0
+	var best_pts: Array = []
+	for bo in _bridge_outlines:
+		var pts: Array = bo.get("points", [])
+		if pts.size() < 4:
+			continue
+		var ox := 0.0; var oz := 0.0
+		for pt in pts:
+			ox += float(pt[0]); oz += float(pt[2])
+		ox /= pts.size(); oz /= pts.size()
+		var d := sqrt((cx - ox) * (cx - ox) + (cz - oz) * (cz - oz))
+		if d < best_dist:
+			best_dist = d
+			best_pts = pts
+	return best_pts
+
+
+func _triangulate_polygon_2d(poly: PackedVector2Array) -> PackedInt32Array:
+	## Ear-clipping triangulation for a simple polygon in 2D.
+	## Returns index triplets into the original polygon.
+	var indices := PackedInt32Array()
+	var n := poly.size()
+	if n < 3:
+		return indices
+	# Build index list
+	var idx: Array[int] = []
+	# Determine winding order (CCW = positive area)
+	var area := 0.0
+	for i in range(n):
+		var j := (i + 1) % n
+		area += poly[i].x * poly[j].y - poly[j].x * poly[i].y
+	if area > 0.0:
+		for i in range(n): idx.append(i)
+	else:
+		for i in range(n): idx.append(n - 1 - i)
+
+	var remaining := idx.size()
+	var fail_count := 0
+	while remaining > 2 and fail_count < remaining * 2:
+		for ei in range(remaining):
+			if remaining <= 2:
+				break
+			var i0 := idx[(ei - 1 + remaining) % remaining]
+			var i1 := idx[ei]
+			var i2 := idx[(ei + 1) % remaining]
+			var v0 := poly[i0]; var v1 := poly[i1]; var v2 := poly[i2]
+			# Check if ear (convex vertex)
+			var cross := (v1.x - v0.x) * (v2.y - v0.y) - (v1.y - v0.y) * (v2.x - v0.x)
+			if cross <= 0.0:
+				fail_count += 1
+				continue
+			# Check no other vertex inside this triangle
+			var ear_ok := true
+			for ci in range(remaining):
+				var ci_idx := idx[ci]
+				if ci_idx == i0 or ci_idx == i1 or ci_idx == i2:
+					continue
+				var p := poly[ci_idx]
+				# Point-in-triangle test
+				var d0 := (v1.x - v0.x) * (p.y - v0.y) - (v1.y - v0.y) * (p.x - v0.x)
+				var d1 := (v2.x - v1.x) * (p.y - v1.y) - (v2.y - v1.y) * (p.x - v1.x)
+				var d2 := (v0.x - v2.x) * (p.y - v2.y) - (v0.y - v2.y) * (p.x - v2.x)
+				if d0 >= 0.0 and d1 >= 0.0 and d2 >= 0.0:
+					ear_ok = false
+					break
+			if ear_ok:
+				indices.append(i0)
+				indices.append(i1)
+				indices.append(i2)
+				idx.remove_at(ei)
+				remaining -= 1
+				fail_count = 0
+				break
+			else:
+				fail_count += 1
+	return indices
+
+
+func _project_onto_polyline(px: float, pz: float, pts: Array,
+		cum_len: PackedFloat32Array) -> float:
+	## Project a point onto a polyline and return the arc-length distance.
+	var best_d := INF
+	var best_t := 0.0
+	for i in range(pts.size() - 1):
+		var ax := float(pts[i][0]); var az := float(pts[i][2])
+		var bx := float(pts[i+1][0]); var bz := float(pts[i+1][2])
+		var dx := bx - ax; var dz := bz - az
+		var seg_sq := dx * dx + dz * dz
+		if seg_sq < 0.0001:
+			continue
+		var t := clampf(((px - ax) * dx + (pz - az) * dz) / seg_sq, 0.0, 1.0)
+		var cx := ax + t * dx - px
+		var cz := az + t * dz - pz
+		var dist := cx * cx + cz * cz
+		if dist < best_d:
+			best_d = dist
+			best_t = cum_len[i] + t * (cum_len[i + 1] - cum_len[i])
+	return best_t
+
+
 func _build_bridge(path: Dictionary) -> void:
 	var hw:   String = str(path.get("highway", "path"))
 	var surf: String = str(path.get("surface", ""))
@@ -1349,7 +1656,7 @@ func _build_bridge(path: Dictionary) -> void:
 		pts[i] = [pts[i][0], _terrain_y(float(pts[i][0]), float(pts[i][2])), pts[i][2]]
 	var n_pts := pts.size()
 
-	var width := _hw_width(hw)
+	var width := _path_width(path)
 	var hw2   := width * 0.5
 
 	# CC0 rock wall texture for parapets / abutments
@@ -1413,14 +1720,15 @@ func _build_bridge(path: Dictionary) -> void:
 	var _label: String = bridge_name if not bridge_name.is_empty() else "(unnamed %.0fm)" % total_len
 	print("  Bridge: ", _label, " → ", _style_names.get(style, "STONE"))
 
-	# Per-style material tints
-	var soffit_tint := Color(0.78, 0.76, 0.72)
-	var parapet_tint := Color(0.82, 0.80, 0.76)
-	var abut_tint := Color(0.80, 0.78, 0.74)
+	# Per-style material tints — Manhattan schist gray for stone (Wikimedia reference)
+	var soffit_tint := Color(0.52, 0.50, 0.46)   # schist gray
+	var parapet_tint := Color(0.56, 0.54, 0.50)  # dressed stone
+	var abut_tint := Color(0.50, 0.48, 0.44)     # schist gray
 	match style:
 		BridgeStyle.CAST_IRON:
-			soffit_tint = Color(0.72, 0.70, 0.68)
-			abut_tint = Color(0.70, 0.68, 0.65)
+			soffit_tint = Color(0.46, 0.35, 0.28)  # warm reddish-brown iron paint
+			parapet_tint = Color(0.50, 0.38, 0.30)  # matching iron color
+			abut_tint = Color(0.48, 0.44, 0.40)     # stone abutments
 		BridgeStyle.BRICK:
 			soffit_tint = Color(0.60, 0.40, 0.30)
 			parapet_tint = Color(0.65, 0.42, 0.32)
@@ -1466,6 +1774,9 @@ func _build_bridge(path: Dictionary) -> void:
 	var pt_y := PackedFloat32Array()
 	pt_y.resize(n_pts)
 	var ramp_sink := 0.15
+	# Bow Bridge: gentle longitudinal arch (1.2m rise at center)
+	var is_bow := bridge_name == "Bow Bridge"
+	var bow_rise := 1.2 if is_bow else 0.0
 	for i in range(n_pts):
 		var d := cum_len[i]
 		var t: float
@@ -1480,41 +1791,105 @@ func _build_bridge(path: Dictionary) -> void:
 			y = lerpf(y_end + PATH_Y - ramp_sink, deck_y, t)
 		else:
 			y = deck_y
+		# Add gentle bow arch to mid-span
+		if bow_rise > 0.0:
+			var frac := d / total_len
+			y += bow_rise * sin(frac * PI)
 		pt_y[i] = y
 
 	# ----------------------------------------------------------------
-	# Deck ribbon (UV-mapped along path)
+	# Deck — use outline polygon if available, otherwise ribbon
 	# ----------------------------------------------------------------
+	var path_cx := (float(pts[0][0]) + float(pts[n_pts-1][0])) * 0.5
+	var path_cz := (float(pts[0][2]) + float(pts[n_pts-1][2])) * 0.5
+	var outline_pts: Array = _find_bridge_outline(path_cx, path_cz, bridge_name)
+
 	var verts   := PackedVector3Array()
 	var normals := PackedVector3Array()
 	var uvs     := PackedVector2Array()
-	var u := 0.0
 
-	for i in range(n_pts - 1):
-		var p1 := Vector3(float(pts[i][0]),     pt_y[i],     float(pts[i][2]))
-		var p2 := Vector3(float(pts[i+1][0]),   pt_y[i+1],   float(pts[i+1][2]))
-		var seg2 := Vector2(p2.x - p1.x, p2.z - p1.z)
-		if seg2.length_squared() < 0.0001:
-			continue
-		var seg_len := seg2.length()
-		var dv := seg2 / seg_len
-		var nv := Vector2(-dv.y, dv.x)
-		var a  := Vector3(p1.x + nv.x * hw2, p1.y, p1.z + nv.y * hw2)
-		var b  := Vector3(p1.x - nv.x * hw2, p1.y, p1.z - nv.y * hw2)
-		var c  := Vector3(p2.x + nv.x * hw2, p2.y, p2.z + nv.y * hw2)
-		var dd := Vector3(p2.x - nv.x * hw2, p2.y, p2.z - nv.y * hw2)
-		var u2 := u + seg_len / width
-		verts.append_array(PackedVector3Array([a, b, c, b, dd, c]))
-		var quad_n := (b - a).cross(c - a).normalized()
-		if quad_n.y < 0.0:
-			quad_n = -quad_n
-		for _i in range(6):
-			normals.append(quad_n)
-		uvs.append_array(PackedVector2Array([
-			Vector2(u, 0.0), Vector2(u, 1.0), Vector2(u2, 0.0),
-			Vector2(u, 1.0), Vector2(u2, 1.0), Vector2(u2, 0.0),
-		]))
-		u = u2
+	if outline_pts.size() >= 4:
+		# --- Outline polygon deck ---
+		# Remove closing duplicate
+		var op := outline_pts.duplicate()
+		if op.size() > 3:
+			var odx := float(op[0][0]) - float(op[-1][0])
+			var odz := float(op[0][2]) - float(op[-1][2])
+			if odx * odx + odz * odz < 4.0:
+				op = op.slice(0, -1)
+		# Build 2D polygon for triangulation
+		var poly2d := PackedVector2Array()
+		poly2d.resize(op.size())
+		for oi in range(op.size()):
+			poly2d[oi] = Vector2(float(op[oi][0]), float(op[oi][2]))
+		var tri_idx := _triangulate_polygon_2d(poly2d)
+		if tri_idx.size() >= 3:
+			# Compute Y for each outline vertex by projecting onto centerline
+			var oy := PackedFloat32Array()
+			oy.resize(op.size())
+			for oi in range(op.size()):
+				var arc := _project_onto_polyline(float(op[oi][0]), float(op[oi][2]),
+						pts, cum_len)
+				# Interpolate pt_y at this arc length
+				var yi := deck_y
+				for pi in range(n_pts - 1):
+					if cum_len[pi + 1] >= arc:
+						var seg_t := 0.0
+						var seg_d := cum_len[pi + 1] - cum_len[pi]
+						if seg_d > 0.001:
+							seg_t = (arc - cum_len[pi]) / seg_d
+						yi = lerpf(pt_y[pi], pt_y[pi + 1], seg_t)
+						break
+				oy[oi] = yi
+			# Compute centroid for UV mapping
+			var ucx := 0.0; var ucz := 0.0
+			for oi in range(op.size()):
+				ucx += poly2d[oi].x; ucz += poly2d[oi].y
+			ucx /= op.size(); ucz /= op.size()
+			# Build triangle verts
+			for ti in range(0, tri_idx.size(), 3):
+				var i0 := tri_idx[ti]; var i1 := tri_idx[ti+1]; var i2 := tri_idx[ti+2]
+				var v0 := Vector3(poly2d[i0].x, oy[i0], poly2d[i0].y)
+				var v1 := Vector3(poly2d[i1].x, oy[i1], poly2d[i1].y)
+				var v2 := Vector3(poly2d[i2].x, oy[i2], poly2d[i2].y)
+				verts.append_array(PackedVector3Array([v0, v1, v2]))
+				var tn := (v1 - v0).cross(v2 - v0).normalized()
+				if tn.y < 0.0: tn = -tn
+				for _j in 3: normals.append(tn)
+				uvs.append_array(PackedVector2Array([
+					Vector2((poly2d[i0].x - ucx) / width, (poly2d[i0].y - ucz) / width),
+					Vector2((poly2d[i1].x - ucx) / width, (poly2d[i1].y - ucz) / width),
+					Vector2((poly2d[i2].x - ucx) / width, (poly2d[i2].y - ucz) / width),
+				]))
+			print("    → outline deck: ", op.size(), " verts, ", tri_idx.size() / 3, " tris")
+	else:
+		# --- Ribbon deck (default) ---
+		var u := 0.0
+		for i in range(n_pts - 1):
+			var p1 := Vector3(float(pts[i][0]),     pt_y[i],     float(pts[i][2]))
+			var p2 := Vector3(float(pts[i+1][0]),   pt_y[i+1],   float(pts[i+1][2]))
+			var seg2 := Vector2(p2.x - p1.x, p2.z - p1.z)
+			if seg2.length_squared() < 0.0001:
+				continue
+			var seg_len := seg2.length()
+			var dv := seg2 / seg_len
+			var nv := Vector2(-dv.y, dv.x)
+			var a  := Vector3(p1.x + nv.x * hw2, p1.y, p1.z + nv.y * hw2)
+			var b  := Vector3(p1.x - nv.x * hw2, p1.y, p1.z - nv.y * hw2)
+			var c  := Vector3(p2.x + nv.x * hw2, p2.y, p2.z + nv.y * hw2)
+			var dd := Vector3(p2.x - nv.x * hw2, p2.y, p2.z - nv.y * hw2)
+			var u2 := u + seg_len / width
+			verts.append_array(PackedVector3Array([a, b, c, b, dd, c]))
+			var quad_n := (b - a).cross(c - a).normalized()
+			if quad_n.y < 0.0:
+				quad_n = -quad_n
+			for _i in range(6):
+				normals.append(quad_n)
+			uvs.append_array(PackedVector2Array([
+				Vector2(u, 0.0), Vector2(u, 1.0), Vector2(u2, 0.0),
+				Vector2(u, 1.0), Vector2(u2, 1.0), Vector2(u2, 0.0),
+			]))
+			u = u2
 
 	if not verts.is_empty():
 		var arrays: Array = []
@@ -1861,8 +2236,9 @@ func _build_bridge(path: Dictionary) -> void:
 		lbl.font_size = 48
 		lbl.pixel_size = 0.01
 		lbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-		lbl.modulate = Color(0.95, 0.90, 0.80)
-		lbl.outline_modulate = Color(0.1, 0.1, 0.1, 0.8)
+
+		lbl.modulate = Color(0.75, 0.72, 0.68, 0.60)
+		lbl.outline_modulate = Color(0.1, 0.1, 0.1, 0.50)
 		lbl.outline_size = 8
 		lbl.position = label_pos
 		lbl.name = "Bridge_Label"
@@ -2419,9 +2795,9 @@ func _build_iron_railings(pts: Array, pt_y: PackedFloat32Array,
 	if rail_verts.is_empty():
 		return
 	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(0.12, 0.12, 0.14)
-	mat.metallic = 0.6
-	mat.roughness = 0.35
+	mat.albedo_color = Color(0.42, 0.30, 0.24)  # warm reddish-brown iron paint (#6B4D3D)
+	mat.metallic = 0.45
+	mat.roughness = 0.40
 	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
 	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
 	arrays[Mesh.ARRAY_VERTEX] = rail_verts
@@ -2559,13 +2935,46 @@ func _build_bow_bridge_railings(pts: Array, pt_y: PackedFloat32Array,
 		_add_cylinder_verts(urn_verts, urn_normals, urn_indices, ucx, uby + 0.15, ucz, 0.14, 0.22, 8, 0.18)
 		_add_cylinder_verts(urn_verts, urn_normals, urn_indices, ucx, uby + 0.37, ucz, 0.18, 0.04, 8, 0.20)
 
+	# Baluster posts — evenly spaced along bridge between railing sections
+	var post_verts := PackedVector3Array()
+	var post_normals := PackedVector3Array()
+	var post_indices := PackedInt32Array()
+	var post_spacing := 2.5  # metres between posts
+	var pd := ramp_start
+	while pd <= ramp_end:
+		var pidx := 0
+		for k in range(n_pts - 1):
+			if cum_len[k + 1] >= pd:
+				pidx = k
+				break
+		var seg_d := cum_len[pidx + 1] - cum_len[pidx]
+		var t_val := (pd - cum_len[pidx]) / seg_d if seg_d > 0.001 else 0.0
+		var ppx := lerpf(float(pts[pidx][0]), float(pts[pidx + 1][0]), t_val)
+		var ppz := lerpf(float(pts[pidx][2]), float(pts[pidx + 1][2]), t_val)
+		var ppy := lerpf(pt_y[pidx], pt_y[pidx + 1], t_val)
+		var seg2 := Vector2(float(pts[pidx+1][0]) - float(pts[pidx][0]),
+							float(pts[pidx+1][2]) - float(pts[pidx][2]))
+		if seg2.length_squared() > 0.001:
+			var pnv := Vector2(-seg2.normalized().y, seg2.normalized().x)
+			for side in [-1.0, 1.0]:
+				var s := float(side)
+				var pcx := ppx + pnv.x * ohw * s
+				var pcz := ppz + pnv.y * ohw * s
+				# Square post from deck to above parapet
+				_add_box_verts(post_verts, post_normals, post_indices,
+					pcx, ppy + PARAPET_H * 0.5 + 0.02, pcz, 0.05, PARAPET_H * 0.5 + 0.02, 0.05)
+				# Finial ball on top
+				_add_cylinder_verts(post_verts, post_normals, post_indices,
+					pcx, ppy + PARAPET_H + 0.06, pcz, 0.04, 0.06, 6, 0.04)
+		pd += post_spacing
+
 	if rail_verts.is_empty():
 		return
-	# Iron material
+	# Bow Bridge: warm reddish-brown cast iron (per Wikimedia reference #7B4B3A-#8B5A4A)
 	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(0.12, 0.12, 0.14)
-	mat.metallic = 0.6
-	mat.roughness = 0.35
+	mat.albedo_color = Color(0.52, 0.33, 0.25)
+	mat.metallic = 0.35
+	mat.roughness = 0.45
 	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
 	# Build railing mesh
 	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
@@ -2579,12 +2988,12 @@ func _build_bow_bridge_railings(pts: Array, pt_y: PackedFloat32Array,
 	mi.name = "BowBridge_Railings"
 	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(mi)
-	# Urn mesh (stone/bronze)
+	# Urn mesh — same cast iron as bridge (#7B4B3A warm reddish-brown)
 	if not urn_verts.is_empty():
 		var urn_mat := StandardMaterial3D.new()
-		urn_mat.albedo_color = Color(0.25, 0.22, 0.18)
-		urn_mat.roughness = 0.65
-		urn_mat.metallic = 0.2
+		urn_mat.albedo_color = Color(0.48, 0.29, 0.23)  # cast iron, matching bridge paint
+		urn_mat.roughness = 0.50
+		urn_mat.metallic = 0.40
 		var ua: Array = []; ua.resize(Mesh.ARRAY_MAX)
 		ua[Mesh.ARRAY_VERTEX] = urn_verts; ua[Mesh.ARRAY_NORMAL] = urn_normals; ua[Mesh.ARRAY_INDEX] = urn_indices
 		var urn_mesh := ArrayMesh.new()
@@ -2594,6 +3003,19 @@ func _build_bow_bridge_railings(pts: Array, pt_y: PackedFloat32Array,
 		umi.mesh = urn_mesh
 		umi.name = "BowBridge_Urns"
 		add_child(umi)
+	# Baluster post mesh (same warm reddish-brown material)
+	if not post_verts.is_empty():
+		var pa: Array = []; pa.resize(Mesh.ARRAY_MAX)
+		pa[Mesh.ARRAY_VERTEX] = post_verts
+		pa[Mesh.ARRAY_NORMAL] = post_normals
+		pa[Mesh.ARRAY_INDEX] = post_indices
+		var post_mesh := ArrayMesh.new()
+		post_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, pa)
+		post_mesh.surface_set_material(0, mat)
+		var pmi := MeshInstance3D.new()
+		pmi.mesh = post_mesh
+		pmi.name = "BowBridge_Posts"
+		add_child(pmi)
 
 
 func _build_wood_railings(pts: Array, pt_y: PackedFloat32Array,
@@ -2715,8 +3137,8 @@ func _build_wood_railings(pts: Array, pt_y: PackedFloat32Array,
 	if rail_verts.is_empty():
 		return
 	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(0.35, 0.25, 0.15)
-	mat.roughness = 0.85
+	mat.albedo_color = Color(0.38, 0.32, 0.25)  # weathered gray-brown (#614F3F)
+	mat.roughness = 0.88
 	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
 	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
 	arrays[Mesh.ARRAY_VERTEX] = rail_verts
@@ -2748,7 +3170,7 @@ func _build_tunnel(path: Dictionary) -> void:
 	for i in range(pts.size()):
 		pts[i] = [pts[i][0], _terrain_y(float(pts[i][0]), float(pts[i][2])), pts[i][2]]
 
-	var width := _hw_width(hw)
+	var width := _path_width(path)
 	var hw2   := width * 0.5
 	var hw2_ext := hw2 + 3.0  # floor/ceiling extend beyond walls to cover depression
 
@@ -3264,12 +3686,13 @@ func _build_fountain(body: Dictionary) -> void:
 	var rw_nrm := _load_tex("res://textures/rock_wall_nrm.jpg")
 	var rw_rgh := _load_tex("res://textures/rock_wall_rgh.jpg")
 
-	# All fountains get a water-filled pool from their polygon
+	var lname := bname.to_lower()
 	_build_fountain_pool(pts, pool_y)
 
-	var lname := bname.to_lower()
 	if lname.contains("bethesda"):
-		_build_bethesda_fountain(cx, cz, base_y, max_r, rw_alb, rw_nrm, rw_rgh)
+		var loaded: bool = _build_bethesda_fountain(cx, cz, base_y, max_r, rw_alb, rw_nrm, rw_rgh)
+		if not loaded:
+			_build_bethesda_fountain_procedural(cx, cz, base_y, max_r, rw_alb, rw_nrm, rw_rgh)
 	elif lname.contains("cherry"):
 		_build_cherry_hill_fountain(cx, cz, base_y, max_r, rw_alb, rw_nrm, rw_rgh)
 	elif lname.contains("untermyer"):
@@ -3512,47 +3935,63 @@ func _add_cascade_ring(x: float, top_y: float, z: float,
 	add_child(particles)
 
 
-# -- Bethesda Fountain: ~29m pool, two-tier sandstone basin, angel column ---
+# -- Bethesda Fountain: photogrammetry GLB ------
+# Returns true if photogrammetry model was loaded (skip procedural pool)
 func _build_bethesda_fountain(cx: float, cz: float, base_y: float, pool_r: float,
+							  alb: ImageTexture, nrm: ImageTexture, rgh: ImageTexture) -> bool:
+	var glb_path := ProjectSettings.globalize_path("res://models/bethesda_fountain_photogrammetry.glb")
+	if FileAccess.file_exists("res://models/bethesda_fountain_photogrammetry.glb") or FileAccess.file_exists(glb_path):
+		var gltf_doc := GLTFDocument.new()
+		var gltf_state := GLTFState.new()
+		var err := gltf_doc.append_from_file(glb_path, gltf_state)
+		if err == OK:
+			var scene: Node = gltf_doc.generate_scene(gltf_state)
+			if scene:
+				var node3d := Node3D.new()
+				node3d.name = "Bethesda_Photogrammetry"
+				# Mesh height 1.68, real angel tip ~8.5m from rim → scale 5.0
+				var glb_scale := 5.0
+				node3d.scale = Vector3(glb_scale, glb_scale, glb_scale)
+				node3d.position = Vector3(cx, base_y + 0.45, cz)
+				var children: Array = []
+				for c in scene.get_children():
+					children.append(c)
+				for c in children:
+					scene.remove_child(c)
+					node3d.add_child(c)
+				scene.queue_free()
+				add_child(node3d)
+				print("ParkLoader: Bethesda Fountain photogrammetry placed at (%.0f, %.0f)" % [cx, cz])
+				return true
+		else:
+			print("WARNING: failed to load Bethesda GLB: error %d" % err)
+	return false
+
+
+func _build_bethesda_fountain_procedural(cx: float, cz: float, base_y: float, pool_r: float,
 							  alb: ImageTexture, nrm: ImageTexture, rgh: ImageTexture) -> void:
-	# Smooth granite for the rim/basins (Concrete034 is smoother than rock_wall)
 	var con_alb := _load_tex("res://textures/Concrete034_2K-JPG_Color.jpg")
 	var con_nrm := _load_tex("res://textures/Concrete034_2K-JPG_NormalGL.jpg")
 	var con_rgh := _load_tex("res://textures/Concrete034_2K-JPG_Roughness.jpg")
-	var stone := _make_stone_material(con_alb, con_nrm, con_rgh, Color(0.82, 0.76, 0.65))
+	var stone := _make_stone_material(con_alb, con_nrm, con_rgh, Color(0.61, 0.55, 0.29))  # New Brunswick sandstone — mustard-olive
 	var bronze := StandardMaterial3D.new()
-	bronze.albedo_color = Color(0.35, 0.45, 0.30)  # green-brown patina
-	bronze.roughness    = 0.55
-	bronze.metallic     = 0.7
-
-	# Basin rim (raised lip around the pool)
+	bronze.albedo_color = Color(0.29, 0.42, 0.29)  # aged green-brown patina
+	bronze.roughness    = 0.60
+	bronze.metallic     = 0.65
 	var rim_h := 0.45
 	_make_ring_mesh(cx, base_y, cz, pool_r - 0.4, pool_r + 0.3, rim_h, stone, "Bethesda_Rim")
-
-	# Lower basin (wide dish, 4m radius, 0.6m above pool)
 	var lb_r := 4.0; var lb_h := 0.6
 	_make_ring_mesh(cx, base_y + rim_h, cz, lb_r - 0.3, lb_r, lb_h, stone, "Bethesda_LowerBasin")
-	# Lower basin pedestal
 	_make_cylinder_mesh(cx, base_y, cz, 1.8, rim_h + lb_h, stone, "Bethesda_LowerPedestal")
-
-	# Upper basin (narrower dish, 2m radius)
 	var ub_base := base_y + rim_h + lb_h
 	var ub_r := 2.0; var ub_h := 0.5
 	_make_ring_mesh(cx, ub_base, cz, ub_r - 0.2, ub_r, ub_h, stone, "Bethesda_UpperBasin")
-	# Upper pedestal column
 	_make_cylinder_mesh(cx, ub_base, cz, 0.8, ub_h + 1.0, stone, "Bethesda_UpperPedestal")
-
-	# Angel column
 	var angel_base := ub_base + ub_h + 1.0
 	_make_cylinder_mesh(cx, angel_base, cz, 0.35, 3.0, bronze, "Bethesda_AngelColumn")
-
-	# Composite angel figure
 	var fig_base := angel_base + 3.0
-	# Torso — tapered (wider at shoulders, narrow at waist)
 	_make_cylinder_mesh(cx, fig_base, cz, 0.35, 1.8, bronze, "Bethesda_AngelTorso", 12)
-	# Head
 	_make_cylinder_mesh(cx, fig_base + 1.8, cz, 0.15, 0.25, bronze, "Bethesda_AngelHead", 8)
-	# Arms — angled 45 deg outward+down (holding lily)
 	for arm_side_i in range(2):
 		var arm_s: float = -1.0 if arm_side_i == 0 else 1.0
 		var arm_verts := PackedVector3Array()
@@ -3562,7 +4001,6 @@ func _build_bethesda_fountain(cx: float, cz: float, base_y: float, pool_r: float
 		var arm_ex := arm_cx + arm_s * 0.65
 		var arm_ey := arm_y - 0.45
 		var arm_r := 0.08
-		# Simple 4-sided cylinder approximation for arm
 		var arm_dir := Vector3(arm_ex - arm_cx, arm_ey - arm_y, 0.0).normalized()
 		var arm_up := Vector3.UP
 		var arm_right := arm_dir.cross(arm_up).normalized()
@@ -3577,12 +4015,8 @@ func _build_bethesda_fountain(cx: float, cz: float, base_y: float, pool_r: float
 			var fn := (arm_right * cos(aa) + arm_fwd * sin(aa)).normalized()
 			arm_verts.append_array(PackedVector3Array([p0, p2, p3, p0, p3, p1]))
 			for _j in 6: arm_norms.append(fn)
-		_add_batch_mesh(arm_verts, arm_norms, Color(0.35, 0.45, 0.30), 0.55, "Bethesda_Arm_%d" % arm_side_i)
-
-	# Lily/cup in front of figure
+		_add_batch_mesh(arm_verts, arm_norms, Color(0.29, 0.42, 0.29), 0.60, "Bethesda_Arm_%d" % arm_side_i)
 	_make_cylinder_mesh(cx, fig_base + 0.8, cz + 0.4, 0.15, 0.3, bronze, "Bethesda_Lily", 8)
-
-	# Wings — 4 curved quad strips each for dimensional sweep
 	var wing_mat := bronze
 	for wing_side_i in range(2):
 		var ws: float = -1.0 if wing_side_i == 0 else 1.0
@@ -3590,24 +4024,21 @@ func _build_bethesda_fountain(cx: float, cz: float, base_y: float, pool_r: float
 		var wnormals := PackedVector3Array()
 		var wing_base_x := cx + ws * 0.30
 		var wing_base_y := fig_base + 1.2
-		# 4 strips from shoulder outward+up with backward arc
 		var n_strips := 4
 		for si in range(n_strips):
 			var t0 := float(si) / float(n_strips)
 			var t1 := float(si + 1) / float(n_strips)
 			var span := 2.0
 			var height := 1.8
-			# Each strip curves outward and backward (arc in Z)
 			var x0 := wing_base_x + ws * span * t0
 			var x1 := wing_base_x + ws * span * t1
-			var z_arc0 := cz - 0.15 * sin(t0 * PI)  # backward arc
+			var z_arc0 := cz - 0.15 * sin(t0 * PI)
 			var z_arc1 := cz - 0.15 * sin(t1 * PI)
 			var y_bot0 := wing_base_y + height * 0.1 * t0
 			var y_bot1 := wing_base_y + height * 0.1 * t1
 			var y_top0 := wing_base_y + height * (1.0 - 0.3 * t0 * t0)
 			var y_top1 := wing_base_y + height * (1.0 - 0.3 * t1 * t1)
-			var wt := 0.04  # wing thickness
-			# Front face quad
+			var wt := 0.04
 			var p0 := Vector3(x0, y_bot0, z_arc0 - wt)
 			var p1 := Vector3(x1, y_bot1, z_arc1 - wt)
 			var p2 := Vector3(x1, y_top1, z_arc1 - wt)
@@ -3615,7 +4046,6 @@ func _build_bethesda_fountain(cx: float, cz: float, base_y: float, pool_r: float
 			var fn := Vector3(0.0, 0.0, -1.0)
 			wverts.append_array(PackedVector3Array([p0, p1, p2, p0, p2, p3]))
 			for _j in 6: wnormals.append(fn)
-			# Back face quad
 			var p4 := Vector3(x0, y_bot0, z_arc0 + wt)
 			var p5 := Vector3(x1, y_bot1, z_arc1 + wt)
 			var p6 := Vector3(x1, y_top1, z_arc1 + wt)
@@ -3632,38 +4062,31 @@ func _build_bethesda_fountain(cx: float, cz: float, base_y: float, pool_r: float
 		var mi := MeshInstance3D.new(); mi.mesh = mesh
 		mi.name = "Bethesda_Wing_%d" % wing_side_i
 		add_child(mi)
-
-	# 4 cherub figures on lower basin rim, spaced 90 degrees apart
 	for ci in range(4):
 		var c_ang := TAU * float(ci) / 4.0 + PI / 4.0
 		var c_x := cx + (lb_r - 0.5) * cos(c_ang)
 		var c_z := cz + (lb_r - 0.5) * sin(c_ang)
 		var c_y := base_y + rim_h + lb_h
-		# Cherub body
 		_make_cylinder_mesh(c_x, c_y, c_z, 0.12, 0.35, bronze, "Bethesda_Cherub_%d" % ci, 8)
-		# Cherub head
 		_make_cylinder_mesh(c_x, c_y + 0.35, c_z, 0.08, 0.12, bronze, "Bethesda_CherubHead_%d" % ci, 8)
-
-	# Water spray: gentle pour from angel's feet, cascading through basins
-	var angel_top := ub_base + ub_h + 1.0 + 3.0  # top of angel column
+	var angel_top := ub_base + ub_h + 1.0 + 3.0
 	_add_fountain_spray(cx, angel_top, cz, 1.5, 15.0, 200, 0.3)
-	# Cascade from upper basin rim into lower basin
 	_add_cascade_ring(cx, ub_base + ub_h, cz, ub_r * 0.9, lb_h + 0.5, 300)
-	# Cascade from lower basin rim into main pool
 	_add_cascade_ring(cx, base_y + rim_h + lb_h, cz, lb_r * 0.9, rim_h + lb_h, 500)
 
 
 # -- Cherry Hill Fountain: 6m basin, ornate column, globe lamps, gold spire --
 func _build_cherry_hill_fountain(cx: float, cz: float, base_y: float, pool_r: float,
 								 alb: ImageTexture, nrm: ImageTexture, rgh: ImageTexture) -> void:
-	var stone := _make_stone_material(alb, nrm, rgh, Color(0.72, 0.70, 0.66))
+	var stone := _make_stone_material(alb, nrm, rgh, Color(0.50, 0.50, 0.50))  # polished gray granite
+	var bluestone := _make_stone_material(alb, nrm, rgh, Color(0.35, 0.42, 0.48))  # bluestone basin
 	var tile_mat := StandardMaterial3D.new()
-	tile_mat.albedo_color = Color(0.20, 0.45, 0.55)  # blue-green Minton tile
-	tile_mat.roughness    = 0.4
-	tile_mat.metallic     = 0.15
+	tile_mat.albedo_color = Color(0.17, 0.31, 0.55)  # Minton cobalt blue + buff
+	tile_mat.roughness    = 0.35
+	tile_mat.metallic     = 0.10
 	var gold := StandardMaterial3D.new()
-	gold.albedo_color = Color(0.85, 0.72, 0.25)
-	gold.roughness    = 0.3
+	gold.albedo_color = Color(0.77, 0.64, 0.28)  # golden spire #C5A348
+	gold.roughness    = 0.25
 	gold.metallic     = 0.85
 	var lamp_mat := StandardMaterial3D.new()
 	lamp_mat.albedo_color = Color(0.95, 0.92, 0.82)  # frosted glass
@@ -3672,7 +4095,7 @@ func _build_cherry_hill_fountain(cx: float, cz: float, base_y: float, pool_r: fl
 	lamp_mat.emission_enabled = true
 
 	# Basin rim
-	_make_ring_mesh(cx, base_y, cz, pool_r - 0.25, pool_r + 0.2, 0.35, stone, "Cherry_Rim")
+	_make_ring_mesh(cx, base_y, cz, pool_r - 0.25, pool_r + 0.2, 0.35, bluestone, "Cherry_Rim")  # 20ft bluestone basin
 
 	# Central column — stone base, tile-clad shaft, bronze top
 	_make_cylinder_mesh(cx, base_y, cz, 0.6, 0.8, stone, "Cherry_Base")
@@ -3723,11 +4146,11 @@ func _build_cherry_hill_fountain(cx: float, cz: float, base_y: float, pool_r: fl
 # -- Untermyer Fountain: oval pool, 3 dancing bronze figures on plinth ------
 func _build_untermyer_fountain(cx: float, cz: float, base_y: float, pool_r: float,
 							   alb: ImageTexture, nrm: ImageTexture, rgh: ImageTexture) -> void:
-	var stone := _make_stone_material(alb, nrm, rgh, Color(0.80, 0.78, 0.72))
+	var stone := _make_stone_material(alb, nrm, rgh, Color(0.56, 0.56, 0.54))  # gray granite
 	var bronze := StandardMaterial3D.new()
-	bronze.albedo_color = Color(0.30, 0.40, 0.28)  # green patina
-	bronze.roughness    = 0.5
-	bronze.metallic     = 0.7
+	bronze.albedo_color = Color(0.29, 0.42, 0.29)  # aged green-brown patina
+	bronze.roughness    = 0.55
+	bronze.metallic     = 0.65
 
 	# Basin rim
 	_make_ring_mesh(cx, base_y, cz, pool_r - 0.2, pool_r + 0.15, 0.3, stone, "Untermyer_Rim")
@@ -3767,6 +4190,144 @@ func _build_generic_fountain(cx: float, cz: float, base_y: float, pool_r: float,
 
 	# Simple upward jet
 	_add_fountain_spray(cx, base_y + 1.5, cz, 2.0, 5.0, 100, 0.08)
+
+
+# ---------------------------------------------------------------------------
+# Bethesda Terrace — load GLB architectural model
+# ---------------------------------------------------------------------------
+func _build_bethesda_terrace() -> void:
+	var glb_res := "res://models/furniture/cp_bethesda_terrace.glb"
+	var glb_path := ProjectSettings.globalize_path(glb_res)
+	if not FileAccess.file_exists(glb_res) and not FileAccess.file_exists(glb_path):
+		return
+	var gltf_doc := GLTFDocument.new()
+	var gltf_state := GLTFState.new()
+	var err := gltf_doc.append_from_file(glb_path, gltf_state)
+	if err != OK:
+		print("WARNING: failed to load Bethesda Terrace GLB: error %d" % err)
+		return
+	var scene: Node = gltf_doc.generate_scene(gltf_state)
+	if scene == null:
+		return
+
+	# Terrace placement — arcade center between Mall and fountain
+	var cx := -460.0
+	var cz := 1000.0
+	var base_y := _terrain_y(cx, cz)
+
+	var node3d := Node3D.new()
+	node3d.name = "BethesdaTerrace"
+	# Blender +Y (south in model) exports as GLB -Z → Godot -Z (north).
+	# We need south facing +Z, so rotate 180 deg around Y.
+	node3d.rotation.y = PI
+	node3d.position = Vector3(cx, base_y, cz)
+
+	var children: Array = []
+	for c in scene.get_children():
+		children.append(c)
+	for c in children:
+		scene.remove_child(c)
+		node3d.add_child(c)
+	scene.queue_free()
+	add_child(node3d)
+	print("ParkLoader: Bethesda Terrace placed at (%.0f, %.0f) y=%.1f" % [cx, cz, base_y])
+
+
+# ---------------------------------------------------------------------------
+# Strawberry Fields — Imagine Mosaic (circular black & white starburst)
+# ---------------------------------------------------------------------------
+func _build_imagine_mosaic(cx: float, cy: float, cz: float) -> void:
+	## 10.4m diameter disc (34ft) with procedural radial starburst pattern.
+	var radius := 5.2
+	var segs := 64
+	var verts := PackedVector3Array()
+	var normals := PackedVector3Array()
+	var uvs := PackedVector2Array()
+	# Fan triangulation: center + rim
+	for i in range(segs):
+		var a0 := TAU * float(i) / float(segs)
+		var a1 := TAU * float(i + 1) / float(segs)
+		verts.append(Vector3(cx, cy + 0.02, cz))
+		verts.append(Vector3(cx + radius * cos(a0), cy + 0.02, cz + radius * sin(a0)))
+		verts.append(Vector3(cx + radius * cos(a1), cy + 0.02, cz + radius * sin(a1)))
+		for _j in 3: normals.append(Vector3.UP)
+		uvs.append(Vector2(0.5, 0.5))
+		uvs.append(Vector2(0.5 + 0.5 * cos(a0), 0.5 + 0.5 * sin(a0)))
+		uvs.append(Vector2(0.5 + 0.5 * cos(a1), 0.5 + 0.5 * sin(a1)))
+	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts
+	arrays[Mesh.ARRAY_NORMAL] = normals
+	arrays[Mesh.ARRAY_TEX_UV] = uvs
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	var mat := ShaderMaterial.new()
+	mat.shader = _get_shader("imagine_mosaic", _imagine_mosaic_shader())
+	mesh.surface_set_material(0, mat)
+	var mi := MeshInstance3D.new(); mi.mesh = mesh
+	mi.name = "Imagine_Mosaic"
+	add_child(mi)
+	# "IMAGINE" label flat on ground
+	var lbl := Label3D.new()
+	lbl.text = "IMAGINE"
+	lbl.font_size = 72
+	lbl.pixel_size = 0.012
+	lbl.modulate = Color(0.10, 0.10, 0.10, 0.95)
+	lbl.outline_size = 0
+	lbl.rotation_degrees = Vector3(-90, 0, 0)
+	lbl.position = Vector3(cx, cy + 0.03, cz)
+	add_child(lbl)
+	print("ParkLoader: Imagine Mosaic at (%.0f, %.0f)" % [cx, cz])
+
+
+func _imagine_mosaic_shader() -> String:
+	return """shader_type spatial;
+render_mode cull_disabled;
+
+void fragment() {
+	// UV 0..1, center at 0.5
+	vec2 c = UV - 0.5;
+	float r = length(c);
+	float angle = atan(c.y, c.x);
+
+	// Concentric bands + radial spokes = starburst
+	float radial = sin(angle * 16.0);  // 16 radial spokes
+	float rings  = sin(r * 40.0);      // concentric rings
+
+	// Combine for mosaic pattern
+	float pattern = radial * 0.5 + rings * 0.5;
+
+	// Inner circle: solid with IMAGINE text area
+	float inner = smoothstep(0.08, 0.10, r);
+
+	// Outer border ring
+	float border = smoothstep(0.46, 0.48, r) * (1.0 - smoothstep(0.49, 0.50, r));
+
+	// Black and warm-white stones
+	vec3 white_stone = vec3(0.91, 0.88, 0.82);  // #E8E0D0
+	vec3 black_stone = vec3(0.10, 0.10, 0.10);  // #1A1A1A
+	vec3 col = mix(black_stone, white_stone, step(0.0, pattern) * inner);
+
+	// Central medallion area (r < 0.10): warm white for text
+	col = mix(white_stone, col, inner);
+
+	// Border ring: black
+	col = mix(col, black_stone, border);
+
+	// Outside circle: gray path surround
+	float outside = smoothstep(0.49, 0.50, r);
+	col = mix(col, vec3(0.45, 0.43, 0.40), outside);
+
+	// Subtle stone grain noise
+	float grain = fract(sin(dot(UV * 200.0, vec2(12.9898, 78.233))) * 43758.5453);
+	col += (grain - 0.5) * 0.03;
+
+	ALBEDO = col;
+	ROUGHNESS = 0.75;
+	METALLIC = 0.0;
+	SPECULAR = 0.2;
+	NORMAL_MAP = vec3(0.5, 0.5, 1.0);
+}
+""";
 
 
 # ---------------------------------------------------------------------------
@@ -3966,6 +4527,10 @@ func _build_water(water: Array) -> void:
 			_build_fountain(body)
 			continue
 
+		# Conservatory Water: add Atlantic Blue granite curb ring
+		if bname.to_lower().contains("conservatory"):
+			_build_water_curb(pts, Color(0.36, 0.42, 0.48))  # Atlantic Blue granite
+
 		# Water level = minimum terrain height along the shore + small offset.
 		var wy := INF
 		for pt in pts:
@@ -4045,7 +4610,7 @@ func _build_water(water: Array) -> void:
 		mat.set_shader_parameter("hm_world_size", _hm_world_size)
 		mat.set_shader_parameter("hm_min_h",      _hm_min_h)
 		mat.set_shader_parameter("hm_range",      _hm_max_h - _hm_min_h)
-		mat.set_shader_parameter("hm_res",        float(_hm_width))
+		mat.set_shader_parameter("hm_res",        float(mini(_hm_width, 4096)))
 	mesh.surface_set_material(0, mat)
 
 	var mi := MeshInstance3D.new()
@@ -4054,118 +4619,124 @@ func _build_water(water: Array) -> void:
 	add_child(mi)
 
 
-func _bake_water_proximity() -> void:
-	## Bake 512×512 R8 water proximity texture using spatial grid acceleration.
-	## Value = 1.0 at water edge, 0.0 beyond 20m.
-	if _water_polygons.is_empty():
-		return
-	const WP_RES := 512
-	const MAX_DIST := 20.0
-	const GRID_CELL := 25.0  # spatial grid cell size
-	var half := _hm_world_size * 0.5
-	# Build spatial grid of edge indices for fast lookup
-	var grid_n := int(ceil(_hm_world_size / GRID_CELL))
-	var edge_grid: Dictionary = {}
-	var edges: Array = []
-	for poly in _water_polygons:
-		for i in range(poly.size()):
-			var a: Vector2 = poly[i]
-			var b: Vector2 = poly[(i + 1) % poly.size()]
-			var eidx := edges.size()
-			edges.append([a, b])
-			# Insert into all grid cells the edge AABB touches (with MAX_DIST margin)
-			var emin_x := minf(a.x, b.x) - MAX_DIST
-			var emax_x := maxf(a.x, b.x) + MAX_DIST
-			var emin_z := minf(a.y, b.y) - MAX_DIST
-			var emax_z := maxf(a.y, b.y) + MAX_DIST
-			var gx0 := clampi(int((emin_x + half) / GRID_CELL), 0, grid_n - 1)
-			var gx1 := clampi(int((emax_x + half) / GRID_CELL), 0, grid_n - 1)
-			var gz0 := clampi(int((emin_z + half) / GRID_CELL), 0, grid_n - 1)
-			var gz1 := clampi(int((emax_z + half) / GRID_CELL), 0, grid_n - 1)
-			for gz in range(gz0, gz1 + 1):
-				for gx in range(gx0, gx1 + 1):
-					var gk := gz * grid_n + gx
-					if not edge_grid.has(gk):
-						edge_grid[gk] = []
-					edge_grid[gk].append(eidx)
-	var img := Image.create(WP_RES, WP_RES, false, Image.FORMAT_R8)
-	for pz in range(WP_RES):
-		var wz := -half + (float(pz) + 0.5) / float(WP_RES) * _hm_world_size
-		var gz := clampi(int((wz + half) / GRID_CELL), 0, grid_n - 1)
-		for px in range(WP_RES):
-			var wx := -half + (float(px) + 0.5) / float(WP_RES) * _hm_world_size
-			var gx := clampi(int((wx + half) / GRID_CELL), 0, grid_n - 1)
-			var gk := gz * grid_n + gx
-			var min_d := MAX_DIST
-			if edge_grid.has(gk):
-				var pt := Vector2(wx, wz)
-				for eidx in edge_grid[gk]:
-					var edge: Array = edges[eidx]
-					var a: Vector2 = edge[0]
-					var b: Vector2 = edge[1]
-					var ab := b - a
-					var ap := pt - a
-					var t := clampf(ap.dot(ab) / maxf(ab.dot(ab), 0.0001), 0.0, 1.0)
-					var closest := a + ab * t
-					var d := pt.distance_to(closest)
-					if d < min_d:
-						min_d = d
-			var val := 1.0 - clampf(min_d / MAX_DIST, 0.0, 1.0)
-			img.set_pixel(px, pz, Color(val, 0.0, 0.0, 1.0))
-	water_proximity_texture = ImageTexture.create_from_image(img)
-	print("Water proximity: %dx%d baked (%d edges)" % [WP_RES, WP_RES, edges.size()])
-
-
-func _bake_landuse_texture(landuse: Array) -> void:
-	## Bake 1024×1024 R8 landuse texture. Zone types:
-	## 0 = default, 1 = mowed lawn (Sheep Meadow, Great Lawn), 2 = garden, 3 = woodland
-	if landuse.is_empty():
-		print("Landuse: no data, skipping")
-		return
-	const LU_RES := 1024
-	var half := _hm_world_size * 0.5
-	var img := Image.create(LU_RES, LU_RES, false, Image.FORMAT_R8)
-	# Classify zones and build polygon arrays
-	var zone_polys: Array = []  # [PackedVector2Array, zone_type_float]
-	for zone in landuse:
-		var pts: Array = zone.get("points", [])
-		if pts.size() < 3:
+func _build_water_curb(pts: Array, tint: Color) -> void:
+	## Build a raised stone curb ring around a water body (e.g. Conservatory Water).
+	var rw_alb := _load_tex("res://textures/rock_wall_diff.jpg")
+	var rw_nrm := _load_tex("res://textures/rock_wall_nrm.jpg")
+	var rw_rgh := _load_tex("res://textures/rock_wall_rgh.jpg")
+	var mat := _make_stone_material(rw_alb, rw_nrm, rw_rgh, tint)
+	var curb_h := 0.35   # curb height above water
+	var curb_w := 0.30   # curb width
+	var verts := PackedVector3Array()
+	var normals := PackedVector3Array()
+	for i in pts.size():
+		var x0 := float(pts[i][0]); var z0 := float(pts[i][1])
+		var ni := (i + 1) % pts.size()
+		var x1 := float(pts[ni][0]); var z1 := float(pts[ni][1])
+		var dx := x1 - x0; var dz := z1 - z0
+		var seg_len := sqrt(dx * dx + dz * dz)
+		if seg_len < 0.1:
 			continue
-		var name_lower: String = str(zone.get("name", "")).to_lower()
-		var zone_type: String = str(zone.get("type", ""))
-		var zone_val := 0.0
-		# Mowed lawns: Sheep Meadow, Great Lawn, North Meadow, etc.
-		if name_lower.contains("meadow") or name_lower.contains("lawn") or \
-		   name_lower.contains("north meadow") or zone_type == "grass":
-			zone_val = 1.0 / 255.0  # type 1
-		elif name_lower.contains("garden") or name_lower.contains("conservatory") or \
-			 zone_type == "garden" or zone_type == "allotments":
-			zone_val = 2.0 / 255.0  # type 2
-		elif name_lower.contains("ramble") or name_lower.contains("north woods") or \
-			 zone_type == "forest" or zone_type == "wood":
-			zone_val = 3.0 / 255.0  # type 3
-		else:
-			continue  # skip unknown zones
-		var poly := PackedVector2Array()
-		for pt in pts:
-			poly.append(Vector2(float(pt[0]), float(pt[1])))
-		zone_polys.append([poly, zone_val])
-	if zone_polys.is_empty():
-		print("Landuse: no recognized zones")
+		var nx := -dz / seg_len; var nz := dx / seg_len  # outward normal
+		var y0 := _terrain_y(x0, z0); var y1 := _terrain_y(x1, z1)
+		# Inner edge (water side)
+		var ix0 := x0; var iz0 := z0; var ix1 := x1; var iz1 := z1
+		# Outer edge
+		var ox0 := x0 + nx * curb_w; var oz0 := z0 + nz * curb_w
+		var ox1 := x1 + nx * curb_w; var oz1 := z1 + nz * curb_w
+		# Top face
+		var iy0 := y0 + curb_h; var iy1 := y1 + curb_h
+		verts.append(Vector3(ix0, iy0, iz0)); verts.append(Vector3(ox0, iy0, oz0)); verts.append(Vector3(ox1, iy1, oz1))
+		verts.append(Vector3(ix0, iy0, iz0)); verts.append(Vector3(ox1, iy1, oz1)); verts.append(Vector3(ix1, iy1, iz1))
+		for _j in 6: normals.append(Vector3.UP)
+		# Outer face
+		verts.append(Vector3(ox0, y0, oz0)); verts.append(Vector3(ox1, y1, oz1)); verts.append(Vector3(ox1, iy1, oz1))
+		verts.append(Vector3(ox0, y0, oz0)); verts.append(Vector3(ox1, iy1, oz1)); verts.append(Vector3(ox0, iy0, oz0))
+		var fn := Vector3(nx, 0.0, nz)
+		for _j in 6: normals.append(fn)
+	if verts.is_empty():
 		return
-	# Rasterize zones
-	for pz in range(LU_RES):
-		var wz := -half + (float(pz) + 0.5) / float(LU_RES) * _hm_world_size
-		for px in range(LU_RES):
-			var wx := -half + (float(px) + 0.5) / float(LU_RES) * _hm_world_size
-			var pt := Vector2(wx, wz)
-			for zp in zone_polys:
-				var poly: PackedVector2Array = zp[0]
-				if Geometry2D.is_point_in_polygon(pt, poly):
-					img.set_pixel(px, pz, Color(zp[1], 0.0, 0.0, 1.0))
-					break  # first matching zone wins
-	landuse_texture = ImageTexture.create_from_image(img)
-	print("Landuse: %dx%d baked (%d zones)" % [LU_RES, LU_RES, zone_polys.size()])
+	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts; arrays[Mesh.ARRAY_NORMAL] = normals
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	mesh.surface_set_material(0, mat)
+	var mi := MeshInstance3D.new(); mi.mesh = mesh; mi.name = "WaterCurb_Conservatory"
+	add_child(mi)
+	print("ParkLoader: Conservatory Water curb (%d segments)" % pts.size())
+
+
+func _build_streams(streams: Array) -> void:
+	if streams.is_empty():
+		return
+	var verts := PackedVector3Array()
+	var normals := PackedVector3Array()
+	const STREAM_W := 1.5  # half-width in metres
+
+	for stream in streams:
+		var pts: Array = stream.get("points", [])
+		if pts.size() < 2:
+			continue
+		# Build ribbon mesh along polyline
+		for i in range(pts.size() - 1):
+			var x0: float = pts[i][0]
+			var y0: float = pts[i][1]
+			var z0: float = pts[i][2]
+			var x1: float = pts[i + 1][0]
+			var y1: float = pts[i + 1][1]
+			var z1: float = pts[i + 1][2]
+
+			# Direction and perpendicular
+			var dx := x1 - x0
+			var dz := z1 - z0
+			var ln := sqrt(dx * dx + dz * dz)
+			if ln < 0.01:
+				continue
+			var nx := -dz / ln * STREAM_W
+			var nz := dx / ln * STREAM_W
+
+			# Clamp Y to terrain + small offset so stream sits on surface
+			var ty0 := _terrain_y(x0, z0) + 0.05
+			var ty1 := _terrain_y(x1, z1) + 0.05
+			y0 = maxf(y0, ty0)
+			y1 = maxf(y1, ty1)
+
+			# Two triangles per segment
+			var a := Vector3(x0 - nx, y0, z0 - nz)
+			var b := Vector3(x0 + nx, y0, z0 + nz)
+			var c := Vector3(x1 + nx, y1, z1 + nz)
+			var d := Vector3(x1 - nx, y1, z1 - nz)
+			verts.append(a); verts.append(b); verts.append(c)
+			verts.append(a); verts.append(c); verts.append(d)
+			for _j in 6:
+				normals.append(Vector3.UP)
+
+	if verts.is_empty():
+		return
+
+	var arrays: Array = []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts
+	arrays[Mesh.ARRAY_NORMAL] = normals
+
+	var s_mesh := ArrayMesh.new()
+	s_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+
+	var mat := ShaderMaterial.new()
+	mat.shader = _get_shader("water", _water_shader_code())
+	if _hm_texture:
+		mat.set_shader_parameter("heightmap_tex", _hm_texture)
+		mat.set_shader_parameter("hm_world_size", _hm_world_size)
+		mat.set_shader_parameter("hm_min_h",      _hm_min_h)
+		mat.set_shader_parameter("hm_range",      _hm_max_h - _hm_min_h)
+		mat.set_shader_parameter("hm_res",        float(mini(_hm_width, 4096)))
+	s_mesh.surface_set_material(0, mat)
+
+	var s_mi := MeshInstance3D.new()
+	s_mi.mesh = s_mesh
+	s_mi.name = "Streams"
+	add_child(s_mi)
+	print("  Streams: %d polylines, %d triangles" % [streams.size(), verts.size() / 3])
 
 
 func _water_shader_code() -> String:
@@ -4178,10 +4749,30 @@ uniform float hm_min_h      = 0.0;
 uniform float hm_range      = 1.0;
 uniform float hm_res        = 256.0;
 uniform float water_y_offset = 0.03;
+global uniform float rain_wetness;
+global uniform vec3 sky_reflect_color;
 
 varying vec3 world_pos;
 varying float v_shore_dist;
 varying float v_water_depth;
+
+// Raindrop ripple rings — concentric circles from random impact points
+float raindrop_ripple(vec2 p) {
+	float t = TIME;
+	float ripple = 0.0;
+	// 6 rain impact layers, offset to avoid synchronization
+	for (int i = 0; i < 6; i++) {
+		vec2 cell = floor(p * (1.5 + float(i) * 0.3)) + vec2(float(i) * 17.3, float(i) * 31.7);
+		vec2 center = cell + vec2(fract(sin(dot(cell, vec2(127.1, 311.7))) * 43758.5453),
+		                          fract(sin(dot(cell, vec2(269.5, 183.3))) * 43758.5453));
+		float phase = fract(sin(dot(cell, vec2(113.5, 271.9))) * 43758.5453) * 3.0;
+		float age = fract(t * 0.4 + phase);  // 0→1 lifecycle
+		float dist = length(p * (1.5 + float(i) * 0.3) - center);
+		float ring = sin((dist - age * 3.0) * 18.0) * exp(-dist * 2.5) * (1.0 - age);
+		ripple += ring * 0.15;
+	}
+	return ripple;
+}
 
 // Decode 16-bit height from RG8
 float decode_h(vec4 s) {
@@ -4278,20 +4869,77 @@ void fragment() {
 	float n_fine  = gnoise(uv * 3.5 + vec2(t * 0.15, -t * 0.12));
 	float wave_h  = n_large * 0.4 + n_med * 0.35 + n_fine * 0.25;
 
-	// Depth-based tinting — deeper water is darker
-	vec3 deep    = vec3(0.025, 0.045, 0.050);
-	vec3 shallow = vec3(0.065, 0.12, 0.095);
-	float depth_blend = smoothstep(0.0, 3.0, v_water_depth);
-	vec3 base_col = mix(shallow, deep, depth_blend);
-	// Subtle wave-based variation on top
-	base_col = mix(base_col, base_col * 1.15, smoothstep(-0.3, 0.6, wave_h) * 0.3);
+	vec3 deep    = vec3(0.020, 0.038, 0.028);   // dark olive-green (Central Park lakes)
+	vec3 shallow = vec3(0.050, 0.075, 0.045);   // slightly warmer shallow
+	float extra_reflect = 0.0;
+
+	// Per-water-body character based on world position
+	// Conservatory Water (Model Boat Pond): shallow formal reflecting pool
+	float d_conserv = length(world_pos.xz - vec2(-152.0, 958.0));
+	if (d_conserv < 80.0) {
+		deep    = vec3(0.035, 0.050, 0.045);   // lighter, blue-gray
+		shallow = vec3(0.065, 0.085, 0.075);
+		extra_reflect = 0.15;
+	}
+	// Turtle Pond: shallow, murky, dark green-brown
+	float d_turtle = length(world_pos.xz - vec2(-213.0, 374.0));
+	if (d_turtle < 120.0) {
+		deep    = vec3(0.018, 0.030, 0.020);   // darker, murkier
+		shallow = vec3(0.040, 0.055, 0.035);
+	}
+	// Reservoir: large, open, more reflective blue
+	float d_reserv = length(world_pos.xz - vec2(282.0, -424.0));
+	if (d_reserv < 500.0) {
+		deep    = vec3(0.015, 0.030, 0.035);   // blue-tinted deep
+		shallow = vec3(0.040, 0.065, 0.070);
+		extra_reflect = 0.10;
+	}
+	// Harlem Meer: large, dark green-blue, reflective
+	float d_meer = length(world_pos.xz - vec2(1132.0, -1494.0));
+	if (d_meer < 250.0) {
+		deep    = vec3(0.015, 0.032, 0.032);
+		shallow = vec3(0.040, 0.060, 0.058);
+		extra_reflect = 0.08;
+	}
+	// The Pool (North Woods): secluded, dark, tree-shadowed
+	float d_pool = length(world_pos.xz - vec2(-400.0, -1100.0));
+	if (d_pool < 80.0) {
+		deep    = vec3(0.012, 0.025, 0.018);   // very dark, canopy-shadowed
+		shallow = vec3(0.030, 0.048, 0.032);
+	}
+	// The Lake (main): classic Central Park, moderate reflectivity
+	float d_lake = length(world_pos.xz - vec2(-420.0, 740.0));
+	if (d_lake < 250.0) {
+		deep    = vec3(0.018, 0.034, 0.028);   // natural dark green
+		shallow = vec3(0.045, 0.065, 0.050);
+		extra_reflect = 0.05;
+	}
+
+	// Subtle blend — mostly deep, shallow only at wave peaks
+	vec3 base_col = mix(deep, shallow, smoothstep(-0.3, 0.6, wave_h));
+
+	// Rain ripples — concentric ring disturbance when raining
+	if (rain_wetness > 0.01) {
+		float rr = raindrop_ripple(world_pos.xz / 6.0);
+		float e = 0.02;
+		float rr_dx = raindrop_ripple((world_pos.xz + vec2(e, 0.0)) / 6.0);
+		float rr_dz = raindrop_ripple((world_pos.xz + vec2(0.0, e)) / 6.0);
+		vec3 ripple_n = normalize(vec3(
+			-(rr_dx - rr) / e * 0.3,
+			1.0,
+			-(rr_dz - rr) / e * 0.3
+		));
+		wave_nrm = normalize(mix(wave_nrm, ripple_n, rain_wetness * 0.6));
+	}
 
 	NORMAL    = normalize((VIEW_MATRIX * vec4(wave_nrm, 0.0)).xyz);
 
-	// Let SSR handle reflections — Fresnel controls roughness for glancing reflection
+	// Fresnel — glancing angles reflect sky (color tracks time of day)
 	float fresnel = pow(1.0 - max(dot(NORMAL, VIEW), 0.0), 4.0);
+	vec3 sky_col = sky_reflect_color;
+	vec3 col = mix(base_col, sky_col, fresnel * (0.6 + extra_reflect));
 
-	// Foam — white caps at wave peaks
+	// Foam — white caps at wave peaks (subtle in ponds, more on reservoir)
 	float foam = smoothstep(0.6, 0.85, wave_h);
 	base_col = mix(base_col, vec3(0.85, 0.90, 0.92), foam * 0.7);
 
@@ -4379,7 +5027,25 @@ func _build_buildings(buildings: Array) -> void:
 		for pt in pts:
 			cx += float(pt[0]); cz += float(pt[1])
 		cx /= float(n); cz /= float(n)
+		var bld_name: String = str(bld.get("name", "")).to_lower()
 		var style := _building_style(cx, cz, h)
+		# Named in-park buildings: override style per Wikimedia research
+		if bld_name.contains("boathouse") or bld_name.contains("kerbs"):
+			style = 2  # RED_BRICK — Kerbs Boathouse (red brick + copper roof)
+		elif bld_name.contains("dairy"):
+			style = 4  # DARK_STONE — The Dairy (Victorian stone + gables)
+		elif bld_name.contains("belvedere") or bld_name.contains("castle"):
+			style = 4  # DARK_STONE — Belvedere Castle (Manhattan schist)
+		elif bld_name.contains("bandshell") or bld_name.contains("naumburg"):
+			style = 0  # LIMESTONE — Naumburg Bandshell (concrete/limestone)
+		elif bld_name.contains("blockhouse"):
+			style = 4  # DARK_STONE — Blockhouse No. 1 (1814, Manhattan schist)
+		elif bld_name.contains("pavilion") or bld_name.contains("ladies"):
+			style = 0  # LIMESTONE — Ladies' Pavilion (ornamental cast iron, light)
+		elif bld_name.contains("arsenal"):
+			style = 2  # RED_BRICK — The Arsenal (1848, red brick Gothic Revival)
+		elif bld_name.contains("chess") or bld_name.contains("checkers"):
+			style = 4  # DARK_STONE — Chess & Checkers House (rustic stone)
 
 		# Per-building tint variation via vertex color (±15%)
 		rng.seed = int(abs(cx * 73.7 + cz * 131.1)) + 12345
@@ -4585,15 +5251,33 @@ func _build_buildings(buildings: Array) -> void:
 		for pt in pts:
 			polygon.append(Vector2(float(pt[0]), float(pt[1])))
 		var indices := Geometry2D.triangulate_polygon(polygon)
-		# Per-building roof color: dark tar (30%), light concrete (30%), brown (20%), greenish (20%)
-		var roof_rv := fmod(abs(cx * 11.3 + cz * 17.7), 10.0)
+		# Named in-park building roof overrides (Wikimedia reference)
 		var roof_col := Color(0.18, 0.17, 0.16)  # dark tar default
-		if roof_rv >= 3.0 and roof_rv < 6.0:
-			roof_col = Color(0.52, 0.50, 0.48)    # light concrete
-		elif roof_rv >= 6.0 and roof_rv < 8.0:
-			roof_col = Color(0.34, 0.28, 0.20)    # brown
-		elif roof_rv >= 8.0:
-			roof_col = Color(0.28, 0.36, 0.26)    # greenish patina
+		var roof_override := false
+		if bld_name.contains("boathouse") or bld_name.contains("kerbs"):
+			roof_col = Color(0.29, 0.48, 0.42)    # aged copper verdigris #4A7B6B
+			roof_override = true
+		elif bld_name.contains("dairy"):
+			roof_col = Color(0.35, 0.33, 0.30)    # dark slate
+			roof_override = true
+		elif bld_name.contains("belvedere") or bld_name.contains("castle"):
+			roof_col = Color(0.32, 0.30, 0.28)    # schist gray cap
+			roof_override = true
+		elif bld_name.contains("blockhouse"):
+			roof_col = Color(0.30, 0.28, 0.26)    # weathered stone cap
+			roof_override = true
+		elif bld_name.contains("arsenal"):
+			roof_col = Color(0.22, 0.20, 0.18)    # dark slate
+			roof_override = true
+		if not roof_override:
+			# Random roof: dark tar (30%), light concrete (30%), brown (20%), greenish (20%)
+			var roof_rv := fmod(abs(cx * 11.3 + cz * 17.7), 10.0)
+			if roof_rv >= 3.0 and roof_rv < 6.0:
+				roof_col = Color(0.52, 0.50, 0.48)    # light concrete
+			elif roof_rv >= 6.0 and roof_rv < 8.0:
+				roof_col = Color(0.34, 0.28, 0.20)    # brown
+			elif roof_rv >= 8.0:
+				roof_col = Color(0.28, 0.36, 0.26)    # greenish patina
 		for i in range(0, indices.size(), 3):
 			roof_verts.append(Vector3(polygon[indices[i    ]].x, top, polygon[indices[i    ]].y))
 			roof_verts.append(Vector3(polygon[indices[i + 1]].x, top, polygon[indices[i + 1]].y))
@@ -4665,6 +5349,7 @@ func _build_buildings(buildings: Array) -> void:
 		_make_facade_buff_brick(),
 		_make_facade_dark_stone(),
 	]
+	facade_materials = style_mats.duplicate()
 	for s in range(5):
 		if sv[s].is_empty():
 			continue
@@ -4748,6 +5433,8 @@ uniform float win_h = 2.0;
 uniform float gap_x = 0.6;
 uniform float gap_y = 0.8;
 uniform float ground_h = 3.5;
+uniform float night_factor = 0.0;
+uniform sampler2D win_gradient : source_color, filter_linear_mipmap;
 
 uniform sampler2D facade_color : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D facade_normal : hint_normal, filter_linear_mipmap_anisotropic, repeat_enable;
@@ -4830,6 +5517,7 @@ void fragment() {
 	float metal;
 	vec3 norm = vec3(0.5, 0.5, 1.0);
 	float norm_depth = 0.8;
+	vec3 emission = vec3(0.0);
 
 	if (in_win) {
 		if (gnd_win) {
@@ -4847,6 +5535,35 @@ void fragment() {
 		}
 		norm = vec3(0.5, 0.5, 1.0);
 		norm_depth = 0.0;
+
+		// Night window emission
+		if (night_factor > 0.01 && !in_reveal) {
+			// ~65% of windows lit, warm interior tones
+			bool is_lit = wrand < 0.65;
+			if (gnd_win) {
+				is_lit = wrand < 0.80;  // storefronts more likely lit
+			}
+			if (is_lit) {
+				// Candlelight — dim, warm amber glow
+				float warmth = fract(wrand * 7.3);
+				vec3 warm_light = mix(vec3(1.0, 0.68, 0.28), vec3(1.0, 0.76, 0.40), warmth);
+				// ~10% of lit windows have faint blue TV glow
+				if (fract(wrand * 13.7) < 0.10) {
+					warm_light = vec3(0.35, 0.42, 0.58);
+				}
+				float em_strength = gnd_win ? 0.60 : 0.50;
+				em_strength *= (0.6 + wrand * 0.5);
+				// Window gradient — ceiling lamp glow, mostly dark
+				vec2 win_uv = gnd_win
+					? vec2(gnd_lx / 0.65, clamp((UV.y - 1.2) / (ground_h - 1.2), 0.0, 1.0))
+					: vec2(lx / win_frac_x, ly / win_frac_y);
+				vec3 grad = texture(win_gradient, vec2(win_uv.x, 1.0 - win_uv.y)).rgb;
+				emission = warm_light * grad * em_strength * night_factor;
+				col = warm_light * grad * 0.15;
+				rough = 0.9;
+				metal = 0.0;
+			}
+		}
 	} else {
 		// Sample Facade011 textures for wall surface detail
 		vec3 fac_col = texture(facade_color, fac_uv).rgb;
@@ -4882,12 +5599,15 @@ void fragment() {
 	METALLIC  = metal;
 	NORMAL_MAP = norm;
 	NORMAL_MAP_DEPTH = norm_depth;
+	EMISSION = emission;
 
 	// Atmospheric distance fade — buildings dissolve into haze
 	float bldg_dist = length(world_pos.xyz - INV_VIEW_MATRIX[3].xyz);
 	float atm_fade = smoothstep(80.0, 250.0, bldg_dist);
 	ALBEDO = mix(ALBEDO, vec3(0.42, 0.40, 0.38), atm_fade * 0.5);
 	ROUGHNESS = mix(ROUGHNESS, 0.95, atm_fade * 0.3);
+	// Fade emission with distance too (don't overlight distant buildings)
+	EMISSION *= (1.0 - atm_fade * 0.7);
 }
 """
 
@@ -4910,6 +5630,8 @@ uniform float win_h = 1.8;
 uniform float gap_x = 0.7;
 uniform float gap_y = 1.0;
 uniform float ground_h = 3.0;
+uniform float night_factor = 0.0;
+uniform sampler2D win_gradient : source_color, filter_linear_mipmap;
 
 varying vec3 world_pos;
 
@@ -4978,21 +5700,47 @@ void fragment() {
 	float wrand = hash2(bld * 0.5 + cell_idx * 0.13);
 
 	vec2 tex_uv = UV * tex_scale;
+	vec3 emission = vec3(0.0);
 
 	if (in_win) {
+		vec3 win_col;
 		if (gnd_win) {
-			ALBEDO = mix(glass_a * 0.7, glass_b * 0.6, wrand * 0.4);
+			win_col = mix(glass_a * 0.7, glass_b * 0.6, wrand * 0.4);
 		} else {
-			ALBEDO = mix(glass_a, glass_b, wrand);
+			win_col = mix(glass_a, glass_b, wrand);
 		}
 		ROUGHNESS = glass_rough;
 		METALLIC  = glass_metal;
 		if (in_reveal) {
-			ALBEDO *= 0.35;
+			win_col *= 0.35;
 			ROUGHNESS = 0.6;
 			METALLIC = 0.0;
 		}
 		NORMAL_MAP = vec3(0.5, 0.5, 1.0);
+
+		// Night window emission
+		if (night_factor > 0.01 && !in_reveal) {
+			bool is_lit = wrand < 0.65;
+			if (gnd_win) { is_lit = wrand < 0.80; }
+			if (is_lit) {
+				float warmth = fract(wrand * 7.3);
+				vec3 warm_light = mix(vec3(1.0, 0.68, 0.28), vec3(1.0, 0.76, 0.40), warmth);
+				if (fract(wrand * 13.7) < 0.10) {
+					warm_light = vec3(0.35, 0.42, 0.58);
+				}
+				float em_strength = gnd_win ? 0.60 : 0.50;
+				em_strength *= (0.6 + wrand * 0.5);
+				vec2 win_uv = gnd_win
+					? vec2(gnd_lx / 0.65, clamp((UV.y - 1.2) / (ground_h - 1.2), 0.0, 1.0))
+					: vec2(lx / win_frac_x, ly / win_frac_y);
+				vec3 grad = texture(win_gradient, vec2(win_uv.x, 1.0 - win_uv.y)).rgb;
+				emission = warm_light * grad * em_strength * night_factor;
+				win_col = warm_light * grad * 0.15;
+				ROUGHNESS = 0.9;
+				METALLIC = 0.0;
+			}
+		}
+		ALBEDO = win_col;
 	} else {
 		vec3 brick_col = texture(brick_alb, tex_uv).rgb * COLOR.rgb;
 		if (is_cornice) {
@@ -5015,11 +5763,14 @@ void fragment() {
 		NORMAL_MAP_DEPTH = is_ledge ? 1.2 : 1.0;
 	}
 
+	EMISSION = emission;
+
 	// Atmospheric distance fade — buildings dissolve into haze
 	float bldg_dist = length(world_pos.xyz - INV_VIEW_MATRIX[3].xyz);
 	float atm_fade = smoothstep(80.0, 250.0, bldg_dist);
 	ALBEDO = mix(ALBEDO, vec3(0.42, 0.40, 0.38), atm_fade * 0.5);
 	ROUGHNESS = mix(ROUGHNESS, 0.95, atm_fade * 0.3);
+	EMISSION *= (1.0 - atm_fade * 0.7);
 }
 """
 
@@ -5032,6 +5783,8 @@ func _set_facade_textures(mat: ShaderMaterial) -> void:
 	if fn: mat.set_shader_parameter("facade_normal", fn)
 	if fr: mat.set_shader_parameter("facade_rough", fr)
 	mat.set_shader_parameter("facade_tile", 2.0)
+	var wg := _load_tex("res://textures/window_night_gradient.png")
+	if wg: mat.set_shader_parameter("win_gradient", wg)
 
 
 func _make_facade_limestone() -> ShaderMaterial:
@@ -5088,6 +5841,8 @@ func _make_facade_red_brick() -> ShaderMaterial:
 	mat.set_shader_parameter("gap_x", 0.8)
 	mat.set_shader_parameter("gap_y", 1.0)
 	mat.set_shader_parameter("ground_h", 3.0)
+	var wg := _load_tex("res://textures/window_night_gradient.png")
+	if wg: mat.set_shader_parameter("win_gradient", wg)
 	return mat
 
 
@@ -5107,6 +5862,8 @@ func _make_facade_buff_brick() -> ShaderMaterial:
 	mat.set_shader_parameter("gap_x", 0.6)
 	mat.set_shader_parameter("gap_y", 0.8)
 	mat.set_shader_parameter("ground_h", 3.5)
+	var wg := _load_tex("res://textures/window_night_gradient.png")
+	if wg: mat.set_shader_parameter("win_gradient", wg)
 	return mat
 
 
@@ -5132,150 +5889,468 @@ func _make_facade_dark_stone() -> ShaderMaterial:
 # ---------------------------------------------------------------------------
 # Trees – crossed billboard planes, separate broadleaf/conifer MultiMeshes
 # ---------------------------------------------------------------------------
+func _collect_meshes(node: Node, out: Array, _depth: int = 0) -> void:
+	if node is MeshInstance3D:
+		out.append(node.mesh)
+	for child in node.get_children():
+		_collect_meshes(child, out, _depth + 1)
+
+
+## Load a GLB file at runtime via GLTFDocument, return dict of {mesh_name: Mesh}.
+func _load_glb_meshes(abs_path: String) -> Dictionary:
+	var result: Dictionary = {}
+	if not FileAccess.file_exists(abs_path):
+		print("WARNING: GLB not found: %s" % abs_path)
+		return result
+	var gltf_doc := GLTFDocument.new()
+	var gltf_state := GLTFState.new()
+	var err := gltf_doc.append_from_file(abs_path, gltf_state)
+	if err != OK:
+		print("WARNING: failed to load GLB %s (error %d)" % [abs_path, err])
+		return result
+	var root: Node = gltf_doc.generate_scene(gltf_state)
+	if root == null:
+		return result
+	_collect_named_meshes(root, result)
+	root.queue_free()
+	return result
+
+
+func _collect_named_meshes(node: Node, out: Dictionary) -> void:
+	if node is MeshInstance3D and node.mesh != null:
+		out[node.name] = node.mesh
+	for child in node.get_children():
+		_collect_named_meshes(child, out)
+
+
+# ---------------------------------------------------------------------------
+# Vegetation mesh loader — Quaternius Stylized Nature MegaKit (CC0)
+# ---------------------------------------------------------------------------
+
+func _load_vegetation_meshes() -> void:
+	## Load all vegetation glTF models from models/vegetation/.
+	## Each model is one mesh at metre scale, Y-up, with shared PNG textures.
+	var veg_models := [
+		"Bush_Common", "Bush_Common_Flowers",
+		"Fern_1",
+		"Flower_3_Group", "Flower_3_Single", "Flower_4_Group", "Flower_4_Single",
+		"Grass_Common_Short", "Grass_Common_Tall", "Grass_Wispy_Short", "Grass_Wispy_Tall",
+		"Clover_1", "Clover_2",
+		"Plant_1", "Plant_1_Big",
+		"Mushroom_Common",
+		"Rock_Medium_1", "Rock_Medium_2", "Rock_Medium_3",
+	]
+	for model_name in veg_models:
+		var gltf_path := ProjectSettings.globalize_path(
+			"res://models/vegetation/%s.gltf" % model_name)
+		if not FileAccess.file_exists(gltf_path):
+			continue
+		var gltf_doc := GLTFDocument.new()
+		var gltf_state := GLTFState.new()
+		var err := gltf_doc.append_from_file(gltf_path, gltf_state)
+		if err != OK:
+			print("WARNING: vegetation load failed: %s (error %d)" % [model_name, err])
+			continue
+		var root: Node = gltf_doc.generate_scene(gltf_state)
+		if root == null:
+			continue
+		var meshes: Array = []
+		_collect_meshes(root, meshes)
+		if not meshes.is_empty():
+			# Impressionistic art nouveau palette — rich, warm, painterly
+			var m: Mesh = meshes[0]
+			var is_flower: bool = model_name.begins_with("Flower") or model_name == "Bush_Common_Flowers"
+			var is_rock: bool = model_name.begins_with("Rock_")
+			var is_mushroom: bool = model_name.begins_with("Mushroom")
+			for si in m.get_surface_count():
+				var smat: Material = m.surface_get_material(si)
+				if smat is StandardMaterial3D:
+					var sm: StandardMaterial3D = smat as StandardMaterial3D
+					if is_rock:
+						sm.albedo_color = Color(0.58, 0.52, 0.44, 1.0)  # warm sandstone
+						sm.roughness = 0.92
+						sm.metallic = 0.0
+					elif is_mushroom:
+						sm.albedo_color = Color(0.75, 0.58, 0.38, 1.0)  # amber-ochre
+						sm.roughness = 0.88
+						sm.metallic = 0.0
+					elif is_flower:
+						sm.albedo_color = Color(0.80, 0.55, 0.52, 1.0)  # dusty rose
+						sm.roughness = 0.85
+						sm.metallic = 0.0
+					else:
+						# Lush painterly green — saturated but soft
+						sm.albedo_color = Color(0.72, 0.88, 0.62, 1.0)
+						sm.roughness = 0.88
+						sm.metallic = 0.0
+			_veg_meshes[model_name] = m
+		root.queue_free()
+	print("Vegetation: loaded %d meshes" % _veg_meshes.size())
+
+
 func _build_trees(trees: Array) -> void:
 	if trees.is_empty():
 		return
 
 	var rng := RandomNumberGenerator.new()
 
-	# [trunk_h_min, trunk_h_max, trunk_r_min, trunk_r_max, canopy_sx, canopy_sy]
-	var ap_table := [
-		[15.0, 24.0, 0.28, 0.50, 1.55, 0.85],   # 0 oak
-		[12.0, 18.0, 0.20, 0.36, 1.05, 1.05],   # 1 maple
-		[20.0, 28.0, 0.18, 0.30, 0.70, 1.40],   # 2 elm
-		[1.0,   3.5, 0.05, 0.12, 2.10, 0.45],   # 3 shrub
-		[18.0, 32.0, 0.16, 0.26, 0.40, 2.30],   # 4 conifer
-	]
+	# --- Load GLB tree models (Quaternius CC0) via GLTFDocument ---
+	# Each GLB has 5 tree variants as separate MeshInstance3D children.
+	# Models use centimetre scale (node scale=100 in GLB) and Z-up orientation.
+	# We load at runtime via GLTFDocument since the project has no editor import cache.
+	# Per-species leaf and bark colors
+	var leaf_tints := {
+		"maple":     Vector3(0.30, 0.50, 0.18),   # bright green, warm
+		"birch":     Vector3(0.34, 0.52, 0.22),   # light yellow-green
+		"deciduous": Vector3(0.26, 0.44, 0.16),   # medium green
+		"pine":      Vector3(0.14, 0.30, 0.10),   # dark desaturated green
+		"elm":       Vector3(0.24, 0.42, 0.15),   # medium-warm green (American Elm)
+	}
+	var bark_colors := {
+		"maple":     Color(0.50, 0.40, 0.30),     # medium brown
+		"birch":     Color(0.80, 0.76, 0.68),     # distinctive white bark
+		"deciduous": Color(0.42, 0.34, 0.26),     # dark brown
+		"pine":      Color(0.48, 0.34, 0.22),     # reddish-brown
+		"elm":       Color(0.30, 0.25, 0.18),     # gray-brown (American Elm bark)
+	}
+	var species_meshes: Dictionary = {}  # species_name -> Array[Mesh]
+	var species_heights: Dictionary = {} # species_name -> float (mesh height in raw units)
+	for species in ["maple", "birch", "deciduous", "pine", "elm"]:
+		var abs_path := ProjectSettings.globalize_path("res://models/trees/%s.glb" % species)
+		if not FileAccess.file_exists(abs_path):
+			print("WARNING: tree model not found: %s" % abs_path)
+			continue
+		var gltf_doc := GLTFDocument.new()
+		var gltf_state := GLTFState.new()
+		var err := gltf_doc.append_from_file(abs_path, gltf_state)
+		if err != OK:
+			print("WARNING: failed to load GLB %s (error %d)" % [abs_path, err])
+			continue
+		var root: Node = gltf_doc.generate_scene(gltf_state)
+		if root == null:
+			print("WARNING: generate_scene returned null for %s" % species)
+			continue
+		var meshes: Array = []
+		var node_scale := 1.0
+		_collect_meshes(root, meshes)
+		# Detect node scale: Quaternius models have scale=100 on mesh nodes.
+		# Scene tree: root → RootNode → NormalTree_N (scale=100, has mesh).
+		for child in root.get_children():
+			if child is Node3D:
+				var s: Vector3 = (child as Node3D).scale
+				if s.x > 1.0:
+					node_scale = s.x
+					break
+				for gc in child.get_children():
+					if gc is Node3D:
+						var gs: Vector3 = (gc as Node3D).scale
+						if gs.x > 1.0:
+							node_scale = gs.x
+							break
+				if node_scale > 1.0:
+					break
+		# Compute mesh height — use RAW AABB since we need the scale factor
+		# to include the GLB node scale (100x for Quaternius centimetre models).
+		# desired_h / raw_mesh_h gives the correct total scale factor.
+		var max_h := 0.0
+		for m: Mesh in meshes:
+			var ab: AABB = m.get_aabb()
+			# Use Z dimension for height: GLB models preserve Blender Z-up in raw
+			# mesh vertices (axis conversion is a node transform, not baked into verts)
+			var h := ab.size.z
+			# Fallback: if Z is tiny (degenerate), use max dimension
+			if h < 0.001:
+				h = maxf(ab.size.x, maxf(ab.size.y, ab.size.z))
+			max_h = maxf(max_h, h)
+		root.queue_free()
+		if meshes.is_empty():
+			print("WARNING: no meshes found in %s" % species)
+			continue
+		# Per-species colors for leaves and bark
+		var leaf_tint: Vector3 = leaf_tints.get(species, Vector3(0.28, 0.48, 0.18))
+		var bark_col: Color = bark_colors.get(species, Color(0.48, 0.38, 0.28))
+		var leaf_shader: Shader = _get_shader("tree_leaf_glb", _tree_glb_leaf_shader_code())
+		for m: Mesh in meshes:
+			for si in m.get_surface_count():
+				var smat: Material = m.surface_get_material(si)
+				if smat is StandardMaterial3D:
+					var sm: StandardMaterial3D = smat as StandardMaterial3D
+					if sm.transparency != BaseMaterial3D.TRANSPARENCY_DISABLED:
+						# Leaves — replace with snow-aware shader
+						var leaf_mat := ShaderMaterial.new()
+						leaf_mat.shader = leaf_shader
+						leaf_mat.set_shader_parameter("albedo_tint", leaf_tint)
+						if sm.albedo_texture:
+							leaf_mat.set_shader_parameter("albedo_tex", sm.albedo_texture)
+						leaf_mat.set_shader_parameter("alpha_scissor", sm.alpha_scissor_threshold if sm.alpha_scissor_threshold > 0.0 else 0.5)
+						m.surface_set_material(si, leaf_mat)
+					else:
+						# Bark — species-specific color
+						sm.albedo_color = bark_col
+						sm.roughness = 0.90
+						sm.metallic = 0.0
+		species_meshes[species] = meshes
+		species_heights[species] = max_h
+		print("Trees: loaded %s — %d variants, raw=%.4f actual=%.1fm" % [species, meshes.size(), max_h, max_h * node_scale])
 
-	# Bark textures
-	var bark_alb  := _load_tex("res://textures/Bark007_2K-JPG_Color.jpg")
-	var bark_nrm  := _load_tex("res://textures/Bark007_2K-JPG_NormalGL.jpg")
-	var bark_rgh  := _load_tex("res://textures/Bark007_2K-JPG_Roughness.jpg")
-	var bark_ao   := _load_tex("res://textures/Bark007_2K-JPG_AmbientOcclusion.jpg")
+	if species_meshes.is_empty():
+		print("WARNING: no tree GLB models loaded, falling back skipped")
+		return
 
-	# Leaf card meshes — 3 LOD levels
-	var broad_leaf_mesh := _make_leaf_card_mesh(false)
-	var conif_leaf_mesh := _make_leaf_card_mesh(true)
-	var broad_lod1 := _make_leaf_card_mesh_lod1(false)
-	var conif_lod1 := _make_leaf_card_mesh_lod1(true)
-	var lod2_mesh  := _make_leaf_card_mesh_lod2()
+	# Map data species to GLB model species
+	var glb_species_map := {
+		"oak":       "deciduous",
+		"maple":     "maple",
+		"elm":       "elm",      # dedicated vase-shaped American Elm model
+		"conifer":   "pine",
+		"deciduous": "deciduous",
+		"birch":     "birch",
+	}
+	# Desired height ranges per species archetype (metres)
+	# [min, max] — mature American Elms are 20-30m; census DBH drives interpolation
+	var height_ranges := {
+		"oak":       [14.0, 25.0],
+		"maple":     [10.0, 20.0],
+		"elm":       [18.0, 30.0],   # American Elm — tall vase shape
+		"conifer":   [15.0, 30.0],
+		"deciduous": [10.0, 22.0],
+	}
 
-	# Per-species leaf materials: oak=LeafSet003, maple+shrub=LeafSet005, elm=LeafSet009, conifer=LeafSet019
-	var oak_mat   := _make_leaf_mat(true, "LeafSet003", 0)   # oak
-	var maple_mat := _make_leaf_mat(true, "LeafSet005", 1)   # maple
-	var elm_mat   := _make_leaf_mat(true, "LeafSet009", 2)   # elm
-	var conif_mat := _make_leaf_mat(false, "", 3)             # conifer
+	# Foliage zone data for deciduous sub-species assignment
+	var foliage_zones: Array = _foliage_zones
 
-	# 8 trunk mesh variants with randomized branches for visual variety
-	const N_TRUNK_VARIANTS := 8
-	var trunk_meshes: Array = []
-	for vi in N_TRUNK_VARIANTS:
-		trunk_meshes.append(_make_trunk_with_branches_mesh(vi))
-
-	var trunk_mat   := ShaderMaterial.new()
-	trunk_mat.shader = _get_shader("trunk", _trunk_shader_code())
-	if bark_alb:
-		trunk_mat.set_shader_parameter("bark_albedo", bark_alb)
-		trunk_mat.set_shader_parameter("bark_normal",  bark_nrm)
-		trunk_mat.set_shader_parameter("bark_rough",   bark_rgh)
-		trunk_mat.set_shader_parameter("bark_ao",      bark_ao)
-
-	# Collect transforms per group: oak / maple+shrub / elm / conifer
-	var oak_xf:   Array = []
-	var maple_xf: Array = []
-	var elm_xf:   Array = []
-	var conif_xf: Array = []
-	# Per-variant trunk transform arrays
-	var trunk_xf_by_variant: Array = []
-	for _vi in N_TRUNK_VARIANTS:
-		trunk_xf_by_variant.append([])
+	# Collect transforms per species-variant for MultiMesh batching
+	# Key: "species_variantIdx" -> Array[Transform3D]
+	var xf_by_key: Dictionary = {}
 	var all_trunk_xf: Array = []  # for collision
+	# LOD1 billboard data: [Transform3D] per color_key for distant imposters
+	var lod1_xf: Array = []  # Array of Transform3D (position + crown scale encoded)
 
 	for i in trees.size():
-		var pt: Array = trees[i]
+		var tree_entry = trees[i]
+		var pt: Array
+		var tree_species := "deciduous"
+		var dbh := 12
+		# Support both new dict format and legacy [x, h, z] arrays
+		if typeof(tree_entry) == TYPE_DICTIONARY:
+			pt = tree_entry["pos"]
+			tree_species = str(tree_entry.get("species", "deciduous"))
+			dbh = int(tree_entry.get("dbh", 12))
+		else:
+			pt = tree_entry
 		var tx := float(pt[0]); var tz := float(pt[2])
 		if not _in_boundary(tx, tz):
+			continue
+		if _is_on_path(tx, tz):
 			continue
 		var ty := _terrain_y(tx, tz)
 		rng.seed = i * 1234567891 + 987654321
 
-		var rv := rng.randf()
-		var arch := 0
-		if   rv < 0.35: arch = 0
-		elif rv < 0.65: arch = 1
-		elif rv < 0.85: arch = 2
-		elif rv < 0.97: arch = 3
-		else:           arch = 4
+		# Zone-based species refinement for generic "deciduous" trees
+		var effective_species := tree_species
+		if tree_species == "deciduous":
+			# Check foliage zones: if tree is in a known zone, assign dominant species
+			for fz in foliage_zones:
+				var zr: Array = fz.get("z_range", [])
+				if zr.size() >= 2 and tz >= float(zr[0]) and tz <= float(zr[1]):
+					var zone_species: Array = fz.get("species", [])
+					if not zone_species.is_empty():
+						var zname: String = fz.get("name", "")
+						if zname == "The Mall":
+							effective_species = "elm"
+						elif "Cherry" in str(zone_species[0]) or "cherry" in zname.to_lower():
+							effective_species = "maple"  # cherry → maple model
+						elif rng.randf() < 0.4 and zone_species.size() > 0:
+							# Probabilistic: 40% chance to use a zone species
+							var pick: String = str(zone_species[rng.randi() % zone_species.size()]).to_lower()
+							if "oak" in pick:
+								effective_species = "oak"
+							elif "maple" in pick:
+								effective_species = "maple"
+							elif "birch" in pick:
+								effective_species = "birch"
+							elif "pine" in pick or "conifer" in pick or "cypress" in pick:
+								effective_species = "conifer"
+					break
 
-		var ap     : Array = ap_table[arch]
-		var trunk_h := rng.randf_range(float(ap[0]), float(ap[1]))
-		var trunk_r := rng.randf_range(float(ap[2]), float(ap[3]))
-		var sx      := float(ap[4])
-		var sy      := float(ap[5])
-		var canopy_r := trunk_h * rng.randf_range(0.32, 0.56)
-
-		# Per-tree random Y rotation for variety
-		var y_rot := rng.randf() * TAU
-		var rot_basis := Basis(Vector3.UP, y_rot)
-
-		var cbasis := Basis(
-			Vector3(canopy_r * sx, 0.0,           0.0),
-			Vector3(0.0,           canopy_r * sy, 0.0),
-			Vector3(0.0,           0.0,           canopy_r * sx))
-		cbasis = rot_basis * cbasis
-		var canopy_tf := Transform3D(cbasis, Vector3(tx, ty + trunk_h, tz))
-		match arch:
-			0: oak_xf.append(canopy_tf)
-			1, 3: maple_xf.append(canopy_tf)
-			2: elm_xf.append(canopy_tf)
-			4: conif_xf.append(canopy_tf)
-
-		var tbasis := Basis(
-			Vector3(trunk_r, 0.0,     0.0),
-			Vector3(0.0,     trunk_h, 0.0),
-			Vector3(0.0,     0.0,     trunk_r))
-		tbasis = rot_basis * tbasis
-		var tf := Transform3D(tbasis, Vector3(tx, ty + trunk_h * 0.5, tz))
-		# Assign to variant based on tree index
-		var variant_idx := i % N_TRUNK_VARIANTS
-		trunk_xf_by_variant[variant_idx].append(tf)
-		all_trunk_xf.append(tf)
-
-	# LOD0: full detail 0-80m, LOD1: reduced 60-200m, LOD2: billboard 150-600m
-	var lod_specs: Array = [
-		["Oak",    oak_xf,   oak_mat,   broad_leaf_mesh, broad_lod1],
-		["Maple",  maple_xf, maple_mat, broad_leaf_mesh, broad_lod1],
-		["Elm",    elm_xf,   elm_mat,   broad_leaf_mesh, broad_lod1],
-		["Conifer",conif_xf, conif_mat, conif_leaf_mesh, conif_lod1],
-	]
-	for spec in lod_specs:
-		var sname: String = spec[0]; var sxf: Array = spec[1]
-		var smat: ShaderMaterial = spec[2]; var smesh0: ArrayMesh = spec[3]
-		var smesh1: ArrayMesh = spec[4]
-		if sxf.is_empty():
+		var species: String = glb_species_map.get(effective_species, "deciduous")
+		if not species_meshes.has(species):
+			species = "deciduous"
+			if not species_meshes.has(species):
+				continue
+		var variants: Array = species_meshes[species]
+		var n_variants := variants.size()
+		if n_variants == 0:
 			continue
-		# LOD0: full detail
-		var mmi0 := _spawn_multimesh(smesh0, smat, sxf, "TreeCanopies_%s_L0" % sname)
-		if mmi0:
-			mmi0.visibility_range_begin = 0.0
-			mmi0.visibility_range_end = 80.0
-			mmi0.visibility_range_fade_mode = GeometryInstance3D.VISIBILITY_RANGE_FADE_SELF
-		# LOD1: reduced
-		var mmi1 := _spawn_multimesh(smesh1, smat, sxf, "TreeCanopies_%s_L1" % sname)
-		if mmi1:
-			mmi1.visibility_range_begin = 60.0
-			mmi1.visibility_range_end = 200.0
-			mmi1.visibility_range_fade_mode = GeometryInstance3D.VISIBILITY_RANGE_FADE_SELF
-		# LOD2: billboard
-		var mmi2 := _spawn_multimesh(lod2_mesh, smat, sxf, "TreeCanopies_%s_L2" % sname)
-		if mmi2:
-			mmi2.visibility_range_begin = 150.0
-			mmi2.visibility_range_end = 600.0
-			mmi2.visibility_range_fade_mode = GeometryInstance3D.VISIBILITY_RANGE_FADE_SELF
-	for vi in N_TRUNK_VARIANTS:
-		_spawn_multimesh(trunk_meshes[vi], trunk_mat, trunk_xf_by_variant[vi],
-			"TreeTrunks_%d" % vi)
+
+		# Pick variant based on tree index
+		var variant_idx := i % n_variants
+
+		# Desired height: use LiDAR measurement if available, else DBH estimate
+		var desired_h: float
+		if typeof(tree_entry) == TYPE_DICTIONARY and tree_entry.has("lidar_h"):
+			desired_h = float(tree_entry["lidar_h"])
+			if desired_h < 3.0:
+				desired_h = 3.0  # clamp tiny LiDAR readings
+		else:
+			var h_range: Array = height_ranges.get(effective_species, [10.0, 22.0])
+			var h_min := float(h_range[0])
+			var h_max := float(h_range[1])
+			var dbh_t := clampf((float(dbh) - 3.0) / 30.0, 0.0, 1.0)
+			desired_h = lerpf(h_min, h_max, dbh_t)
+
+		# Scale factor: desired_height / mesh_height_in_raw_units
+		var mesh_h: float = species_heights[species]
+		if mesh_h < 0.001:
+			mesh_h = 0.06
+		var sy := desired_h / mesh_h
+
+		# Crown width: blend uniform scale with LiDAR crown data for subtle variation
+		var sx := sy
+		if typeof(tree_entry) == TYPE_DICTIONARY and tree_entry.has("crown_a"):
+			var crown_a := float(tree_entry["crown_a"])
+			if crown_a > 0.0 and desired_h > 1.0:
+				var crown_d := 2.0 * sqrt(crown_a / PI)
+				# Ratio of crown spread to height (typical trees: 0.3–1.0)
+				var crown_ratio := clampf(crown_d / desired_h, 0.3, 1.2)
+				# Apply as a subtle modifier (30% blend) to avoid extreme stretching
+				sx = sy * lerpf(1.0, crown_ratio, 0.3)
+
+		# Random Y rotation for variety
+		var y_rot := rng.randf() * TAU
+
+		# Build transform: Y rotation × Z-up fix (rotate -90° around X) × non-uniform scale
+		# The GLB meshes grow along +Z (Blender convention). We need +Y up.
+		# sx scales crown width (XZ), sy scales height (Y after rotation)
+		var basis := Basis(Vector3.UP, y_rot) * Basis(Vector3.RIGHT, -PI * 0.5) * Basis().scaled(Vector3(sx, sy, sx))
+		var tf := Transform3D(basis, Vector3(tx, ty, tz))
+
+		var key := "%s_%d" % [species, variant_idx]
+		if not xf_by_key.has(key):
+			xf_by_key[key] = []
+		xf_by_key[key].append(tf)
+
+		# LOD1 billboard: encode crown width & height in basis for distant imposter
+		var crown_w := sx * mesh_h * 0.7  # approximate crown width in metres
+		var crown_h := desired_h * 0.65   # canopy portion (top 65%)
+		var bb_basis := Basis(
+			Vector3(crown_w, 0.0, 0.0),
+			Vector3(0.0, crown_h, 0.0),
+			Vector3(0.0, 0.0, crown_w))
+		lod1_xf.append(Transform3D(bb_basis, Vector3(tx, ty + desired_h * 0.5, tz)))
+
+		# Collision: simplified cylinder at trunk position
+		var trunk_r := desired_h * 0.02
+		var col_basis := Basis(
+			Vector3(trunk_r, 0.0,      0.0),
+			Vector3(0.0,     desired_h, 0.0),
+			Vector3(0.0,     0.0,      trunk_r))
+		all_trunk_xf.append(Transform3D(col_basis, Vector3(tx, ty + desired_h * 0.5, tz)))
+
+	# --- Spatial chunking for LOD culling ---
+	# Each chunk's MMI is positioned at its spatial centre so that
+	# visibility_range works per-chunk (distance from camera to node).
+	const CHUNK := 150.0
+	const LOD0_END := 150.0
+
+	# Bucket transforms by spatial chunk per-species-variant
+	var lod0_chunks: Dictionary = {}
+
+	for key in xf_by_key:
+		for tf: Transform3D in xf_by_key[key]:
+			var cx := int(floorf(tf.origin.x / CHUNK))
+			var cz := int(floorf(tf.origin.z / CHUNK))
+			var ck0 := "%s|%d|%d" % [key, cx, cz]
+			if not lod0_chunks.has(ck0):
+				lod0_chunks[ck0] = {"mesh_key": key, "cx": cx, "cz": cz, "xf": []}
+			lod0_chunks[ck0]["xf"].append(tf)
+
+	# Spawn LOD0 chunks — position MMI at instance centroid for accurate culling
+	for ckey in lod0_chunks:
+		var info: Dictionary = lod0_chunks[ckey]
+		var mesh_key: String = info["mesh_key"]
+		var xf_list: Array = info["xf"]
+		if xf_list.is_empty():
+			continue
+		var parts: PackedStringArray = mesh_key.split("_")
+		var sp_name: String = parts[0]
+		var vi: int = int(parts[1])
+		var mesh: Mesh = species_meshes[sp_name][vi]
+		var cx_sum := 0.0
+		var cy_sum := 0.0
+		var cz_sum := 0.0
+		for tf: Transform3D in xf_list:
+			cx_sum += tf.origin.x
+			cy_sum += tf.origin.y
+			cz_sum += tf.origin.z
+		var n := float(xf_list.size())
+		var chunk_origin := Vector3(cx_sum / n, cy_sum / n, cz_sum / n)
+		var mm := MultiMesh.new()
+		mm.transform_format = MultiMesh.TRANSFORM_3D
+		mm.mesh = mesh
+		mm.instance_count = xf_list.size()
+		for i in xf_list.size():
+			var tf: Transform3D = xf_list[i]
+			var local_tf := Transform3D(tf.basis, tf.origin - chunk_origin)
+			mm.set_instance_transform(i, local_tf)
+		var mmi := MultiMeshInstance3D.new()
+		mmi.multimesh = mm
+		mmi.position = chunk_origin
+		mmi.name = "TrL0_%s" % ckey.replace("|", "_")
+		mmi.visibility_range_end = LOD0_END
+		mmi.visibility_range_fade_mode = GeometryInstance3D.VISIBILITY_RANGE_FADE_SELF
+		add_child(mmi)
+
+	# --- LOD1: crossed-quad billboard imposters for distant trees (120–500m) ---
+	# Simple X-shaped billboard per tree, chunked by 300m cells.
+	var bb_mesh := _make_crossed_quad_mesh()
+	var bb_shader := _get_shader("tree_billboard", _tree_billboard_shader_code())
+	var bb_mat := ShaderMaterial.new()
+	bb_mat.shader = bb_shader
+
+	const LOD1_CHUNK := 300.0
+	const LOD1_BEGIN := 120.0
+	const LOD1_END := 500.0
+	var lod1_chunks: Dictionary = {}
+	for tf: Transform3D in lod1_xf:
+		var cx := int(floorf(tf.origin.x / LOD1_CHUNK))
+		var cz := int(floorf(tf.origin.z / LOD1_CHUNK))
+		var ck := "bb|%d|%d" % [cx, cz]
+		if not lod1_chunks.has(ck):
+			lod1_chunks[ck] = []
+		lod1_chunks[ck].append(tf)
+
+	var lod1_count := 0
+	for ck in lod1_chunks:
+		var xf_list: Array = lod1_chunks[ck]
+		if xf_list.is_empty():
+			continue
+		# Compute centroid
+		var sum_x := 0.0; var sum_y := 0.0; var sum_z := 0.0
+		for tf: Transform3D in xf_list:
+			sum_x += tf.origin.x; sum_y += tf.origin.y; sum_z += tf.origin.z
+		var n := float(xf_list.size())
+		var origin := Vector3(sum_x / n, sum_y / n, sum_z / n)
+		var mm := MultiMesh.new()
+		mm.transform_format = MultiMesh.TRANSFORM_3D
+		mm.mesh = bb_mesh
+		mm.instance_count = xf_list.size()
+		for i in xf_list.size():
+			var tf: Transform3D = xf_list[i]
+			mm.set_instance_transform(i, Transform3D(tf.basis, tf.origin - origin))
+		var mmi := MultiMeshInstance3D.new()
+		mmi.multimesh = mm
+		mmi.material_override = bb_mat
+		mmi.position = origin
+		mmi.name = "TrL1_%s" % ck.replace("|", "_")
+		mmi.visibility_range_begin = LOD1_BEGIN
+		mmi.visibility_range_end = LOD1_END
+		mmi.visibility_range_fade_mode = GeometryInstance3D.VISIBILITY_RANGE_FADE_SELF
+		add_child(mmi)
+		lod1_count += xf_list.size()
+
 	_build_tree_collision(all_trunk_xf)
+	print("Trees: %d placed, LOD0 chunks=%d, LOD1 billboards=%d (chunks=%d)" % [all_trunk_xf.size(), lod0_chunks.size(), lod1_count, lod1_chunks.size()])
 
 
 func _build_tree_collision(trunk_xf: Array) -> void:
@@ -5298,10 +6373,9 @@ func _build_tree_collision(trunk_xf: Array) -> void:
 	add_child(body)
 
 
-func _make_trunk_with_branches_mesh(variant_seed: int = 0) -> ArrayMesh:
-	# Procedural trunk cylinder + randomized branches. Unit scale:
-	# trunk height=1.0, bottom_r=1.0, top_r=0.5. Bark UVs wrap.
-	# variant_seed produces distinct branch layouts per mesh variant.
+func _UNUSED_make_trunk_with_branches_mesh(variant_seed: int = 0) -> ArrayMesh:
+	# DEAD CODE — kept temporarily for reference. Procedural trunk+branches replaced by GLB models.
+	# TODO: remove once GLB tree pipeline is fully stable.
 	var verts   := PackedVector3Array()
 	var normals := PackedVector3Array()
 	var uvs     := PackedVector2Array()
@@ -5884,6 +6958,152 @@ func _spawn_multimesh(mesh: Mesh, mat: Material,
 	return mmi
 
 
+func _tree_glb_leaf_shader_code() -> String:
+	return """shader_type spatial;
+render_mode cull_disabled, depth_prepass_alpha;
+
+uniform vec3 albedo_tint = vec3(0.28, 0.48, 0.18);
+uniform sampler2D albedo_tex : source_color, filter_linear_mipmap_anisotropic;
+uniform float alpha_scissor : hint_range(0.0, 1.0) = 0.5;
+
+global uniform vec2 wind_vec;
+global uniform float snow_cover;
+
+void vertex() {
+	vec3 tree_origin = (MODEL_MATRIX * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+	float sway = max(VERTEX.y, 0.0);
+	float wind_str = length(wind_vec);
+	float rustle = 0.3 + wind_str * 0.7;
+	VERTEX.x += sin(TIME * 0.7 + tree_origin.x * 0.04 + tree_origin.z * 0.06) * 0.09 * sway * rustle;
+	VERTEX.z += sin(TIME * 1.1 + tree_origin.z * 0.05) * 0.05 * sway * rustle;
+	VERTEX.x += wind_vec.x * sway * 0.18;
+	VERTEX.z += wind_vec.y * sway * 0.18;
+	float flutter = sin(TIME * 3.5 + VERTEX.x * 11.0 + VERTEX.z * 7.0) * 0.012 * rustle;
+	VERTEX.y += flutter * sway;
+}
+
+void fragment() {
+	vec4 tex = texture(albedo_tex, UV);
+	vec3 col = tex.rgb * albedo_tint;
+	float alpha = tex.a;
+	if (alpha < alpha_scissor) discard;
+
+	// Snow accumulation — world-space normal
+	if (snow_cover > 0.01) {
+		vec3 world_n = mat3(INV_VIEW_MATRIX) * NORMAL;
+		float upward = max(world_n.y, 0.0);
+		vec3 tree_pos = (MODEL_MATRIX * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+		float noise = sin(tree_pos.x * 0.3 + tree_pos.z * 0.4) * 0.15;
+		float snow_amt = clamp((0.3 + upward * 0.7 + noise) * snow_cover, 0.0, 1.0);
+		col = mix(col, vec3(0.92, 0.93, 0.96), snow_amt * 0.65);
+	}
+
+	ALBEDO = col;
+	ROUGHNESS = 0.88;
+	SPECULAR = 0.08;
+	METALLIC = 0.0;
+	BACKLIGHT = vec3(0.28, 0.20, 0.06);
+}
+"""
+
+
+func _make_crossed_quad_mesh() -> ArrayMesh:
+	## Two quads crossing at 90° forming an X shape, unit size (-0.5 to 0.5).
+	## Transform basis scales to crown dimensions per-instance.
+	var verts := PackedVector3Array()
+	var normals := PackedVector3Array()
+	var uvs := PackedVector2Array()
+	# Quad 1: aligned along X axis
+	for quad_rot in [0.0, PI * 0.5]:
+		var c := cos(quad_rot); var s := sin(quad_rot)
+		var bl := Vector3(-0.5 * c, -0.5, -0.5 * s)
+		var br := Vector3( 0.5 * c, -0.5,  0.5 * s)
+		var tl := Vector3(-0.5 * c,  0.5, -0.5 * s)
+		var tr := Vector3( 0.5 * c,  0.5,  0.5 * s)
+		var n := Vector3(-s, 0.0, c)
+		# Triangle 1
+		verts.append(bl); verts.append(br); verts.append(tr)
+		# Triangle 2
+		verts.append(bl); verts.append(tr); verts.append(tl)
+		for _i in 6:
+			normals.append(n)
+		uvs.append(Vector2(0, 1)); uvs.append(Vector2(1, 1)); uvs.append(Vector2(1, 0))
+		uvs.append(Vector2(0, 1)); uvs.append(Vector2(1, 0)); uvs.append(Vector2(0, 0))
+	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts
+	arrays[Mesh.ARRAY_NORMAL] = normals
+	arrays[Mesh.ARRAY_TEX_UV] = uvs
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	return mesh
+
+
+func _tree_billboard_shader_code() -> String:
+	return """shader_type spatial;
+render_mode cull_disabled;
+
+global uniform vec2 wind_vec;
+global uniform float snow_cover;
+
+float hash21(vec2 p) {
+	p = fract(p * vec2(233.34, 851.73));
+	p += dot(p, p + 23.45);
+	return fract(p.x * p.y);
+}
+
+void vertex() {
+	vec3 tree_origin = (MODEL_MATRIX * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+	float sway = max(VERTEX.y + 0.5, 0.0);
+	float wind_str = length(wind_vec);
+	VERTEX.x += sin(TIME * 0.5 + tree_origin.x * 0.03) * 0.04 * sway * (0.3 + wind_str);
+	VERTEX.z += sin(TIME * 0.7 + tree_origin.z * 0.04) * 0.03 * sway * (0.3 + wind_str);
+}
+
+void fragment() {
+	// Elliptical canopy mask from UV
+	vec2 c = UV - 0.5;
+	float r = length(c * vec2(1.0, 1.3));  // slightly taller than wide
+	if (r > 0.48) discard;
+
+	// Per-tree color variation
+	vec3 tree_pos = (MODEL_MATRIX * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+	float h = hash21(floor(tree_pos.xz * 0.025));
+
+	// 5-tone impressionist green palette
+	vec3 base_col;
+	if (h < 0.2) {
+		base_col = vec3(0.12, 0.28, 0.06);  // deep forest
+	} else if (h < 0.4) {
+		base_col = vec3(0.18, 0.38, 0.10);  // rich green
+	} else if (h < 0.6) {
+		base_col = vec3(0.22, 0.42, 0.12);  // sap green
+	} else if (h < 0.8) {
+		base_col = vec3(0.16, 0.34, 0.08);  // viridian
+	} else {
+		base_col = vec3(0.20, 0.36, 0.14);  // olive green
+	}
+
+	// Soft edge darkening for crown shape
+	float edge = smoothstep(0.30, 0.48, r);
+	base_col *= 1.0 - edge * 0.4;
+
+	// Snow
+	if (snow_cover > 0.01) {
+		float upward = max(NORMAL.y, 0.0);
+		float noise = sin(tree_pos.x * 0.3 + tree_pos.z * 0.4) * 0.15;
+		float snow_amt = clamp((0.3 + upward * 0.7 + noise) * snow_cover, 0.0, 1.0);
+		base_col = mix(base_col, vec3(0.92, 0.93, 0.96), snow_amt * 0.65);
+	}
+
+	ALBEDO = base_col;
+	ROUGHNESS = 0.85;
+	SPECULAR = 0.05;
+	METALLIC = 0.0;
+	ALPHA = smoothstep(0.48, 0.40, r);  // soft edge
+}
+"""
+
+
 func _leaf_shader_code() -> String:
 	return """shader_type spatial;
 render_mode cull_disabled, depth_prepass_alpha;
@@ -5895,6 +7115,8 @@ uniform sampler2D leaf_opacity : hint_default_white, filter_linear_mipmap_anisot
 uniform float understorey : hint_range(0.0, 1.0) = 0.0;
 uniform int species = 0; // 0=oak, 1=maple, 2=elm, 3=conifer, 4=shrub
 
+global uniform vec2 wind_vec;
+global uniform float snow_cover;
 varying vec3 tree_origin;
 
 float hash21(vec2 p) {
@@ -5906,16 +7128,20 @@ float hash21(vec2 p) {
 void vertex() {
 	tree_origin = (MODEL_MATRIX * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
 
-	// Spatial wind field — visible waves across canopy
 	float sway = max(VERTEX.y, 0.0);
-	float wind_base = sin(tree_origin.x * 0.02 + tree_origin.z * 0.025 + TIME * 0.3) * 0.5 + 0.5;
-	float gust = max(0.0, sin(TIME * 0.15 + tree_origin.x * 0.005) * 0.6 + 0.2);
-	float wind_str = (0.5 + wind_base * 0.5) * (1.0 + gust);
-	VERTEX.x += sin(TIME * 0.7 + tree_origin.x * 0.04 + tree_origin.z * 0.06) * 0.09 * sway * wind_str;
-	VERTEX.z += sin(TIME * 1.1 + tree_origin.z * 0.05) * 0.05 * sway * wind_str;
+	float wind_str = length(wind_vec);
+	float rustle = 0.3 + wind_str * 0.7;
 
-	// Leaf flutter: small high-frequency jitter per-card
-	float flutter = sin(TIME * 3.5 + VERTEX.x * 11.0 + VERTEX.z * 7.0) * 0.012;
+	// Per-tree oscillation — natural rustling, amplitude scales with wind
+	VERTEX.x += sin(TIME * 0.7 + tree_origin.x * 0.04 + tree_origin.z * 0.06) * 0.09 * sway * rustle;
+	VERTEX.z += sin(TIME * 1.1 + tree_origin.z * 0.05) * 0.05 * sway * rustle;
+
+	// Directional wind push — trees lean in wind direction
+	VERTEX.x += wind_vec.x * sway * 0.18;
+	VERTEX.z += wind_vec.y * sway * 0.18;
+
+	// Leaf flutter — high-frequency jitter
+	float flutter = sin(TIME * 3.5 + VERTEX.x * 11.0 + VERTEX.z * 7.0) * 0.012 * rustle;
 	VERTEX.y += flutter * sway;
 }
 
@@ -5941,71 +7167,44 @@ void fragment() {
 	float dist_fill = smoothstep(10.0, 40.0, cam_dist) * 0.25;
 	ALPHA = min(alpha + dist_fill, 1.0);
 
-	// Desaturate leaf texture — preserves structural detail, let species tint drive color
+	// Keep some texture detail, mild desaturation
 	float grey = dot(alb, vec3(0.299, 0.587, 0.114));
-	alb = mix(vec3(grey), alb, 0.50);
+	alb = mix(vec3(grey), alb, 0.55);
 
-	// Per-card brightness from vertex color red channel (range 0.7–1.3)
-	float card_bright = COLOR.r * 0.6 + 0.7;
-	// Per-card age/condition from alpha channel — desaturate + darken
-	float card_age = COLOR.a * 0.3;
-
-	// Per-tree autumn tone from hash
+	// Per-tree summer variation from hash
 	float h = hash21(floor(tree_origin.xz * 0.025));
 	float bright = mix(0.65 + h * 0.55, 0.45 + h * 0.30, understorey);
 	vec3 col = alb * bright * card_bright;
 
-	// Species-aware autumn palettes
-	vec3 autumn_tint;
-	float bare_chance = 0.0;
-	float green_thresh = 1.0; // h above this → stays green (never by default)
-	if (species == 0) {
-		// Oak: russet brown/dark brown/tan-gold — oaks hold leaves
-		bare_chance = 0.05; green_thresh = 0.80;
-		if (h < 0.33) autumn_tint = vec3(0.70, 0.40, 0.18);       // russet brown
-		else if (h < 0.66) autumn_tint = vec3(0.55, 0.32, 0.15);  // dark brown
-		else autumn_tint = vec3(0.82, 0.65, 0.28);                 // tan-gold
-	} else if (species == 1 || species == 4) {
-		// Maple/shrub: brilliant red/orange/yellow/deep crimson
-		bare_chance = 0.15; green_thresh = 0.85;
-		if (h < 0.25) autumn_tint = vec3(0.90, 0.22, 0.12);       // brilliant red
-		else if (h < 0.50) autumn_tint = vec3(0.92, 0.55, 0.15);  // orange
-		else if (h < 0.75) autumn_tint = vec3(0.88, 0.78, 0.22);  // yellow
-		else autumn_tint = vec3(0.72, 0.12, 0.15);                 // deep crimson
-	} else if (species == 2) {
-		// Elm: golden yellow/pale gold — early droppers
-		bare_chance = 0.25; green_thresh = 0.80;
-		if (h < 0.50) autumn_tint = vec3(0.88, 0.78, 0.25);       // golden yellow
-		else autumn_tint = vec3(0.82, 0.72, 0.38);                 // pale gold
+	// Impressionist summer palette — rich layered greens with golden warmth
+	vec3 summer_tint;
+	if (h < 0.25) {
+		summer_tint = vec3(0.18, 0.42, 0.08);       // deep viridian
+	} else if (h < 0.45) {
+		summer_tint = vec3(0.25, 0.50, 0.12);       // sap green
+	} else if (h < 0.65) {
+		summer_tint = vec3(0.15, 0.38, 0.06);       // dark emerald
+	} else if (h < 0.82) {
+		summer_tint = vec3(0.30, 0.52, 0.14);       // cadmium green
 	} else {
-		// Conifer: stays green — no autumn tint
-		bare_chance = 0.0; green_thresh = 0.0;
-		autumn_tint = vec3(0.45, 0.55, 0.28);
+		summer_tint = vec3(0.35, 0.48, 0.18);       // warm olive gold
 	}
+	col *= summer_tint * 2.4;
 
-	// Still-green trees: ~15-20% of broadleaf stay green
-	if (species != 3 && h > green_thresh) {
-		autumn_tint = vec3(0.50, 0.62, 0.25); // still-green mid-autumn
+	// Warm subsurface scattering — golden light through leaves
+	float sss = pow(1.0 - max(dot(NORMAL, VIEW), 0.0), 2.2) * 0.40;
+	col += vec3(0.12, 0.15, 0.02) * sss;
+
+	// Snow accumulation on canopy — world-space normal for upward detection
+	if (snow_cover > 0.01) {
+		vec3 world_n = mat3(INV_VIEW_MATRIX) * NORMAL;
+		float upward = max(world_n.y, 0.0);
+		float snow_noise = sin(tree_origin.x * 0.3 + tree_origin.z * 0.4) * 0.15;
+		// Base coverage on all canopy + extra on upward-facing cards
+		float snow_amt = clamp((0.3 + upward * 0.7 + snow_noise) * snow_cover, 0.0, 1.0);
+		col = mix(col, vec3(0.92, 0.93, 0.96), snow_amt * 0.65);
+		rgh = mix(rgh, 0.90, snow_amt);
 	}
-
-	// Bare trees: discard canopy entirely (trunk stays visible)
-	if (h < bare_chance) {
-		discard;
-	}
-
-	// Per-card hue shift from green channel (±0.15 warm/cool)
-	float hue_shift = (COLOR.g - 0.5) * 0.30;
-	autumn_tint.r += hue_shift;
-	autumn_tint.b -= hue_shift * 0.5;
-	col *= autumn_tint * 1.7;
-
-	// Age desaturation
-	float col_grey = dot(col, vec3(0.299, 0.587, 0.114));
-	col = mix(col, vec3(col_grey) * 0.85, card_age);
-
-	// Fake subsurface scattering: warm amber backlit leaves
-	float sss = pow(1.0 - max(dot(NORMAL, VIEW), 0.0), 2.5) * 0.35;
-	col += vec3(0.25, 0.14, 0.10) * sss;
 
 	ALBEDO     = clamp(col, 0.0, 1.0);
 	NORMAL_MAP = texture(leaf_normal, card_uv).rgb;
@@ -6073,98 +7272,232 @@ void fragment() {
 # Undergrowth bushes – scattered near trees and along path edges
 # ---------------------------------------------------------------------------
 func _build_undergrowth(trees: Array, paths: Array) -> void:
-	if trees.is_empty():
+	## Bushes, ferns, flowers, grass clumps — all Quaternius MegaKit models.
+	if trees.is_empty() or _veg_meshes.is_empty():
 		return
 
 	var rng := RandomNumberGenerator.new()
 	rng.seed = 77777
 
-	var bush_mat  := _make_leaf_mat(true, "", 4)   # shrub species
-	bush_mat.set_shader_parameter("understorey", 1.0)
-	var bush_mesh := _make_bush_leaf_mesh()
-	var xforms: Array = []
+	# Mesh pools — pick randomly from available variants
+	var bush_meshes: Array = []
+	for n in ["Bush_Common", "Bush_Common_Flowers"]:
+		if _veg_meshes.has(n): bush_meshes.append(_veg_meshes[n])
+	var fern_meshes: Array = []
+	for n in ["Fern_1"]:
+		if _veg_meshes.has(n): fern_meshes.append(_veg_meshes[n])
+	var flower_meshes: Array = []
+	for n in ["Flower_3_Single", "Flower_3_Group", "Flower_4_Single", "Flower_4_Group"]:
+		if _veg_meshes.has(n): flower_meshes.append(_veg_meshes[n])
+	var grass_meshes: Array = []
+	for n in ["Grass_Common_Short", "Grass_Common_Tall", "Grass_Wispy_Short", "Grass_Wispy_Tall"]:
+		if _veg_meshes.has(n): grass_meshes.append(_veg_meshes[n])
+	var cover_meshes: Array = []
+	for n in ["Clover_1", "Clover_2", "Plant_1"]:
+		if _veg_meshes.has(n): cover_meshes.append(_veg_meshes[n])
 
-	# Scatter 1–4 bushes within 3–12m of ~80% of trees
-	for i in trees.size():
-		rng.seed = i * 314159 + 271828
-		if rng.randf() > 0.8:
-			continue
-		var pt: Array = trees[i]
-		var tx := float(pt[0]); var tz := float(pt[2])
-		if not _in_boundary(tx, tz):
-			continue
-		var n_bushes := rng.randi_range(1, 4)
-		for _b in range(n_bushes):
-			var angle := rng.randf() * TAU
-			var dist  := rng.randf_range(3.0, 12.0)
-			var bx := tx + cos(angle) * dist
-			var bz := tz + sin(angle) * dist
-			# Skip if near a bridge or outside boundary
-			var bgk := Vector2i(int(floor(bx / BRIDGE_GRID_CELL)), int(floor(bz / BRIDGE_GRID_CELL)))
-			if _bridge_grid.has(bgk):
-				continue
-			if not _in_boundary(bx, bz):
-				continue
-			var by := _terrain_y(bx, bz)
-			var r  := rng.randf_range(1.2, 3.0)
-			var h  := rng.randf_range(0.8, 2.2)
-			var rot := rng.randf() * TAU
-			var basis := Basis(
-				Vector3(cos(rot) * r, 0.0, sin(rot) * r),
-				Vector3(0.0, h, 0.0),
-				Vector3(-sin(rot) * r, 0.0, cos(rot) * r))
-			xforms.append(Transform3D(basis, Vector3(bx, by + h * 0.3, bz)))
+	# All vegetation collects into per-mesh transform arrays
+	var xf_by_mesh: Dictionary = {}  # Mesh -> Array[Transform3D]
 
-	# Scatter bushes along footway/path edges (every ~6m, 0.5–3m offset)
-	for path in paths:
-		var hw: String = str(path.get("highway", "path"))
-		if hw != "footway" and hw != "path":
-			continue
-		if bool(path.get("bridge", false)) or bool(path.get("tunnel", false)):
-			continue
-		var pts: Array = path["points"]
-		if pts.size() < 2:
-			continue
-		var half_w := _hw_width(hw) * 0.5
-		var cum := 0.0
-		var next_at := rng.randf_range(3.0, 6.0)
-		for pi in range(1, pts.size()):
-			var dx := float(pts[pi][0]) - float(pts[pi-1][0])
-			var dz := float(pts[pi][2]) - float(pts[pi-1][2])
-			cum += sqrt(dx * dx + dz * dz)
-			if cum >= next_at:
-				cum = 0.0
-				next_at = rng.randf_range(3.0, 6.0)
-				var px := float(pts[pi][0]); var pz := float(pts[pi][2])
-				var side := 1.0 if rng.randf() > 0.5 else -1.0
-				var off := half_w + rng.randf_range(0.5, 3.0)
-				# Perpendicular offset
-				var tlen := sqrt(dx * dx + dz * dz)
-				if tlen < 0.01:
+	# --- Helper to add a placement ---
+	var _add := func(mesh: Mesh, tf: Transform3D) -> void:
+		if not xf_by_mesh.has(mesh):
+			xf_by_mesh[mesh] = []
+		xf_by_mesh[mesh].append(tf)
+
+	# ===== BUSHES: 1-2 near ~40% of trees, 3-10m radius =====
+	if not bush_meshes.is_empty():
+		for i in trees.size():
+			rng.seed = i * 314159 + 271828
+			if rng.randf() > 0.40:
+				continue
+			var pt: Array = _tree_pos(trees[i])
+			var tx := float(pt[0]); var tz := float(pt[2])
+			if not _in_boundary(tx, tz):
+				continue
+			var n_bushes := rng.randi_range(1, 2)
+			for _b in range(n_bushes):
+				var angle := rng.randf() * TAU
+				var dist  := rng.randf_range(3.0, 10.0)
+				var bx := tx + cos(angle) * dist
+				var bz := tz + sin(angle) * dist
+				if _bridge_grid.has(Vector2i(int(floor(bx / BRIDGE_GRID_CELL)), int(floor(bz / BRIDGE_GRID_CELL)))):
 					continue
-				var nx := -dz / tlen * side; var nz := dx / tlen * side
-				var bx := px + nx * off; var bz := pz + nz * off
-				# Skip if in front of a bench or near a bridge
-				var gk := Vector2i(int(floor(bx / BENCH_GRID_CELL)), int(floor(bz / BENCH_GRID_CELL)))
-				if _bench_grid.has(gk):
-					continue
-				var bgk := Vector2i(int(floor(bx / BRIDGE_GRID_CELL)), int(floor(bz / BRIDGE_GRID_CELL)))
-				if _bridge_grid.has(bgk):
-					continue
-				if not _in_boundary(bx, bz):
+				if not _in_boundary(bx, bz) or _is_on_path(bx, bz):
 					continue
 				var by := _terrain_y(bx, bz)
-				var r  := rng.randf_range(1.0, 2.5)
-				var h  := rng.randf_range(0.6, 1.8)
+				# Bush_Common is ~1.6m tall, scale 0.5-1.2 for variety
+				var s := rng.randf_range(0.5, 1.2)
 				var rot := rng.randf() * TAU
-				var basis := Basis(
-					Vector3(cos(rot) * r, 0.0, sin(rot) * r),
-					Vector3(0.0, h, 0.0),
-					Vector3(-sin(rot) * r, 0.0, cos(rot) * r))
-				xforms.append(Transform3D(basis, Vector3(bx, by + h * 0.3, bz)))
+				var basis := Basis(Vector3.UP, rot) * Basis().scaled(Vector3(s, s, s))
+				var mesh: Mesh = bush_meshes[rng.randi() % bush_meshes.size()]
+				_add.call(mesh, Transform3D(basis, Vector3(bx, by, bz)))
 
-	print("ParkLoader: undergrowth bushes = ", xforms.size())
-	_spawn_multimesh(bush_mesh, bush_mat, xforms, "Undergrowth")
+	# ===== FERNS: near ~25% of trees, 2-8m radius =====
+	if not fern_meshes.is_empty():
+		for i in trees.size():
+			rng.seed = i * 667788 + 112233
+			if i % 4 != 0:
+				continue
+			if rng.randf() > 0.60:
+				continue
+			var pt: Array = _tree_pos(trees[i])
+			var tx := float(pt[0]); var tz := float(pt[2])
+			var n_ferns := rng.randi_range(2, 4)
+			for _fi in n_ferns:
+				var angle := rng.randf() * TAU
+				var dist := rng.randf_range(2.0, 8.0)
+				var fx := tx + cos(angle) * dist
+				var fz := tz + sin(angle) * dist
+				if not _in_boundary(fx, fz) or _is_on_path(fx, fz):
+					continue
+				var fy := _terrain_y(fx, fz)
+				# Fern_1 AABB after load is ~2.8×0.8m — scale 0.5-1.2 for realistic fern
+				var s := rng.randf_range(0.5, 1.2)
+				var rot := rng.randf() * TAU
+				var basis := Basis(Vector3.UP, rot) * Basis().scaled(Vector3(s, s, s))
+				_add.call(fern_meshes[0], Transform3D(basis, Vector3(fx, fy, fz)))
+
+	# ===== WILDFLOWERS: meadow patches via FBM noise =====
+	if not flower_meshes.is_empty():
+		rng.seed = 112233
+		# Scan on a 20m grid, place clusters where noise > threshold
+		for gx in range(-80, 80):
+			for gz in range(-130, 130):
+				var wx := float(gx) * 20.0
+				var wz := float(gz) * 20.0
+				if not _in_boundary(wx, wz):
+					continue
+				# Simple hash-based pseudo noise for meadow patches
+				rng.seed = (gx * 73856093) ^ (gz * 19349663)
+				if rng.randf() > 0.08:  # ~8% of grid cells get flowers
+					continue
+				if _is_on_path(wx, wz):
+					continue
+				var n_flowers := rng.randi_range(3, 8)
+				for _fi in n_flowers:
+					var fx := wx + rng.randf_range(-8.0, 8.0)
+					var fz := wz + rng.randf_range(-8.0, 8.0)
+					if _is_on_path(fx, fz):
+						continue
+					var fy := _terrain_y(fx, fz)
+					# Flowers are 1.5-2.5m tall raw — scale 0.3-0.6 for wildflowers
+					var s := rng.randf_range(0.3, 0.6)
+					var rot := rng.randf() * TAU
+					var basis := Basis(Vector3.UP, rot) * Basis().scaled(Vector3(s, s, s))
+					var mesh: Mesh = flower_meshes[rng.randi() % flower_meshes.size()]
+					_add.call(mesh, Transform3D(basis, Vector3(fx, fy, fz)))
+
+	# ===== GRASS CLUMPS: near paths and in meadow areas =====
+	if not grass_meshes.is_empty():
+		rng.seed = 445566
+		for path in paths:
+			var hw: String = str(path.get("highway", "path"))
+			if hw != "footway" and hw != "path":
+				continue
+			if bool(path.get("bridge", false)) or bool(path.get("tunnel", false)):
+				continue
+			var pts: Array = path["points"]
+			if pts.size() < 2:
+				continue
+			var half_w := _hw_width(hw) * 0.5
+			var cum := 0.0
+			var next_at := rng.randf_range(2.0, 5.0)
+			for pi in range(1, pts.size()):
+				var dx := float(pts[pi][0]) - float(pts[pi-1][0])
+				var dz := float(pts[pi][2]) - float(pts[pi-1][2])
+				cum += sqrt(dx * dx + dz * dz)
+				if cum >= next_at:
+					cum = 0.0
+					next_at = rng.randf_range(2.0, 5.0)
+					var px := float(pts[pi][0]); var pz := float(pts[pi][2])
+					var side := 1.0 if rng.randf() > 0.5 else -1.0
+					var tlen := sqrt(dx * dx + dz * dz)
+					if tlen < 0.01:
+						continue
+					var nx := -dz / tlen * side; var nz := dx / tlen * side
+					var off := half_w + rng.randf_range(0.3, 2.0)
+					var gx := px + nx * off; var gz := pz + nz * off
+					if not _in_boundary(gx, gz):
+						continue
+					var gy := _terrain_y(gx, gz)
+					# Grass models are ~1-1.9m tall, scale 0.3-0.6
+					var s := rng.randf_range(0.3, 0.6)
+					var rot := rng.randf() * TAU
+					var basis := Basis(Vector3.UP, rot) * Basis().scaled(Vector3(s, s, s))
+					var mesh: Mesh = grass_meshes[rng.randi() % grass_meshes.size()]
+					_add.call(mesh, Transform3D(basis, Vector3(gx, gy, gz)))
+
+	# ===== GROUND COVER: clover/plants near ~15% of trees =====
+	if not cover_meshes.is_empty():
+		for i in trees.size():
+			rng.seed = i * 889900 + 556677
+			if rng.randf() > 0.15:
+				continue
+			var pt: Array = _tree_pos(trees[i])
+			var tx := float(pt[0]); var tz := float(pt[2])
+			var n_cover := rng.randi_range(2, 5)
+			for _ci in n_cover:
+				var angle := rng.randf() * TAU
+				var dist := rng.randf_range(1.5, 6.0)
+				var cx := tx + cos(angle) * dist
+				var cz := tz + sin(angle) * dist
+				if not _in_boundary(cx, cz) or _is_on_path(cx, cz):
+					continue
+				var cy := _terrain_y(cx, cz)
+				# Clover/plants are ~0.8-1.4m, scale 0.3-0.7
+				var s := rng.randf_range(0.3, 0.7)
+				var rot := rng.randf() * TAU
+				var basis := Basis(Vector3.UP, rot) * Basis().scaled(Vector3(s, s, s))
+				var mesh: Mesh = cover_meshes[rng.randi() % cover_meshes.size()]
+				_add.call(mesh, Transform3D(basis, Vector3(cx, cy, cz)))
+
+	# Spawn with spatial chunking — 100m grid cells, centroid positioning.
+	# visibility_range measures from camera to MMI position, so each chunk
+	# must be positioned at its centroid for correct distance culling.
+	const VEG_CHUNK := 100.0
+	const VEG_VIS_END := 120.0
+	var total := 0
+	var n_chunks := 0
+	for mesh: Mesh in xf_by_mesh:
+		var xf_list: Array = xf_by_mesh[mesh]
+		if xf_list.is_empty():
+			continue
+		# Bucket by spatial chunk
+		var chunks: Dictionary = {}  # "cx|cz" -> Array[Transform3D]
+		for tf: Transform3D in xf_list:
+			var cx := int(floorf(tf.origin.x / VEG_CHUNK))
+			var cz := int(floorf(tf.origin.z / VEG_CHUNK))
+			var ck := "%d|%d" % [cx, cz]
+			if not chunks.has(ck):
+				chunks[ck] = []
+			chunks[ck].append(tf)
+		# Spawn one MMI per chunk
+		for ck in chunks:
+			var chunk_xf: Array = chunks[ck]
+			var sx := 0.0; var sy := 0.0; var sz := 0.0
+			for tf: Transform3D in chunk_xf:
+				sx += tf.origin.x; sy += tf.origin.y; sz += tf.origin.z
+			var n := float(chunk_xf.size())
+			var centroid := Vector3(sx / n, sy / n, sz / n)
+			var mm := MultiMesh.new()
+			mm.transform_format = MultiMesh.TRANSFORM_3D
+			mm.mesh = mesh
+			mm.instance_count = chunk_xf.size()
+			for i in chunk_xf.size():
+				var tf: Transform3D = chunk_xf[i]
+				mm.set_instance_transform(i, Transform3D(tf.basis, tf.origin - centroid))
+			var mmi := MultiMeshInstance3D.new()
+			mmi.multimesh = mm
+			mmi.position = centroid
+			mmi.name = "Veg_%d" % n_chunks
+			mmi.visibility_range_end = VEG_VIS_END
+			mmi.visibility_range_fade_mode = GeometryInstance3D.VISIBILITY_RANGE_FADE_SELF
+			add_child(mmi)
+			n_chunks += 1
+			total += chunk_xf.size()
+
+	print("ParkLoader: vegetation = %d instances, %d chunks" % [total, n_chunks])
 
 
 # ---------------------------------------------------------------------------
@@ -6178,14 +7511,24 @@ func _build_rocks(trees: Array, water: Array) -> void:
 	var rock_nrm := _load_tex("res://textures/rock_wall_nrm.jpg")
 	var rock_rgh := _load_tex("res://textures/rock_wall_rgh.jpg")
 
-	var rock_mesh := SphereMesh.new()
-	rock_mesh.radius          = 1.0
-	rock_mesh.height          = 2.0
-	rock_mesh.radial_segments = 6
-	rock_mesh.rings           = 4
+	# Load GLB rock variants if available, else fallback to sphere
+	var rock_glb_path := ProjectSettings.globalize_path("res://models/furniture/cp_rocks.glb")
+	var rock_glb_meshes := _load_glb_meshes(rock_glb_path)
+	var rock_variants: Array[Mesh] = []
+	for key in rock_glb_meshes:
+		rock_variants.append(rock_glb_meshes[key] as Mesh)
+	if rock_variants.is_empty():
+		var rock_mesh := SphereMesh.new()
+		rock_mesh.radius          = 1.0
+		rock_mesh.height          = 2.0
+		rock_mesh.radial_segments = 6
+		rock_mesh.rings           = 4
+		rock_variants.append(rock_mesh)
 
 	var rock_mat := _make_rock_material(rock_alb, rock_nrm, rock_rgh)
-	var xforms: Array = []
+	var xforms_by_variant: Array = []
+	for _v in rock_variants.size():
+		xforms_by_variant.append([])
 
 	# Rocks along water body shores (~30 per body)
 	for body in water:
@@ -6222,12 +7565,12 @@ func _build_rocks(trees: Array, water: Array) -> void:
 				Vector3(cos(rot) * scale, 0.0, sin(rot) * scale),
 				Vector3(0.0, sy, 0.0),
 				Vector3(-sin(rot) * scale, 0.0, cos(rot) * scale))
-			xforms.append(Transform3D(basis, Vector3(rx, ry - sy * 0.3, rz)))
+			xforms_by_variant[rng.randi() % rock_variants.size()].append(Transform3D(basis, Vector3(rx, ry - sy * 0.3, rz)))
 
 	# Rocks near ~every 5th tree
 	for i in range(0, trees.size(), 5):
 		rng.seed = i * 135791 + 246810
-		var pt: Array = trees[i]
+		var pt: Array = _tree_pos(trees[i])
 		var tx := float(pt[0]); var tz := float(pt[2])
 		if not _in_boundary(tx, tz):
 			continue
@@ -6245,10 +7588,14 @@ func _build_rocks(trees: Array, water: Array) -> void:
 				Vector3(cos(rot) * scale, 0.0, sin(rot) * scale),
 				Vector3(0.0, sy, 0.0),
 				Vector3(-sin(rot) * scale, 0.0, cos(rot) * scale))
-			xforms.append(Transform3D(basis, Vector3(rx, ry - sy * 0.3, rz)))
+			xforms_by_variant[rng.randi() % rock_variants.size()].append(Transform3D(basis, Vector3(rx, ry - sy * 0.3, rz)))
 
-	print("ParkLoader: rocks = ", xforms.size())
-	_spawn_multimesh(rock_mesh, rock_mat, xforms, "Rocks")
+	var total_rocks := 0
+	for vi in rock_variants.size():
+		if not xforms_by_variant[vi].is_empty():
+			_spawn_multimesh(rock_variants[vi], rock_mat, xforms_by_variant[vi], "Rocks_%d" % vi)
+			total_rocks += xforms_by_variant[vi].size()
+	print("ParkLoader: rocks = ", total_rocks)
 
 
 func _rock_shader_code() -> String:
@@ -6292,14 +7639,30 @@ void fragment() {
 	float rgh_z = texture(rock_rough, world_pos.xy * scale).r;
 	float rgh = rgh_x * blend.x + rgh_y * blend.y + rgh_z * blend.z;
 
-	// Per-rock color variation
+	// Per-rock color variation — Manhattan schist gray base
 	float h = hash21(floor(world_pos.xz * 0.05));
 	float bright = 0.55 + h * 0.35;
 	alb *= bright;
 
+	// Manhattan schist: gray base (#5A5A5A) with warm/cool variation
+	vec3 schist_gray = vec3(0.35, 0.35, 0.35);
+	alb = mix(alb, alb * schist_gray / max(dot(alb, vec3(0.333)), 0.01) * 0.35, 0.6);
+
+	// Rusty weathering patches (#7B4B3A)
+	float rust_n = sin(world_pos.x * 0.8 + world_pos.z * 1.2) * 0.5
+	             + sin(world_pos.y * 2.3 + world_pos.x * 0.6) * 0.3;
+	float rust = smoothstep(0.3, 0.7, rust_n * 0.5 + 0.5) * 0.25;
+	alb = mix(alb, alb * vec3(1.3, 0.85, 0.65), rust);
+
+	// Mica sparkle — view-dependent glint
+	float mica = hash21(floor(world_pos.xz * 8.0));
+	float sparkle = pow(max(dot(reflect(-VIEW, NORMAL), vec3(0.0, 1.0, 0.0)), 0.0), 32.0);
+	sparkle *= step(0.92, mica);  // only 8% of surface has mica flakes
+
 	ALBEDO    = clamp(alb, 0.0, 1.0);
-	ROUGHNESS = clamp(rgh * 0.9 + 0.1, 0.0, 1.0);
+	ROUGHNESS = clamp(rgh * 0.85 + 0.08, 0.0, 1.0);
 	METALLIC  = 0.0;
+	SPECULAR  = 0.15 + sparkle * 0.6;
 }
 """
 
@@ -6356,9 +7719,10 @@ func _build_labels(water: Array) -> void:
 		lbl.font_size         = 64
 		lbl.pixel_size        = pixel_size
 		lbl.billboard         = BaseMaterial3D.BILLBOARD_ENABLED
-		lbl.modulate          = Color(1.0, 1.0, 1.0, 0.95)
+		lbl.render_priority   = 1
+		lbl.modulate          = Color(0.55, 0.55, 0.55, 0.55)
 		lbl.outline_size      = 8
-		lbl.outline_modulate  = Color(0.0, 0.08, 0.25, 0.85)
+		lbl.outline_modulate  = Color(0.0, 0.08, 0.25, 0.55)
 		var water_y: float = float(body.get("water_y", 0.0))
 		lbl.position          = Vector3(cx, water_y + height, cz)
 		add_child(lbl)
@@ -6402,8 +7766,9 @@ func _build_barriers(barriers: Array) -> void:
 
 	# Stone wall mesh
 	if not wall_verts.is_empty():
+		# Manhattan schist: gray stone with subtle warm weathering
 		_add_stone_mesh(wall_verts, wall_normals, rw_alb, rw_nrm, rw_rgh,
-						Color(0.78, 0.76, 0.72), "StoneWalls")
+						Color(0.50, 0.48, 0.44), "StoneWalls")
 	# Iron fence mesh
 	if not fence_verts.is_empty():
 		_add_batch_mesh(fence_verts, fence_normals,
@@ -6431,8 +7796,8 @@ func _build_wall_segments(pts: Array, height: float,
 	for i in range(pts.size() - 1):
 		var p1x := float(pts[i][0]);   var p1z := float(pts[i][2])
 		var p2x := float(pts[i+1][0]); var p2z := float(pts[i+1][2])
-		var p1y := _terrain_y(p1x, p1z)
-		var p2y := _terrain_y(p2x, p2z)
+		var p1y := _terrain_y(p1x, p1z) - 0.02  # sink base below terrain
+		var p2y := _terrain_y(p2x, p2z) - 0.02
 
 		var seg2 := Vector2(p2x - p1x, p2z - p1z)
 		if seg2.length_squared() < 0.01:
@@ -6765,12 +8130,69 @@ func _build_statues(statues: Array) -> void:
 	var rw_alb := _load_tex("res://textures/rock_wall_diff.jpg")
 	var rw_nrm := _load_tex("res://textures/rock_wall_nrm.jpg")
 	var rw_rgh := _load_tex("res://textures/rock_wall_rgh.jpg")
-	var stone_mat := _make_stone_material(rw_alb, rw_nrm, rw_rgh, Color(0.80, 0.78, 0.74))
+	var stone_mat := _make_stone_material(rw_alb, rw_nrm, rw_rgh, Color(0.56, 0.56, 0.54))  # gray granite pedestal
 
 	var bronze_mat := StandardMaterial3D.new()
-	bronze_mat.albedo_color = Color(0.30, 0.25, 0.18)
-	bronze_mat.roughness    = 0.55
-	bronze_mat.metallic     = 0.65
+	bronze_mat.albedo_color = Color(0.29, 0.42, 0.29)  # aged green-brown patina per Wikimedia
+	bronze_mat.roughness    = 0.65
+	bronze_mat.metallic     = 0.55
+
+	# Load GLB statue models (3 variants for variety)
+	var statue_glb_meshes: Array[Mesh] = []
+	var statue_glb_heights: Array[float] = []
+	for glb_name in ["statue1", "statue2", "statue3"]:
+		var abs_path := ProjectSettings.globalize_path("res://models/furniture/%s.glb" % glb_name)
+		if not FileAccess.file_exists(abs_path):
+			continue
+		var meshes: Array = []
+		var gd := GLTFDocument.new()
+		var gs := GLTFState.new()
+		if gd.append_from_file(abs_path, gs) == OK:
+			var root: Node = gd.generate_scene(gs)
+			if root:
+				_collect_meshes(root, meshes)
+				# Detect node scale (these models have scale=0.33)
+				var node_scale := 1.0
+				for child in root.get_children():
+					if child is Node3D:
+						var s: Vector3 = (child as Node3D).scale
+						if absf(s.x - 1.0) > 0.01:
+							node_scale = s.x
+							break
+				if not meshes.is_empty():
+					var m: Mesh = meshes[0]
+					var ab: AABB = m.get_aabb()
+					var raw_h := maxf(ab.size.x, maxf(ab.size.y, ab.size.z))
+					statue_glb_meshes.append(m)
+					statue_glb_heights.append(raw_h * node_scale)
+				root.queue_free()
+	var use_glb := not statue_glb_meshes.is_empty()
+	if use_glb:
+		print("Statues: loaded %d GLB variants" % statue_glb_meshes.size())
+
+	# Named statue GLBs (photogrammetry scans with own textures)
+	# Each entry: { "file": glb filename, "height": desired real-world height in metres }
+	var named_statue_glbs: Dictionary = {}  # key -> { "root": Node, "scale": float }
+	var named_defs: Dictionary = {
+		"alice in wonderland": { "file": "alice_in_wonderland.glb", "height": 3.35 },
+		"hans christian andersen": { "file": "hans_christian_andersen.glb", "height": 3.4 },
+		"eagles and prey": { "file": "eagles_and_prey.glb", "height": 3.8 },
+	}
+	for skey in named_defs:
+		var def: Dictionary = named_defs[skey]
+		var abs_path := ProjectSettings.globalize_path("res://models/furniture/%s" % def["file"])
+		if not FileAccess.file_exists(abs_path):
+			continue
+		var gd := GLTFDocument.new()
+		var gs := GLTFState.new()
+		if gd.append_from_file(abs_path, gs) == OK:
+			var root: Node = gd.generate_scene(gs)
+			if root:
+				named_statue_glbs[skey] = { "root": root, "height": def["height"] }
+				print("Statues: loaded named GLB '%s'" % skey)
+			else:
+				print("Statues: failed to generate scene for '%s'" % skey)
+	print("Statues: %d named GLBs loaded" % named_statue_glbs.size())
 
 	var statue_col_shapes: Array = []
 
@@ -6779,23 +8201,101 @@ func _build_statues(statues: Array) -> void:
 		var sname: String = str(statue.get("name", ""))
 		var pos: Array = statue.get("position", [0, 0, 0])
 		var sx := float(pos[0]); var sz := float(pos[2])
-		if not _in_boundary(sx, sz):
-			continue
 		var sy := _terrain_y(sx, sz)
+		# Skip out-of-boundary unless it's a named photogrammetry statue
+		if not _in_boundary(sx, sz) and not sname.to_lower() in named_statue_glbs:
+			continue
 
 		# Skip murals/graffiti/street_art — 2D art, no 3D geometry
 		if stype in ["mural", "graffiti", "street_art"]:
 			continue
 
+		var safe_name: String = sname if sname else stype.capitalize()
+
+		# Check for named photogrammetry model (these include their own base)
+		var sname_lower := sname.to_lower()
+		var used_named := false
+		if sname_lower in named_statue_glbs:
+			var entry: Dictionary = named_statue_glbs[sname_lower]
+			var scene_root: Node = (entry["root"] as Node).duplicate()
+			scene_root.name = "NamedStatue_%s" % safe_name
+			if scene_root is Node3D:
+				(scene_root as Node3D).position = Vector3(sx, sy, sz)
+			add_child(scene_root)
+			# Measure actual world-space Y bounds now that it's in tree
+			var y_min := 1e9
+			var y_max := -1e9
+			var mi_stack: Array = [scene_root]
+			while not mi_stack.is_empty():
+				var n: Node = mi_stack.pop_back()
+				if n is MeshInstance3D:
+					var mi := n as MeshInstance3D
+					if mi.mesh:
+						var ab: AABB = mi.mesh.get_aabb()
+						var gt: Transform3D = mi.global_transform
+						for ix in [0, 1]:
+							for iy in [0, 1]:
+								for iz in [0, 1]:
+									var pt := gt * (ab.position + ab.size * Vector3(float(ix), float(iy), float(iz)))
+									if pt.y < y_min:
+										y_min = pt.y
+									if pt.y > y_max:
+										y_max = pt.y
+				for c in n.get_children():
+					mi_stack.append(c)
+			var actual_h := y_max - y_min
+			var desired_h: float = entry["height"]
+			# Scale to desired height and reposition so base sits on terrain
+			var s := desired_h / maxf(actual_h, 0.01)
+			if scene_root is Node3D:
+				var n3d := scene_root as Node3D
+				n3d.scale = Vector3(s, s, s)
+				# After scaling, the bottom moves: new_y_min = sy + s*(y_min - sy)
+				# We want new_y_min = sy, so shift up by (1-s)*(y_min - sy)...
+				# Simpler: new bottom = root_y + s*(old_y_min - root_y)
+				# old_y_min - root_y = y_min - sy, so new bottom = sy + s*(y_min - sy)
+				# Want new bottom = sy → shift = sy - (sy + s*(y_min - sy)) = -s*(y_min - sy)
+				n3d.position.y = sy - s * (y_min - sy)
+			used_named = true
+			print("Named statue '%s' at (%.0f, %.1f, %.0f) actual_h=%.2f scale=%.2f y_range=[%.2f,%.2f]" % [sname, sx, sy, sz, actual_h, s, y_min, y_max])
+			# Collision
+			var cyl := CylinderShape3D.new()
+			cyl.radius = 1.5
+			cyl.height = desired_h
+			var col := CollisionShape3D.new()
+			col.shape = cyl
+			col.position = Vector3(sx, sy + desired_h * 0.5, sz)
+			statue_col_shapes.append(col)
+			# Label
+			var lbl := Label3D.new()
+			lbl.text = sname
+			lbl.font_size = 48
+			lbl.pixel_size = 0.02
+			lbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+
+			lbl.modulate = Color(0.75, 0.72, 0.68, 0.65)
+			lbl.outline_size = 6
+			lbl.outline_modulate = Color(0.0, 0.0, 0.0, 0.50)
+			lbl.position = Vector3(sx, sy + desired_h + 0.5, sz)
+			add_child(lbl)
+		if used_named:
+			continue
+
+		# Strawberry Fields Imagine Mosaic — flat circular disc, not a statue
+		if sname_lower.contains("strawberry"):
+			_build_imagine_mosaic(sx, sy, sz)
+			continue
+
+		# Generic statue placement
 		var ped_h := 1.2
 		var ped_r := 0.6
 		var fig_h := 1.6
 
-		if stype == "obelisk" or sname.to_lower().contains("needle") or sname.to_lower().contains("obelisk"):
+		if stype == "obelisk" or sname_lower.contains("needle") or sname_lower.contains("obelisk"):
 			stype = "obelisk"
 			ped_h = 1.5
 			ped_r = 1.2
-			fig_h = 18.0
+			fig_h = 21.0  # Cleopatra's Needle = 69ft (21m)
 		elif stype == "monument":
 			ped_h = 1.8
 			ped_r = 0.9
@@ -6805,57 +8305,41 @@ func _build_statues(statues: Array) -> void:
 		_make_cylinder_mesh(sx, sy, sz, ped_r, ped_h, stone_mat,
 							"Pedestal_%s" % sname if sname else "Pedestal")
 
-		# Figure on top — composite humanoid silhouette
 		var fig_y := sy + ped_h
-		var safe_name: String = sname if sname else stype.capitalize()
+
 		if stype == "obelisk":
-			# Tall tapered column
-			_make_cylinder_mesh(sx, fig_y, sz, 0.8, fig_h, stone_mat,
+			# Tall tapered column — keep procedural (unique shape)
+			# Cleopatra's Needle: Aswan red granite — warm pinkish-red
+			var obelisk_mat := stone_mat
+			if sname_lower.contains("needle") or sname_lower.contains("cleopatra"):
+				obelisk_mat = _make_stone_material(rw_alb, rw_nrm, rw_rgh, Color(0.62, 0.42, 0.38))
+			_make_cylinder_mesh(sx, fig_y, sz, 0.8, fig_h, obelisk_mat,
 								"Obelisk_%s" % safe_name, 4)
+		elif use_glb and stype != "bust":
+			# Use GLB statue model
+			var vi := hash(sname) % statue_glb_meshes.size()
+			if vi < 0:
+				vi = -vi % statue_glb_meshes.size()
+			var mesh: Mesh = statue_glb_meshes[vi]
+			var glb_h: float = statue_glb_heights[vi]
+			# Scale to desired figure height
+			var desired_h := fig_h
+			var s := desired_h / maxf(glb_h, 0.01)
+			var mi := MeshInstance3D.new()
+			mi.mesh = mesh
+			mi.material_override = bronze_mat
+			# GLB models are Y-up, so just scale + position
+			mi.transform = Transform3D(
+				Basis().scaled(Vector3(s, s, s)),
+				Vector3(sx, fig_y, sz))
+			mi.name = "Statue_%s" % safe_name
+			add_child(mi)
 		elif stype == "bust":
-			# Head + torso only
+			# Small bust — keep simple cylinder approximation
 			_make_cylinder_mesh(sx, fig_y, sz, 0.14, 0.30, bronze_mat,
 								"BustTorso_%s" % safe_name, 10)
 			_make_cylinder_mesh(sx, fig_y + 0.30, sz, 0.10, 0.20, bronze_mat,
 								"BustHead_%s" % safe_name, 8)
-		elif stype == "monument":
-			# Larger composite humanoid (1.5x scale)
-			var leg_h := 0.90; var torso_h := 1.05; var head_h := 0.30
-			# Legs
-			_make_cylinder_mesh(sx - 0.12, fig_y, sz, 0.105, leg_h, bronze_mat,
-								"MonLegL_%s" % safe_name, 8)
-			_make_cylinder_mesh(sx + 0.12, fig_y, sz, 0.105, leg_h, bronze_mat,
-								"MonLegR_%s" % safe_name, 8)
-			# Torso (tapered)
-			_make_cylinder_mesh(sx, fig_y + leg_h, sz, 0.27, torso_h, bronze_mat,
-								"MonTorso_%s" % safe_name, 10)
-			# Arms
-			_make_cylinder_mesh(sx - 0.30, fig_y + leg_h + 0.15, sz, 0.075, 0.75, bronze_mat,
-								"MonArmL_%s" % safe_name, 6)
-			_make_cylinder_mesh(sx + 0.30, fig_y + leg_h + 0.15, sz, 0.075, 0.75, bronze_mat,
-								"MonArmR_%s" % safe_name, 6)
-			# Head
-			_make_cylinder_mesh(sx, fig_y + leg_h + torso_h, sz, 0.15, head_h, bronze_mat,
-								"MonHead_%s" % safe_name, 8)
-		else:
-			# Default statue — composite humanoid (~1.5m total)
-			var leg_h := 0.60; var torso_h := 0.70; var head_h := 0.20
-			# Legs
-			_make_cylinder_mesh(sx - 0.08, fig_y, sz, 0.07, leg_h, bronze_mat,
-								"FigLegL_%s" % safe_name, 8)
-			_make_cylinder_mesh(sx + 0.08, fig_y, sz, 0.07, leg_h, bronze_mat,
-								"FigLegR_%s" % safe_name, 8)
-			# Torso (tapered)
-			_make_cylinder_mesh(sx, fig_y + leg_h, sz, 0.18, torso_h, bronze_mat,
-								"FigTorso_%s" % safe_name, 10)
-			# Arms (slight outward angle)
-			_make_cylinder_mesh(sx - 0.22, fig_y + leg_h + 0.10, sz, 0.05, 0.50, bronze_mat,
-								"FigArmL_%s" % safe_name, 6)
-			_make_cylinder_mesh(sx + 0.22, fig_y + leg_h + 0.10, sz, 0.05, 0.50, bronze_mat,
-								"FigArmR_%s" % safe_name, 6)
-			# Head
-			_make_cylinder_mesh(sx, fig_y + leg_h + torso_h, sz, 0.10, head_h, bronze_mat,
-								"FigHead_%s" % safe_name, 8)
 
 		# Label
 		var lbl := Label3D.new()
@@ -6863,9 +8347,10 @@ func _build_statues(statues: Array) -> void:
 		lbl.font_size = 48
 		lbl.pixel_size = 0.02
 		lbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-		lbl.modulate = Color(1.0, 1.0, 0.9, 0.9)
+
+		lbl.modulate = Color(0.75, 0.72, 0.68, 0.65)
 		lbl.outline_size = 6
-		lbl.outline_modulate = Color(0.0, 0.0, 0.0, 0.7)
+		lbl.outline_modulate = Color(0.0, 0.0, 0.0, 0.50)
 		lbl.position = Vector3(sx, sy + ped_h + fig_h + 0.5, sz)
 		add_child(lbl)
 
@@ -6887,6 +8372,126 @@ func _build_statues(statues: Array) -> void:
 		add_child(body)
 
 	print("ParkLoader: statues/monuments = %d" % [statues.size()])
+
+
+# ---------------------------------------------------------------------------
+# Amenities — drinking water, toilets, theatres (inside park only)
+# ---------------------------------------------------------------------------
+func _build_amenities(amenities: Array) -> void:
+	if amenities.is_empty():
+		return
+
+	# Load drinking fountain GLB
+	var df_path := ProjectSettings.globalize_path("res://models/furniture/cp_drinking_fountain.glb")
+	var df_meshes := _load_glb_meshes(df_path)
+	var df_mesh: Mesh = null
+	if df_meshes.has("CP_DrinkingFountain"):
+		df_mesh = df_meshes["CP_DrinkingFountain"] as Mesh
+	var df_xforms: Array = []
+
+	var count := 0
+	for am in amenities:
+		var pos: Array = am.get("position", [])
+		if pos.size() < 3:
+			continue
+		var x: float = pos[0]
+		var y: float = pos[1]
+		var z: float = pos[2]
+		if not _in_boundary(x, z):
+			continue
+
+		var am_type: String = am.get("type", "")
+		var am_name: String = am.get("name", "")
+
+		# Skip restaurants/cafes — they're mostly outside the park
+		if am_type == "restaurant" or am_type == "cafe":
+			if am_name.is_empty():
+				continue
+
+		var ty := _terrain_y(x, z)
+		y = maxf(y, ty)
+
+		# Named amenities get Label3D
+		if not am_name.is_empty():
+			var label := Label3D.new()
+			label.text = am_name
+			label.font_size = 28
+			label.position = Vector3(x, y + 2.5, z)
+			label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+
+			label.modulate = Color(0.70, 0.68, 0.60, 0.60)
+			label.outline_modulate = Color(0.1, 0.1, 0.1, 0.45)
+			label.outline_size = 4
+			label.no_depth_test = false
+			label.pixel_size = 0.01
+			add_child(label)
+
+		# Drinking water: granite pedestal fountain
+		if am_type == "drinking_water":
+			if df_mesh:
+				df_xforms.append(Transform3D(Basis.IDENTITY, Vector3(x, y, z)))
+			else:
+				var post := _make_cylinder(0.06, 0.8, 8)
+				var mi := MeshInstance3D.new()
+				mi.mesh = post
+				var mat := StandardMaterial3D.new()
+				mat.albedo_color = Color(0.3, 0.5, 0.8)
+				mat.roughness = 0.6
+				mi.material_override = mat
+				mi.position = Vector3(x, y + 0.4, z)
+				add_child(mi)
+
+		# Toilets: small brown marker
+		elif am_type == "toilets":
+			var post := _make_cylinder(0.1, 1.0, 8)
+			var mi := MeshInstance3D.new()
+			mi.mesh = post
+			var mat := StandardMaterial3D.new()
+			mat.albedo_color = Color(0.45, 0.35, 0.25)
+			mat.roughness = 0.7
+			mi.material_override = mat
+			mi.position = Vector3(x, y + 0.5, z)
+			add_child(mi)
+
+		count += 1
+
+	# Spawn drinking fountains via MultiMesh
+	if not df_xforms.is_empty() and df_mesh:
+		_spawn_multimesh(df_mesh, null, df_xforms, "DrinkingFountains")
+		print("  Drinking fountains: %d (CP model)" % df_xforms.size())
+	print("  Amenities: %d placed (inside park)" % count)
+
+
+func _make_cylinder(radius: float, height: float, segments: int) -> ArrayMesh:
+	var verts := PackedVector3Array()
+	var normals := PackedVector3Array()
+	for i in range(segments):
+		var a0 := TAU * float(i) / float(segments)
+		var a1 := TAU * float(i + 1) / float(segments)
+		var x0 := cos(a0) * radius
+		var z0 := sin(a0) * radius
+		var x1 := cos(a1) * radius
+		var z1 := sin(a1) * radius
+		var hh := height * 0.5
+		# Side quad (2 tris)
+		var n0 := Vector3(cos(a0), 0, sin(a0)).normalized()
+		var n1 := Vector3(cos(a1), 0, sin(a1)).normalized()
+		verts.append(Vector3(x0, -hh, z0)); normals.append(n0)
+		verts.append(Vector3(x1, -hh, z1)); normals.append(n1)
+		verts.append(Vector3(x1, hh, z1)); normals.append(n1)
+		verts.append(Vector3(x0, -hh, z0)); normals.append(n0)
+		verts.append(Vector3(x1, hh, z1)); normals.append(n1)
+		verts.append(Vector3(x0, hh, z0)); normals.append(n0)
+		# Top cap tri
+		verts.append(Vector3(0, hh, 0)); normals.append(Vector3.UP)
+		verts.append(Vector3(x0, hh, z0)); normals.append(Vector3.UP)
+		verts.append(Vector3(x1, hh, z1)); normals.append(Vector3.UP)
+	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts
+	arrays[Mesh.ARRAY_NORMAL] = normals
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	return mesh
 
 
 # ---------------------------------------------------------------------------
@@ -6925,9 +8530,10 @@ func _build_boundary(boundary: Array) -> void:
 		body.add_child(col)
 
 
-func _build_perimeter_wall(boundary: Array) -> void:
+func _build_perimeter_wall(boundary: Array, paths: Array) -> void:
 	## Central Park's brownstone perimeter wall — 1.17m tall, 0.45m thick,
 	## slanted top (15-degree batter angle on inner cap). rock_wall texture.
+	## Gate openings where paths cross the boundary.
 	if boundary.size() < 3:
 		return
 	var wall_h := 1.17
@@ -6943,9 +8549,39 @@ func _build_perimeter_wall(boundary: Array) -> void:
 		cx += float(pt[0]); cz += float(pt[1])
 	cx /= float(boundary.size()); cz /= float(boundary.size())
 
-	# Find gate positions: where paths cross the boundary
-	var gate_positions: Array = []  # Array of Vector2 positions along boundary
-	# We'll skip gate detection for now and just build continuous wall
+	# Find gate positions: where a path segment crosses the boundary polygon
+	# Only actual entry/exit roads and paths (service, footway, pedestrian)
+	var gate_positions: Array = []  # Array of Vector2
+	var gate_radius := 4.0  # gate half-width in metres
+	for path in paths:
+		if bool(path.get("bridge", false)) or bool(path.get("tunnel", false)):
+			continue
+		var hw: String = str(path.get("highway", "path"))
+		if hw == "steps" or hw == "track" or hw == "bridleway":
+			continue
+		var ppts: Array = path["points"]
+		if ppts.size() < 2:
+			continue
+		# Check consecutive points for boundary crossings
+		for pi in range(ppts.size() - 1):
+			var ax := float(ppts[pi][0]); var az := float(ppts[pi][2])
+			var bx := float(ppts[pi+1][0]); var bz := float(ppts[pi+1][2])
+			var a_in := _in_boundary(ax, az)
+			var b_in := _in_boundary(bx, bz)
+			if a_in == b_in:
+				continue
+			# Crossing found — approximate position at midpoint
+			var gx := (ax + bx) * 0.5
+			var gz := (az + bz) * 0.5
+			# Gate width scales with path type
+			var too_close := false
+			for gp in gate_positions:
+				if Vector2(gx, gz).distance_to(gp) < gate_radius * 2.5:
+					too_close = true
+					break
+			if not too_close:
+				gate_positions.append(Vector2(gx, gz))
+	print("ParkLoader: perimeter wall gates = %d" % gate_positions.size())
 
 	var verts := PackedVector3Array()
 	var normals := PackedVector3Array()
@@ -6969,6 +8605,16 @@ func _build_perimeter_wall(boundary: Array) -> void:
 			var a := p1.lerp(p2, t0)
 			var b := p1.lerp(p2, t1)
 			var sub_len := a.distance_to(b)
+			# Skip segments near gate positions
+			var mid := (a + b) * 0.5
+			var is_gate := false
+			for gp in gate_positions:
+				if mid.distance_to(gp) < gate_radius:
+					is_gate = true
+					break
+			if is_gate:
+				cum_d += sub_len
+				continue
 			var dir := (b - a) / sub_len if sub_len > 0.01 else Vector2.RIGHT
 			# Inward normal (toward centroid)
 			var nrm2 := Vector2(-dir.y, dir.x)
@@ -6976,8 +8622,8 @@ func _build_perimeter_wall(boundary: Array) -> void:
 				nrm2 = -nrm2
 			var outward := -nrm2
 
-			var ya := _terrain_y(a.x, a.y)
-			var yb := _terrain_y(b.x, b.y)
+			var ya := _terrain_y(a.x, a.y) - 0.02  # sink base below terrain
+			var yb := _terrain_y(b.x, b.y) - 0.02
 			var ht := wall_t * 0.5
 
 			# Outer wall origin (outward from boundary center)
@@ -7036,7 +8682,8 @@ func _build_perimeter_wall(boundary: Array) -> void:
 		var b2 := qi * 4
 		indices.append_array(PackedInt32Array([b2, b2+1, b2+2, b2, b2+2, b2+3]))
 
-	var mat := _make_stone_material(rw_alb, rw_nrm, rw_rgh, Color(0.65, 0.55, 0.42))
+	# Manhattan schist: gray with subtle warm weathering (Wikimedia reference)
+	var mat := _make_stone_material(rw_alb, rw_nrm, rw_rgh, Color(0.48, 0.46, 0.42))
 	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
 	arrays[Mesh.ARRAY_VERTEX] = verts
 	arrays[Mesh.ARRAY_NORMAL] = normals
@@ -7066,6 +8713,98 @@ func _build_perimeter_wall(boundary: Array) -> void:
 	col.shape = shape
 	body.add_child(col)
 	print("ParkLoader: perimeter wall = %d segments" % n_quads)
+
+	# Gate pillars — stone posts flanking each gate opening
+	# Real CP gates have paired granite pillars ~2.4m tall with capstones
+	var pillar_verts := PackedVector3Array()
+	var pillar_normals := PackedVector3Array()
+	var pillar_w := 0.55   # pillar width
+	var pillar_h := 2.4    # pillar height (taller than wall)
+	var cap_overhang := 0.08  # capstone extends beyond pillar
+	for gp in gate_positions:
+		# Find nearest boundary segment to get wall direction
+		var best_dir := Vector2.RIGHT
+		var best_d := INF
+		for bi in range(boundary.size()):
+			var bp1 := Vector2(float(boundary[bi][0]), float(boundary[bi][1]))
+			var bp2 := Vector2(float(boundary[(bi + 1) % boundary.size()][0]),
+							float(boundary[(bi + 1) % boundary.size()][1]))
+			var seg2 := bp2 - bp1
+			var sl := seg2.length()
+			if sl < 0.5: continue
+			var t2 := clampf(seg2.dot(gp - bp1) / (sl * sl), 0.0, 1.0)
+			var closest := bp1 + seg2 * t2
+			var d: float = gp.distance_to(closest)
+			if d < best_d:
+				best_d = d
+				best_dir = seg2.normalized()
+		var nrm2 := Vector2(-best_dir.y, best_dir.x)
+		if nrm2.dot(Vector2(cx - gp.x, cz - gp.y)) < 0.0:
+			nrm2 = -nrm2
+		var gy := _terrain_y(gp.x, gp.y) - 0.02
+		# Place two pillars at ±(gate_radius + pillar_w/2) along wall direction
+		for side in [-1.0, 1.0]:
+			var offset: Vector2 = best_dir * (gate_radius + pillar_w * 0.5) * side
+			var pc: Vector2 = gp + offset  # pillar center XZ
+			var phw := pillar_w * 0.5
+			var py := _terrain_y(pc.x, pc.y) - 0.02
+			# 4 vertical faces of the pillar
+			for face in range(4):
+				var fn: Vector3; var c0: Vector3; var c1: Vector3; var c2: Vector3; var c3: Vector3
+				if face == 0:  # +X face
+					fn = Vector3(1, 0, 0)
+					c0 = Vector3(pc.x + phw, py, pc.y - phw)
+					c1 = Vector3(pc.x + phw, py, pc.y + phw)
+					c2 = Vector3(pc.x + phw, py + pillar_h, pc.y + phw)
+					c3 = Vector3(pc.x + phw, py + pillar_h, pc.y - phw)
+				elif face == 1:  # -X face
+					fn = Vector3(-1, 0, 0)
+					c0 = Vector3(pc.x - phw, py, pc.y + phw)
+					c1 = Vector3(pc.x - phw, py, pc.y - phw)
+					c2 = Vector3(pc.x - phw, py + pillar_h, pc.y - phw)
+					c3 = Vector3(pc.x - phw, py + pillar_h, pc.y + phw)
+				elif face == 2:  # +Z face
+					fn = Vector3(0, 0, 1)
+					c0 = Vector3(pc.x + phw, py, pc.y + phw)
+					c1 = Vector3(pc.x - phw, py, pc.y + phw)
+					c2 = Vector3(pc.x - phw, py + pillar_h, pc.y + phw)
+					c3 = Vector3(pc.x + phw, py + pillar_h, pc.y + phw)
+				else:  # -Z face
+					fn = Vector3(0, 0, -1)
+					c0 = Vector3(pc.x - phw, py, pc.y - phw)
+					c1 = Vector3(pc.x + phw, py, pc.y - phw)
+					c2 = Vector3(pc.x + phw, py + pillar_h, pc.y - phw)
+					c3 = Vector3(pc.x - phw, py + pillar_h, pc.y - phw)
+				pillar_verts.append_array(PackedVector3Array([c0, c1, c2, c0, c2, c3]))
+				for _j in 6: pillar_normals.append(fn)
+			# Capstone top face
+			var cw := phw + cap_overhang
+			var cap_y := py + pillar_h
+			pillar_verts.append_array(PackedVector3Array([
+				Vector3(pc.x - cw, cap_y, pc.y - cw),
+				Vector3(pc.x + cw, cap_y, pc.y - cw),
+				Vector3(pc.x + cw, cap_y, pc.y + cw),
+				Vector3(pc.x - cw, cap_y, pc.y - cw),
+				Vector3(pc.x + cw, cap_y, pc.y + cw),
+				Vector3(pc.x - cw, cap_y, pc.y + cw)
+			]))
+			for _j in 6: pillar_normals.append(Vector3.UP)
+
+	if not pillar_verts.is_empty():
+		# Light gray granite for gate pillars (dressed stone, lighter than schist wall)
+		var pillar_mat := _make_stone_material(rw_alb, rw_nrm, rw_rgh, Color(0.62, 0.60, 0.56))
+		var pillar_arrays: Array = []; pillar_arrays.resize(Mesh.ARRAY_MAX)
+		pillar_arrays[Mesh.ARRAY_VERTEX] = pillar_verts
+		pillar_arrays[Mesh.ARRAY_NORMAL] = pillar_normals
+		var pillar_mesh := ArrayMesh.new()
+		pillar_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, pillar_arrays)
+		pillar_mesh.surface_set_material(0, pillar_mat)
+		var pillar_mi := MeshInstance3D.new()
+		pillar_mi.mesh = pillar_mesh
+		pillar_mi.name = "GatePillars"
+		pillar_mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
+		add_child(pillar_mi)
+		print("ParkLoader: gate pillars = %d" % (gate_positions.size() * 2))
 
 
 func _build_boundary_facades() -> void:
@@ -7100,34 +8839,47 @@ func _build_boundary_facades() -> void:
 	# East side (Fifth Avenue): cream limestone co-ops, 12-18 stories
 	# Z coords: 59th=1967, 70th=1145, 72nd=996, 80th=398, 84th=99, 88th=-199, 110th=-1842
 	var east_lm := [
-		[1890.0, 1970.0, 77.0,  3],  # Plaza Hotel — 18 stories, white/buff brick
-		[1100.0, 1200.0, 15.0,  0],  # Frick Collection — 3-story limestone mansion
+		[1890.0, 1970.0, 77.0,  3],  # Plaza Hotel — 18 stories, white/buff brick (76m)
+		[1100.0, 1200.0, 15.0,  0],  # Frick Collection — 3-story limestone mansion (14m)
 		[99.0,   398.0,  28.0,  0],  # Metropolitan Museum — wide, low, limestone/granite
-		[-275.0, -199.0, 28.0,  0],  # Guggenheim Museum — white concrete spiral
+		[-275.0, -199.0, 28.0,  0],  # Guggenheim Museum — white concrete spiral (28m)
 		[-1320.0,-946.0, 50.0,  1],  # Mount Sinai Hospital — institutional glass/brick
 	]
 	# West side (Central Park West): Art Deco twin-towers + buff brick
 	var west_lm := [
-		[1890.0, 1970.0, 200.0, 1],  # Deutsche Bank Center (Time Warner) — 55-story glass
-		[1750.0, 1830.0, 115.0, 0],  # 15 CPW — modern limestone, 35 stories
-		[1670.0, 1750.0, 91.0,  3],  # The Century — Art Deco twin tower, 30 stories
-		[996.0,  1071.0, 106.0, 3],  # The Majestic — Art Deco twin tower, 30 stories
-		[920.0,  996.0,  30.0,  3],  # The Dakota — Victorian Gothic, 9 stories, yellow brick
-		[772.0,  920.0,  122.0, 3],  # The San Remo — twin tower, 27 stories, most iconic
-		[324.0,  622.0,  25.0,  0],  # Am. Museum of Natural History — wide low limestone
-		[250.0,  324.0,  70.0,  3],  # The Beresford — triple tower, 22 stories
-		[-424.0, -349.0, 119.0, 3],  # The El Dorado — Art Deco twin tower, 29 stories
+		[1890.0, 1970.0, 229.0, 1],  # Deutsche Bank Center (Time Warner) — 55-story glass (229m)
+		[1750.0, 1830.0, 199.0, 0],  # 15 CPW — modern limestone, 43 stories (199m)
+		[1670.0, 1750.0, 100.0, 3],  # The Century — Art Deco twin tower, 30 stories (100m)
+		[996.0,  1071.0, 96.0,  3],  # The Majestic — Art Deco twin tower, 29 stories (96m)
+		[920.0,  996.0,  29.0,  3],  # The Dakota — Victorian Gothic, 9 stories (29m)
+		[772.0,  920.0,  126.0, 3],  # The San Remo — twin tower, 27 stories (126m)
+		[324.0,  622.0,  23.0,  0],  # Am. Museum of Natural History — wide low limestone
+		[250.0,  324.0,  87.0,  3],  # The Beresford — triple tower, 23 stories (87m)
+		[-424.0, -349.0, 96.0,  3],  # The El Dorado — Art Deco twin tower, 29 stories (96m)
 	]
 	# South side (59th St / CPS): Art Deco hotels + supertall backdrop
 	# Uses X coordinate instead of Z
 	var south_lm := [
-		[800.0,  1020.0, 77.0,  3],  # Plaza Hotel (east end)
-		[500.0,  650.0,  220.0, 0],  # 432 Park Avenue vicinity — white concrete grid
-		[-150.0, -50.0,  150.0, 3],  # Essex House — 44-story Art Deco, cream brick
-		[-300.0, -200.0, 120.0, 3],  # Hampshire House — white brick Art Deco
-		[-500.0, -350.0, 250.0, 1],  # Central Park Tower vicinity — 98-story glass
-		[-150.0, 0.0,    200.0, 1],  # One57 / Steinway Tower vicinity — glass
+		[800.0,  1020.0, 77.0,  3],  # Plaza Hotel (east end) (76m)
+		[500.0,  650.0,  426.0, 0],  # 432 Park Avenue — white concrete grid (426m)
+		[-150.0, -50.0,  152.0, 3],  # Essex House — 44-story Art Deco, cream brick (152m)
+		[-300.0, -200.0, 120.0, 3],  # Hampshire House — white brick Art Deco (120m)
+		[-500.0, -350.0, 472.0, 1],  # Central Park Tower — 98-story glass (472m)
+		[-250.0, -100.0, 435.0, 1],  # Steinway Tower (111 W 57th) — slender glass (435m)
+		[-100.0, 50.0,   306.0, 1],  # One57 — glass curtain wall (306m)
 	]
+
+	# Build spatial grid index for fast perimeter height lookups
+	var _ph_grid: Dictionary = {}  # "gx,gz" → Array of [x, z, h] entries
+	var PH_CELL := 50.0  # grid cell size in metres
+	for ph in _perimeter_heights:
+		var gx := int(floor(float(ph[0]) / PH_CELL))
+		var gz := int(floor(float(ph[1]) / PH_CELL))
+		var key := "%d,%d" % [gx, gz]
+		if not _ph_grid.has(key):
+			_ph_grid[key] = []
+		_ph_grid[key].append(ph)
+	var ph_search_r := int(ceil(300.0 / PH_CELL))  # grid cells to search
 
 	var n := boundary_polygon.size()
 	var cum_dist := 0.0
@@ -7157,73 +8909,79 @@ func _build_boundary_facades() -> void:
 		var fp2 := p2 + face_offset
 		var norm3 := Vector3(inward.x, 0.0, inward.y)
 
-		# Building block index for height variation (30m blocks)
+		# Building block index for style variation (30m blocks)
 		var block_idx := int(floor(cum_dist / 30.0))
 		var bh := fmod(abs(float(block_idx) * 73.7 + 17.3), 1.0)  # 0..1 hash
 
-		# --- Classify side and determine height + style ---
-		var bld_h: float
+		# --- Find nearest real building height from NYC data (grid lookup) ---
+		var bld_h := 10.0  # fallback
+		var found_nyc := false
+		var best_dist_sq := 300.0 * 300.0
+		var cgx := int(floor(mx / PH_CELL))
+		var cgz := int(floor(mz / PH_CELL))
+		for gx2 in range(cgx - ph_search_r, cgx + ph_search_r + 1):
+			for gz2 in range(cgz - ph_search_r, cgz + ph_search_r + 1):
+				var key2 := "%d,%d" % [gx2, gz2]
+				if _ph_grid.has(key2):
+					for ph in _ph_grid[key2]:
+						var dx := float(ph[0]) - mx
+						var dz := float(ph[1]) - mz
+						var dsq := dx * dx + dz * dz
+						if dsq < best_dist_sq:
+							best_dist_sq = dsq
+							bld_h = float(ph[2])
+							found_nyc = true
+
+		# --- Classify side for style + tint ---
 		var style: int
 		var tint := Color(1.0, 1.0, 1.0)
 		var matched_lm := false
 
 		if mx > 500.0 and mz > -1700.0 and mz < 1800.0:
 			# ═══ EAST SIDE — Fifth Avenue ═══
-			# Default: cream Indiana limestone co-ops, 12-18 stories (40-60m)
 			style = 0  # LIMESTONE
-			bld_h = 40.0 + bh * 20.0
 			tint = Color(1.02, 1.0, 0.96)  # warm cream
-			# Check landmarks
 			for lm in east_lm:
 				if mz >= lm[0] and mz <= lm[1]:
-					bld_h = lm[2]; style = int(lm[3]); matched_lm = true; break
-			# North of 103rd: transition to shorter red brick (East Harlem)
-			if not matched_lm and mz < -1320.0:
-				bld_h = 18.0 + bh * 8.0; style = 2
+					style = int(lm[3]); matched_lm = true; break
+			if mz < -1320.0:
+				style = 2  # red brick north of 103rd
 				tint = Color(0.98, 0.94, 0.90)
 
 		elif mx < -700.0 and mz > -1700.0 and mz < 1800.0:
 			# ═══ WEST SIDE — Central Park West ═══
-			# Default: tan/buff brick pre-war apartments, 8-12 stories (28-42m)
 			style = 3  # BUFF_BRICK
-			bld_h = 28.0 + bh * 14.0
 			tint = Color(1.0, 0.98, 0.94)
 			for lm in west_lm:
 				if mz >= lm[0] and mz <= lm[1]:
-					bld_h = lm[2]; style = int(lm[3]); matched_lm = true; break
-			# Dakota special tint (pale yellow brick)
+					style = int(lm[3]); matched_lm = true; break
 			if matched_lm and mz >= 920.0 and mz < 996.0:
-				tint = Color(1.05, 1.02, 0.86)
-			# North of 98th: transition to shorter brick
-			if not matched_lm and mz < -700.0:
-				bld_h = 20.0 + bh * 10.0; style = 2
+				tint = Color(1.05, 1.02, 0.86)  # Dakota tint
+			if mz < -700.0 and not matched_lm:
+				style = 2
 				tint = Color(0.96, 0.93, 0.88)
 
 		elif mz > 1700.0:
 			# ═══ SOUTH SIDE — Central Park South / 59th St ═══
-			# Default: Art Deco hotels, 30-44 stories (100-145m)
-			style = 3  # BUFF_BRICK (Art Deco cream brick)
-			bld_h = 100.0 + bh * 45.0
+			style = 3  # BUFF_BRICK
 			tint = Color(1.0, 0.98, 0.95)
-			# Check landmarks by X coordinate
 			for lm in south_lm:
 				if mx >= lm[0] and mx <= lm[1]:
-					bld_h = lm[2]; style = int(lm[3]); matched_lm = true; break
+					style = int(lm[3]); matched_lm = true; break
 
 		else:
-			# ═══ NORTH SIDE — 110th St / Central Park North ═══
-			# Low brownstone/brick mix, 4-7 stories (15-22m)
+			# ═══ NORTH SIDE — 110th St ═══
 			style = 2  # RED_BRICK
-			bld_h = 15.0 + bh * 8.0
 			tint = Color(0.98, 0.94, 0.90)
-			# Occasional newer glass mid-rise
-			if bh > 0.85:
-				bld_h = 35.0 + bh * 20.0; style = 1
+			if bld_h > 30.0:
+				style = 1  # glass for taller buildings
 
-		# Height sawtooth jitter ±4m (seeded from position)
-		var h_jitter := fmod(abs(float(block_idx) * 29.7 + mx * 0.13), 8.0) - 4.0
-		if not matched_lm:
-			bld_h += h_jitter
+		if not found_nyc:
+			# No NYC data — use procedural fallback
+			if mx > 500.0: bld_h = 40.0 + bh * 20.0
+			elif mx < -700.0: bld_h = 28.0 + bh * 14.0
+			elif mz > 1700.0: bld_h = 100.0 + bh * 45.0
+			else: bld_h = 15.0 + bh * 8.0
 
 		# Per-building tint variation (±15%)
 		var rv := fmod(abs(float(block_idx) * 17.3), 0.30) - 0.15
@@ -7335,6 +9093,7 @@ func _build_boundary_facades() -> void:
 		_make_facade_buff_brick(),
 		_make_facade_dark_stone(),
 	]
+	facade_materials.append_array(style_mats)
 	var total_quads := 0
 	for s in range(5):
 		if sv[s].is_empty():
@@ -7373,6 +9132,85 @@ func _build_boundary_facades() -> void:
 		add_child(r_mi)
 
 	print("ParkLoader: boundary facades = %d segments" % total_quads)
+
+	# Add name labels for park-facing buildings from OSM data
+	_label_boundary_buildings()
+
+
+func _label_boundary_buildings() -> void:
+	## Add Label3D name tags to named buildings near the park boundary.
+	## Only shows buildings that are outside the park but close to it.
+	var fh := FileAccess.open("res://park_data.json", FileAccess.READ)
+	if not fh:
+		return
+	var data: Dictionary = JSON.parse_string(fh.get_as_text())
+	fh.close()
+	var buildings: Array = data.get("buildings", [])
+	var count := 0
+	for b in buildings:
+		var bname: String = str(b.get("name", ""))
+		if bname.is_empty():
+			continue
+		var pts: Array = b.get("points", [])
+		if pts.size() < 3:
+			continue
+
+		# Compute centroid
+		var cx := 0.0
+		var cz := 0.0
+		for pt in pts:
+			cx += float(pt[0])
+			cz += float(pt[1])
+		cx /= float(pts.size())
+		cz /= float(pts.size())
+
+		# Skip buildings inside the park — we only want perimeter buildings
+		if _in_boundary(cx, cz):
+			continue
+
+		# Must be close to park boundary (within 200m)
+		var min_dist := 999999.0
+		for bp in boundary_polygon:
+			var d := Vector2(cx - bp.x, cz - bp.y).length()
+			if d < min_dist:
+				min_dist = d
+		if min_dist > 200.0:
+			continue
+
+		# Estimate building height from footprint area
+		var min_x := INF; var max_x := -INF
+		var min_z := INF; var max_z := -INF
+		for pt in pts:
+			var px := float(pt[0]); var pz := float(pt[1])
+			if px < min_x: min_x = px
+			if px > max_x: max_x = px
+			if pz < min_z: min_z = pz
+			if pz > max_z: max_z = pz
+		var footprint_w := max_x - min_x
+		var footprint_d := max_z - min_z
+		var diag := sqrt(footprint_w * footprint_w + footprint_d * footprint_d)
+		# Estimate height: small building=15m, large=60m+
+		var est_h := clampf(diag * 0.8, 15.0, 200.0)
+
+		var ty := _terrain_y(cx, cz)
+		var label_y := ty + est_h * 0.6  # place label at ~60% building height
+
+		var lbl := Label3D.new()
+		lbl.text = bname
+		lbl.font_size = 36
+		lbl.pixel_size = 0.008
+		lbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+
+		lbl.modulate = Color(0.70, 0.68, 0.64, 0.45)
+		lbl.outline_size = 4
+		lbl.outline_modulate = Color(0.08, 0.08, 0.08, 0.30)
+		lbl.no_depth_test = false
+		lbl.position = Vector3(cx, label_y, cz)
+		add_child(lbl)
+		count += 1
+
+	if count > 0:
+		print("ParkLoader: building labels = %d" % count)
 
 
 # ---------------------------------------------------------------------------
@@ -7415,445 +9253,260 @@ func _add_box_verts(v: PackedVector3Array, n: PackedVector3Array, idx: PackedInt
 		for _j in 4: n.append(face[4])
 		idx.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
 
-func _make_lamppost_mesh_a() -> ArrayMesh:
-	## Variant A: Henry Bacon Type B — fluted shaft, 3-tier base, Kent Bloomer luminaire, acorn finial
-	## Surface 0 = post+base (no emission), Surface 1 = luminaire (emission)
-	var p_verts   := PackedVector3Array()
-	var p_normals := PackedVector3Array()
-	var p_indices := PackedInt32Array()
-	var segs := 12  # 12-sided for fluted shaft
-	var post_h := 3.5
-	# --- 3-tier base ---
-	# Tier 1: square foot 0.18m half-width, 0.12m tall
-	_add_box_verts(p_verts, p_normals, p_indices, 0.0, 0.06, 0.0, 0.18, 0.06, 0.18)
-	# Tier 2: octagonal plinth (approximate as 12-sided cylinder r=0.14, h=0.15)
-	_add_cylinder_verts(p_verts, p_normals, p_indices, 0.0, 0.12, 0.0, 0.14, 0.15, segs, 0.10)
-	# Tier 3: fluted column shaft — 12-sided with alternating insets for flutes
-	var shaft_base := 0.27
-	var shaft_r := 0.065
-	var flute_depth := 0.012  # concave inset on alternating faces
-	for i in segs:
-		var a0 := TAU * float(i) / float(segs)
-		var a1 := TAU * float(i + 1) / float(segs)
-		var c0 := cos(a0); var s0 := sin(a0)
-		var c1 := cos(a1); var s1 := sin(a1)
-		# Alternate faces get slightly smaller radius (flute)
-		var r0 := shaft_r - (flute_depth if i % 2 == 0 else 0.0)
-		var r1 := shaft_r - (flute_depth if (i + 1) % segs % 2 == 0 else 0.0)
-		var base := p_verts.size()
-		p_verts.append(Vector3(c0 * r0, shaft_base, s0 * r0))
-		p_verts.append(Vector3(c1 * r1, shaft_base, s1 * r1))
-		p_verts.append(Vector3(c1 * r1, post_h, s1 * r1))
-		p_verts.append(Vector3(c0 * r0, post_h, s0 * r0))
-		var n0 := Vector3(c0, 0.0, s0); var n1 := Vector3(c1, 0.0, s1)
-		p_normals.append(n0); p_normals.append(n1); p_normals.append(n1); p_normals.append(n0)
-		p_indices.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
-	# --- S-curve arm (Bishop's crook) ---
-	var arm_segs := 6
-	var arm_r := 0.025
-	var arm_len := 0.30
-	var arm_y := post_h - 0.1
-	for i in arm_segs:
-		var a0 := TAU * float(i) / float(arm_segs)
-		var a1 := TAU * float(i + 1) / float(arm_segs)
-		var base := p_verts.size()
-		p_verts.append(Vector3(0.0, arm_y + cos(a0) * arm_r, sin(a0) * arm_r))
-		p_verts.append(Vector3(arm_len, arm_y + cos(a0) * arm_r, sin(a0) * arm_r))
-		p_verts.append(Vector3(arm_len, arm_y + cos(a1) * arm_r, sin(a1) * arm_r))
-		p_verts.append(Vector3(0.0, arm_y + cos(a1) * arm_r, sin(a1) * arm_r))
-		var n := Vector3(0.0, cos(a0), sin(a0)).normalized()
-		for _j in 4: p_normals.append(n)
-		p_indices.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
-	# --- Number plate (tiny rectangle at eye height ~1.6m) ---
-	_add_box_verts(p_verts, p_normals, p_indices, 0.07, 1.6, 0.0, 0.04, 0.03, 0.005)
-
-	# --- Kent Bloomer luminaire (inverted bell / urn shape with ribs) ---
-	var l_verts   := PackedVector3Array()
-	var l_normals := PackedVector3Array()
-	var l_indices := PackedInt32Array()
-	var lx := arm_len
-	var l_base := arm_y - 0.18
-	var l_segs := 8  # 8 ribs
-	# Two-tier urn: wider bottom tapering to narrower top
-	_add_cylinder_verts(l_verts, l_normals, l_indices, lx, l_base, 0.0, 0.10, 0.18, l_segs, 0.08)
-	_add_cylinder_verts(l_verts, l_normals, l_indices, lx, l_base + 0.18, 0.0, 0.08, 0.12, l_segs, 0.06)
-	# Acorn finial: small sphere(ish) + cone cap on top
-	_add_cylinder_verts(l_verts, l_normals, l_indices, lx, l_base + 0.30, 0.0, 0.035, 0.05, 6, 0.025)
-	_add_cylinder_verts(l_verts, l_normals, l_indices, lx, l_base + 0.35, 0.0, 0.025, 0.04, 6, 0.005)
-
-	var mesh := ArrayMesh.new()
-	var pa: Array = []; pa.resize(Mesh.ARRAY_MAX)
-	pa[Mesh.ARRAY_VERTEX] = p_verts; pa[Mesh.ARRAY_NORMAL] = p_normals; pa[Mesh.ARRAY_INDEX] = p_indices
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, pa)
-	var la: Array = []; la.resize(Mesh.ARRAY_MAX)
-	la[Mesh.ARRAY_VERTEX] = l_verts; la[Mesh.ARRAY_NORMAL] = l_normals; la[Mesh.ARRAY_INDEX] = l_indices
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, la)
-	return mesh
 
 
-func _make_lamppost_mesh_b() -> ArrayMesh:
-	## Variant B: Double luminaire — taller fluted post, two arms, two Kent Bloomer urns
-	## Surface 0 = post+arms, Surface 1 = luminaires
-	var p_verts   := PackedVector3Array()
-	var p_normals := PackedVector3Array()
-	var p_indices := PackedInt32Array()
-	var l_verts   := PackedVector3Array()
-	var l_normals := PackedVector3Array()
-	var l_indices := PackedInt32Array()
-	var segs := 12
-	var post_h := 4.0
-	# 3-tier base
-	_add_box_verts(p_verts, p_normals, p_indices, 0.0, 0.06, 0.0, 0.20, 0.06, 0.20)
-	_add_cylinder_verts(p_verts, p_normals, p_indices, 0.0, 0.12, 0.0, 0.15, 0.15, segs, 0.11)
-	# Fluted shaft
-	var shaft_base := 0.27
-	var shaft_r := 0.07; var flute_depth := 0.012
-	for i in segs:
-		var a0 := TAU * float(i) / float(segs)
-		var a1 := TAU * float(i + 1) / float(segs)
-		var c0 := cos(a0); var s0 := sin(a0)
-		var c1 := cos(a1); var s1 := sin(a1)
-		var r0 := shaft_r - (flute_depth if i % 2 == 0 else 0.0)
-		var r1 := shaft_r - (flute_depth if (i + 1) % segs % 2 == 0 else 0.0)
-		var base := p_verts.size()
-		p_verts.append(Vector3(c0 * r0, shaft_base, s0 * r0))
-		p_verts.append(Vector3(c1 * r1, shaft_base, s1 * r1))
-		p_verts.append(Vector3(c1 * r1, post_h, s1 * r1))
-		p_verts.append(Vector3(c0 * r0, post_h, s0 * r0))
-		var n0 := Vector3(c0, 0.0, s0); var n1 := Vector3(c1, 0.0, s1)
-		p_normals.append(n0); p_normals.append(n1); p_normals.append(n1); p_normals.append(n0)
-		p_indices.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
-	# Two arms at y=3.8, opposite X directions
-	var arm_y := 3.85; var arm_r := 0.025; var arm_len := 0.30
-	for arm_dir in [-1.0, 1.0]:
-		for i in 6:
-			var a0 := TAU * float(i) / 6.0
-			var a1 := TAU * float(i + 1) / 6.0
-			var base := p_verts.size()
-			p_verts.append(Vector3(0.0, arm_y + cos(a0) * arm_r, sin(a0) * arm_r))
-			p_verts.append(Vector3(arm_len * arm_dir, arm_y + cos(a0) * arm_r, sin(a0) * arm_r))
-			p_verts.append(Vector3(arm_len * arm_dir, arm_y + cos(a1) * arm_r, sin(a1) * arm_r))
-			p_verts.append(Vector3(0.0, arm_y + cos(a1) * arm_r, sin(a1) * arm_r))
-			var n := Vector3(0.0, cos(a0), sin(a0)).normalized()
-			for _j in 4: p_normals.append(n)
-			p_indices.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
-		# Kent Bloomer luminaire at arm end
-		var lx: float = arm_len * arm_dir
-		var l_base := arm_y - 0.18
-		_add_cylinder_verts(l_verts, l_normals, l_indices, lx, l_base, 0.0, 0.09, 0.16, 8, 0.07)
-		_add_cylinder_verts(l_verts, l_normals, l_indices, lx, l_base + 0.16, 0.0, 0.07, 0.10, 8, 0.05)
-		# Acorn finial
-		_add_cylinder_verts(l_verts, l_normals, l_indices, lx, l_base + 0.26, 0.0, 0.03, 0.04, 6, 0.02)
-		_add_cylinder_verts(l_verts, l_normals, l_indices, lx, l_base + 0.30, 0.0, 0.02, 0.035, 6, 0.005)
-	var mesh := ArrayMesh.new()
-	var pa: Array = []; pa.resize(Mesh.ARRAY_MAX)
-	pa[Mesh.ARRAY_VERTEX] = p_verts; pa[Mesh.ARRAY_NORMAL] = p_normals; pa[Mesh.ARRAY_INDEX] = p_indices
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, pa)
-	var la: Array = []; la.resize(Mesh.ARRAY_MAX)
-	la[Mesh.ARRAY_VERTEX] = l_verts; la[Mesh.ARRAY_NORMAL] = l_normals; la[Mesh.ARRAY_INDEX] = l_indices
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, la)
-	return mesh
+func _build_furniture(bench_data: Array, lamppost_data: Array, paths: Array) -> void:
+	# --- Load GLB furniture models (cache for reuse by _build_trash_cans) ---
+	if _furn_glb_meshes.is_empty():
+		var furn_path := ProjectSettings.globalize_path("res://models/furniture/park_furniture/glb/parkfurnitures.glb")
+		_furn_glb_meshes = _load_glb_meshes(furn_path)
+	var furn_meshes: Dictionary = _furn_glb_meshes
+	if furn_meshes.is_empty():
+		print("WARNING: furniture GLB not loaded, skipping furniture")
+		return
+	print("Furniture: loaded %d meshes from GLB" % furn_meshes.size())
 
+	# --- Lamp meshes ---
+	# Load CP-specific lamppost (Bishop's Crook style)
+	var cp_lamp_path := ProjectSettings.globalize_path("res://models/furniture/cp_lamppost.glb")
+	var cp_lamp_meshes := _load_glb_meshes(cp_lamp_path)
+	var lamp_meshes_formal: Array[Mesh] = []
+	var lamp_meshes_standard: Array[Mesh] = []
+	var lamp_meshes_simple: Array[Mesh] = []
+	var _cp_lamp_loaded := false
+	if cp_lamp_meshes.has("CP_Lamppost"):
+		var cp_mesh: Mesh = cp_lamp_meshes["CP_Lamppost"] as Mesh
+		lamp_meshes_formal.append(cp_mesh)
+		lamp_meshes_standard.append(cp_mesh)
+		lamp_meshes_simple.append(cp_mesh)
+		_cp_lamp_loaded = true
+		print("Lamp: loaded CP lamppost model (Bishop's Crook)")
+	# Fallback to generic furniture GLB variants
+	if not _cp_lamp_loaded:
+		for lname in ["ParkFurn_Lamp_A", "ParkFurn_Lamp_B"]:
+			if furn_meshes.has(lname):
+				lamp_meshes_formal.append(furn_meshes[lname] as Mesh)
+		for lname in ["ParkFurn_Lamp_C"]:
+			if furn_meshes.has(lname):
+				lamp_meshes_standard.append(furn_meshes[lname] as Mesh)
+		for lname in ["ParkFurn_Lamp_D", "ParkFurn_Lamp_E"]:
+			if furn_meshes.has(lname):
+				lamp_meshes_simple.append(furn_meshes[lname] as Mesh)
+	if lamp_meshes_standard.is_empty():
+		print("WARNING: no lamp meshes found in GLB")
+		return
+	if lamp_meshes_formal.is_empty():
+		lamp_meshes_formal = lamp_meshes_standard
+	if lamp_meshes_simple.is_empty():
+		lamp_meshes_simple = lamp_meshes_standard
+	var lamp_post_mat := StandardMaterial3D.new()
+	lamp_post_mat.albedo_color = Color(0.08, 0.08, 0.06)  # dark wrought iron
+	lamp_post_mat.roughness    = 0.78
+	lamp_post_mat.metallic     = 0.45
+	var lamp_mat_override: Material = lamp_post_mat
+	# Emissive bulb material (main.gd modulates emission for day/night)
+	var lamp_bulb_mat := StandardMaterial3D.new()
+	lamp_bulb_mat.albedo_color = Color(1.0, 0.72, 0.32)
+	lamp_bulb_mat.roughness    = 0.3
+	lamp_bulb_mat.emission_enabled = true
+	lamp_bulb_mat.emission         = Color(0.0, 0.0, 0.0)  # start dark; main.gd modulates
+	lamp_bulb_mat.emission_energy_multiplier = 0.0
+	lamppost_material = lamp_bulb_mat
 
-func _make_lamppost_mesh_c() -> ArrayMesh:
-	## Variant C: Globe top — shorter fluted post, globe luminaire on top
-	## Surface 0 = post, Surface 1 = globe luminaire
-	var p_verts   := PackedVector3Array()
-	var p_normals := PackedVector3Array()
-	var p_indices := PackedInt32Array()
-	var segs := 12
-	var post_h := 3.2
-	# 3-tier base (slightly smaller)
-	_add_box_verts(p_verts, p_normals, p_indices, 0.0, 0.05, 0.0, 0.16, 0.05, 0.16)
-	_add_cylinder_verts(p_verts, p_normals, p_indices, 0.0, 0.10, 0.0, 0.12, 0.12, segs, 0.09)
-	# Fluted shaft
-	var shaft_base := 0.22
-	var shaft_r := 0.055; var flute_depth := 0.010
-	for i in segs:
-		var a0 := TAU * float(i) / float(segs)
-		var a1 := TAU * float(i + 1) / float(segs)
-		var c0 := cos(a0); var s0 := sin(a0)
-		var c1 := cos(a1); var s1 := sin(a1)
-		var r0 := shaft_r - (flute_depth if i % 2 == 0 else 0.0)
-		var r1 := shaft_r - (flute_depth if (i + 1) % segs % 2 == 0 else 0.0)
-		var base := p_verts.size()
-		p_verts.append(Vector3(c0 * r0, shaft_base, s0 * r0))
-		p_verts.append(Vector3(c1 * r1, shaft_base, s1 * r1))
-		p_verts.append(Vector3(c1 * r1, post_h, s1 * r1))
-		p_verts.append(Vector3(c0 * r0, post_h, s0 * r0))
-		var n0 := Vector3(c0, 0.0, s0); var n1 := Vector3(c1, 0.0, s1)
-		p_normals.append(n0); p_normals.append(n1); p_normals.append(n1); p_normals.append(n0)
-		p_indices.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
-	# Globe luminaire directly on top
-	var l_verts   := PackedVector3Array()
-	var l_normals := PackedVector3Array()
-	var l_indices := PackedInt32Array()
-	var l_base := post_h - 0.02
-	# Wider urn/globe shape
-	_add_cylinder_verts(l_verts, l_normals, l_indices, 0.0, l_base, 0.0, 0.10, 0.12, 8, 0.12)
-	_add_cylinder_verts(l_verts, l_normals, l_indices, 0.0, l_base + 0.12, 0.0, 0.12, 0.10, 8, 0.08)
-	_add_cylinder_verts(l_verts, l_normals, l_indices, 0.0, l_base + 0.22, 0.0, 0.08, 0.06, 8, 0.03)
-	# Acorn finial
-	_add_cylinder_verts(l_verts, l_normals, l_indices, 0.0, l_base + 0.28, 0.0, 0.025, 0.04, 6, 0.005)
-	var mesh := ArrayMesh.new()
-	var pa: Array = []; pa.resize(Mesh.ARRAY_MAX)
-	pa[Mesh.ARRAY_VERTEX] = p_verts; pa[Mesh.ARRAY_NORMAL] = p_normals; pa[Mesh.ARRAY_INDEX] = p_indices
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, pa)
-	var la: Array = []; la.resize(Mesh.ARRAY_MAX)
-	la[Mesh.ARRAY_VERTEX] = l_verts; la[Mesh.ARRAY_NORMAL] = l_normals; la[Mesh.ARRAY_INDEX] = l_indices
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, la)
-	return mesh
-
-
-func _make_worlds_fair_bench(half_w: float) -> ArrayMesh:
-	## 1938 World's Fair bench: curved wood slats, circular cast-iron armrests,
-	## Art Deco S-curve legs. 2-surface mesh: S0=iron (green), S1=wood (brown).
-	var iv := PackedVector3Array()  # iron verts
-	var in_ := PackedVector3Array()  # iron normals
-	var ii := PackedInt32Array()     # iron indices
-	var wv := PackedVector3Array()   # wood verts
-	var wn := PackedVector3Array()   # wood normals
-	var wi := PackedInt32Array()     # wood indices
-	var seat_y := 0.44
-	var seat_depth := 0.44  # Z extent
-	var back_tilt := 0.10  # backrest leans back this much (Z)
-
-	# --- Art Deco S-curve legs (2 per end) — heavier iron profile ---
-	for xsign in [-1.0, 1.0]:
-		var lx: float = half_w * 0.85 * float(xsign)
-		# Front leg
-		_add_box_verts(iv, in_, ii, lx, 0.22, 0.16, 0.025, 0.22, 0.018)
-		# Back leg (slightly angled back)
-		_add_box_verts(iv, in_, ii, lx, 0.22, -0.18 - back_tilt * 0.3, 0.025, 0.22, 0.018)
-		# Cross brace between front/back legs
-		_add_box_verts(iv, in_, ii, lx, 0.12, -0.01, 0.018, 0.018, 0.16)
-
-	# --- Circular cast-iron armrests (the signature detail) ---
-	# 6-segment torus approximation, r=0.08m, tube_r=0.012m
-	var arm_r := 0.08
-	var tube_r := 0.012
-	for xsign in [-1.0, 1.0]:
-		var ax: float = (half_w + 0.02) * float(xsign)
-		var ay: float = seat_y + 0.18  # center of circle above seat
-		var az: float = -0.04
-		var torus_segs: int = 8
-		for i in torus_segs:
-			var a0 := TAU * float(i) / float(torus_segs)
-			var a1 := TAU * float(i + 1) / float(torus_segs)
-			# Points on the circle in YZ plane
-			var cy0 := ay + sin(a0) * arm_r; var cz0 := az + cos(a0) * arm_r
-			var cy1 := ay + sin(a1) * arm_r; var cz1 := az + cos(a1) * arm_r
-			# Approximate tube as thin box segments
-			var base := iv.size()
-			iv.append(Vector3(ax - tube_r, cy0, cz0))
-			iv.append(Vector3(ax + tube_r, cy0, cz0))
-			iv.append(Vector3(ax + tube_r, cy1, cz1))
-			iv.append(Vector3(ax - tube_r, cy1, cz1))
-			var n := Vector3(xsign, 0.0, 0.0)
-			for _j in 4: in_.append(n)
-			ii.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
-
-	# --- 5 curved wood seat slats ---
-	var slat_h := 0.018  # slat thickness
-	var slat_gap := seat_depth / 5.0
-	for si in 5:
-		var sz := -seat_depth * 0.5 + slat_gap * (float(si) + 0.5)
-		# Slight arc: center higher by 0.01m
-		var arc_y := seat_y + 0.01 * (1.0 - pow(sz / (seat_depth * 0.5), 2.0))
-		var base := wv.size()
-		wv.append(Vector3(-half_w, arc_y, sz - slat_gap * 0.4))
-		wv.append(Vector3( half_w, arc_y, sz - slat_gap * 0.4))
-		wv.append(Vector3( half_w, arc_y, sz + slat_gap * 0.4))
-		wv.append(Vector3(-half_w, arc_y, sz + slat_gap * 0.4))
-		for _j in 4: wn.append(Vector3.UP)
-		wi.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
-		# Bottom face
-		base = wv.size()
-		wv.append(Vector3(-half_w, arc_y - slat_h, sz + slat_gap * 0.4))
-		wv.append(Vector3( half_w, arc_y - slat_h, sz + slat_gap * 0.4))
-		wv.append(Vector3( half_w, arc_y - slat_h, sz - slat_gap * 0.4))
-		wv.append(Vector3(-half_w, arc_y - slat_h, sz - slat_gap * 0.4))
-		for _j in 4: wn.append(Vector3.DOWN)
-		wi.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
-
-	# --- 2 curved wood backrest slats ---
-	for bi in 2:
-		var by := seat_y + 0.14 + float(bi) * 0.16
-		var bz := -seat_depth * 0.5 - 0.02 - back_tilt * float(bi) * 0.5
-		var base := wv.size()
-		wv.append(Vector3(-half_w, by, bz - 0.02))
-		wv.append(Vector3( half_w, by, bz - 0.02))
-		wv.append(Vector3( half_w, by + 0.06, bz))
-		wv.append(Vector3(-half_w, by + 0.06, bz))
-		var n := Vector3(0.0, 0.15, -1.0).normalized()
-		for _j in 4: wn.append(n)
-		wi.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
-
-	# --- Adopt-A-Bench plaque (tiny brass rectangle on backrest top rail) ---
-	var plaque_y := seat_y + 0.42
-	var plaque_z := -seat_depth * 0.5 - 0.03 - back_tilt
-	_add_box_verts(iv, in_, ii, 0.0, plaque_y, plaque_z, 0.06, 0.02, 0.003)
-
-	# Build 2-surface mesh: S0=iron, S1=wood
-	var mesh := ArrayMesh.new()
-	var ia: Array = []; ia.resize(Mesh.ARRAY_MAX)
-	ia[Mesh.ARRAY_VERTEX] = iv; ia[Mesh.ARRAY_NORMAL] = in_; ia[Mesh.ARRAY_INDEX] = ii
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, ia)
-	var wa: Array = []; wa.resize(Mesh.ARRAY_MAX)
-	wa[Mesh.ARRAY_VERTEX] = wv; wa[Mesh.ARRAY_NORMAL] = wn; wa[Mesh.ARRAY_INDEX] = wi
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, wa)
-	return mesh
-
-func _make_bench_mesh_a() -> ArrayMesh:
-	## Variant A: World's Fair 6ft (1.8m) — the standard Central Park bench
-	return _make_worlds_fair_bench(0.90)
-
-func _make_bench_mesh_b() -> ArrayMesh:
-	## Variant B: World's Fair 8ft (2.4m) — wider version for major paths
-	return _make_worlds_fair_bench(1.20)
-
-func _make_bench_mesh_c() -> ArrayMesh:
-	## Variant C: World's Fair 4ft (1.2m) — compact version for smaller spaces
-	return _make_worlds_fair_bench(0.60)
-
-
-func _build_furniture(paths: Array) -> void:
-	if paths.is_empty():
+	# --- Bench mesh (CP-specific model with iron + wood materials baked in) ---
+	var cp_bench_path := ProjectSettings.globalize_path("res://models/furniture/cp_bench.glb")
+	var cp_bench_meshes := _load_glb_meshes(cp_bench_path)
+	var bench_mesh: Mesh = null
+	if cp_bench_meshes.has("ParkFurn_Bench_CP"):
+		bench_mesh = cp_bench_meshes["ParkFurn_Bench_CP"] as Mesh
+		print("Bench: loaded CP bench model (iron + wood)")
+	else:
+		# Fallback: first available bench from furniture GLB
+		for bname in ["ParkFurn_Bench_A", "ParkFurn_Bench_B", "ParkFurn_Bench_C"]:
+			if furn_meshes.has(bname):
+				bench_mesh = furn_meshes[bname] as Mesh
+				break
+	if bench_mesh == null:
+		print("WARNING: no bench mesh found in GLB")
 		return
 
-	var rng := RandomNumberGenerator.new()
-	rng.seed = 88888
-
-	var lamp_meshes: Array = [_make_lamppost_mesh_a(), _make_lamppost_mesh_b(), _make_lamppost_mesh_c()]
-	var bench_meshes: Array = [_make_bench_mesh_a(), _make_bench_mesh_b(), _make_bench_mesh_c()]
-
-	# Post material — dark green iron (Henry Bacon authentic)
-	var lamp_post_mat := StandardMaterial3D.new()
-	lamp_post_mat.albedo_color = Color(0.08, 0.14, 0.06)
-	lamp_post_mat.roughness    = 0.50
-	lamp_post_mat.metallic     = 0.15
-
-	# Lantern material — frosted glass with emission (controlled by day/night cycle)
-	var lamp_lantern_mat := StandardMaterial3D.new()
-	lamp_lantern_mat.albedo_color = Color(0.95, 0.92, 0.82)
-	lamp_lantern_mat.roughness    = 0.25
-	lamp_lantern_mat.emission_enabled = true
-	lamp_lantern_mat.emission         = Color(1.0, 0.45, 0.08)
-	lamp_lantern_mat.emission_energy_multiplier = 2.0
-	lamppost_material = lamp_lantern_mat
-
-	# Set per-surface materials on each lamp mesh
-	for lm in lamp_meshes:
-		lm.surface_set_material(0, lamp_post_mat)
-		lm.surface_set_material(1, lamp_lantern_mat)
-
-	# Bench materials — 2-surface: S0=deep evergreen iron, S1=warm wood
-	var bench_iron_mat := StandardMaterial3D.new()
-	bench_iron_mat.albedo_color = Color(0.12, 0.22, 0.10)
-	bench_iron_mat.roughness    = 0.55
-	bench_iron_mat.metallic     = 0.15
-	var bench_wood_mat := StandardMaterial3D.new()
-	bench_wood_mat.albedo_color = Color(0.40, 0.26, 0.14)
-	bench_wood_mat.roughness    = 0.72
-	for bm in bench_meshes:
-		bm.surface_set_material(0, bench_iron_mat)
-		bm.surface_set_material(1, bench_wood_mat)
-
-	var lamp_xf:  Array = [[], [], []]
-	var bench_xf: Array = [[], [], []]
-
-	for path in paths:
-		var hw: String = str(path.get("highway", "path"))
-		if hw == "cycleway" or hw == "track" or hw == "steps":
+	# --- Place lampposts: OSM positions + procedural supplement ---
+	# Zone classification: formal areas get ornate lamps, naturalistic get standard,
+	# recreational get simple utilitarian lamps
+	# Formal: Mall/Literary Walk, Bethesda, Conservatory Garden
+	# Simple/recreational: Great Lawn, fields, perimeter paths
+	var lamp_xf_formal: Array = []
+	var lamp_xf_standard: Array = []
+	var lamp_xf_simple: Array = []
+	# Always place OSM lampposts first (standard style)
+	for lp in lamppost_data:
+		var lx := float(lp[0])
+		var lz := float(lp[2])
+		if not _in_boundary(lx, lz):
 			continue
-		if bool(path.get("bridge", false)) or bool(path.get("tunnel", false)):
-			continue
-		var raw_fpts: Array = path["points"]
-		var pts: Array = _smooth_path_catmull_rom(raw_fpts) if raw_fpts.size() >= 3 and hw != "steps" else raw_fpts
-		if pts.size() < 2:
-			continue
-
-		var half_w := _hw_width(hw) * 0.5  # path half-width
-		var lamp_cum  := 0.0
-		var bench_cum := 0.0
-		var next_lamp  := rng.randf_range(25.0, 45.0)
-		var next_bench := rng.randf_range(18.0, 32.0)
-		# Lamps on one side, benches on the other (fixed per path)
-		var lamp_side  := 1.0 if rng.randf() > 0.5 else -1.0
-		var bench_side := -lamp_side
-
-		for pi in range(1, pts.size()):
-			var x0 := float(pts[pi-1][0]); var z0 := float(pts[pi-1][2])
-			var x1 := float(pts[pi][0]);   var z1 := float(pts[pi][2])
-			var dx := x1 - x0; var dz := z1 - z0
-			var seg_len := sqrt(dx * dx + dz * dz)
-			if seg_len < 0.01:
+		var ly := _terrain_y(lx, lz)
+		var tf := Transform3D(Basis.IDENTITY, Vector3(lx, ly, lz))
+		var zone := _lamp_zone(lx, lz)
+		if zone == 0:
+			lamp_xf_formal.append(tf)
+		elif zone == 2:
+			lamp_xf_simple.append(tf)
+		else:
+			lamp_xf_standard.append(tf)
+	var osm_lamp_count := lamp_xf_formal.size() + lamp_xf_standard.size() + lamp_xf_simple.size()
+	# Procedural supplementation disabled — OSM only has 201 of ~1600 real lampposts
+	# No public dataset covers Central Park's internal lamppost positions
+	if false:
+		var rng := RandomNumberGenerator.new()
+		rng.seed = 88888
+		for path in paths:
+			var hw: String = str(path.get("highway", "path"))
+			if hw == "cycleway" or hw == "track" or hw == "steps":
 				continue
-			var nx := -dz / seg_len; var nz := dx / seg_len
-			lamp_cum  += seg_len
-			bench_cum += seg_len
-
-			# Skip placement near bridges
-			var bgk := Vector2i(int(floor(x1 / BRIDGE_GRID_CELL)), int(floor(z1 / BRIDGE_GRID_CELL)))
-			var near_bridge := _bridge_grid.has(bgk)
-
-			if lamp_cum >= next_lamp:
-				lamp_cum = 0.0
-				next_lamp = rng.randf_range(28.0, 40.0)
-				if not near_bridge:
+			if bool(path.get("bridge", false)) or bool(path.get("tunnel", false)):
+				continue
+			var raw_fpts: Array = path["points"]
+			var pts: Array = _smooth_path_catmull_rom(raw_fpts) if raw_fpts.size() >= 3 and hw != "steps" else raw_fpts
+			if pts.size() < 2:
+				continue
+			var half_w := _hw_width(hw) * 0.5
+			var cum := 0.0
+			var next := rng.randf_range(25.0, 45.0)
+			var side := 1.0 if rng.randf() > 0.5 else -1.0
+			for pi in range(1, pts.size()):
+				var x0 := float(pts[pi-1][0]); var z0 := float(pts[pi-1][2])
+				var x1 := float(pts[pi][0]);   var z1 := float(pts[pi][2])
+				var dx := x1 - x0; var dz := z1 - z0
+				var seg_len := sqrt(dx * dx + dz * dz)
+				if seg_len < 0.01:
+					continue
+				cum += seg_len
+				if cum >= next:
+					cum = 0.0
+					next = rng.randf_range(28.0, 40.0)
+					var nx := -dz / seg_len; var nz := dx / seg_len
 					var off := half_w + 0.8
-					var lx := x1 + nx * off * lamp_side
-					var lz := z1 + nz * off * lamp_side
-					var lbk := Vector2i(int(floor(lx / BUILDING_GRID_CELL)), int(floor(lz / BUILDING_GRID_CELL)))
-					if not _building_grid.has(lbk):
-						if _terrain_slope(lx, lz) > 0.35:
-							continue
-						if not _in_boundary(lx, lz):
-							continue
+					var lx := x1 + nx * off * side
+					var lz := z1 + nz * off * side
+					if _in_boundary(lx, lz) and _terrain_slope(lx, lz) <= 0.35:
 						var ly := _terrain_y(lx, lz)
-						var lv := int(abs(lx * 7.3 + lz * 13.1)) % 3
-						lamp_xf[lv].append(Transform3D(Basis.IDENTITY, Vector3(lx, ly, lz)))
+						var tf := Transform3D(Basis.IDENTITY, Vector3(lx, ly, lz))
+						var zone := _lamp_zone(lx, lz)
+						if zone == 0:
+							lamp_xf_formal.append(tf)
+						elif zone == 2:
+							lamp_xf_simple.append(tf)
+						else:
+							lamp_xf_standard.append(tf)
+	var lamp_xf: Array = lamp_xf_formal + lamp_xf_standard + lamp_xf_simple
 
-			if bench_cum >= next_bench:
-				bench_cum = 0.0
-				next_bench = rng.randf_range(20.0, 30.0)
-				if not near_bridge:
+	# --- Place benches: OSM positions + procedural supplement ---
+	var bench_xf: Array = []
+	# Always place OSM benches first
+	for b in bench_data:
+		var bx := float(b[0])
+		var bz := float(b[2])
+		if not _in_boundary(bx, bz):
+			continue
+		var by := _terrain_y(bx, bz) + 0.42  # bench mesh origin is at center, lift to sit on terrain
+		var dir_deg := float(b[3]) if b.size() > 3 else 0.0
+		var angle := deg_to_rad(-dir_deg)
+		var basis := Basis(Vector3.UP, angle)
+		bench_xf.append(Transform3D(basis, Vector3(bx, by, bz)))
+	var osm_bench_count := bench_xf.size()
+	# Procedural supplementation disabled — OSM only has 610 of ~9000 real benches
+	# No public dataset covers Central Park's internal bench positions
+	if false:
+		var rng := RandomNumberGenerator.new()
+		rng.seed = 88889
+		for path in paths:
+			var hw: String = str(path.get("highway", "path"))
+			if hw == "cycleway" or hw == "track" or hw == "steps":
+				continue
+			if bool(path.get("bridge", false)) or bool(path.get("tunnel", false)):
+				continue
+			var raw_fpts: Array = path["points"]
+			var pts: Array = _smooth_path_catmull_rom(raw_fpts) if raw_fpts.size() >= 3 and hw != "steps" else raw_fpts
+			if pts.size() < 2:
+				continue
+			var half_w := _hw_width(hw) * 0.5
+			var cum := 0.0
+			var next := rng.randf_range(18.0, 32.0)
+			var side := 1.0 if rng.randf() > 0.5 else -1.0
+			for pi in range(1, pts.size()):
+				var x0 := float(pts[pi-1][0]); var z0 := float(pts[pi-1][2])
+				var x1 := float(pts[pi][0]);   var z1 := float(pts[pi][2])
+				var dx := x1 - x0; var dz := z1 - z0
+				var seg_len := sqrt(dx * dx + dz * dz)
+				if seg_len < 0.01:
+					continue
+				cum += seg_len
+				if cum >= next:
+					cum = 0.0
+					next = rng.randf_range(20.0, 30.0)
+					var nx := -dz / seg_len; var nz := dx / seg_len
 					var off := half_w + 1.2
-					var bx := x1 + nx * off * bench_side
-					var bz := z1 + nz * off * bench_side
-					var bbk := Vector2i(int(floor(bx / BUILDING_GRID_CELL)), int(floor(bz / BUILDING_GRID_CELL)))
-					if not _building_grid.has(bbk):
-						if _terrain_slope(bx, bz) > BENCH_MAX_SLOPE:
-							continue
-						if not _in_boundary(bx, bz):
-							continue
-						var by := _terrain_y(bx, bz)
-						# Face bench toward the path (opposite of offset direction)
-						var angle := atan2(-nx * bench_side, -nz * bench_side)
-						var basis := Basis(Vector3.UP, angle)
-						var bv := int(abs(bx * 11.7 + bz * 5.3)) % 3
-						bench_xf[bv].append(Transform3D(basis, Vector3(bx, by, bz)))
+					var bx := x1 + nx * off * side
+					var bz := z1 + nz * off * side
+					if _in_boundary(bx, bz) and _terrain_slope(bx, bz) <= BENCH_MAX_SLOPE:
+						var by := _terrain_y(bx, bz) + 0.42
+						var angle := atan2(-nx * side, -nz * side)
+						bench_xf.append(Transform3D(Basis(Vector3.UP, angle), Vector3(bx, by, bz)))
 
-	# Build spatial hash of bench front zones (bench pos + area toward path)
-	for variant_xf in bench_xf:
-		for xf in variant_xf:
-			var pos: Vector3 = xf.origin
-			var fwd: Vector3 = xf.basis.z  # bench faces +Z local = toward path
-			# Mark cells at bench and 3m in front of it
-			for step in 4:  # 0, 1, 2, 3m in front
-				var px := pos.x + fwd.x * float(step)
-				var pz := pos.z + fwd.z * float(step)
-				var key := Vector2i(int(floor(px / BENCH_GRID_CELL)), int(floor(pz / BENCH_GRID_CELL)))
-				_bench_grid[key] = true
+	# Build spatial hash of bench positions (used by undergrowth to keep clear)
+	for xf in bench_xf:
+		var pos: Vector3 = xf.origin
+		var fwd: Vector3 = xf.basis.z
+		for step in 4:
+			var px := pos.x + fwd.x * float(step)
+			var pz := pos.z + fwd.z * float(step)
+			var key := Vector2i(int(floor(px / BENCH_GRID_CELL)), int(floor(pz / BENCH_GRID_CELL)))
+			_bench_grid[key] = true
 
-	var total_lamps: int = lamp_xf[0].size() + lamp_xf[1].size() + lamp_xf[2].size()
-	var total_bench: int = bench_xf[0].size() + bench_xf[1].size() + bench_xf[2].size()
-	print("ParkLoader: lampposts = ", total_lamps, "  benches = ", total_bench)
-	for vi in 3:
-		if not lamp_xf[vi].is_empty():
-			_spawn_multimesh(lamp_meshes[vi], null, lamp_xf[vi], "Lampposts_%d" % vi)
-		if not bench_xf[vi].is_empty():
-			_spawn_multimesh(bench_meshes[vi], null, bench_xf[vi], "Benches_%d" % vi)
+	print("ParkLoader: lampposts = %d (%d OSM + %d procedural)  benches = %d (%d OSM + %d procedural)" % [
+		lamp_xf.size(), osm_lamp_count, lamp_xf.size() - osm_lamp_count,
+		bench_xf.size(), osm_bench_count, bench_xf.size() - osm_bench_count])
+	print("  Lamp zones: formal=%d, standard=%d, simple=%d" % [lamp_xf_formal.size(), lamp_xf_standard.size(), lamp_xf_simple.size()])
+	# Spawn lamps per zone with appropriate mesh variants
+	var bulb_mesh := SphereMesh.new()
+	bulb_mesh.radius = 0.07
+	bulb_mesh.height = 0.14
+	bulb_mesh.radial_segments = 8
+	bulb_mesh.rings = 4
+	var all_bulb_xf: Array = []
+	var zone_data: Array = [
+		[lamp_xf_formal, lamp_meshes_formal, "Lampposts_Formal"],
+		[lamp_xf_standard, lamp_meshes_standard, "Lampposts_Standard"],
+		[lamp_xf_simple, lamp_meshes_simple, "Lampposts_Simple"],
+	]
+	for zd in zone_data:
+		var xf_list: Array = zd[0]
+		var meshes: Array = zd[1]
+		var label: String = zd[2]
+		if xf_list.is_empty() or meshes.is_empty():
+			continue
+		# Distribute across mesh variants
+		var n_vars := meshes.size()
+		var var_xf: Array = []
+		for _v in n_vars:
+			var_xf.append([])
+		for i in xf_list.size():
+			var_xf[i % n_vars].append(xf_list[i])
+		for vi in n_vars:
+			if not var_xf[vi].is_empty():
+				_spawn_multimesh(meshes[vi], lamp_mat_override, var_xf[vi], "%s_%d" % [label, vi])
+		# Bulb positions for all lamps in this zone
+		# CP lamppost globe at (0.45, 3.2, 0), generic at (0.012, 2.79, 0.475)
+		var bulb_offset := Vector3(0.45, 3.2, 0.0) if _cp_lamp_loaded else Vector3(0.012, 2.79, 0.475)
+		for xf in xf_list:
+			var bxf: Transform3D = xf
+			bxf.origin += bulb_offset
+			all_bulb_xf.append(bxf)
+	if not all_bulb_xf.is_empty():
+		_spawn_multimesh(bulb_mesh, lamp_bulb_mat, all_bulb_xf, "LampBulbs")
+	# Spawn all benches with the CP bench model (materials baked into GLB)
+	if not bench_xf.is_empty():
+		_spawn_multimesh(bench_mesh, null, bench_xf, "Benches_0")
 
 
 # ---------------------------------------------------------------------------
@@ -7884,79 +9537,80 @@ func _make_dirt_circle_mesh() -> ArrayMesh:
 	return mesh
 
 
-func _build_trash_cans(paths: Array) -> void:
-	## Dark green cylindrical trash receptacles (~every 60m along paths).
-	if paths.is_empty():
+func _build_trash_cans(trash_data: Array, paths: Array) -> void:
+	## Trash receptacles from OSM data, with procedural fallback.
+	# Load CP-specific trash can (green wire basket)
+	var cp_tc_path := ProjectSettings.globalize_path("res://models/furniture/cp_trash_can.glb")
+	var cp_tc_meshes := _load_glb_meshes(cp_tc_path)
+	var mesh: Mesh
+	var mat: Material = null
+	if cp_tc_meshes.has("CP_TrashCan"):
+		mesh = cp_tc_meshes["CP_TrashCan"] as Mesh
+		print("TrashCan: loaded CP trash can model (green wire)")
+	elif _furn_glb_meshes.has("ParkFurn_TrashCan_A"):
+		mesh = _furn_glb_meshes["ParkFurn_TrashCan_A"]
+		var trash_mat := StandardMaterial3D.new()
+		trash_mat.albedo_color = Color(0.08, 0.08, 0.06)
+		trash_mat.roughness = 0.78
+		trash_mat.metallic = 0.45
+		mat = trash_mat
+	else:
+		print("WARNING: no trash can mesh found, skipping")
 		return
-	var rng := RandomNumberGenerator.new()
-	rng.seed = 77711
-	# Mesh: cylinder 0.35m radius × 0.9m tall + domed lid
-	var v := PackedVector3Array(); var n := PackedVector3Array(); var idx := PackedInt32Array()
-	var segs := 8
-	_add_cylinder_verts(v, n, idx, 0.0, 0.0, 0.0, 0.35, 0.85, segs)
-	# Domed lid (tapers to 0.20 over 0.10m)
-	_add_cylinder_verts(v, n, idx, 0.0, 0.85, 0.0, 0.36, 0.10, segs, 0.20)
-	# Top cap
-	var base := v.size()
-	for i in segs:
-		var a0 := TAU * float(i) / float(segs)
-		var a1 := TAU * float(i + 1) / float(segs)
-		v.append(Vector3(0.0, 0.95, 0.0))
-		v.append(Vector3(cos(a0) * 0.20, 0.95, sin(a0) * 0.20))
-		v.append(Vector3(cos(a1) * 0.20, 0.95, sin(a1) * 0.20))
-		for _j in 3: n.append(Vector3.UP)
-		var b2 := base + i * 3
-		idx.append_array(PackedInt32Array([b2, b2+1, b2+2]))
-	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
-	arrays[Mesh.ARRAY_VERTEX] = v; arrays[Mesh.ARRAY_NORMAL] = n; arrays[Mesh.ARRAY_INDEX] = idx
-	var mesh := ArrayMesh.new()
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(0.08, 0.14, 0.06)
-	mat.roughness = 0.60
-	mat.metallic = 0.10
+
+	# Place from OSM data + procedural supplement
 	var xforms: Array = []
-	for path in paths:
-		var hw: String = str(path.get("highway", "path"))
-		if hw == "cycleway" or hw == "track" or hw == "steps":
+	for tc in trash_data:
+		var tx := float(tc[0])
+		var tz := float(tc[2])
+		if not _in_boundary(tx, tz):
 			continue
-		if bool(path.get("bridge", false)) or bool(path.get("tunnel", false)):
-			continue
-		var pts: Array = path["points"]
-		if pts.size() < 2:
-			continue
-		var half_w := _hw_width(hw) * 0.5
-		var cum := 0.0
-		var next := rng.randf_range(45.0, 75.0)
-		var side := 1.0 if rng.randf() > 0.5 else -1.0
-		for pi in range(1, pts.size()):
-			var x0 := float(pts[pi-1][0]); var z0 := float(pts[pi-1][2])
-			var x1 := float(pts[pi][0]);   var z1 := float(pts[pi][2])
-			var dx := x1 - x0; var dz := z1 - z0
-			var seg_len := sqrt(dx * dx + dz * dz)
-			if seg_len < 0.01:
+		var ty := _terrain_y(tx, tz)
+		xforms.append(Transform3D(Basis.IDENTITY, Vector3(tx, ty, tz)))
+	var osm_trash_count := xforms.size()
+	if true:
+		var rng := RandomNumberGenerator.new()
+		rng.seed = 77711
+		for path in paths:
+			var hw: String = str(path.get("highway", "path"))
+			if hw == "cycleway" or hw == "track" or hw == "steps":
 				continue
-			cum += seg_len
-			if cum >= next:
-				cum = 0.0
-				next = rng.randf_range(50.0, 70.0)
-				side = -side
-				var nx := -dz / seg_len; var nz := dx / seg_len
-				var tx := x1 + nx * (half_w + 0.6) * side
-				var tz := z1 + nz * (half_w + 0.6) * side
-				if not _in_boundary(tx, tz):
+			if bool(path.get("bridge", false)) or bool(path.get("tunnel", false)):
+				continue
+			var pts: Array = path["points"]
+			if pts.size() < 2:
+				continue
+			var half_w := _hw_width(hw) * 0.5
+			var cum := 0.0
+			var next := rng.randf_range(45.0, 75.0)
+			var side := 1.0 if rng.randf() > 0.5 else -1.0
+			for pi in range(1, pts.size()):
+				var x0 := float(pts[pi-1][0]); var z0 := float(pts[pi-1][2])
+				var x1 := float(pts[pi][0]);   var z1 := float(pts[pi][2])
+				var dx := x1 - x0; var dz := z1 - z0
+				var seg_len := sqrt(dx * dx + dz * dz)
+				if seg_len < 0.01:
 					continue
-				var bgk := Vector2i(int(floor(tx / BRIDGE_GRID_CELL)), int(floor(tz / BRIDGE_GRID_CELL)))
-				if _bridge_grid.has(bgk):
-					continue
-				var bbk := Vector2i(int(floor(tx / BUILDING_GRID_CELL)), int(floor(tz / BUILDING_GRID_CELL)))
-				if _building_grid.has(bbk):
-					continue
-				var ty := _terrain_y(tx, tz)
-				xforms.append(Transform3D(Basis.IDENTITY, Vector3(tx, ty, tz)))
+				cum += seg_len
+				if cum >= next:
+					cum = 0.0
+					next = rng.randf_range(50.0, 70.0)
+					side = -side
+					var nx := -dz / seg_len; var nz := dx / seg_len
+					var tx := x1 + nx * (half_w + 0.6) * side
+					var tz := z1 + nz * (half_w + 0.6) * side
+					if not _in_boundary(tx, tz):
+						continue
+					var bgk := Vector2i(int(floor(tx / BRIDGE_GRID_CELL)), int(floor(tz / BRIDGE_GRID_CELL)))
+					if _bridge_grid.has(bgk):
+						continue
+					var ty := _terrain_y(tx, tz)
+					xforms.append(Transform3D(Basis.IDENTITY, Vector3(tx, ty, tz)))
+
 	if not xforms.is_empty():
 		_spawn_multimesh(mesh, mat, xforms, "TrashCans")
-	print("ParkLoader: trash cans = ", xforms.size())
+	print("ParkLoader: trash cans = %d (from %s)" % [
+		xforms.size(), "OSM" if not trash_data.is_empty() else "procedural"])
 
 
 func _build_tree_dirt(trees: Array) -> void:
@@ -7968,18 +9622,19 @@ func _build_tree_dirt(trees: Array) -> void:
 
 	var dirt_mesh := _make_dirt_circle_mesh()
 	var dirt_mat  := StandardMaterial3D.new()
-	dirt_mat.albedo_color    = Color(0.15, 0.12, 0.07, 0.5)
+	dirt_mat.albedo_color    = Color(0.18, 0.14, 0.08, 0.45)  # warm earth, subtle
 	dirt_mat.roughness       = 0.92
 	dirt_mat.transparency    = BaseMaterial3D.TRANSPARENCY_ALPHA
 	dirt_mat.render_priority = -1
+	dirt_mat.depth_draw_mode = BaseMaterial3D.DEPTH_DRAW_ALWAYS
 
 	var xforms: Array = []
 	for i in trees.size():
-		var pt: Array = trees[i]
+		var pt: Array = _tree_pos(trees[i])
 		var tx := float(pt[0]); var tz := float(pt[2])
 		if not _in_boundary(tx, tz):
 			continue
-		var ty := _terrain_y(tx, tz) + 0.02
+		var ty := _terrain_y(tx, tz) + 0.04  # above terrain (+0.04 in overlay hierarchy)
 		rng.seed = i * 271828 + 31415
 		var r := rng.randf_range(2.0, 4.0)
 		# Skip dirt circles that would overlap any path — check at actual circle radius + buffer
@@ -8035,16 +9690,18 @@ render_mode cull_disabled, depth_prepass_alpha;
 uniform sampler2D petal_opacity : hint_default_white, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform vec3 flower_tint : source_color = vec3(0.95, 0.92, 0.75);
 
+global uniform vec2 wind_vec;
 varying vec3 origin;
 
 void vertex() {
 	origin = (MODEL_MATRIX * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
 	float sway = max(VERTEX.y, 0.0);
-	float wind_base = sin(origin.x * 0.02 + origin.z * 0.025 + TIME * 0.3) * 0.5 + 0.5;
-	float gust = max(0.0, sin(TIME * 0.15 + origin.x * 0.005) * 0.6 + 0.2);
-	float wind_str = (0.5 + wind_base * 0.5) * (1.0 + gust);
-	VERTEX.x += sin(TIME * 1.2 + origin.x * 0.08 + origin.z * 0.1) * 0.04 * sway * wind_str;
-	VERTEX.z += sin(TIME * 1.6 + origin.z * 0.09) * 0.03 * sway * wind_str;
+	float wind_str = length(wind_vec);
+	float rustle = 0.4 + wind_str * 0.6;
+	VERTEX.x += sin(TIME * 1.2 + origin.x * 0.08 + origin.z * 0.1) * 0.04 * sway * rustle;
+	VERTEX.z += sin(TIME * 1.6 + origin.z * 0.09) * 0.03 * sway * rustle;
+	VERTEX.x += wind_vec.x * sway * 0.12;
+	VERTEX.z += wind_vec.y * sway * 0.12;
 }
 
 void fragment() {
@@ -8080,16 +9737,18 @@ render_mode cull_disabled, depth_prepass_alpha;
 uniform sampler2D petal_opacity : hint_default_white, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform vec3 flower_tint : source_color = vec3(0.25, 0.35, 0.75);
 
+global uniform vec2 wind_vec;
 varying vec3 origin;
 
 void vertex() {
 	origin = (MODEL_MATRIX * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
 	float sway = max(VERTEX.y, 0.0);
-	float wind_base = sin(origin.x * 0.02 + origin.z * 0.025 + TIME * 0.3) * 0.5 + 0.5;
-	float gust = max(0.0, sin(TIME * 0.15 + origin.x * 0.005) * 0.6 + 0.2);
-	float wind_str = (0.5 + wind_base * 0.5) * (1.0 + gust);
-	VERTEX.x += sin(TIME * 1.2 + origin.x * 0.08 + origin.z * 0.1) * 0.03 * sway * wind_str;
-	VERTEX.z += sin(TIME * 1.6 + origin.z * 0.09) * 0.02 * sway * wind_str;
+	float wind_str = length(wind_vec);
+	float rustle = 0.4 + wind_str * 0.6;
+	VERTEX.x += sin(TIME * 1.2 + origin.x * 0.08 + origin.z * 0.1) * 0.03 * sway * rustle;
+	VERTEX.z += sin(TIME * 1.6 + origin.z * 0.09) * 0.02 * sway * rustle;
+	VERTEX.x += wind_vec.x * sway * 0.10;
+	VERTEX.z += wind_vec.y * sway * 0.10;
 }
 
 void fragment() {
@@ -8282,7 +9941,8 @@ func _build_wildflowers(trees: Array, water: Array) -> void:
 
 	# Build a quick tree-position lookup for proximity bias
 	var tree_positions: PackedVector2Array = PackedVector2Array()
-	for pt in trees:
+	for pt_raw in trees:
+		var pt: Array = _tree_pos(pt_raw)
 		tree_positions.append(Vector2(float(pt[0]), float(pt[2])))
 
 	# Build a spatial hash of tree positions for fast proximity lookup
@@ -8294,16 +9954,16 @@ func _build_wildflowers(trees: Array, water: Array) -> void:
 			tree_hash[tk] = []
 		tree_hash[tk].append(tp)
 
-	# Grid scan — dense carpet concentrated near trees
+	# Grid scan — carpet concentrated near trees
 	var half := _hm_world_size * 0.5
-	var scan_step := 10.0
+	var scan_step := 12.0
 	var x := -half + 50.0
 	while x < half - 50.0:
 		var z := -half + 50.0
 		while z < half - 50.0:
 			# FBM noise gate — creates natural patches
 			var noise_val := _fbm(Vector2(x, z) * 0.007, 3)
-			if noise_val < 0.35:
+			if noise_val < 0.38:
 				z += scan_step
 				continue
 
@@ -8311,32 +9971,38 @@ func _build_wildflowers(trees: Array, water: Array) -> void:
 				z += scan_step
 				continue
 
-			# Check tree proximity via spatial hash — within 30m of a tree
+			# Check tree proximity via spatial hash — within 25m of a tree
 			var min_dist := 999.0
 			var ck := Vector2i(int(floor(x / TREE_HASH_CELL)), int(floor(z / TREE_HASH_CELL)))
-			for di in range(-2, 3):
-				for dj in range(-2, 3):
+			for di in range(-1, 2):
+				for dj in range(-1, 2):
 					var nk := Vector2i(ck.x + di, ck.y + dj)
 					if tree_hash.has(nk):
 						for tp: Vector2 in tree_hash[nk]:
 							var d := Vector2(x, z).distance_to(tp)
 							if d < min_dist:
 								min_dist = d
-			if min_dist > 30.0:
+								if d < 8.0:
+									break
+					if min_dist < 8.0:
+						break
+				if min_dist < 8.0:
+					break
+			if min_dist > 25.0:
 				z += scan_step
 				continue
 
-			# Dense carpet: many instances per cluster, tight radius
+			# Moderate clusters near trees
 			var cluster_size: int
 			var cluster_r: float
 			if min_dist < 8.0:
-				cluster_size = rng.randi_range(35, 60)
+				cluster_size = rng.randi_range(15, 30)
 				cluster_r = rng.randf_range(2.0, 3.5)
-			elif min_dist < 18.0:
-				cluster_size = rng.randi_range(18, 35)
+			elif min_dist < 16.0:
+				cluster_size = rng.randi_range(8, 18)
 				cluster_r = rng.randf_range(2.0, 4.0)
 			else:
-				cluster_size = rng.randi_range(8, 16)
+				cluster_size = rng.randi_range(4, 10)
 				cluster_r = rng.randf_range(1.5, 3.0)
 
 			# Choose dominant species for this cluster
@@ -8356,7 +10022,7 @@ func _build_wildflowers(trees: Array, water: Array) -> void:
 				if _is_excluded(fx, fz) or _is_on_path(fx, fz):
 					continue
 
-				var fy := _terrain_y(fx, fz) + 0.01
+				var fy := _terrain_y(fx, fz) + 0.03  # vegetation overlay layer
 
 				# 75% dominant for uniform-color patches, 25% random
 				var sp := dom_species
@@ -8464,7 +10130,8 @@ func _build_meadow_grass(trees: Array) -> void:
 	# Spatial hash for tree proximity
 	const MG_TREE_CELL := 30.0
 	var mg_tree_hash: Dictionary = {}
-	for pt in trees:
+	for pt_raw in trees:
+		var pt: Array = _tree_pos(pt_raw)
 		var tp := Vector2(float(pt[0]), float(pt[2]))
 		var tk := Vector2i(int(floor(tp.x / MG_TREE_CELL)), int(floor(tp.y / MG_TREE_CELL)))
 		if not mg_tree_hash.has(tk):
@@ -8489,17 +10156,22 @@ func _build_meadow_grass(trees: Array) -> void:
 				continue
 
 			# Must be within 50m of a tree (actual park area)
-			var mg_min := 999.0
+			var mg_near := false
 			var mgk := Vector2i(int(floor(x / MG_TREE_CELL)), int(floor(z / MG_TREE_CELL)))
+			var mg_pos := Vector2(x, z)
 			for di in range(-2, 3):
+				if mg_near:
+					break
 				for dj in range(-2, 3):
 					var nk := Vector2i(mgk.x + di, mgk.y + dj)
 					if mg_tree_hash.has(nk):
 						for tp: Vector2 in mg_tree_hash[nk]:
-							var d := Vector2(x, z).distance_to(tp)
-							if d < mg_min:
-								mg_min = d
-			if mg_min > 50.0:
+							if mg_pos.distance_squared_to(tp) < 2500.0:
+								mg_near = true
+								break
+					if mg_near:
+						break
+			if not mg_near:
 				z += scan_step
 				continue
 
@@ -8513,7 +10185,7 @@ func _build_meadow_grass(trees: Array) -> void:
 				if _is_excluded(gx, gz) or _is_on_path(gx, gz):
 					continue
 
-				var gy := _terrain_y(gx, gz) + 0.01
+				var gy := _terrain_y(gx, gz) + 0.03  # vegetation overlay layer
 				var h := rng.randf_range(0.15, 0.45)
 				var w := rng.randf_range(0.12, 0.35)
 				var rot := rng.randf() * TAU
@@ -8550,6 +10222,8 @@ render_mode cull_disabled, depth_prepass_alpha;
 uniform sampler2D leaf_opacity : hint_default_white, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform vec3 blossom_tint : source_color = vec3(0.95, 0.72, 0.80);
 
+global uniform vec2 wind_vec;
+global uniform float snow_cover;
 varying vec3 tree_origin;
 
 float hash21(vec2 p) {
@@ -8561,12 +10235,13 @@ float hash21(vec2 p) {
 void vertex() {
 	tree_origin = (MODEL_MATRIX * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
 	float sway = max(VERTEX.y, 0.0);
-	float wind_base = sin(tree_origin.x * 0.02 + tree_origin.z * 0.025 + TIME * 0.3) * 0.5 + 0.5;
-	float gust = max(0.0, sin(TIME * 0.15 + tree_origin.x * 0.005) * 0.6 + 0.2);
-	float wind_str = (0.5 + wind_base * 0.5) * (1.0 + gust);
-	VERTEX.x += sin(TIME * 0.7 + tree_origin.x * 0.04 + tree_origin.z * 0.06) * 0.09 * sway * wind_str;
-	VERTEX.z += sin(TIME * 1.1 + tree_origin.z * 0.05) * 0.05 * sway * wind_str;
-	float flutter = sin(TIME * 3.5 + VERTEX.x * 11.0 + VERTEX.z * 7.0) * 0.012;
+	float wind_str = length(wind_vec);
+	float rustle = 0.3 + wind_str * 0.7;
+	VERTEX.x += sin(TIME * 0.7 + tree_origin.x * 0.04 + tree_origin.z * 0.06) * 0.09 * sway * rustle;
+	VERTEX.z += sin(TIME * 1.1 + tree_origin.z * 0.05) * 0.05 * sway * rustle;
+	VERTEX.x += wind_vec.x * sway * 0.18;
+	VERTEX.z += wind_vec.y * sway * 0.18;
+	float flutter = sin(TIME * 3.5 + VERTEX.x * 11.0 + VERTEX.z * 7.0) * 0.012 * rustle;
 	VERTEX.y += flutter * sway;
 }
 
@@ -8598,9 +10273,18 @@ void fragment() {
 	float rim = pow(1.0 - max(dot(NORMAL, VIEW), 0.0), 2.0) * 0.15;
 	col += vec3(rim);
 
+	// Snow accumulation on blossom canopy — world-space normal
+	if (snow_cover > 0.01) {
+		vec3 world_n = mat3(INV_VIEW_MATRIX) * NORMAL;
+		float upward = max(world_n.y, 0.0);
+		float snow_noise = sin(tree_origin.x * 0.3 + tree_origin.z * 0.4) * 0.15;
+		float snow_amt = clamp((0.3 + upward * 0.7 + snow_noise) * snow_cover, 0.0, 1.0);
+		col = mix(col, vec3(0.92, 0.93, 0.96), snow_amt * 0.65);
+	}
+
 	ALPHA = alpha;
 	ALBEDO = clamp(col, 0.0, 1.0);
-	ROUGHNESS = 0.60;
+	ROUGHNESS = mix(0.60, 0.90, snow_cover * 0.5);
 	SPECULAR = 0.25;
 	METALLIC = 0.0;
 	BACKLIGHT = vec3(0.30, 0.15, 0.05);
@@ -8650,7 +10334,7 @@ func _build_blossoms(trees: Array) -> void:
 	var blossom_xf: Array = [[], [], [], []]
 
 	for i in trees.size():
-		var pt: Array = trees[i]
+		var pt: Array = _tree_pos(trees[i])
 		var tx := float(pt[0]); var tz := float(pt[2])
 		if not _in_boundary(tx, tz):
 			continue
@@ -8781,7 +10465,7 @@ func _build_ground_cover(trees: Array, water: Array, buildings: Array) -> void:
 	fern_mat.shader = _get_shader("flower", _flower_shader_code())
 	if opac_tex:
 		fern_mat.set_shader_parameter("petal_opacity", opac_tex)
-	fern_mat.set_shader_parameter("flower_tint", Vector3(0.42, 0.48, 0.18))
+	fern_mat.set_shader_parameter("flower_tint", Vector3(0.30, 0.40, 0.18))  # dark forest green
 
 	var fern_mesh := _make_fern_mesh()
 	var fern_xf: Array = []
@@ -8832,7 +10516,7 @@ func _build_ground_cover(trees: Array, water: Array, buildings: Array) -> void:
 		rng.seed = i * 667788 + 112233
 		if rng.randf() > 0.65:
 			continue
-		var pt: Array = trees[i]
+		var pt: Array = _tree_pos(trees[i])
 		var tx := float(pt[0]); var tz := float(pt[2])
 		var n_ferns := rng.randi_range(2, 5)
 		for _fi in n_ferns:
@@ -8893,7 +10577,7 @@ func _build_leaf_litter(trees: Array) -> void:
 
 	for i in trees.size():
 		rng.seed = i * 445566 + 778899
-		var pt: Array = trees[i]
+		var pt: Array = _tree_pos(trees[i])
 		var tx := float(pt[0]); var tz := float(pt[2])
 		if not _in_boundary(tx, tz):
 			continue
@@ -9003,17 +10687,19 @@ func _grass_blade_shader_code() -> String:
 	return """shader_type spatial;
 render_mode cull_disabled;
 
+global uniform vec2 wind_vec;
 varying vec3 origin;
 
 void vertex() {
 	origin = (MODEL_MATRIX * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
 	float sway = max(VERTEX.y, 0.0);
 	float hash = fract(sin(origin.x * 12.9898 + origin.z * 78.233) * 43758.5453);
-	float wind_base = sin(origin.x * 0.02 + origin.z * 0.025 + TIME * 0.3) * 0.5 + 0.5;
-	float gust = max(0.0, sin(TIME * 0.15 + origin.x * 0.005) * 0.6 + 0.2);
-	float wind_str = (0.5 + wind_base * 0.5) * (1.0 + gust);
-	VERTEX.x += sin(TIME * 1.5 + hash * 6.28 + origin.x * 0.1) * 0.06 * sway * wind_str;
-	VERTEX.z += sin(TIME * 1.8 + hash * 3.14 + origin.z * 0.12) * 0.04 * sway * wind_str;
+	float wind_str = length(wind_vec);
+	float rustle = 0.3 + wind_str * 0.7;
+	VERTEX.x += sin(TIME * 1.5 + hash * 6.28 + origin.x * 0.1) * 0.06 * sway * rustle;
+	VERTEX.z += sin(TIME * 1.8 + hash * 3.14 + origin.z * 0.12) * 0.04 * sway * rustle;
+	VERTEX.x += wind_vec.x * sway * 0.20;
+	VERTEX.z += wind_vec.y * sway * 0.20;
 }
 
 void fragment() {
@@ -9212,17 +10898,36 @@ func _make_person_mesh_sitter() -> ArrayMesh:
 	return mesh
 
 func _build_pedestrians(paths: Array) -> void:
-	## Billboard pedestrian silhouettes along paths + on benches.
+	## Low-poly 3D pedestrians along paths + on benches.
 	if paths.is_empty():
 		return
 	var rng := RandomNumberGenerator.new()
 	rng.seed = 44422
-	var walk_mat := _make_person_material(Color(0.15, 0.15, 0.18))
-	var sit_mat := _make_person_material(Color(0.22, 0.18, 0.14))
-	var walker_mesh := _make_person_mesh_walker()
+	# Load lowpoly human GLB
+	var human_path := ProjectSettings.globalize_path("res://models/furniture/human_lowpoly.glb")
+	var human_meshes := _load_glb_meshes(human_path)
+	var walker_mesh: Mesh = null
+	for key in human_meshes:
+		walker_mesh = human_meshes[key] as Mesh
+		break
+	if walker_mesh == null:
+		walker_mesh = _make_person_mesh_walker()
 	var sitter_mesh := _make_person_mesh_sitter()
+	# Varied clothing colors
+	var ped_colors: Array[Color] = [
+		Color(0.15, 0.15, 0.20),  # dark navy
+		Color(0.25, 0.12, 0.10),  # maroon
+		Color(0.10, 0.18, 0.12),  # forest green
+		Color(0.30, 0.28, 0.22),  # khaki
+		Color(0.12, 0.12, 0.12),  # charcoal
+		Color(0.35, 0.20, 0.10),  # brown
+		Color(0.20, 0.20, 0.25),  # grey-blue
+		Color(0.22, 0.10, 0.15),  # burgundy
+	]
 
-	var walk_xf: Array = []
+	var n_colors := ped_colors.size()
+	var walk_xf_by_color: Array = []
+	for _c in n_colors: walk_xf_by_color.append([])
 	var jog_xf: Array = []
 	var sit_xf: Array = []
 
@@ -9261,7 +10966,8 @@ func _build_pedestrians(paths: Array) -> void:
 					continue
 				var py := _terrain_y(px, pz)
 				var angle := atan2(dx, dz) + rng.randf_range(-0.5, 0.5)
-				walk_xf.append(Transform3D(Basis(Vector3.UP, angle), Vector3(px, py, pz)))
+				var ci := rng.randi() % n_colors
+				walk_xf_by_color[ci].append(Transform3D(Basis(Vector3.UP, angle), Vector3(px, py, pz)))
 				# Occasionally add joggers on major paths
 				if is_major and rng.randf() < 0.15:
 					var jx := x1 + nx * half_w * 0.3 * (-side)
@@ -9285,17 +10991,21 @@ func _build_pedestrians(paths: Array) -> void:
 			var sit_pos := xf.origin + Vector3(0.0, 0.45, 0.0)
 			sit_xf.append(Transform3D(xf.basis, sit_pos))
 
-	# Spawn multimeshes
-	if not walk_xf.is_empty():
-		_spawn_multimesh(walker_mesh, walk_mat, walk_xf, "Pedestrians_Walkers")
+	# Spawn multimeshes — one per color for clothing variety
+	var total_walkers := 0
+	for ci in n_colors:
+		if not walk_xf_by_color[ci].is_empty():
+			var mat := _make_person_material(ped_colors[ci])
+			_spawn_multimesh(walker_mesh, mat, walk_xf_by_color[ci], "Pedestrians_Walk_%d" % ci)
+			total_walkers += walk_xf_by_color[ci].size()
 	if not jog_xf.is_empty():
 		var jog_mat := _make_person_material(Color(0.20, 0.10, 0.10))
-		var jog_mesh := _make_person_mesh_walker()
-		_spawn_multimesh(jog_mesh, jog_mat, jog_xf, "Pedestrians_Joggers")
+		_spawn_multimesh(walker_mesh, jog_mat, jog_xf, "Pedestrians_Joggers")
 	if not sit_xf.is_empty():
+		var sit_mat := _make_person_material(Color(0.22, 0.18, 0.14))
 		_spawn_multimesh(sitter_mesh, sit_mat, sit_xf, "Pedestrians_Sitters")
 	print("ParkLoader: pedestrians = %d walkers, %d joggers, %d sitters" % [
-		walk_xf.size(), jog_xf.size(), sit_xf.size()])
+		total_walkers, jog_xf.size(), sit_xf.size()])
 
 func _build_waterfowl(water: Array) -> void:
 	## Tiny billboard ducks/geese on water surfaces near shorelines.
@@ -9352,15 +11062,15 @@ func _build_squirrels(trees: Array) -> void:
 		return
 	var rng := RandomNumberGenerator.new()
 	rng.seed = 22211
-	# Small billboard quad for squirrels
-	var sq_mat := _make_person_material(Color(0.35, 0.22, 0.12))
-	# Tiny crossed quads for squirrel silhouette
+	# Eastern gray squirrel silhouette — slightly oversized for visibility
+	var sq_mat := _make_person_material(Color(0.42, 0.34, 0.24))  # warm brown-gray
 	var sv := PackedVector3Array(); var sn := PackedVector3Array()
-	sv.append(Vector3(-0.09, 0.0, 0.0)); sv.append(Vector3(0.09, 0.0, 0.0))
-	sv.append(Vector3(0.09, 0.14, 0.0)); sv.append(Vector3(-0.09, 0.14, 0.0))
+	var shw := 0.12; var sh := 0.18  # ~24cm wide × 18cm tall
+	sv.append(Vector3(-shw, 0.0, 0.0)); sv.append(Vector3(shw, 0.0, 0.0))
+	sv.append(Vector3(shw, sh, 0.0)); sv.append(Vector3(-shw, sh, 0.0))
 	for _j in 4: sn.append(Vector3.BACK)
-	sv.append(Vector3(0.0, 0.0, -0.09)); sv.append(Vector3(0.0, 0.0, 0.09))
-	sv.append(Vector3(0.0, 0.14, 0.09)); sv.append(Vector3(0.0, 0.14, -0.09))
+	sv.append(Vector3(0.0, 0.0, -shw)); sv.append(Vector3(0.0, 0.0, shw))
+	sv.append(Vector3(0.0, sh, shw)); sv.append(Vector3(0.0, sh, -shw))
 	for _j in 4: sn.append(Vector3.RIGHT)
 	var si := PackedInt32Array([0,1,2, 0,2,3, 4,5,6, 4,6,7])
 	var sa: Array = []; sa.resize(Mesh.ARRAY_MAX)
@@ -9368,11 +11078,12 @@ func _build_squirrels(trees: Array) -> void:
 	var sq_mesh := ArrayMesh.new()
 	sq_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, sa)
 	var xforms: Array = []
-	for tree in trees:
+	for tree_raw in trees:
 		if rng.randf() > 0.05:
 			continue
+		var tree: Array = _tree_pos(tree_raw)
 		var tx := float(tree[0])
-		var tz := float(tree[1])
+		var tz := float(tree[2])
 		if not _in_boundary(tx, tz):
 			continue
 		var dist := rng.randf_range(0.5, 2.0)
@@ -9385,6 +11096,691 @@ func _build_squirrels(trees: Array) -> void:
 	if not xforms.is_empty():
 		_spawn_multimesh(sq_mesh, sq_mat, xforms, "Squirrels")
 	print("ParkLoader: squirrels = ", xforms.size())
+
+
+# ---------------------------------------------------------------------------
+# Baseball / softball field markings — dirt infield + foul lines + base paths
+# ---------------------------------------------------------------------------
+func _build_field_markings() -> void:
+	## Draws dirt infield and white line markings for named baseball/softball fields.
+	var fields: Array = []
+	for zone in landuse_zones:
+		var name: String = zone.get("name", "")
+		if name.is_empty():
+			continue
+		var nl := name.to_lower()
+		if not ("ballfield" in nl or "ball field" in nl or "baseball" in nl or "softball" in nl):
+			continue
+		var pts: Array = zone.get("points", [])
+		if pts.size() < 6:
+			continue
+		# Skip aggregate zones (e.g. "Heckscher Ballfields" enclosing polygon)
+		if pts.size() > 60:
+			continue
+		fields.append(zone)
+
+	if fields.is_empty():
+		return
+
+	# Materials
+	var dirt_mat := StandardMaterial3D.new()
+	dirt_mat.albedo_color = Color(0.55, 0.42, 0.30)  # baseball infield dirt
+	dirt_mat.roughness = 0.95
+	dirt_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+
+	var line_mat := StandardMaterial3D.new()
+	line_mat.albedo_color = Color(0.95, 0.95, 0.90)  # white chalk lines
+	line_mat.roughness = 0.85
+	line_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+
+	var count := 0
+	for zone in fields:
+		var name: String = zone["name"]
+		var pts: Array = zone["points"]
+		var is_softball := "softball" in name.to_lower()
+		var base_dist: float = 18.3 if is_softball else 27.4  # 60ft / 90ft
+
+		# Remove duplicate closing point
+		if pts.size() > 3:
+			var dx := float(pts[0][0]) - float(pts[-1][0])
+			var dz := float(pts[0][1]) - float(pts[-1][1])
+			if dx * dx + dz * dz < 4.0:
+				pts = pts.slice(0, -1)
+		var n := pts.size()
+		if n < 4:
+			continue
+
+		# Find home plate: vertex with sharpest interior angle (closest to 90°)
+		var best_i := 0
+		var best_diff := 999.0
+		for i in range(n):
+			var p0x := float(pts[(i - 1 + n) % n][0])
+			var p0z := float(pts[(i - 1 + n) % n][1])
+			var p1x := float(pts[i][0])
+			var p1z := float(pts[i][1])
+			var p2x := float(pts[(i + 1) % n][0])
+			var p2z := float(pts[(i + 1) % n][1])
+			var v1x := p0x - p1x; var v1z := p0z - p1z
+			var v2x := p2x - p1x; var v2z := p2z - p1z
+			var m1 := sqrt(v1x * v1x + v1z * v1z)
+			var m2 := sqrt(v2x * v2x + v2z * v2z)
+			if m1 < 0.1 or m2 < 0.1:
+				continue
+			var dot := (v1x * v2x + v1z * v2z) / (m1 * m2)
+			dot = clampf(dot, -1.0, 1.0)
+			var angle := acos(dot)
+			var diff := absf(angle - PI * 0.5)  # how close to 90°
+			if diff < best_diff:
+				best_diff = diff
+				best_i = i
+
+		var hp_x := float(pts[best_i][0])
+		var hp_z := float(pts[best_i][1])
+		var hp_y := _terrain_y(hp_x, hp_z) + 0.02
+
+		# Foul line directions: the two edges from home plate
+		var prev_i := (best_i - 1 + n) % n
+		var next_i := (best_i + 1) % n
+		var fl1_dx := float(pts[prev_i][0]) - hp_x
+		var fl1_dz := float(pts[prev_i][1]) - hp_z
+		var fl2_dx := float(pts[next_i][0]) - hp_x
+		var fl2_dz := float(pts[next_i][1]) - hp_z
+		var fl1_len := sqrt(fl1_dx * fl1_dx + fl1_dz * fl1_dz)
+		var fl2_len := sqrt(fl2_dx * fl2_dx + fl2_dz * fl2_dz)
+		if fl1_len < 1.0 or fl2_len < 1.0:
+			continue
+		fl1_dx /= fl1_len; fl1_dz /= fl1_len
+		fl2_dx /= fl2_len; fl2_dz /= fl2_len
+
+		# Bisector direction = toward second base (center field)
+		var bis_x := fl1_dx + fl2_dx
+		var bis_z := fl1_dz + fl2_dz
+		var bis_len := sqrt(bis_x * bis_x + bis_z * bis_z)
+		if bis_len < 0.01:
+			continue
+		bis_x /= bis_len; bis_z /= bis_len
+
+		# Base positions
+		var first_x := hp_x + fl2_dx * base_dist
+		var first_z := hp_z + fl2_dz * base_dist
+		var third_x := hp_x + fl1_dx * base_dist
+		var third_z := hp_z + fl1_dz * base_dist
+		var second_x := hp_x + bis_x * base_dist * 1.414
+		var second_z := hp_z + bis_z * base_dist * 1.414
+
+		# --- Dirt infield: fan-shaped area ---
+		var dirt_verts := PackedVector3Array()
+		var dirt_norms := PackedVector3Array()
+		var infield_r: float = base_dist * 1.1  # slightly beyond bases
+		var arc_segs := 24
+		# Fan from home plate covering the 90° arc between foul lines
+		for ai in range(arc_segs):
+			var t0 := float(ai) / float(arc_segs)
+			var t1 := float(ai + 1) / float(arc_segs)
+			# Interpolate direction between foul lines
+			var d0x := fl1_dx * (1.0 - t0) + fl2_dx * t0
+			var d0z := fl1_dz * (1.0 - t0) + fl2_dz * t0
+			var d1x := fl1_dx * (1.0 - t1) + fl2_dx * t1
+			var d1z := fl1_dz * (1.0 - t1) + fl2_dz * t1
+			var l0 := sqrt(d0x * d0x + d0z * d0z)
+			var l1 := sqrt(d1x * d1x + d1z * d1z)
+			if l0 > 0.01: d0x /= l0; d0z /= l0
+			if l1 > 0.01: d1x /= l1; d1z /= l1
+			var ex0 := hp_x + d0x * infield_r
+			var ez0 := hp_z + d0z * infield_r
+			var ex1 := hp_x + d1x * infield_r
+			var ez1 := hp_z + d1z * infield_r
+			var ey0 := _terrain_y(ex0, ez0) + 0.02
+			var ey1 := _terrain_y(ex1, ez1) + 0.02
+			dirt_verts.append(Vector3(hp_x, hp_y, hp_z))
+			dirt_verts.append(Vector3(ex0, ey0, ez0))
+			dirt_verts.append(Vector3(ex1, ey1, ez1))
+			for _j in 3:
+				dirt_norms.append(Vector3.UP)
+
+		if not dirt_verts.is_empty():
+			var da: Array = []; da.resize(Mesh.ARRAY_MAX)
+			da[Mesh.ARRAY_VERTEX] = dirt_verts
+			da[Mesh.ARRAY_NORMAL] = dirt_norms
+			var dm := ArrayMesh.new()
+			dm.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, da)
+			dm.surface_set_material(0, dirt_mat)
+			var dmi := MeshInstance3D.new()
+			dmi.mesh = dm
+			dmi.name = "Field_Dirt_" + name.replace(" ", "_")
+			add_child(dmi)
+
+		# --- Foul lines: thin white strips from home plate outward ---
+		var line_w := 0.08  # ~3 inches wide
+		var line_verts := PackedVector3Array()
+		var line_norms := PackedVector3Array()
+		var foul_len: float = base_dist * 1.6  # extend past bases
+		var _foul_dirs: Array[Vector2] = [Vector2(fl1_dx, fl1_dz), Vector2(fl2_dx, fl2_dz)]
+		for fl_dir in _foul_dirs:
+			var perp := Vector2(-fl_dir.y, fl_dir.x) * line_w * 0.5
+			var end_x: float = hp_x + fl_dir.x * foul_len
+			var end_z: float = hp_z + fl_dir.y * foul_len
+			var end_y := _terrain_y(end_x, end_z) + 0.03
+			var a := Vector3(hp_x + perp.x, hp_y + 0.01, hp_z + perp.y)
+			var b := Vector3(hp_x - perp.x, hp_y + 0.01, hp_z - perp.y)
+			var c := Vector3(end_x + perp.x, end_y, end_z + perp.y)
+			var d := Vector3(end_x - perp.x, end_y, end_z - perp.y)
+			line_verts.append_array(PackedVector3Array([a, b, c, b, d, c]))
+			for _j in 6:
+				line_norms.append(Vector3.UP)
+
+		# --- Base paths: diamond connecting HP → 1B → 2B → 3B → HP ---
+		var bases: Array[Vector3] = [
+			Vector3(hp_x, hp_y + 0.01, hp_z),
+			Vector3(first_x, _terrain_y(first_x, first_z) + 0.03, first_z),
+			Vector3(second_x, _terrain_y(second_x, second_z) + 0.03, second_z),
+			Vector3(third_x, _terrain_y(third_x, third_z) + 0.03, third_z),
+		]
+		for bi in range(4):
+			var ba: Vector3 = bases[bi]
+			var bb: Vector3 = bases[(bi + 1) % 4]
+			var seg := Vector2(bb.x - ba.x, bb.z - ba.z).normalized()
+			var perp := Vector2(-seg.y, seg.x) * line_w * 0.5
+			var la := Vector3(ba.x + perp.x, ba.y, ba.z + perp.y)
+			var lb := Vector3(ba.x - perp.x, ba.y, ba.z - perp.y)
+			var lc := Vector3(bb.x + perp.x, bb.y, bb.z + perp.y)
+			var ld := Vector3(bb.x - perp.x, bb.y, bb.z - perp.y)
+			line_verts.append_array(PackedVector3Array([la, lb, lc, lb, ld, lc]))
+			for _j in 6:
+				line_norms.append(Vector3.UP)
+
+		# --- Base markers: small white squares at each base position ---
+		var base_sz := 0.38  # 15 inches
+		for bi in range(4):
+			var bx: float = bases[bi].x; var by: float = bases[bi].y + 0.01; var bz: float = bases[bi].z
+			var h := base_sz * 0.5
+			line_verts.append_array(PackedVector3Array([
+				Vector3(bx - h, by, bz - h), Vector3(bx + h, by, bz - h),
+				Vector3(bx + h, by, bz + h), Vector3(bx - h, by, bz - h),
+				Vector3(bx + h, by, bz + h), Vector3(bx - h, by, bz + h),
+			]))
+			for _j in 6:
+				line_norms.append(Vector3.UP)
+
+		if not line_verts.is_empty():
+			var la: Array = []; la.resize(Mesh.ARRAY_MAX)
+			la[Mesh.ARRAY_VERTEX] = line_verts
+			la[Mesh.ARRAY_NORMAL] = line_norms
+			var lm := ArrayMesh.new()
+			lm.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, la)
+			lm.surface_set_material(0, line_mat)
+			var lmi := MeshInstance3D.new()
+			lmi.mesh = lm
+			lmi.name = "Field_Lines_" + name.replace(" ", "_")
+			add_child(lmi)
+
+		count += 1
+
+	print("ParkLoader: baseball field markings = ", count)
+
+	# --- Soccer field markings ---
+	var soccer_count := 0
+	for zone in landuse_zones:
+		var name2: String = zone.get("name", "")
+		if name2.is_empty():
+			continue
+		var nl2 := name2.to_lower()
+		if "soccer" not in nl2:
+			continue
+		var spts: Array = zone.get("points", [])
+		if spts.size() < 4:
+			continue
+		# 4-corner polygon — compute center and axes
+		var cx := 0.0; var cz := 0.0
+		for sp in spts:
+			cx += float(sp[0]); cz += float(sp[1])
+		cx /= spts.size(); cz /= spts.size()
+		# Long axis: direction from midpoint of one side to opposite
+		var ax := float(spts[1][0]) - float(spts[0][0])
+		var az := float(spts[1][1]) - float(spts[0][1])
+		var bx := float(spts[2][0]) - float(spts[1][0])
+		var bz := float(spts[2][1]) - float(spts[1][1])
+		var a_len := sqrt(ax * ax + az * az)
+		var b_len := sqrt(bx * bx + bz * bz)
+		# Long axis is the longer side
+		var long_dx: float; var long_dz: float; var field_l: float; var field_w: float
+		var short_dx: float; var short_dz: float
+		if a_len >= b_len:
+			long_dx = ax / a_len; long_dz = az / a_len
+			short_dx = bx / b_len; short_dz = bz / b_len
+			field_l = a_len; field_w = b_len
+		else:
+			long_dx = bx / b_len; long_dz = bz / b_len
+			short_dx = ax / a_len; short_dz = az / a_len
+			field_l = b_len; field_w = a_len
+		var cy := _terrain_y(cx, cz) + 0.025
+		var lw := 0.10  # line width
+		var half_l := field_l * 0.5
+		var half_w := field_w * 0.5
+		var s_verts := PackedVector3Array()
+		var s_norms := PackedVector3Array()
+		# Helper: draw a line strip in world space
+		var _draw_line := func(x0: float, z0: float, x1: float, z1: float) -> void:
+			var dx2 := x1 - x0; var dz2 := z1 - z0
+			var ln := sqrt(dx2 * dx2 + dz2 * dz2)
+			if ln < 0.01: return
+			var px := -dz2 / ln * lw * 0.5; var pz := dx2 / ln * lw * 0.5
+			var y0 := _terrain_y(x0, z0) + 0.025
+			var y1 := _terrain_y(x1, z1) + 0.025
+			s_verts.append(Vector3(x0 + px, y0, z0 + pz))
+			s_verts.append(Vector3(x0 - px, y0, z0 - pz))
+			s_verts.append(Vector3(x1 + px, y1, z1 + pz))
+			s_verts.append(Vector3(x0 - px, y0, z0 - pz))
+			s_verts.append(Vector3(x1 - px, y1, z1 - pz))
+			s_verts.append(Vector3(x1 + px, y1, z1 + pz))
+			for _j2 in 6: s_norms.append(Vector3.UP)
+		# Touchlines (long sides)
+		for side in [-1.0, 1.0]:
+			var sf := float(side)
+			var sx: float = cx + short_dx * half_w * sf - long_dx * half_l
+			var sz: float = cz + short_dz * half_w * sf - long_dz * half_l
+			var ex: float = cx + short_dx * half_w * sf + long_dx * half_l
+			var ez: float = cz + short_dz * half_w * sf + long_dz * half_l
+			_draw_line.call(sx, sz, ex, ez)
+		# Goal lines (short sides)
+		for side2 in [-1.0, 1.0]:
+			var sf2 := float(side2)
+			var sx2: float = cx + long_dx * half_l * sf2 - short_dx * half_w
+			var sz2: float = cz + long_dz * half_l * sf2 - short_dz * half_w
+			var ex2: float = cx + long_dx * half_l * sf2 + short_dx * half_w
+			var ez2: float = cz + long_dz * half_l * sf2 + short_dz * half_w
+			_draw_line.call(sx2, sz2, ex2, ez2)
+		# Halfway line
+		var hx0 := cx - short_dx * half_w; var hz0 := cz - short_dz * half_w
+		var hx1 := cx + short_dx * half_w; var hz1 := cz + short_dz * half_w
+		_draw_line.call(hx0, hz0, hx1, hz1)
+		# Center circle (radius ~9.15m)
+		var cr := 9.15
+		var c_segs := 32
+		for ci in c_segs:
+			var a0 := TAU * float(ci) / float(c_segs)
+			var a1 := TAU * float(ci + 1) / float(c_segs)
+			var p0x := cx + cos(a0) * cr * long_dx + sin(a0) * cr * short_dx
+			var p0z := cz + cos(a0) * cr * long_dz + sin(a0) * cr * short_dz
+			var p1x := cx + cos(a1) * cr * long_dx + sin(a1) * cr * short_dx
+			var p1z := cz + cos(a1) * cr * long_dz + sin(a1) * cr * short_dz
+			_draw_line.call(p0x, p0z, p1x, p1z)
+		# Penalty areas (16.5m from goal line, 40.3m wide)
+		var pa_d := 16.5; var pa_hw := 20.15
+		for side3 in [-1.0, 1.0]:
+			var sf3 := float(side3)
+			var goal_cx: float = cx + long_dx * half_l * sf3
+			var goal_cz: float = cz + long_dz * half_l * sf3
+			# Inward direction (toward center)
+			var inx: float = -long_dx * sf3; var inz: float = -long_dz * sf3
+			# 4 corners of penalty area
+			var c0x: float = goal_cx - short_dx * pa_hw
+			var c0z: float = goal_cz - short_dz * pa_hw
+			var c1x: float = goal_cx + short_dx * pa_hw
+			var c1z: float = goal_cz + short_dz * pa_hw
+			var c2x: float = c1x + inx * pa_d; var c2z: float = c1z + inz * pa_d
+			var c3x: float = c0x + inx * pa_d; var c3z: float = c0z + inz * pa_d
+			_draw_line.call(c0x, c0z, c3x, c3z)
+			_draw_line.call(c3x, c3z, c2x, c2z)
+			_draw_line.call(c2x, c2z, c1x, c1z)
+
+		if not s_verts.is_empty():
+			var sa2: Array = []; sa2.resize(Mesh.ARRAY_MAX)
+			sa2[Mesh.ARRAY_VERTEX] = s_verts
+			sa2[Mesh.ARRAY_NORMAL] = s_norms
+			var sm := ArrayMesh.new()
+			sm.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, sa2)
+			sm.surface_set_material(0, line_mat)
+			var smi := MeshInstance3D.new()
+			smi.mesh = sm
+			smi.name = "Soccer_" + name2.replace(" ", "_")
+			add_child(smi)
+			soccer_count += 1
+
+	if soccer_count > 0:
+		print("ParkLoader: soccer field markings = ", soccer_count)
+
+	# --- Basketball court markings ---
+	var bball_count := 0
+	for zone2 in landuse_zones:
+		var name3: String = zone2.get("name", "")
+		if name3.is_empty():
+			continue
+		var nl3 := name3.to_lower()
+		if "basketball" not in nl3:
+			continue
+		var bpts: Array = zone2.get("points", [])
+		if bpts.size() < 4:
+			continue
+		# Compute center and axes
+		var bcx := 0.0; var bcz := 0.0
+		for bp in bpts:
+			bcx += float(bp[0]); bcz += float(bp[1])
+		bcx /= bpts.size(); bcz /= bpts.size()
+		# Court dimensions: ~28.7m × 15.2m (NBA standard)
+		var bax := float(bpts[1][0]) - float(bpts[0][0])
+		var baz := float(bpts[1][1]) - float(bpts[0][1])
+		var bbx := float(bpts[2][0]) - float(bpts[1][0])
+		var bbz := float(bpts[2][1]) - float(bpts[1][1])
+		var ba_len := sqrt(bax * bax + baz * baz)
+		var bb_len := sqrt(bbx * bbx + bbz * bbz)
+		var blong_dx: float; var blong_dz: float; var bcourt_l: float; var bcourt_w: float
+		var bshort_dx: float; var bshort_dz: float
+		if ba_len >= bb_len:
+			blong_dx = bax / ba_len; blong_dz = baz / ba_len
+			bshort_dx = bbx / bb_len; bshort_dz = bbz / bb_len
+			bcourt_l = ba_len; bcourt_w = bb_len
+		else:
+			blong_dx = bbx / bb_len; blong_dz = bbz / bb_len
+			bshort_dx = bax / ba_len; bshort_dz = baz / ba_len
+			bcourt_l = bb_len; bcourt_w = ba_len
+		var bcy := _terrain_y(bcx, bcz) + 0.025
+		var blw := 0.08  # line width
+		var bhalf_l := bcourt_l * 0.5
+		var bhalf_w := bcourt_w * 0.5
+		var b_verts := PackedVector3Array()
+		var b_norms := PackedVector3Array()
+		var _draw_bline := func(x0b: float, z0b: float, x1b: float, z1b: float) -> void:
+			var dbx := x1b - x0b; var dbz := z1b - z0b
+			var bln := sqrt(dbx * dbx + dbz * dbz)
+			if bln < 0.01: return
+			var bpx := -dbz / bln * blw * 0.5; var bpz := dbx / bln * blw * 0.5
+			var by0 := _terrain_y(x0b, z0b) + 0.025
+			var by1 := _terrain_y(x1b, z1b) + 0.025
+			b_verts.append(Vector3(x0b + bpx, by0, z0b + bpz))
+			b_verts.append(Vector3(x0b - bpx, by0, z0b - bpz))
+			b_verts.append(Vector3(x1b + bpx, by1, z1b + bpz))
+			b_verts.append(Vector3(x0b - bpx, by0, z0b - bpz))
+			b_verts.append(Vector3(x1b - bpx, by1, z1b - bpz))
+			b_verts.append(Vector3(x1b + bpx, by1, z1b + bpz))
+			for _j3 in 6: b_norms.append(Vector3.UP)
+		# Court outline
+		var corners: Array[Vector2] = [
+			Vector2(bcx - blong_dx * bhalf_l - bshort_dx * bhalf_w, bcz - blong_dz * bhalf_l - bshort_dz * bhalf_w),
+			Vector2(bcx + blong_dx * bhalf_l - bshort_dx * bhalf_w, bcz + blong_dz * bhalf_l - bshort_dz * bhalf_w),
+			Vector2(bcx + blong_dx * bhalf_l + bshort_dx * bhalf_w, bcz + blong_dz * bhalf_l + bshort_dz * bhalf_w),
+			Vector2(bcx - blong_dx * bhalf_l + bshort_dx * bhalf_w, bcz - blong_dz * bhalf_l + bshort_dz * bhalf_w),
+		]
+		for ci2 in 4:
+			_draw_bline.call(corners[ci2].x, corners[ci2].y, corners[(ci2 + 1) % 4].x, corners[(ci2 + 1) % 4].y)
+		# Halfway line
+		_draw_bline.call(
+			bcx - bshort_dx * bhalf_w, bcz - bshort_dz * bhalf_w,
+			bcx + bshort_dx * bhalf_w, bcz + bshort_dz * bhalf_w)
+		# Center circle (radius ~1.8m)
+		var bcr := 1.83
+		var bc_segs := 24
+		for bci in bc_segs:
+			var ba0 := TAU * float(bci) / float(bc_segs)
+			var ba1 := TAU * float(bci + 1) / float(bc_segs)
+			var bp0x := bcx + cos(ba0) * bcr * blong_dx + sin(ba0) * bcr * bshort_dx
+			var bp0z := bcz + cos(ba0) * bcr * blong_dz + sin(ba0) * bcr * bshort_dz
+			var bp1x := bcx + cos(ba1) * bcr * blong_dx + sin(ba1) * bcr * bshort_dx
+			var bp1z := bcz + cos(ba1) * bcr * blong_dz + sin(ba1) * bcr * bshort_dz
+			_draw_bline.call(bp0x, bp0z, bp1x, bp1z)
+		# Free throw lanes + 3-point arcs at each end
+		var ft_d := 5.8; var ft_hw := 2.44  # free throw lane 4.88m wide, 5.8m deep
+		for bside in [-1.0, 1.0]:
+			var bsf := float(bside)
+			var goal_cx2: float = bcx + blong_dx * bhalf_l * bsf
+			var goal_cz2: float = bcz + blong_dz * bhalf_l * bsf
+			var binx: float = -blong_dx * bsf; var binz: float = -blong_dz * bsf
+			# Free throw lane rectangle
+			var fc0x: float = goal_cx2 - bshort_dx * ft_hw
+			var fc0z: float = goal_cz2 - bshort_dz * ft_hw
+			var fc1x: float = goal_cx2 + bshort_dx * ft_hw
+			var fc1z: float = goal_cz2 + bshort_dz * ft_hw
+			var fc2x: float = fc1x + binx * ft_d; var fc2z: float = fc1z + binz * ft_d
+			var fc3x: float = fc0x + binx * ft_d; var fc3z: float = fc0z + binz * ft_d
+			_draw_bline.call(fc0x, fc0z, fc3x, fc3z)
+			_draw_bline.call(fc3x, fc3z, fc2x, fc2z)
+			_draw_bline.call(fc2x, fc2z, fc1x, fc1z)
+
+		if not b_verts.is_empty():
+			var ba3: Array = []; ba3.resize(Mesh.ARRAY_MAX)
+			ba3[Mesh.ARRAY_VERTEX] = b_verts
+			ba3[Mesh.ARRAY_NORMAL] = b_norms
+			var bm2 := ArrayMesh.new()
+			bm2.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, ba3)
+			bm2.surface_set_material(0, line_mat)
+			var bmi := MeshInstance3D.new()
+			bmi.mesh = bm2
+			bmi.name = "Basketball_" + name3.replace(" ", "_")
+			add_child(bmi)
+			bball_count += 1
+
+	if bball_count > 0:
+		print("ParkLoader: basketball court markings = ", bball_count)
+
+	# --- Tennis court markings ---
+	# Central Park Tennis Center: Har-Tru green clay, white lines
+	var tennis_count := 0
+	for zone3 in landuse_zones:
+		var name4: String = zone3.get("name", "")
+		if name4.is_empty():
+			continue
+		if "Tennis" not in name4:
+			continue
+		var tpts2: Array = zone3.get("points", [])
+		if tpts2.size() < 4:
+			continue
+		# Skip facilities outside park boundary
+		var in_park := false
+		for tp_chk in tpts2:
+			if _in_boundary(float(tp_chk[0]), float(tp_chk[1])):
+				in_park = true
+				break
+		if not in_park:
+			continue
+		# Compute bounding box center and axes from polygon
+		var tcx2 := 0.0; var tcz2 := 0.0
+		for tp in tpts2:
+			tcx2 += float(tp[0]); tcz2 += float(tp[1])
+		tcx2 /= tpts2.size(); tcz2 /= tpts2.size()
+		# Find longest edge to determine facility orientation
+		var best_edge_len := 0.0
+		var best_edge_dx := 0.0; var best_edge_dz := 0.0
+		for ei in tpts2.size():
+			var ei2 := (ei + 1) % tpts2.size()
+			var edx := float(tpts2[ei2][0]) - float(tpts2[ei][0])
+			var edz := float(tpts2[ei2][1]) - float(tpts2[ei][1])
+			var elen := sqrt(edx * edx + edz * edz)
+			if elen > best_edge_len:
+				best_edge_len = elen
+				best_edge_dx = edx / elen; best_edge_dz = edz / elen
+		if best_edge_len < 1.0:
+			continue
+		var fac_long_x := best_edge_dx; var fac_long_z := best_edge_dz
+		var fac_short_x := -fac_long_z; var fac_short_z := fac_long_x
+		# Project all polygon points onto axes to get true extent
+		var min_long := 1e9; var max_long := -1e9
+		var min_short := 1e9; var max_short := -1e9
+		for tp2 in tpts2:
+			var px2 := float(tp2[0]) - tcx2; var pz2 := float(tp2[1]) - tcz2
+			var proj_l := px2 * fac_long_x + pz2 * fac_long_z
+			var proj_s := px2 * fac_short_x + pz2 * fac_short_z
+			min_long = minf(min_long, proj_l); max_long = maxf(max_long, proj_l)
+			min_short = minf(min_short, proj_s); max_short = maxf(max_short, proj_s)
+		var fac_l := max_long - min_long
+		var fac_w := max_short - min_short
+		# Recenter on polygon extent
+		var ctr_long := (min_long + max_long) * 0.5
+		var ctr_short := (min_short + max_short) * 0.5
+		tcx2 += fac_long_x * ctr_long + fac_short_x * ctr_short
+		tcz2 += fac_long_z * ctr_long + fac_short_z * ctr_short
+		# Tennis court dimensions (doubles)
+		var court_l := 23.77  # baseline to baseline
+		var court_w := 10.97  # doubles sideline to sideline
+		var singles_w := 8.23
+		var service_d := 6.40  # net to service line
+		# Spacing between courts
+		var gap_side := 3.66   # between sidelines
+		var gap_end := 6.40    # between baselines
+		var slot_x := court_w + gap_side  # ~14.6m per court across
+		var slot_z := court_l + gap_end   # ~30.2m per court deep
+		# Inset for walkways/fencing/clubhouse
+		var usable_l := fac_l - 20.0  # margin for perimeter walkways
+		var usable_w := fac_w - 10.0
+		# Courts oriented with long axis along fac_short (perpendicular to facility long axis)
+		var n_cols := int(usable_l / slot_x)
+		var n_rows := int(usable_w / slot_z)
+		if n_cols < 1: n_cols = 1
+		if n_rows < 1: n_rows = 1
+		# Cap to realistic count (Central Park Tennis Center has ~26 courts)
+		while n_cols * n_rows > 30:
+			if n_cols > n_rows and n_cols > 1:
+				n_cols -= 1
+			elif n_rows > 1:
+				n_rows -= 1
+			else:
+				break
+		# Offset so grid is centered
+		var grid_w_total := float(n_cols) * slot_x - gap_side
+		var grid_h_total := float(n_rows) * slot_z - gap_end
+		var off_long := -grid_w_total * 0.5 + court_w * 0.5
+		var off_short := -grid_h_total * 0.5 + court_l * 0.5
+
+		# Materials
+		var court_mat := StandardMaterial3D.new()
+		court_mat.albedo_color = Color(0.35, 0.55, 0.38)  # Har-Tru green clay
+		court_mat.roughness = 0.90
+		court_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+
+		var t_verts := PackedVector3Array()
+		var t_norms := PackedVector3Array()
+		var tl_verts := PackedVector3Array()
+		var tl_norms := PackedVector3Array()
+		var tlw := 0.05  # tennis line width (~2 inches)
+
+		var _draw_tline := func(x0t: float, z0t: float, x1t: float, z1t: float) -> void:
+			var dtx := x1t - x0t; var dtz := z1t - z0t
+			var tln := sqrt(dtx * dtx + dtz * dtz)
+			if tln < 0.01: return
+			var tpx := -dtz / tln * tlw * 0.5; var tpz := dtx / tln * tlw * 0.5
+			var ty0 := _terrain_y(x0t, z0t) + 0.03
+			var ty1 := _terrain_y(x1t, z1t) + 0.03
+			tl_verts.append(Vector3(x0t + tpx, ty0, z0t + tpz))
+			tl_verts.append(Vector3(x0t - tpx, ty0, z0t - tpz))
+			tl_verts.append(Vector3(x1t + tpx, ty1, z1t + tpz))
+			tl_verts.append(Vector3(x0t - tpx, ty0, z0t - tpz))
+			tl_verts.append(Vector3(x1t - tpx, ty1, z1t - tpz))
+			tl_verts.append(Vector3(x1t + tpx, ty1, z1t + tpz))
+			for _jt in 6: tl_norms.append(Vector3.UP)
+
+		var _draw_court_quad := func(x0q: float, z0q: float, x1q: float, z1q: float,
+				x2q: float, z2q: float, x3q: float, z3q: float) -> void:
+			var qy0 := _terrain_y(x0q, z0q) + 0.02
+			var qy1 := _terrain_y(x1q, z1q) + 0.02
+			var qy2 := _terrain_y(x2q, z2q) + 0.02
+			var qy3 := _terrain_y(x3q, z3q) + 0.02
+			t_verts.append(Vector3(x0q, qy0, z0q))
+			t_verts.append(Vector3(x1q, qy1, z1q))
+			t_verts.append(Vector3(x2q, qy2, z2q))
+			t_verts.append(Vector3(x0q, qy0, z0q))
+			t_verts.append(Vector3(x2q, qy2, z2q))
+			t_verts.append(Vector3(x3q, qy3, z3q))
+			for _jq in 6: t_norms.append(Vector3.UP)
+
+		var courts_placed := 0
+		for col in n_cols:
+			for row in n_rows:
+				# Court center in facility-local coords
+				var loc_x := off_long + float(col) * slot_x
+				var loc_z := off_short + float(row) * slot_z
+				# Transform to world
+				var ccx := tcx2 + fac_long_x * loc_x + fac_short_x * loc_z
+				var ccz := tcz2 + fac_long_z * loc_x + fac_short_z * loc_z
+				# Court long axis = fac_short, court short axis = fac_long
+				var cl_x := fac_short_x; var cl_z := fac_short_z  # court long (baseline-to-baseline)
+				var cs_x := fac_long_x; var cs_z := fac_long_z    # court short (sideline-to-sideline)
+				var hl := court_l * 0.5  # half length
+				var hw2 := court_w * 0.5  # half width (doubles)
+				var hsw := singles_w * 0.5  # half width (singles)
+				# Court surface quad
+				var q0x := ccx - cl_x * hl - cs_x * hw2
+				var q0z := ccz - cl_z * hl - cs_z * hw2
+				var q1x := ccx + cl_x * hl - cs_x * hw2
+				var q1z := ccz + cl_z * hl - cs_z * hw2
+				var q2x := ccx + cl_x * hl + cs_x * hw2
+				var q2z := ccz + cl_z * hl + cs_z * hw2
+				var q3x := ccx - cl_x * hl + cs_x * hw2
+				var q3z := ccz - cl_z * hl + cs_z * hw2
+				_draw_court_quad.call(q0x, q0z, q1x, q1z, q2x, q2z, q3x, q3z)
+				# Doubles sidelines (long sides)
+				for tside in [-1.0, 1.0]:
+					var tsf := float(tside)
+					var s0x: float = ccx - cl_x * hl + cs_x * hw2 * tsf
+					var s0z: float = ccz - cl_z * hl + cs_z * hw2 * tsf
+					var s1x: float = ccx + cl_x * hl + cs_x * hw2 * tsf
+					var s1z: float = ccz + cl_z * hl + cs_z * hw2 * tsf
+					_draw_tline.call(s0x, s0z, s1x, s1z)
+				# Singles sidelines
+				for tside2 in [-1.0, 1.0]:
+					var tsf2 := float(tside2)
+					var ss0x: float = ccx - cl_x * hl + cs_x * hsw * tsf2
+					var ss0z: float = ccz - cl_z * hl + cs_z * hsw * tsf2
+					var ss1x: float = ccx + cl_x * hl + cs_x * hsw * tsf2
+					var ss1z: float = ccz + cl_z * hl + cs_z * hsw * tsf2
+					_draw_tline.call(ss0x, ss0z, ss1x, ss1z)
+				# Baselines (short ends)
+				for tside3 in [-1.0, 1.0]:
+					var tsf3 := float(tside3)
+					var b0x: float = ccx + cl_x * hl * tsf3 - cs_x * hw2
+					var b0z: float = ccz + cl_z * hl * tsf3 - cs_z * hw2
+					var b1x: float = ccx + cl_x * hl * tsf3 + cs_x * hw2
+					var b1z: float = ccz + cl_z * hl * tsf3 + cs_z * hw2
+					_draw_tline.call(b0x, b0z, b1x, b1z)
+				# Service lines (parallel to net, 6.40m from center each side)
+				for tside4 in [-1.0, 1.0]:
+					var tsf4 := float(tside4)
+					var sv0x: float = ccx + cl_x * service_d * tsf4 - cs_x * hsw
+					var sv0z: float = ccz + cl_z * service_d * tsf4 - cs_z * hsw
+					var sv1x: float = ccx + cl_x * service_d * tsf4 + cs_x * hsw
+					var sv1z: float = ccz + cl_z * service_d * tsf4 + cs_z * hsw
+					_draw_tline.call(sv0x, sv0z, sv1x, sv1z)
+				# Center service line (net to each service line, along court center)
+				_draw_tline.call(
+					ccx - cl_x * service_d, ccz - cl_z * service_d,
+					ccx + cl_x * service_d, ccz + cl_z * service_d)
+				# Center mark on baselines (short tick at center)
+				var cm_len := 0.1  # 10cm tick
+				for tside5 in [-1.0, 1.0]:
+					var tsf5 := float(tside5)
+					var cmx: float = ccx + cl_x * hl * tsf5
+					var cmz: float = ccz + cl_z * hl * tsf5
+					_draw_tline.call(
+						cmx - cl_x * cm_len * tsf5, cmz - cl_z * cm_len * tsf5,
+						cmx, cmz)
+				courts_placed += 1
+
+		# Build court surface mesh
+		if not t_verts.is_empty():
+			var ta2: Array = []; ta2.resize(Mesh.ARRAY_MAX)
+			ta2[Mesh.ARRAY_VERTEX] = t_verts
+			ta2[Mesh.ARRAY_NORMAL] = t_norms
+			var tm := ArrayMesh.new()
+			tm.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, ta2)
+			tm.surface_set_material(0, court_mat)
+			var tmi := MeshInstance3D.new()
+			tmi.mesh = tm
+			tmi.name = "Tennis_Surface_" + name4.replace(" ", "_")
+			add_child(tmi)
+		# Build court lines mesh
+		if not tl_verts.is_empty():
+			var tla: Array = []; tla.resize(Mesh.ARRAY_MAX)
+			tla[Mesh.ARRAY_VERTEX] = tl_verts
+			tla[Mesh.ARRAY_NORMAL] = tl_norms
+			var tlm := ArrayMesh.new()
+			tlm.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, tla)
+			tlm.surface_set_material(0, line_mat)
+			var tlmi := MeshInstance3D.new()
+			tlmi.mesh = tlm
+			tlmi.name = "Tennis_Lines_" + name4.replace(" ", "_")
+			add_child(tlmi)
+		tennis_count += courts_placed
+
+	if tennis_count > 0:
+		print("ParkLoader: tennis court markings = ", tennis_count)
 
 
 func _build_grass_blades(trees: Array) -> void:
