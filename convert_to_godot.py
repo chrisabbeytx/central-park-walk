@@ -2010,6 +2010,7 @@ def main() -> None:
     prebake_world_atlas(boundary_pts, paths_out, water_out, buildings_out,
                         trees_out, benches_out, lampposts_out, trash_cans_out,
                         barriers_out, bridge_outlines, terrain, bridge_centroids)
+    prebake_landuse_map(landuse_out, water_out)
 
 
 def prebake_paths(paths, bridge_centroids):
@@ -2480,6 +2481,90 @@ def prebake_world_atlas(boundary_pts, paths, water, buildings, trees,
     nonzero_surface = int(np.count_nonzero(surface))
     nonzero_occ = int(np.count_nonzero(occupancy))
     print(f"  Atlas: {nonzero_surface} classified cells, {nonzero_occ} occupied cells")
+
+
+def prebake_landuse_map(landuse_zones, water_bodies):
+    """Pre-bake landuse zone map at 4096×4096 resolution → landuse_map.png.
+
+    Replaces runtime GDScript scanline rasterization (1024×1024) with a
+    higher-resolution pre-baked texture.  Zone encoding matches main.gd:
+      0=unzoned, 1=garden, 2=grass, 3=pitch, 4=playground, 5=nature_reserve,
+      6=dog_park, 7=sports, 8=pool, 9=track, 10=wood, 11=forest, 12=water, 13=shore
+    """
+    import numpy as np
+    from PIL import Image, ImageDraw
+
+    ZONE_MAP = {
+        "garden": 1, "grass": 2, "pitch": 3, "playground": 4,
+        "nature_reserve": 5, "dog_park": 6, "sports": 7,
+        "sports_centre": 7, "swimming_pool": 8, "pool": 8,
+        "track": 9, "wood": 10, "forest": 11,
+    }
+
+    RES = 4096
+    HALF = WORLD_SIZE / 2.0
+
+    def world_to_pixel(wx, wz):
+        px = (wx + HALF) / WORLD_SIZE * RES
+        pz = (wz + HALF) / WORLD_SIZE * RES
+        return px, pz
+
+    print("Pre-baking landuse map at %d×%d..." % (RES, RES))
+
+    # Use PIL for fast polygon rasterization
+    img = Image.new('L', (RES, RES), 0)
+    draw = ImageDraw.Draw(img)
+
+    # --- Rasterize landuse zones ---
+    filled = 0
+    for zone in landuse_zones:
+        zone_type = zone.get("type", "")
+        zone_id = ZONE_MAP.get(zone_type, 0)
+        if zone_id == 0:
+            continue
+        pts = zone.get("points", [])
+        if len(pts) < 3:
+            continue
+        poly = [world_to_pixel(float(pt[0]), float(pt[1])) for pt in pts]
+        draw.polygon(poly, fill=zone_id)
+        filled += 1
+    print(f"  Landuse: {filled} zones rasterized")
+
+    # --- Rasterize water bodies (zone 12) ---
+    water_count = 0
+    for body in water_bodies:
+        pts = body.get("points", [])
+        if len(pts) < 3:
+            continue
+        poly = [world_to_pixel(float(pt[0]), float(pt[1])) for pt in pts]
+        draw.polygon(poly, fill=12)
+        water_count += 1
+    print(f"  Landuse: {water_count} water bodies rasterized")
+
+    # --- Dilate water → shore zone (13) using numpy ---
+    # At 4096 over 5000m, 1 pixel ≈ 1.22m. 12-pixel radius ≈ 15m shore.
+    if water_count > 0:
+        arr = np.array(img, dtype=np.uint8)
+        water_mask = (arr == 12)
+        # Create circular structuring element
+        SHORE_R = 12  # pixels ≈ 15m
+        y_idx, x_idx = np.ogrid[-SHORE_R:SHORE_R+1, -SHORE_R:SHORE_R+1]
+        disk = (x_idx**2 + y_idx**2) <= SHORE_R**2
+        # Dilate water mask
+        from scipy.ndimage import binary_dilation
+        dilated = binary_dilation(water_mask, structure=disk)
+        # Shore = dilated AND NOT water AND NOT already a non-zero zone
+        shore_mask = dilated & ~water_mask & (arr == 0)
+        # Also allow shore to overwrite grass (zone 1,2) near water
+        shore_mask |= dilated & ~water_mask & ((arr == 1) | (arr == 2))
+        shore_count = int(shore_mask.sum())
+        arr[shore_mask] = 13
+        print(f"  Landuse: {shore_count} shore pixels (12px ≈ 15m radius)")
+        img = Image.fromarray(arr, mode='L')
+
+    img.save("landuse_map.png")
+    size_kb = os.path.getsize("landuse_map.png") / 1024
+    print(f"  Landuse: saved → landuse_map.png ({RES}×{RES}, {size_kb:.0f} KB)")
 
 
 if __name__ == "__main__":
