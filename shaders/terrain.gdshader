@@ -524,6 +524,23 @@ void fragment() {
 		grass_rgh = mix(grass_rgh, 0.65, naum_blend);
 	}
 
+	// The Mall & Literary Walk: formal promenade, well-maintained elm canopy
+	// The Mall runs roughly from (-600, 1300) to (-550, 1500) — narrow corridor
+	// Literary Walk: southern end, wider, with benches and statues
+	float mall_x = world_pos.x;
+	float mall_z = world_pos.z;
+	bool in_mall_corridor = (mall_x > -680.0 && mall_x < -430.0 && mall_z > 1200.0 && mall_z < 1520.0);
+	if (in_mall_corridor && mat_idx == 0 && slope < 0.08) {
+		// Exceptionally well-maintained formal lawn flanking the promenade
+		float mall_blend = 0.35;
+		// Formal grass: uniform, rich green, tightly mowed
+		vec3 formal_green = grass_alb * vec3(1.0, 1.08, 0.88);  // enhanced green
+		float sat = dot(formal_green, vec3(0.299, 0.587, 0.114));
+		formal_green = mix(vec3(sat), formal_green, 0.85);  // slight desaturation = uniformity
+		grass_alb = mix(grass_alb, formal_green, mall_blend);
+		grass_rgh = mix(grass_rgh, grass_rgh * 0.95, mall_blend);  // slightly smoother mow
+	}
+
 	// Great Lawn: Kentucky bluegrass — rich maintained green
 	float d_gl = length(world_pos.xz - vec2(0.0, 100.0));
 	if (d_gl < 200.0 && slope < 0.08 && mat_idx == 0) {
