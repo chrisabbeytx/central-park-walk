@@ -22,6 +22,7 @@ the lowest point in the dataset) into every feature:
 import json
 import math
 import os
+import struct
 import sys
 from collections import defaultdict
 
@@ -334,6 +335,353 @@ def assemble_ring(outer_way_ids: list, ways_nodes: dict) -> list:
             break
 
     return ring
+
+
+# ---------------------------------------------------------------------------
+# Binary park data (CPW1 format)
+# ---------------------------------------------------------------------------
+def _write_string_table(f, strings):
+    """Write uint16 count, then count x (uint16 len, utf8 bytes)."""
+    f.write(struct.pack('<H', len(strings)))
+    for s in strings:
+        encoded = s.encode('utf-8')
+        f.write(struct.pack('<H', len(encoded)))
+        f.write(encoded)
+
+
+def _build_string_index(values):
+    """Return (table: list[str], indices: list[int]) for a list of string values."""
+    table = []
+    lookup = {}
+    indices = []
+    for v in values:
+        s = str(v) if v else ""
+        if s not in lookup:
+            lookup[s] = len(table)
+            table.append(s)
+        indices.append(lookup[s])
+    return table, indices
+
+
+def write_park_data_bin(filename, data_dict):
+    """Write a binary version of park_data.json in CPW1 format.
+
+    Designed for fast bulk reading via Godot FileAccess (little-endian).
+    See format spec in project docs.
+    """
+    import io
+
+    # -- Helpers to build section bytes in memory -------------------------
+    def _pack_floats(vals):
+        return struct.pack(f'<{len(vals)}f', *vals)
+
+    def _pack_uint16s(vals):
+        return struct.pack(f'<{len(vals)}H', *vals)
+
+    def _pack_uint32s(vals):
+        return struct.pack(f'<{len(vals)}I', *vals)
+
+    sections = []  # list of (tag_bytes, data_bytes)
+
+    # == META section =====================================================
+    # Contains scalar metadata + all small/complex sections as JSON
+    meta = {}
+    for key in ("ref_lat", "ref_lon", "metres_per_deg_lat",
+                "metres_per_deg_lon", "heightmap"):
+        if key in data_dict:
+            meta[key] = data_dict[key]
+    for key in ("water", "streams", "statues", "landuse",
+                "bridge_outlines", "tunnel_outlines", "rocks",
+                "amenities", "playgrounds", "facilities", "foliage_zones"):
+        if key in data_dict:
+            meta[key] = data_dict[key]
+
+    meta_json = json.dumps(meta, separators=(",", ":")).encode('utf-8')
+    meta_buf = struct.pack('<I', len(meta_json)) + meta_json
+    sections.append((b"META", meta_buf))
+
+    # == BNDY section =====================================================
+    boundary = data_dict.get("boundary", [])
+    bndy_buf = io.BytesIO()
+    bndy_buf.write(struct.pack('<I', len(boundary)))
+    for pt in boundary:
+        bndy_buf.write(struct.pack('<2f', float(pt[0]), float(pt[1])))
+    sections.append((b"BNDY", bndy_buf.getvalue()))
+
+    # == TREE section (columnar) ==========================================
+    trees = data_dict.get("trees", [])
+    tree_buf = io.BytesIO()
+    count = len(trees)
+    tree_buf.write(struct.pack('<I', count))
+
+    if count:
+        species_vals = [t.get("species", "") for t in trees]
+        sp_table, sp_idx = _build_string_index(species_vals)
+
+        # species string table
+        stab = io.BytesIO()
+        _write_string_table(stab, sp_table)
+        tree_buf.write(stab.getvalue())
+
+        # positions: float32[count*3] (x,y,z interleaved)
+        pos_floats = []
+        for t in trees:
+            p = t["pos"]
+            pos_floats.extend([float(p[0]), float(p[1]), float(p[2])])
+        tree_buf.write(_pack_floats(pos_floats))
+
+        # species_idx: uint16[count]
+        tree_buf.write(_pack_uint16s(sp_idx))
+
+        # dbh: uint16[count]
+        tree_buf.write(_pack_uint16s([int(t.get("dbh", 0)) for t in trees]))
+
+        # lidar_h: float32[count]
+        tree_buf.write(_pack_floats([float(t.get("lidar_h", 0)) for t in trees]))
+
+        # crown_a: float32[count]
+        tree_buf.write(_pack_floats([float(t.get("crown_a", 0)) for t in trees]))
+
+    sections.append((b"TREE", tree_buf.getvalue()))
+
+    # == BLDG section (columnar) ==========================================
+    buildings = data_dict.get("buildings", [])
+    bldg_buf = io.BytesIO()
+    bcount = len(buildings)
+    bldg_buf.write(struct.pack('<I', bcount))
+
+    if bcount:
+        # Gather all polygon points
+        all_pts = []
+        offsets = []
+        pt_counts = []
+        for b in buildings:
+            offsets.append(len(all_pts))
+            pts = b.get("points", [])
+            pt_counts.append(len(pts))
+            for pt in pts:
+                all_pts.append((float(pt[0]), float(pt[1])))
+
+        total_pts = len(all_pts)
+        bldg_buf.write(struct.pack('<I', total_pts))
+
+        # all_points: float32[total_pts*2]
+        flat_pts = []
+        for px, pz in all_pts:
+            flat_pts.extend([px, pz])
+        bldg_buf.write(_pack_floats(flat_pts))
+
+        # offsets: uint32[count]
+        bldg_buf.write(_pack_uint32s(offsets))
+
+        # pt_counts: uint16[count]
+        bldg_buf.write(_pack_uint16s(pt_counts))
+
+        # heights: float32[count]
+        bldg_buf.write(_pack_floats([float(b.get("height", 0)) for b in buildings]))
+
+        # bases: float32[count]
+        bldg_buf.write(_pack_floats([float(b.get("base", 0)) for b in buildings]))
+
+        # ground_elevs: float32[count]
+        bldg_buf.write(_pack_floats([float(b.get("ground_elev", 0)) for b in buildings]))
+
+        # years: uint16[count]
+        bldg_buf.write(_pack_uint16s([int(b.get("year_built", 0)) for b in buildings]))
+
+        # floors: uint16[count]
+        bldg_buf.write(_pack_uint16s([int(b.get("num_floors", 0)) for b in buildings]))
+
+        # bin string table + indices
+        bin_table, bin_idx = _build_string_index([b.get("bin", "") for b in buildings])
+        stab = io.BytesIO()
+        _write_string_table(stab, bin_table)
+        bldg_buf.write(stab.getvalue())
+        bldg_buf.write(_pack_uint16s(bin_idx))
+
+        # name string table + indices
+        name_table, name_idx = _build_string_index([b.get("name", "") for b in buildings])
+        stab = io.BytesIO()
+        _write_string_table(stab, name_table)
+        bldg_buf.write(stab.getvalue())
+        bldg_buf.write(_pack_uint16s(name_idx))
+
+    sections.append((b"BLDG", bldg_buf.getvalue()))
+
+    # == PATH section (columnar) ==========================================
+    paths = data_dict.get("paths", [])
+    path_buf = io.BytesIO()
+    pcount = len(paths)
+    path_buf.write(struct.pack('<I', pcount))
+
+    if pcount:
+        # String tables for highway, surface, name
+        hw_table, hw_idx = _build_string_index([p.get("highway", "") for p in paths])
+        surf_table, surf_idx = _build_string_index([p.get("surface", "") for p in paths])
+        name_table, name_idx = _build_string_index([p.get("name", "") for p in paths])
+
+        stab = io.BytesIO()
+        _write_string_table(stab, hw_table)
+        path_buf.write(stab.getvalue())
+
+        stab = io.BytesIO()
+        _write_string_table(stab, surf_table)
+        path_buf.write(stab.getvalue())
+
+        stab = io.BytesIO()
+        _write_string_table(stab, name_table)
+        path_buf.write(stab.getvalue())
+
+        # Gather all path points (x,y,z)
+        all_pts = []
+        offsets = []
+        pt_counts = []
+        for p in paths:
+            offsets.append(len(all_pts))
+            pts = p.get("points", [])
+            pt_counts.append(len(pts))
+            for pt in pts:
+                all_pts.append((float(pt[0]), float(pt[1]), float(pt[2])))
+
+        total_pts = len(all_pts)
+        path_buf.write(struct.pack('<I', total_pts))
+
+        # all_points: float32[total_pts*3]
+        flat_pts = []
+        for px, py, pz in all_pts:
+            flat_pts.extend([px, py, pz])
+        path_buf.write(_pack_floats(flat_pts))
+
+        # offsets: uint32[count]
+        path_buf.write(_pack_uint32s(offsets))
+
+        # pt_counts: uint16[count]
+        path_buf.write(_pack_uint16s(pt_counts))
+
+        # hw_idx, surf_idx, name_idx: uint16[count]
+        path_buf.write(_pack_uint16s(hw_idx))
+        path_buf.write(_pack_uint16s(surf_idx))
+        path_buf.write(_pack_uint16s(name_idx))
+
+    sections.append((b"PATH", path_buf.getvalue()))
+
+    # == BARR section (columnar) ==========================================
+    barriers = data_dict.get("barriers", [])
+    barr_buf = io.BytesIO()
+    bacount = len(barriers)
+    barr_buf.write(struct.pack('<I', bacount))
+
+    if bacount:
+        type_table, type_idx = _build_string_index([b.get("type", "") for b in barriers])
+        mat_table, mat_idx = _build_string_index([b.get("material", "") for b in barriers])
+
+        stab = io.BytesIO()
+        _write_string_table(stab, type_table)
+        barr_buf.write(stab.getvalue())
+
+        stab = io.BytesIO()
+        _write_string_table(stab, mat_table)
+        barr_buf.write(stab.getvalue())
+
+        # Gather all barrier points (x,y,z)
+        all_pts = []
+        offsets = []
+        pt_counts = []
+        for b in barriers:
+            offsets.append(len(all_pts))
+            pts = b.get("points", [])
+            pt_counts.append(len(pts))
+            for pt in pts:
+                all_pts.append((float(pt[0]), float(pt[1]), float(pt[2])))
+
+        total_pts = len(all_pts)
+        barr_buf.write(struct.pack('<I', total_pts))
+
+        # all_points: float32[total_pts*3]
+        flat_pts = []
+        for px, py, pz in all_pts:
+            flat_pts.extend([px, py, pz])
+        barr_buf.write(_pack_floats(flat_pts))
+
+        # offsets: uint32[count]
+        barr_buf.write(_pack_uint32s(offsets))
+
+        # pt_counts: uint16[count]
+        barr_buf.write(_pack_uint16s(pt_counts))
+
+        # type_idx: uint16[count]
+        barr_buf.write(_pack_uint16s(type_idx))
+
+        # heights: float32[count]
+        barr_buf.write(_pack_floats([float(b.get("height", 0)) for b in barriers]))
+
+        # mat_idx: uint16[count]
+        barr_buf.write(_pack_uint16s(mat_idx))
+
+    sections.append((b"BARR", barr_buf.getvalue()))
+
+    # == BNCH section (flat float array) ==================================
+    benches = data_dict.get("benches", [])
+    bnch_buf = io.BytesIO()
+    bnch_buf.write(struct.pack('<I', len(benches)))
+    if benches:
+        flat = []
+        for b in benches:
+            flat.extend([float(b[0]), float(b[1]), float(b[2]), float(b[3])])
+        bnch_buf.write(_pack_floats(flat))
+    sections.append((b"BNCH", bnch_buf.getvalue()))
+
+    # == LAMP section (flat float array) ==================================
+    lampposts = data_dict.get("lampposts", [])
+    lamp_buf = io.BytesIO()
+    lamp_buf.write(struct.pack('<I', len(lampposts)))
+    if lampposts:
+        flat = []
+        for lp in lampposts:
+            flat.extend([float(lp[0]), float(lp[1]), float(lp[2])])
+        lamp_buf.write(_pack_floats(flat))
+    sections.append((b"LAMP", lamp_buf.getvalue()))
+
+    # == TRSH section (flat float array) ==================================
+    trash_cans = data_dict.get("trash_cans", [])
+    trsh_buf = io.BytesIO()
+    trsh_buf.write(struct.pack('<I', len(trash_cans)))
+    if trash_cans:
+        flat = []
+        for tc in trash_cans:
+            flat.extend([float(tc[0]), float(tc[1]), float(tc[2])])
+        trsh_buf.write(_pack_floats(flat))
+    sections.append((b"TRSH", trsh_buf.getvalue()))
+
+    # -- Assemble the file ------------------------------------------------
+    section_count = len(sections)
+    # Header: magic(4) + version(4) + section_count(4) = 12
+    # Directory: section_count * (tag(4) + offset(4) + size(4)) = section_count * 12
+    header_size = 12 + section_count * 12
+
+    # Calculate offsets
+    offset = header_size
+    directory = []
+    for tag, data in sections:
+        directory.append((tag, offset, len(data)))
+        offset += len(data)
+
+    with open(filename, "wb") as f:
+        # File header
+        f.write(b"CPW1")
+        f.write(struct.pack('<I', 1))            # version
+        f.write(struct.pack('<I', section_count))
+
+        # Section directory
+        for tag, sec_offset, sec_size in directory:
+            f.write(tag)
+            f.write(struct.pack('<II', sec_offset, sec_size))
+
+        # Section data
+        for _tag, data in sections:
+            f.write(data)
+
+    return os.path.getsize(filename)
 
 
 # ---------------------------------------------------------------------------
@@ -1302,6 +1650,10 @@ def main() -> None:
     print(f"Rocks:      {len(rocks_out):5d}  outcrops")
     print(f"Amenities:  {len(amenities_out):5d}")
     print(f"\nSaved → park_data.json  ({size_kb:.0f} KB)")
+
+    bin_size = write_park_data_bin("park_data.bin", out)
+    bin_kb = bin_size / 1024
+    print(f"Saved → park_data.bin   ({bin_kb:.0f} KB)")
 
     # Pre-bake path textures for fast Godot loading
     bridge_centroids = []

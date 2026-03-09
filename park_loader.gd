@@ -4,6 +4,7 @@ extends Node3D
 ##   • One StaticBody3D with BoxShape3D collision per boundary segment (invisible walls)
 
 const DATA_PATH := "res://park_data.json"
+const BIN_PATH  := "res://park_data.bin"
 const PATH_Y    := 0.06   # metres above ground plane
 const WATER_Y   := 0.03   # water sits above ground, below path ribbons
 const STEP_RISE  := 0.17  # staircase step height (used by tunnel_builder too)
@@ -673,23 +674,303 @@ static func _convex_hull(points: PackedVector2Array) -> PackedVector2Array:
 
 
 # ---------------------------------------------------------------------------
-func _ready() -> void:
-	if not FileAccess.file_exists(DATA_PATH):
-		push_warning("ParkLoader: park_data.json not found – run convert_to_godot.py first")
-		return
+# Binary park data reader (CPW1 format — much faster than JSON)
+# ---------------------------------------------------------------------------
+func _read_string_table(fa: FileAccess) -> PackedStringArray:
+	var count := fa.get_16()
+	var out := PackedStringArray()
+	out.resize(count)
+	for i in count:
+		var slen := fa.get_16()
+		out[i] = fa.get_buffer(slen).get_string_from_utf8()
+	return out
 
+
+func _load_park_data_bin() -> Dictionary:
+	if not FileAccess.file_exists(BIN_PATH):
+		return {}
+	var fa := FileAccess.open(BIN_PATH, FileAccess.READ)
+	if fa == null:
+		return {}
+	var magic := fa.get_buffer(4)
+	if magic != PackedByteArray([0x43, 0x50, 0x57, 0x31]):  # "CPW1"
+		fa.close()
+		return {}
+	var _version := fa.get_32()
+	var sect_count := fa.get_32()
+
+	# Read section directory
+	var sections: Dictionary = {}
+	for _i in sect_count:
+		var tag := fa.get_buffer(4).get_string_from_ascii()
+		var sec_off := fa.get_32()
+		var sec_size := fa.get_32()
+		sections[tag] = [sec_off, sec_size]
+
+	var data: Dictionary = {}
+
+	# -- META section (JSON blob with scalars + small sections) ----
+	if sections.has("META"):
+		fa.seek(sections["META"][0])
+		var json_len := fa.get_32()
+		var json_str := fa.get_buffer(json_len).get_string_from_utf8()
+		var meta = JSON.parse_string(json_str)
+		if typeof(meta) == TYPE_DICTIONARY:
+			for key in meta:
+				data[key] = meta[key]
+
+	# -- BNDY section (boundary polygon) ----
+	if sections.has("BNDY"):
+		fa.seek(sections["BNDY"][0])
+		var count := fa.get_32()
+		var coords := fa.get_buffer(count * 8).to_float32_array()
+		var boundary: Array = []
+		boundary.resize(count)
+		for i in count:
+			boundary[i] = [coords[i * 2], coords[i * 2 + 1]]
+		data["boundary"] = boundary
+
+	# -- TREE section (columnar) ----
+	if sections.has("TREE"):
+		fa.seek(sections["TREE"][0])
+		var count := fa.get_32()
+		if count > 0:
+			var sp_table := _read_string_table(fa)
+			var positions := fa.get_buffer(count * 12).to_float32_array()
+			# Read uint16 arrays manually since Godot lacks to_uint16_array
+			var sp_idx := PackedInt32Array()
+			sp_idx.resize(count)
+			for i in count:
+				sp_idx[i] = fa.get_16()
+			var dbh := PackedInt32Array()
+			dbh.resize(count)
+			for i in count:
+				dbh[i] = fa.get_16()
+			var lidar_h := fa.get_buffer(count * 4).to_float32_array()
+			var crown_a := fa.get_buffer(count * 4).to_float32_array()
+			var trees: Array = []
+			trees.resize(count)
+			for i in count:
+				trees[i] = {
+					"pos": [positions[i * 3], positions[i * 3 + 1], positions[i * 3 + 2]],
+					"species": sp_table[sp_idx[i]],
+					"dbh": dbh[i],
+					"lidar_h": lidar_h[i],
+					"crown_a": crown_a[i],
+				}
+			data["trees"] = trees
+		else:
+			data["trees"] = []
+
+	# -- BLDG section (columnar) ----
+	if sections.has("BLDG"):
+		fa.seek(sections["BLDG"][0])
+		var count := fa.get_32()
+		if count > 0:
+			var total_pts := fa.get_32()
+			var all_pts := fa.get_buffer(total_pts * 8).to_float32_array()
+			var offsets := fa.get_buffer(count * 4).to_int32_array()
+			var pt_counts := PackedInt32Array()
+			pt_counts.resize(count)
+			for i in count:
+				pt_counts[i] = fa.get_16()
+			var heights := fa.get_buffer(count * 4).to_float32_array()
+			var bases := fa.get_buffer(count * 4).to_float32_array()
+			var ground_elevs := fa.get_buffer(count * 4).to_float32_array()
+			var years := PackedInt32Array()
+			years.resize(count)
+			for i in count:
+				years[i] = fa.get_16()
+			var floors := PackedInt32Array()
+			floors.resize(count)
+			for i in count:
+				floors[i] = fa.get_16()
+			var bin_table := _read_string_table(fa)
+			var bin_idx := PackedInt32Array()
+			bin_idx.resize(count)
+			for i in count:
+				bin_idx[i] = fa.get_16()
+			var name_table := _read_string_table(fa)
+			var name_idx := PackedInt32Array()
+			name_idx.resize(count)
+			for i in count:
+				name_idx[i] = fa.get_16()
+			var buildings: Array = []
+			buildings.resize(count)
+			for i in count:
+				var npts := pt_counts[i]
+				var off := offsets[i]
+				var pts: Array = []
+				pts.resize(npts)
+				for j in npts:
+					pts[j] = [all_pts[(off + j) * 2], all_pts[(off + j) * 2 + 1]]
+				buildings[i] = {
+					"points": pts,
+					"height": heights[i],
+					"base": bases[i],
+					"ground_elev": ground_elevs[i],
+					"year_built": years[i],
+					"num_floors": floors[i],
+					"bin": bin_table[bin_idx[i]],
+					"name": name_table[name_idx[i]],
+				}
+			data["buildings"] = buildings
+		else:
+			data["buildings"] = []
+
+	# -- PATH section (columnar) ----
+	if sections.has("PATH"):
+		fa.seek(sections["PATH"][0])
+		var count := fa.get_32()
+		if count > 0:
+			var hw_table := _read_string_table(fa)
+			var surf_table := _read_string_table(fa)
+			var name_table := _read_string_table(fa)
+			var total_pts := fa.get_32()
+			var all_pts := fa.get_buffer(total_pts * 12).to_float32_array()
+			var offsets := fa.get_buffer(count * 4).to_int32_array()
+			var pt_counts := PackedInt32Array()
+			pt_counts.resize(count)
+			for i in count:
+				pt_counts[i] = fa.get_16()
+			var hw_idx := PackedInt32Array()
+			hw_idx.resize(count)
+			for i in count:
+				hw_idx[i] = fa.get_16()
+			var surf_idx := PackedInt32Array()
+			surf_idx.resize(count)
+			for i in count:
+				surf_idx[i] = fa.get_16()
+			var name_idx := PackedInt32Array()
+			name_idx.resize(count)
+			for i in count:
+				name_idx[i] = fa.get_16()
+			var paths: Array = []
+			paths.resize(count)
+			for i in count:
+				var npts := pt_counts[i]
+				var off := offsets[i]
+				var pts: Array = []
+				pts.resize(npts)
+				for j in npts:
+					var bi := (off + j) * 3
+					pts[j] = [all_pts[bi], all_pts[bi + 1], all_pts[bi + 2]]
+				paths[i] = {
+					"highway": hw_table[hw_idx[i]],
+					"surface": surf_table[surf_idx[i]],
+					"points": pts,
+					"name": name_table[name_idx[i]],
+				}
+			data["paths"] = paths
+		else:
+			data["paths"] = []
+
+	# -- BARR section (columnar) ----
+	if sections.has("BARR"):
+		fa.seek(sections["BARR"][0])
+		var count := fa.get_32()
+		if count > 0:
+			var type_table := _read_string_table(fa)
+			var mat_table := _read_string_table(fa)
+			var total_pts := fa.get_32()
+			var all_pts := fa.get_buffer(total_pts * 12).to_float32_array()
+			var offsets := fa.get_buffer(count * 4).to_int32_array()
+			var pt_counts := PackedInt32Array()
+			pt_counts.resize(count)
+			for i in count:
+				pt_counts[i] = fa.get_16()
+			var type_idx := PackedInt32Array()
+			type_idx.resize(count)
+			for i in count:
+				type_idx[i] = fa.get_16()
+			var barr_heights := fa.get_buffer(count * 4).to_float32_array()
+			var mat_idx := PackedInt32Array()
+			mat_idx.resize(count)
+			for i in count:
+				mat_idx[i] = fa.get_16()
+			var barriers: Array = []
+			barriers.resize(count)
+			for i in count:
+				var npts := pt_counts[i]
+				var off := offsets[i]
+				var pts: Array = []
+				pts.resize(npts)
+				for j in npts:
+					var bi := (off + j) * 3
+					pts[j] = [all_pts[bi], all_pts[bi + 1], all_pts[bi + 2]]
+				barriers[i] = {
+					"type": type_table[type_idx[i]],
+					"height": barr_heights[i],
+					"points": pts,
+					"material": mat_table[mat_idx[i]],
+				}
+			data["barriers"] = barriers
+		else:
+			data["barriers"] = []
+
+	# -- BNCH section (flat float array) ----
+	if sections.has("BNCH"):
+		fa.seek(sections["BNCH"][0])
+		var count := fa.get_32()
+		var benches: Array = []
+		if count > 0:
+			var buf := fa.get_buffer(count * 16).to_float32_array()
+			benches.resize(count)
+			for i in count:
+				benches[i] = [buf[i * 4], buf[i * 4 + 1], buf[i * 4 + 2], buf[i * 4 + 3]]
+		data["benches"] = benches
+
+	# -- LAMP section (flat float array) ----
+	if sections.has("LAMP"):
+		fa.seek(sections["LAMP"][0])
+		var count := fa.get_32()
+		var lamps: Array = []
+		if count > 0:
+			var buf := fa.get_buffer(count * 12).to_float32_array()
+			lamps.resize(count)
+			for i in count:
+				lamps[i] = [buf[i * 3], buf[i * 3 + 1], buf[i * 3 + 2]]
+		data["lampposts"] = lamps
+
+	# -- TRSH section (flat float array) ----
+	if sections.has("TRSH"):
+		fa.seek(sections["TRSH"][0])
+		var count := fa.get_32()
+		var cans: Array = []
+		if count > 0:
+			var buf := fa.get_buffer(count * 12).to_float32_array()
+			cans.resize(count)
+			for i in count:
+				cans[i] = [buf[i * 3], buf[i * 3 + 1], buf[i * 3 + 2]]
+		data["trash_cans"] = cans
+
+	fa.close()
+	return data
+
+
+# ---------------------------------------------------------------------------
+func _ready() -> void:
 	# Heightmap data is passed via set_heightmap() before add_child().
 	# Build GPU texture if not already done (fallback for standalone testing).
 	if _hm_texture == null and not _hm_data.is_empty():
 		_build_hm_gpu_texture()
 
-	var fa   := FileAccess.open(DATA_PATH, FileAccess.READ)
-	var data  = JSON.parse_string(fa.get_as_text())
-	fa.close()
-
-	if typeof(data) != TYPE_DICTIONARY:
-		push_error("ParkLoader: failed to parse park_data.json")
-		return
+	# Try binary format first (2-5× faster), fall back to JSON
+	var _t_load := Time.get_ticks_msec()
+	var data: Dictionary = _load_park_data_bin()
+	if not data.is_empty():
+		print("ParkLoader: loaded park_data.bin in %d ms" % (Time.get_ticks_msec() - _t_load))
+	else:
+		if not FileAccess.file_exists(DATA_PATH):
+			push_warning("ParkLoader: park_data.json not found – run convert_to_godot.py first")
+			return
+		var fa := FileAccess.open(DATA_PATH, FileAccess.READ)
+		data = JSON.parse_string(fa.get_as_text())
+		fa.close()
+		if typeof(data) != TYPE_DICTIONARY:
+			push_error("ParkLoader: failed to parse park_data.json")
+			return
+		print("ParkLoader: loaded park_data.json in %d ms" % (Time.get_ticks_msec() - _t_load))
 
 	# Populate boundary polygon FIRST so all builders can clip to it.
 	# Use convex hull to eliminate transverse-road pinch points in OSM boundary.
