@@ -4,12 +4,7 @@ render_mode cull_disabled;
 global uniform float rain_wetness;
 global uniform float snow_cover;
 
-// Hash for tesserae grain variation
-float mosaic_hash(vec2 p) {
-	p = fract(p * vec2(127.1, 311.7));
-	p += dot(p, p + 43.21);
-	return fract(p.x * p.y);
-}
+#include "res://shaders/include/hash_noise.gdshaderinc"
 
 void fragment() {
 	// UV 0..1, center at 0.5
@@ -25,7 +20,7 @@ void fragment() {
 	vec2 tile_uv = UV * 160.0;  // ~160 tiles across diameter
 	vec2 tile_id = floor(tile_uv);
 	vec2 tile_f = fract(tile_uv) - 0.5;
-	float tile_var = mosaic_hash(tile_id);
+	float tile_var = hash2(tile_id);
 	// Grout lines between tesserae
 	float grout = smoothstep(0.38, 0.42, max(abs(tile_f.x), abs(tile_f.y)));
 	float grout_mask = 1.0 - (1.0 - grout) * 0.3;
@@ -128,7 +123,7 @@ void fragment() {
 
 	// Snow: light dusting
 	if (snow_cover > 0.01) {
-		float snow_noise = mosaic_hash(tile_id + vec2(99.0));
+		float snow_noise = hash2(tile_id + vec2(99.0));
 		// Snow collects in grout lines and lower spots
 		float snow_in_grout = (1.0 - grout) * 0.4;
 		float snow_amt = snow_cover * (0.6 + snow_in_grout + snow_noise * 0.2);

@@ -56,14 +56,10 @@ uniform int list_tex_w = 512;
 // Park boundary mask: white = inside park, black = outside
 uniform sampler2D park_mask : filter_linear, repeat_disable;
 
-// Snow accumulation
-uniform float snow_cover : hint_range(0.0, 1.0) = 0.0;
-// Rain wetness — darkens surfaces, lowers roughness
-uniform float rain_wetness : hint_range(0.0, 1.0) = 0.0;
-// Season: 0=spring, 1=summer, 2=autumn, 3=winter (wraps at 4)
+// Weather & season (global uniforms — set by main.gd via RenderingServer)
+global uniform float snow_cover;
+global uniform float rain_wetness;
 global uniform float season_t;
-// Morning dew — subtle specular on grass at dawn
-uniform float dew_amount : hint_range(0.0, 1.0) = 0.0;
 
 // Landuse zone map: encodes zone type per pixel
 // 0=unzoned (default mowed lawn), 1=garden, 2=grass, 3=pitch, 4=playground,
@@ -75,17 +71,9 @@ uniform sampler2D structure_mask : filter_linear, repeat_disable;
 
 varying vec3 world_pos;
 
-float hash2(vec2 p) {
-	p = fract(p * vec2(127.1, 311.7));
-	p += dot(p, p + 43.21);
-	return fract(p.x * p.y);
-}
-float vnoise(vec2 p) {
-	vec2 i = floor(p); vec2 f = fract(p);
-	vec2 u = f * f * (3.0 - 2.0 * f);
-	return mix(mix(hash2(i), hash2(i+vec2(1.,0.)), u.x),
-	           mix(hash2(i+vec2(0.,1.)), hash2(i+vec2(1.,1.)), u.x), u.y);
-}
+#include "res://shaders/include/hash_noise.gdshaderinc"
+
+// Variable-octave FBM (terrain needs more than 3 octaves in places)
 float fbm(vec2 p, int oct) {
 	float v = 0.0, a = 0.5;
 	for (int i = 0; i < oct; i++) { v += a*vnoise(p); p *= 2.13; a *= 0.47; }

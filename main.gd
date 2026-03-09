@@ -484,8 +484,6 @@ func _process(delta: float) -> void:
 	else:
 		_snow_cover = maxf(_snow_cover - delta * 0.05, 0.0)  # ~20s to melt
 	if _snow_cover != prev_snow:
-		if _terrain_mat:
-			_terrain_mat.set_shader_parameter("snow_cover", _snow_cover)
 		RenderingServer.global_shader_parameter_set("snow_cover", _snow_cover)
 
 	# Rain wetness — ground darkens, gets glossy
@@ -495,8 +493,6 @@ func _process(delta: float) -> void:
 	else:
 		_rain_wetness = maxf(_rain_wetness - delta * 0.015, 0.0)  # ~67s to dry
 	if _rain_wetness != prev_wet:
-		if _terrain_mat:
-			_terrain_mat.set_shader_parameter("rain_wetness", _rain_wetness)
 		RenderingServer.global_shader_parameter_set("rain_wetness", _rain_wetness)
 
 	# Season advance
@@ -610,9 +606,6 @@ func _set_weather(mode: String) -> void:
 	else:
 		_snow_cover = 0.0
 		_rain_wetness = 0.0
-	if _terrain_mat:
-		_terrain_mat.set_shader_parameter("snow_cover", _snow_cover)
-		_terrain_mat.set_shader_parameter("rain_wetness", _rain_wetness)
 	RenderingServer.global_shader_parameter_set("snow_cover", _snow_cover)
 	RenderingServer.global_shader_parameter_set("rain_wetness", _rain_wetness)
 

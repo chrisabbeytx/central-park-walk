@@ -20,11 +20,7 @@ global uniform float season_t;
 
 varying flat float depth_jitter;
 
-float pos_hash(vec2 p) {
-	p = fract(p * vec2(127.1, 311.7));
-	p += dot(p, p + 43.21);
-	return fract(p.x * p.y);
-}
+#include "res://shaders/include/hash_noise.gdshaderinc"
 
 void vertex() {
 	vec3 world = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
@@ -34,7 +30,7 @@ void vertex() {
 		VERTEX.y = snapped.y;
 	}
 	// Per-triangle depth jitter to break z-fighting at same-type intersections
-	depth_jitter = pos_hash(floor(world.xz * 0.5)) * 0.0003;
+	depth_jitter = hash2(floor(world.xz * 0.5)) * 0.0003;
 }
 
 void fragment() {
@@ -51,7 +47,7 @@ void fragment() {
 	float autumn_t = smoothstep(2.0, 2.6, season_t) * (1.0 - smoothstep(3.3, 3.8, season_t));
 	if (autumn_t > 0.01) {
 		// Leaf debris: small brown/amber patches on pavement
-		float leaf_noise = pos_hash(floor(UV * 40.0));
+		float leaf_noise = hash2(floor(UV * 40.0));
 		float leaf_mask = step(0.85, leaf_noise) * autumn_t;
 		vec3 leaf_col = mix(vec3(0.45, 0.28, 0.10), vec3(0.58, 0.32, 0.12), leaf_noise);
 		ALBEDO = mix(ALBEDO, leaf_col, leaf_mask * 0.5);
@@ -62,7 +58,7 @@ void fragment() {
 	float winter_t = smoothstep(2.8, 3.5, season_t);
 	if (winter_t > 0.01) {
 		// Road salt residue: lighter streaks on pavement
-		float salt_noise = pos_hash(floor(UV * 20.0));
+		float salt_noise = hash2(floor(UV * 20.0));
 		float salt_mask = step(0.8, salt_noise) * winter_t;
 		ALBEDO = mix(ALBEDO, ALBEDO * 1.25 + vec3(0.06), salt_mask * 0.3);
 		// Overall cooler, grayer
@@ -87,7 +83,7 @@ void fragment() {
 		SPECULAR  = mix(SPECULAR, 0.15, snow_amt);
 		// Snow sparkle on paths
 		if (snow_amt > 0.3) {
-			float sparkle = pos_hash(floor(world.xz * 25.0));
+			float sparkle = hash2(floor(world.xz * 25.0));
 			if (sparkle > 0.96) {
 				float si = (sparkle - 0.96) * 25.0;
 				SPECULAR = mix(SPECULAR, 0.90, si * snow_amt);

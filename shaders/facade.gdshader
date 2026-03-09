@@ -36,11 +36,7 @@ uniform sampler2D win_gradient : source_color, filter_linear_mipmap;
 
 varying vec3 world_pos;
 
-float hash2(vec2 p) {
-	p = fract(p * vec2(127.1, 311.7));
-	p += dot(p, p + 43.21);
-	return fract(p.x * p.y);
-}
+#include "res://shaders/include/hash_noise.gdshaderinc"
 
 void vertex() {
 	world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;

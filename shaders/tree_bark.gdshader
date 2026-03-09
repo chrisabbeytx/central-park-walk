@@ -8,11 +8,7 @@ global uniform float season_t;
 varying vec3 world_pos;
 varying vec3 world_nrm;
 
-float bark_hash(vec2 p) {
-	p = fract(p * vec2(127.1, 311.7));
-	p += dot(p, p + 43.21);
-	return fract(p.x * p.y);
-}
+#include "res://shaders/include/hash_noise.gdshaderinc"
 
 void vertex() {
 	world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
@@ -22,11 +18,11 @@ void vertex() {
 void fragment() {
 	// Base bark color with per-tree variation from world position
 	vec3 tree_base = (MODEL_MATRIX * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
-	float tree_var = bark_hash(floor(tree_base.xz * 0.5));
+	float tree_var = hash2(floor(tree_base.xz * 0.5));
 	vec3 col = bark_color * (0.90 + tree_var * 0.20);
 
 	// Vertical bark texture streaks
-	float streak = bark_hash(vec2(world_pos.x * 3.0 + world_pos.z * 2.0, world_pos.y * 8.0));
+	float streak = hash2(vec2(world_pos.x * 3.0 + world_pos.z * 2.0, world_pos.y * 8.0));
 	col *= (0.90 + streak * 0.20);
 
 	ALBEDO = col;
@@ -39,7 +35,7 @@ void fragment() {
 	float local_h = world_pos.y - tree_base.y;
 	float moss_height = smoothstep(3.0, 0.0, local_h);  // bottom 3m of trunk
 	float moss_facing = max(0.0, -world_nrm.z) * 0.5 + max(0.0, -world_nrm.x) * 0.3 + 0.2;
-	float moss_noise = bark_hash(floor(world_pos.xz * 4.0 + world_pos.yy * 2.0));
+	float moss_noise = hash2(floor(world_pos.xz * 4.0 + world_pos.yy * 2.0));
 	float moss = moss_height * moss_facing * step(0.4, moss_noise) * spring_summer;
 	if (moss > 0.01) {
 		vec3 moss_col = mix(vec3(0.10, 0.20, 0.06), vec3(0.16, 0.26, 0.08), moss_noise);
@@ -61,7 +57,7 @@ void fragment() {
 	// Snow on upward-facing bark and branch crotches
 	if (snow_cover > 0.01) {
 		float upward = max(world_nrm.y, 0.0);
-		float snow_noise = bark_hash(floor(world_pos.xz * 5.0 + world_pos.yy * 3.0));
+		float snow_noise = hash2(floor(world_pos.xz * 5.0 + world_pos.yy * 3.0));
 		float snow_amt = snow_cover * smoothstep(0.3, 0.7, upward + snow_noise * 0.3);
 		ALBEDO = mix(ALBEDO, vec3(0.90, 0.91, 0.94), snow_amt * 0.7);
 		ROUGHNESS = mix(ROUGHNESS, 0.85, snow_amt);
