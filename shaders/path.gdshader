@@ -11,6 +11,7 @@ uniform float hm_min_h      = 0.0;
 uniform float hm_range      = 1.0;
 uniform float hm_res        = 256.0;
 uniform float path_y_offset = 0.08;
+uniform float snap_to_terrain = 1.0;  // 0.0 for bridge decks (pre-elevated)
 global uniform float rain_wetness;
 global uniform float snow_cover;
 global uniform float season_t;
@@ -27,9 +28,11 @@ float pos_hash(vec2 p) {
 
 void vertex() {
 	vec3 world = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
-	float terrain_h = sample_terrain(world.xz);
-	vec3 snapped = (inverse(MODEL_MATRIX) * vec4(world.x, terrain_h + path_y_offset, world.z, 1.0)).xyz;
-	VERTEX.y = snapped.y;
+	if (snap_to_terrain > 0.5) {
+		float terrain_h = sample_terrain(world.xz);
+		vec3 snapped = (inverse(MODEL_MATRIX) * vec4(world.x, terrain_h + path_y_offset, world.z, 1.0)).xyz;
+		VERTEX.y = snapped.y;
+	}
 	// Per-triangle depth jitter to break z-fighting at same-type intersections
 	depth_jitter = pos_hash(floor(world.xz * 0.5)) * 0.0003;
 }

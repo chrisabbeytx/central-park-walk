@@ -356,22 +356,22 @@ func _path_tex_prefix(hw: String, surface: String) -> String:
 
 
 func _make_bridge_deck_material(hw: String, surface: String) -> Material:
-	## Like path material but with no vertex terrain-snapping (bridge decks are pre-elevated)
+	## Like path material but with terrain-snapping disabled (bridge decks are pre-elevated).
+	## Uses the path shader so bridge decks get rain, snow, and seasonal effects.
 	var prefix  := _path_tex_prefix(hw, surface)
 	var tex_alb := _load_tex(prefix + "_Color.jpg")
 	var tex_nrm := _load_tex(prefix + "_NormalGL.jpg")
 	var tex_rgh := _load_tex(prefix + "_Roughness.jpg")
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = _path_color(hw, surface)
+	var mat := ShaderMaterial.new()
+	mat.shader = _get_shader("path", _path_shader_code())
 	if tex_alb:
-		mat.albedo_texture = tex_alb
+		mat.set_shader_parameter("tex_alb", tex_alb)
 	if tex_nrm:
-		mat.normal_enabled = true
-		mat.normal_texture = tex_nrm
+		mat.set_shader_parameter("tex_nrm", tex_nrm)
 	if tex_rgh:
-		mat.roughness_texture = tex_rgh
-	mat.roughness = 0.85
-	mat.uv1_scale = Vector3(1, 1, 1)
+		mat.set_shader_parameter("tex_rgh", tex_rgh)
+	mat.set_shader_parameter("tint", _path_color(hw, surface))
+	mat.set_shader_parameter("snap_to_terrain", 0.0)  # no terrain snap for bridge decks
 	return mat
 
 
