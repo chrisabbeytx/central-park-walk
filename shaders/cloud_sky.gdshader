@@ -81,6 +81,13 @@ void sky() {
 		// Stronger near horizon, fades above
 		scatter *= (1.0 - smoothstep(0.0, 0.35, elev));
 		sky_col += scatter_col * scatter;
+
+		// Blue hour: opposite-sun sky deepens to purple-blue at dusk/dawn
+		float anti_sun = max(-sun_dot, 0.0);  // strongest away from sun
+		float blue_hour = pow(anti_sun, 1.5) * golden * 0.20;
+		vec3 blue_tint = vec3(0.15, 0.10, 0.35);  // deep purple-blue
+		blue_hour *= (1.0 - smoothstep(0.0, 0.5, elev));  // near horizon
+		sky_col += blue_tint * blue_hour;
 	}
 
 	// --- Moon — visible through NYC light pollution ---
