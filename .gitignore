@@ -29,6 +29,7 @@ __pycache__/
 # Presentations, screenshots, reference images
 *.odp
 *.png
+!screenshots/*.png
 example pics/
 
 # Internal planning docs (not part of the project)

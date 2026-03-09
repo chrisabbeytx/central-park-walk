@@ -26,7 +26,17 @@ The project is designed to expand. More places, more data sources, more contribu
 
 ## Screenshots
 
-*Coming soon — run `--tour` to generate your own.*
+![Literary Walk — Golden Hour](screenshots/literary_walk_golden.png)
+*The Literary Walk at golden hour. Every tree placed from NYC Tree Census data, every path from OpenStreetMap.*
+
+![Literary Walk — Noon](screenshots/literary_walk_noon.png)
+*Midday on the Mall. 16,243 trees rendered with LiDAR-measured heights across 843 acres.*
+
+![Literary Walk — Morning](screenshots/literary_walk_morning.png)
+*Early morning light. The day/night cycle shifts sun angle, sky color, and shadow direction across 5 keyframes.*
+
+![North Woods Rustic Bridge](screenshots/north_woods_bridge.png)
+*A rustic wood bridge in the North Woods — one of 55 bridges rendered in 5 architectural styles from OSM data.*
 
 ## Quick Start
 
@@ -68,8 +78,10 @@ python3 convert_to_godot.py
 | [ / ] | Nudge time ±1 hour |
 | P | Cycle weather (Clear / Rain / Snow / Fog) |
 | 9 / 0 | Adjust wind |
+| G | Toggle data gap markers |
 | H | Toggle HUD |
 | F11 | Toggle fullscreen |
+| F12 | Screenshot (saves to screenshots/) |
 
 **Xbox/gamepad support**: left stick to walk, right stick to look, right trigger for fly mode.
 
@@ -102,7 +114,7 @@ All data is freely available. No paid APIs. No API keys.
 | Feature | Count | Detail |
 |---------|-------|--------|
 | Terrain | 4096×4096 | LiDAR-accurate, per-pixel normals, structure mask |
-| Trees | 16,243 placed | 4 species models, LOD0 + LOD1 billboards (0–500m), zone-specific species |
+| Trees | 16,243 placed | 4 species models, zone-specific species mapping |
 | Paths | 2,624 | Analytical GPU rendering, 58K segments, width-correct |
 | Water | 27 bodies | Per-body color, shore alpha, depth tinting |
 | Buildings | 18,368 | Real NYC footprints + measured heights, 5 facade styles, night emission |

@@ -127,6 +127,11 @@ func _ready() -> void:
 				_cli_pos_set = true
 		elif arg == "--pitch" and i + 1 < OS.get_cmdline_user_args().size():
 			_cli_pitch = float(OS.get_cmdline_user_args()[i + 1])
+	# Auto-screenshot only in headless capture mode (--quit-after)
+	for earg in OS.get_cmdline_args():
+		if earg.begins_with("--quit-after"):
+			_auto_screenshot = true
+			break
 	if cli_time != "":
 		if TIME_PRESETS.has(cli_time):
 			_time_of_day = TIME_PRESETS[cli_time]
@@ -195,6 +200,8 @@ func _ready() -> void:
 var _screenshot_timer := 0.0
 var _screenshot_done  := false
 var _labels_hidden_for_screenshot := false
+var _screenshot_counter := 0  # incrementing counter for F12 screenshots
+var _auto_screenshot := false  # only auto-capture when --quit-after is used
 
 # ---------------------------------------------------------------------------
 # Tour mode — automated screenshot capture across 10 locations × 3 angles × 3 times
@@ -373,8 +380,8 @@ func _process(delta: float) -> void:
 		_update_hud()
 		return
 
-	# Auto-screenshot for dev review (non-tour mode)
-	if not _screenshot_done:
+	# Auto-screenshot for headless capture (only with --quit-after)
+	if not _screenshot_done and _auto_screenshot:
 		_screenshot_timer += delta
 		if _screenshot_timer <= delta and _player:
 			_player.set_physics_process(false)
@@ -656,6 +663,21 @@ func _unhandled_input(event: InputEvent) -> void:
 			_wind_override = 1.0
 		_wind_override = clampf(_wind_override + 0.1, 0.0, 3.0)
 		print("Wind: %.0f%%" % (_wind_override * 100.0))
+	elif event.keycode == KEY_F12:
+		_take_screenshot()
+
+
+func _take_screenshot() -> void:
+	var dir_path := ProjectSettings.globalize_path("res://screenshots")
+	DirAccess.make_dir_recursive_absolute(dir_path)
+	var img := get_viewport().get_texture().get_image()
+	if not img:
+		print("Screenshot: failed to capture")
+		return
+	var path := "%s/cpw_%03d.png" % [dir_path, _screenshot_counter]
+	img.save_png(path)
+	_screenshot_counter += 1
+	print("Screenshot saved: %s" % path)
 
 
 # ---------------------------------------------------------------------------
