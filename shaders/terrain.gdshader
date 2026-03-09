@@ -758,6 +758,16 @@ void fragment() {
 		ALBEDO = mix(ALBEDO, snow_col, snow_amt);
 		ROUGHNESS = mix(ROUGHNESS, 0.90, snow_amt);
 		SPECULAR = mix(SPECULAR, 0.3, snow_amt);
+		// Snow sparkle: individual ice crystals catch sunlight
+		if (snow_amt > 0.3) {
+			float sparkle = hash2(floor(world_pos.xz * 30.0));
+			if (sparkle > 0.97) {
+				float intensity = (sparkle - 0.97) * 33.3;  // 0-1 for top 3%
+				SPECULAR = mix(SPECULAR, 0.95, intensity * snow_amt);
+				ROUGHNESS = mix(ROUGHNESS, 0.02, intensity * snow_amt * 0.5);
+				ALBEDO += vec3(0.05) * intensity * snow_amt;
+			}
+		}
 	}
 
 }
