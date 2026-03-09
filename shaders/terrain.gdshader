@@ -685,8 +685,13 @@ void fragment() {
 			float puddle = smoothstep(puddle_threshold, puddle_threshold - 0.08, puddle_noise);
 			puddle *= flatness;  // only on truly flat ground
 			if (puddle > 0.01) {
-				// Puddle: very dark, very smooth, highly reflective
-				ALBEDO = mix(ALBEDO, ALBEDO * 0.3, puddle);
+				// Puddle: reflects sky color, dark ground underneath
+				float p_sky_lum = dot(sky_reflect_color, vec3(0.2126, 0.7152, 0.0722));
+				float p_night = smoothstep(0.15, 0.02, p_sky_lum);
+				vec3 puddle_col = sky_reflect_color * 0.35 + ALBEDO * 0.12;
+				// Night puddles reflect city light pollution instead of dark sky
+				puddle_col = mix(puddle_col, vec3(0.08, 0.06, 0.03) + ALBEDO * 0.06, p_night);
+				ALBEDO = mix(ALBEDO, puddle_col, puddle);
 				ROUGHNESS = mix(ROUGHNESS, 0.02, puddle);
 				SPECULAR = mix(SPECULAR, 0.8, puddle);
 				METALLIC = mix(METALLIC, 0.0, puddle);

@@ -12,6 +12,7 @@ uniform vec3 cloud_color_top = vec3(0.90, 0.90, 0.92);
 uniform vec3 cloud_color_bottom = vec3(0.45, 0.45, 0.50);
 global uniform vec2 wind_vec;
 global uniform float season_t;
+global uniform float lightning_flash;
 
 // Scalar hash — used for stars (cell-based)
 float sky_hash(vec2 p) {
@@ -221,6 +222,21 @@ void sky() {
 			vec3 cirrus_col = cloud_color_top + LIGHT0_COLOR * 0.15;
 			sky_col = mix(sky_col, cirrus_col, cirrus);
 		}
+	}
+
+	// Lightning flash — clouds light up from within during thunderstorm
+	if (lightning_flash > 0.01 && elev > -0.05) {
+		float lf = lightning_flash;
+		// Clouds glow bright blue-white from internal lightning
+		float cloud_y2 = max(elev, 0.01);
+		vec2 lf_uv = dir.xz / (cloud_y2 + 0.1) * 0.8 + TIME * vec2(cloud_speed, cloud_speed * 0.7);
+		float lf_cloud = sky_fbm(lf_uv * 3.0, 3);
+		float lf_mask = smoothstep(0.4, 0.8, lf_cloud);
+		// Lightning illuminates from below: brighter cloud bases
+		vec3 lf_col = vec3(0.70, 0.75, 1.0);  // cool white-blue
+		sky_col += lf_col * lf * lf_mask * 0.6;
+		// Even clear sky brightens slightly (atmospheric scatter from flash)
+		sky_col += lf_col * lf * 0.08;
 	}
 
 	COLOR = sky_col;
