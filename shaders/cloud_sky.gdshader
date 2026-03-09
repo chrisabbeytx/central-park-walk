@@ -60,13 +60,27 @@ void sky() {
 		sky_col = mix(ground_horizon_color, ground_bottom_color, t);
 	}
 
-	// --- Sun disc ---
+	// --- Sun disc + atmospheric scattering ---
 	float sun_dot = dot(dir, LIGHT0_DIRECTION);
 	float sun_disc = smoothstep(0.9992, 0.9998, sun_dot);
 	vec3 sun_col = LIGHT0_COLOR * LIGHT0_ENERGY * 2.0;
-	// Sun glow halo
+	// Sun glow halo — tight inner core + wider outer aureole
 	float sun_glow = pow(max(sun_dot, 0.0), 64.0) * 0.3;
-	sky_col += sun_col * (sun_disc + sun_glow);
+	float sun_aureole = pow(max(sun_dot, 0.0), 8.0) * 0.12;
+	sky_col += sun_col * (sun_disc + sun_glow + sun_aureole);
+
+	// Golden hour scatter — warm tint near horizon when sun is low
+	float sun_elev = LIGHT0_DIRECTION.y;  // negative = below horizon
+	float golden = smoothstep(0.15, -0.05, sun_elev);  // peaks at sunset/sunrise
+	if (golden > 0.01 && elev >= 0.0) {
+		// Rayleigh-like forward scatter: warm orange glow around sun direction on horizon
+		float scatter_dot = max(sun_dot, 0.0);
+		float scatter = pow(scatter_dot, 3.0) * golden * 0.35;
+		vec3 scatter_col = LIGHT0_COLOR * vec3(1.1, 0.7, 0.4);  // warm orange
+		// Stronger near horizon, fades above
+		scatter *= (1.0 - smoothstep(0.0, 0.35, elev));
+		sky_col += scatter_col * scatter;
+	}
 
 	// --- Stars (Bortle 8-9: inner-city light pollution) ---
 	// Central Park: nearly starless sky. Only ~10 brightest stars visible on clear nights.
@@ -109,6 +123,14 @@ void sky() {
 		vec3 cloud_col = mix(cloud_color_bottom, cloud_color_top, sun_illum * 0.4 + 0.25);
 		// Sun-facing edges get warm highlight
 		cloud_col += LIGHT0_COLOR * edge_lit * 0.5;
+		// Golden hour cloud drama: undersides lit warm orange, edges more vivid
+		float cloud_golden = smoothstep(0.15, -0.05, LIGHT0_DIRECTION.y);
+		if (cloud_golden > 0.01) {
+			float rim = pow(max(sun_dot, 0.0), 2.0) * 0.3;
+			cloud_col += LIGHT0_COLOR * vec3(1.2, 0.6, 0.3) * rim * cloud_golden;
+			// Warmer cloud base at golden hour
+			cloud_col = mix(cloud_col, cloud_col * vec3(1.15, 0.9, 0.75), cloud_golden * 0.4);
+		}
 
 		// Fade clouds near horizon to blend with haze
 		float horizon_fade = smoothstep(0.0, 0.12, elev);
