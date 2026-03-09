@@ -12,6 +12,7 @@ var _speed_idx: int = 1
 var head: Node3D    # pitch pivot at eye height
 var _stair_offset: float = 0.0  # camera smoothing for stair steps
 var boundary_polygon: PackedVector2Array  # XZ park boundary (set by main.gd)
+var tour_freeze := false  # when true, physics runs but player doesn't move/look
 
 
 func _ready() -> void:
@@ -46,6 +47,10 @@ func _ready() -> void:
 
 
 func _physics_process(delta: float) -> void:
+	if tour_freeze:
+		velocity = Vector3.ZERO
+		move_and_slide()  # keep physics body synced with scene transform
+		return
 	_handle_look(delta)
 	var pre_pos := position
 	var pre_y := position.y

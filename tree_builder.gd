@@ -4,6 +4,11 @@
 
 var _loader  # Reference to park_loader for shared utilities
 
+# Maps data species archetype → phenology index for GPU seasonal color
+const PHENOLOGY_INDEX := {
+	"oak": 0, "maple": 1, "elm": 2, "birch": 3, "deciduous": 4, "conifer": 5,
+}
+
 func _init(loader) -> void:
 	_loader = loader
 
@@ -138,9 +143,10 @@ func _build_trees(trees: Array) -> void:
 
 	# Foliage zone data for deciduous sub-species assignment
 
-	# Collect transforms per species-variant for MultiMesh batching
+	# Collect transforms + season data per species-variant for MultiMesh batching
 	# Key: "species_variantIdx" -> Array[Transform3D]
 	var xf_by_key: Dictionary = {}
+	var cd_by_key: Dictionary = {}  # parallel Color arrays for custom_data (season info)
 	var all_trunk_xf: Array = []  # for collision
 	for i in trees.size():
 		var tree_entry = trees[i]
@@ -220,7 +226,13 @@ func _build_trees(trees: Array) -> void:
 		var key := "%s_%d" % [species, variant_idx]
 		if not xf_by_key.has(key):
 			xf_by_key[key] = []
+			cd_by_key[key] = []
 		xf_by_key[key].append(tf)
+		# Pack season data: R=species phenology index, G=timing offset, B=evergreen flag
+		var pheno_idx: int = PHENOLOGY_INDEX.get(effective_species, 4)
+		var timing_off := rng.randf_range(-0.15, 0.15)
+		var is_evergreen := 1.0 if effective_species == "conifer" else 0.0
+		cd_by_key[key].append(Color(float(pheno_idx) / 5.0, timing_off + 0.5, is_evergreen, 0.0))
 
 		# Collision: simplified cylinder at trunk position
 		var trunk_r := desired_h * 0.02
@@ -239,19 +251,24 @@ func _build_trees(trees: Array) -> void:
 	var lod0_chunks: Dictionary = {}
 
 	for key in xf_by_key:
-		for tf: Transform3D in xf_by_key[key]:
+		var xf_arr: Array = xf_by_key[key]
+		var cd_arr: Array = cd_by_key[key]
+		for j in xf_arr.size():
+			var tf: Transform3D = xf_arr[j]
 			var cx := int(floorf(tf.origin.x / CHUNK))
 			var cz := int(floorf(tf.origin.z / CHUNK))
 			var ck0 := "%s|%d|%d" % [key, cx, cz]
 			if not lod0_chunks.has(ck0):
-				lod0_chunks[ck0] = {"mesh_key": key, "cx": cx, "cz": cz, "xf": []}
+				lod0_chunks[ck0] = {"mesh_key": key, "cx": cx, "cz": cz, "xf": [], "cd": []}
 			lod0_chunks[ck0]["xf"].append(tf)
+			lod0_chunks[ck0]["cd"].append(cd_arr[j])
 
 	# Spawn LOD0 chunks — position MMI at instance centroid for accurate culling
 	for ckey in lod0_chunks:
 		var info: Dictionary = lod0_chunks[ckey]
 		var mesh_key: String = info["mesh_key"]
 		var xf_list: Array = info["xf"]
+		var cd_list: Array = info["cd"]
 		if xf_list.is_empty():
 			continue
 		var parts: PackedStringArray = mesh_key.split("_")
@@ -269,12 +286,14 @@ func _build_trees(trees: Array) -> void:
 		var chunk_origin := Vector3(cx_sum / n, cy_sum / n, cz_sum / n)
 		var mm := MultiMesh.new()
 		mm.transform_format = MultiMesh.TRANSFORM_3D
+		mm.use_custom_data = true
 		mm.mesh = mesh
 		mm.instance_count = xf_list.size()
 		for i in xf_list.size():
 			var tf: Transform3D = xf_list[i]
 			var local_tf := Transform3D(tf.basis, tf.origin - chunk_origin)
 			mm.set_instance_transform(i, local_tf)
+			mm.set_instance_custom_data(i, cd_list[i])
 		var mmi := MultiMeshInstance3D.new()
 		mmi.multimesh = mm
 		mmi.position = chunk_origin
@@ -315,29 +334,101 @@ uniform float alpha_scissor : hint_range(0.0, 1.0) = 0.5;
 
 global uniform vec2 wind_vec;
 global uniform float snow_cover;
+global uniform float season_t;
+
+// Species fall colors: oak, maple, elm, birch, deciduous, conifer
+const vec3 FALL_COLORS[6] = vec3[6](
+	vec3(0.55, 0.25, 0.12),  // oak: red-brown
+	vec3(0.85, 0.22, 0.08),  // maple: brilliant red-orange
+	vec3(0.78, 0.72, 0.18),  // elm: golden yellow
+	vec3(0.82, 0.75, 0.22),  // birch: yellow
+	vec3(0.65, 0.45, 0.15),  // deciduous: amber
+	vec3(0.14, 0.30, 0.10)   // conifer: stays green
+);
+
+// Phenology timing per species: (fall_start, fall_peak, bare_start, leaf_start)
+const vec4 PHENOLOGY[6] = vec4[6](
+	vec4(2.3, 2.7, 3.1, 0.4),  // oak
+	vec4(2.1, 2.5, 2.9, 0.3),  // maple
+	vec4(2.2, 2.6, 3.0, 0.3),  // elm
+	vec4(2.0, 2.4, 2.8, 0.2),  // birch
+	vec4(2.2, 2.6, 3.0, 0.3),  // deciduous
+	vec4(0.0, 0.0, 0.0, 0.0)   // conifer (unused)
+);
+
+varying float v_leaf_density;
 
 void vertex() {
+	// Decode per-instance season data
+	float is_evergreen = INSTANCE_CUSTOM.b;
+	int sp_idx = int(INSTANCE_CUSTOM.r * 5.0 + 0.5);
+	float timing_off = INSTANCE_CUSTOM.g - 0.5;
+	float s = mod(season_t + timing_off, 4.0);
+
+	// Compute leaf density for vertex shrinking and fragment alpha
+	float leaf_density = 1.0;
+	if (is_evergreen < 0.5) {
+		vec4 ph = PHENOLOGY[sp_idx];
+		float shedding = 1.0 - smoothstep(ph.z - 0.2, ph.z + 0.3, s);
+		float regrowth = smoothstep(ph.w - 0.1, ph.w + 0.3, s);
+		leaf_density = max(shedding, regrowth);
+		leaf_density = clamp(leaf_density, 0.08, 1.0);
+	}
+	v_leaf_density = leaf_density;
+
 	vec3 tree_origin = (MODEL_MATRIX * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
 	float sway = max(VERTEX.y, 0.0);
 	float wind_str = length(wind_vec);
-	float rustle = 0.3 + wind_str * 0.7;
+	float rustle = (0.3 + wind_str * 0.7) * mix(0.3, 1.0, leaf_density);
 	VERTEX.x += sin(TIME * 0.7 + tree_origin.x * 0.04 + tree_origin.z * 0.06) * 0.09 * sway * rustle;
 	VERTEX.z += sin(TIME * 1.1 + tree_origin.z * 0.05) * 0.05 * sway * rustle;
 	VERTEX.x += wind_vec.x * sway * 0.18;
 	VERTEX.z += wind_vec.y * sway * 0.18;
 	float flutter = sin(TIME * 3.5 + VERTEX.x * 11.0 + VERTEX.z * 7.0) * 0.012 * rustle;
 	VERTEX.y += flutter * sway;
+
+	// Winter: shrink canopy toward trunk
+	if (is_evergreen < 0.5 && leaf_density < 0.5) {
+		float shrink = mix(0.4, 1.0, leaf_density * 2.0);
+		VERTEX.xz *= shrink;
+	}
 }
 
 void fragment() {
 	vec4 tex = texture(albedo_tex, UV);
-	// Use tint as base color, modulated by texture luminance for variation
 	float lum = dot(tex.rgb, vec3(0.3, 0.6, 0.1));
-	vec3 col = albedo_tint * (0.6 + lum * 0.8);
-	float alpha = tex.a;
+	float alpha = tex.a * v_leaf_density;
 	if (alpha < alpha_scissor) discard;
 
-	// Snow accumulation — world-space normal
+	// Decode per-instance season data
+	int sp_idx = int(INSTANCE_CUSTOM.r * 5.0 + 0.5);
+	float timing_off = INSTANCE_CUSTOM.g - 0.5;
+	float is_evergreen = INSTANCE_CUSTOM.b;
+	float s = mod(season_t + timing_off, 4.0);
+
+	// Seasonal color
+	vec3 leaf_color = albedo_tint;
+	if (is_evergreen < 0.5) {
+		vec4 ph = PHENOLOGY[sp_idx];
+		vec3 fall_col = FALL_COLORS[sp_idx];
+		vec3 spring_tint = albedo_tint * vec3(1.15, 1.2, 0.7);
+
+		// Spring: fresh bright green
+		float spring_t = smoothstep(ph.w, ph.w + 0.4, s);
+		leaf_color = mix(spring_tint, albedo_tint, spring_t);
+
+		// Fall: green to species fall color
+		float fall_t = smoothstep(ph.x, ph.y, s);
+		leaf_color = mix(leaf_color, fall_col, fall_t);
+
+		// Late fall: darken as leaves die
+		float late_fall = smoothstep(ph.y, ph.z, s);
+		leaf_color = mix(leaf_color, fall_col * 0.5, late_fall * 0.6);
+	}
+
+	vec3 col = leaf_color * (0.6 + lum * 0.8);
+
+	// Snow accumulation
 	if (snow_cover > 0.01) {
 		vec3 world_n = mat3(INV_VIEW_MATRIX) * NORMAL;
 		float upward = max(world_n.y, 0.0);
@@ -351,7 +442,7 @@ void fragment() {
 	ROUGHNESS = 0.88;
 	SPECULAR = 0.08;
 	METALLIC = 0.0;
-	BACKLIGHT = vec3(0.28, 0.20, 0.06);
+	BACKLIGHT = vec3(0.28, 0.20, 0.06) * v_leaf_density;
 }
 """
 

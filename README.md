@@ -78,6 +78,7 @@ python3 convert_to_godot.py
 | [ / ] | Nudge time ±1 hour |
 | P | Cycle weather (Clear / Rain / Snow / Fog) |
 | 9 / 0 | Adjust wind |
+| N / Shift+N | Cycle season (Spring / Summer / Autumn / Winter) |
 | G | Toggle data gap markers |
 | H | Toggle HUD |
 | F11 | Toggle fullscreen |
@@ -92,6 +93,7 @@ python3 convert_to_godot.py
 -- --pos "x,z,yaw"    # Spawn at specific coordinates
 -- --time noon         # Set time (dawn/morning/noon/golden_hour/dusk/night)
 -- --weather rain      # Set weather (clear/rain/snow/fog)
+-- --season autumn     # Set season (spring/summer/autumn/fall/winter)
 ```
 
 ## Data Sources

@@ -87,6 +87,13 @@ var _snow_cover := 0.0          # 0-1, ramps up during snow weather
 # Rain wetness — ground darkens + specular increases
 var _rain_wetness := 0.0        # 0-1, ramps up during rain
 
+# Seasons — 0.0=spring equinox, 1.0=summer solstice, 2.0=autumn equinox, 3.0=winter solstice
+var _season_t := 1.5            # default mid-summer (matches current look)
+var _season_speed := 0.0        # season-units per real-second (0 = manual only)
+const SEASON_PRESETS: Dictionary = {
+	"spring": 0.5, "summer": 1.5, "autumn": 2.5, "fall": 2.5, "winter": 3.5,
+}
+
 
 # --time name-to-hour mapping
 const TIME_PRESETS: Dictionary = {
@@ -127,6 +134,16 @@ func _ready() -> void:
 				_cli_pos_set = true
 		elif arg == "--pitch" and i + 1 < OS.get_cmdline_user_args().size():
 			_cli_pitch = float(OS.get_cmdline_user_args()[i + 1])
+		elif arg == "--season" and i + 1 < OS.get_cmdline_user_args().size():
+			var s_val: String = OS.get_cmdline_user_args()[i + 1]
+			if SEASON_PRESETS.has(s_val):
+				_season_t = SEASON_PRESETS[s_val]
+				print("Season: %s (%.1f)" % [s_val, _season_t])
+			elif s_val.is_valid_float():
+				_season_t = clampf(float(s_val), 0.0, 4.0)
+				print("Season: %.1f" % _season_t)
+			else:
+				print("Unknown --season '%s'. Options: spring summer autumn fall winter (or 0.0-4.0)" % s_val)
 	# Auto-screenshot only in headless capture mode (--quit-after)
 	for earg in OS.get_cmdline_args():
 		if earg.begins_with("--quit-after"):
@@ -157,6 +174,7 @@ func _ready() -> void:
 	RenderingServer.global_shader_parameter_add("snow_cover", RenderingServer.GLOBAL_VAR_TYPE_FLOAT, 0.0)
 	RenderingServer.global_shader_parameter_add("rain_wetness", RenderingServer.GLOBAL_VAR_TYPE_FLOAT, 0.0)
 	RenderingServer.global_shader_parameter_add("sky_reflect_color", RenderingServer.GLOBAL_VAR_TYPE_VEC3, Vector3(0.32, 0.38, 0.45))
+	RenderingServer.global_shader_parameter_add("season_t", RenderingServer.GLOBAL_VAR_TYPE_FLOAT, _season_t)
 	print("main: environment: %d ms" % (Time.get_ticks_msec() - _mt)); _mt = Time.get_ticks_msec()
 	if not _terrain_only:
 		_setup_park()
@@ -193,7 +211,7 @@ func _ready() -> void:
 			_tour_state = 0  # WAIT_LOAD
 			_tour_timer = 0.0
 			_tour_idx = 0
-			_player.set_physics_process(false)  # disable gravity/collision during tour
+			_player.tour_freeze = true  # keep physics synced but freeze movement/look
 			DirAccess.make_dir_recursive_absolute("/tmp/tour")
 			print("Tour mode: %d shots queued" % _tour_shots.size())
 			break
@@ -433,6 +451,11 @@ func _process(delta: float) -> void:
 			_terrain_mat.set_shader_parameter("rain_wetness", _rain_wetness)
 		RenderingServer.global_shader_parameter_set("rain_wetness", _rain_wetness)
 
+	# Season advance
+	if _season_speed > 0.0:
+		_season_t = fmod(_season_t + _season_speed * delta, 4.0)
+		RenderingServer.global_shader_parameter_set("season_t", _season_t)
+
 	# Particles follow player — wind deflects rain/snow
 	if _rain_particles and _player:
 		_rain_particles.global_position = _player.global_position + Vector3(0, 14, 0)
@@ -479,7 +502,7 @@ func _update_hud() -> void:
 			h12 = 12
 		var mins: int = int(fmod(_time_of_day, 1.0) * 60.0)
 		var ampm: String = "AM" if _time_of_day < 12.0 else "PM"
-		_time_label.text = "%d:%02d %s  [%s]" % [h12, mins, ampm, TIME_SPEED_NAMES[_time_speed_idx]]
+		_time_label.text = "%d:%02d %s  [%s]  %s" % [h12, mins, ampm, TIME_SPEED_NAMES[_time_speed_idx], _season_name(_season_t)]
 	if _speed_label and _player:
 		_speed_label.text = "%s (%.1f m/s)" % [_player.SPEED_NAMES[_player._speed_idx], _player.walk_speed]
 	if _location_label:
@@ -500,13 +523,15 @@ func _tour_teleport(idx: int) -> void:
 	var yaw: float = shot["yaw"]
 	var pitch: float = shot["pitch"]
 	var hour: float = shot["hour"]
-	_player.position = Vector3(x, _terrain_height(x, z) + 1.3, z)
+	_player.global_position = Vector3(x, _terrain_height(x, z) + 1.3, z)
+	_player.velocity = Vector3.ZERO
 	_player.rotation_degrees.y = yaw
 	var head: Node3D = _player.get_node("Head")
 	if head:
 		head.rotation_degrees.x = pitch
 	_time_of_day = hour
 	_time_speed = 0.0
+	_last_applied_tod = -999.0  # force full lighting update
 	_apply_time_of_day()
 
 
@@ -663,8 +688,25 @@ func _unhandled_input(event: InputEvent) -> void:
 			_wind_override = 1.0
 		_wind_override = clampf(_wind_override + 0.1, 0.0, 3.0)
 		print("Wind: %.0f%%" % (_wind_override * 100.0))
+	elif event.keycode == KEY_N:
+		if event.shift_pressed:
+			# Shift+N: cycle season backward
+			_season_t = fmod(_season_t - 0.5 + 4.0, 4.0)
+		else:
+			# N: cycle season forward
+			_season_t = fmod(_season_t + 0.5, 4.0)
+		RenderingServer.global_shader_parameter_set("season_t", _season_t)
+		var season_name := _season_name(_season_t)
+		print("Season: %s (%.1f)" % [season_name, _season_t])
 	elif event.keycode == KEY_F12:
 		_take_screenshot()
+
+
+func _season_name(t: float) -> String:
+	if t < 1.0: return "Spring"
+	if t < 2.0: return "Summer"
+	if t < 3.0: return "Autumn"
+	return "Winter"
 
 
 func _take_screenshot() -> void:
@@ -1577,6 +1619,8 @@ uniform sampler2D park_mask : filter_linear, repeat_disable;
 uniform float snow_cover : hint_range(0.0, 1.0) = 0.0;
 // Rain wetness — darkens surfaces, lowers roughness
 uniform float rain_wetness : hint_range(0.0, 1.0) = 0.0;
+// Season: 0=spring, 1=summer, 2=autumn, 3=winter (wraps at 4)
+global uniform float season_t;
 // Morning dew — subtle specular on grass at dawn
 uniform float dew_amount : hint_range(0.0, 1.0) = 0.0;
 
@@ -1785,6 +1829,26 @@ void fragment() {
 	grass_alb *= 0.94 + lawn_noise * 0.12;  // ±6% brightness variation
 	grass_alb.r += lawn_warm * 0.015;       // subtle warm/cool patches
 	grass_alb.b -= lawn_warm * 0.01;
+
+	// --- Seasonal grass color modulation ---
+	// Spring (0-1): fresh bright green, Summer (1-2): rich green (baseline),
+	// Autumn (2-3): golden-brown, Winter (3-4): dormant brown
+	{
+		float spring_t = 1.0 - smoothstep(0.0, 1.0, season_t);
+		float autumn_t = smoothstep(2.0, 2.8, season_t) * (1.0 - smoothstep(3.2, 4.0, season_t));
+		float winter_t = smoothstep(3.0, 3.5, season_t);
+		// Spring: brighter, more yellow-green
+		vec3 spring_grass = grass_alb * vec3(1.1, 1.15, 0.75);
+		// Autumn: golden-amber, desaturated
+		vec3 autumn_grass = grass_alb * vec3(1.3, 0.85, 0.45);
+		// Winter: dormant brown, desaturated
+		float g_lum = dot(grass_alb, vec3(0.299, 0.587, 0.114));
+		vec3 winter_grass = mix(vec3(g_lum), grass_alb, 0.3) * vec3(0.85, 0.78, 0.55);
+		grass_alb = mix(grass_alb, spring_grass, spring_t * 0.6);
+		grass_alb = mix(grass_alb, autumn_grass, autumn_t * 0.7);
+		grass_alb = mix(grass_alb, winter_grass, winter_t * 0.8);
+	}
+
 	vec3 grass_nrm = textureNoTile_n(grass_normal, uv);
 	float grass_rgh = clamp(textureNoTile_r(grass_rough, uv) * 0.20 + 0.65, 0.0, 1.0);
 
