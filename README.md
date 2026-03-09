@@ -123,12 +123,12 @@ All data is freely available. No paid APIs. No API keys.
 | Buildings | 6,557 | NYC Building Footprints + LiDAR heights, 5 facade styles, night window variety (incandescent/LED/TV blue), age patina, seasonal haze, rain streaks, weather-responsive roofs, collision |
 | Bridges | 55 | 5 styles, miter joints, arched soffits, Bow Bridge railings, parapet collision |
 | Tunnels | 15 | Barrel vault interiors, portal lighting |
-| Furniture | 1,004+ | Custom Blender models: lampposts, benches, trash cans, fountains — cast iron shader with rust/rain/snow, wood shader for bridge railings |
+| Furniture | 1,022+ | Custom Blender models: lampposts (201), benches (610), trash cans (166), fountains (19), flagpoles (18) — cast iron shader with rust/rain/snow, wood shader for bridge railings |
 | Statues | 106 positions | 3 photogrammetry scans, labels mark unscanned locations |
 | Perimeter wall | 7,962 segments | Manhattan schist with mica sparkle, glacial striations, moss, 105 gate openings, 210 gate pillars |
 | Sports fields | 147 | Baseball (30), tennis (55), basketball (37), soccer (10), handball (4), croquet (2), plus multi-sport — all from OSM `sport` tags with regulation markings |
 | Landmarks | 16 viewpoints + 42 attractions | OSM-sourced viewpoints, zoo exhibits, museums, historic features with labels |
-| Seasons | 4 | Per-species phenology, fallen leaf scatter, seasonal water/fog/atmosphere/sky/paths, winter frost + ice, stone moss, bark moss, hedge seasonal color |
+| Seasons | 4 | Per-species phenology, wind-drifted fallen leaf scatter, seasonal water/fog/atmosphere/sky/paths, winter frost + ice, stone moss, bark moss, hedge seasonal color |
 | Weather | 5 modes | Rain (wet surfaces/paths/stone/bark/iron/sports, glossy leaves, puddles with sky reflections, facade rain streaks, rain-on-lens), thunderstorm (30K particles, lightning flash + cloud glow + color grade wash), snow (terrain/trees/buildings/paths/stone/water/roofs/iron/hedges), fog, clear — dew, frost |
 | Day/night | 5 keyframes | 48-light lamp pool, lit windows, directional NYC light pollution, blue hour, moon with maria, dawn mist |
 | Color grading | Time-aware | Golden hour warmth, cool night desaturation, seasonal tint shifts, dynamic vignette, film grain, eye adaptation |
@@ -181,7 +181,7 @@ See [FUNDING.md](FUNDING.md) for details on how funds are used.
 | Data pipeline | Python: GDAL, numpy/scipy, Pillow |
 | 3D modeling | Blender 3.0.1 (headless scripts) |
 | Audio | Not yet implemented (awaiting field recordings) |
-| Rendering | 17 custom GLSL shaders (terrain, water, stream, facade, tree leaf/bark, sky, stone, path, roof, cast iron, hedge, wood, ground surface, IMAGINE mosaic, color grade, lens distortion), shared noise include, MultiMesh instancing, analytical GPU path rendering |
+| Rendering | 18 custom GLSL shaders (terrain, water, stream, facade, tree leaf/bark, sky, stone, path, roof, cast iron, hedge, wood, ground surface, cloud sky, IMAGINE mosaic, color grade, lens distortion), shared noise include, MultiMesh instancing, analytical GPU path rendering |
 
 ## License
 
