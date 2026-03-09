@@ -1321,3 +1321,177 @@ func _build_field_markings() -> void:
 
 	if tennis_count > 0:
 		print("ParkLoader: tennis court markings = ", tennis_count)
+
+
+# ---------------------------------------------------------------------------
+# Playgrounds — named locations with colored ground markers and labels
+# ---------------------------------------------------------------------------
+func _build_playgrounds(playgrounds: Array) -> void:
+	if playgrounds.is_empty():
+		return
+	var count := 0
+	var pg_mat := StandardMaterial3D.new()
+	pg_mat.albedo_color = Color(0.62, 0.42, 0.28, 0.6)  # mulch/rubber ground
+	pg_mat.roughness = 0.95
+	pg_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	pg_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+
+	for pg in playgrounds:
+		var name_: String = pg.get("name", "")
+		var pos: Array = pg.get("pos", [])
+		if pos.size() < 2:
+			continue
+		var x: float = float(pos[0])
+		var z: float = float(pos[1])
+		if not _loader._in_boundary(x, z):
+			continue
+
+		var ty: float = _loader._terrain_y(x, z)
+
+		# Ground disc — 12m radius play area
+		var disc: ArrayMesh = _loader._make_cylinder(12.0, 0.02, 24)
+		var mi := MeshInstance3D.new()
+		mi.mesh = disc
+		mi.material_override = pg_mat
+		mi.position = Vector3(x, ty + 0.05, z)
+		_loader.add_child(mi)
+
+		# Label
+		if not name_.is_empty():
+			var label := Label3D.new()
+			label.text = name_
+			label.font_size = 24
+			label.position = Vector3(x, ty + 3.5, z)
+			label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+			label.modulate = Color(0.85, 0.55, 0.25, 0.70)
+			label.outline_modulate = Color(0.1, 0.08, 0.05, 0.50)
+			label.outline_size = 4
+			label.no_depth_test = false
+			label.pixel_size = 0.012
+			_loader.add_child(label)
+		count += 1
+	print("  Playgrounds: %d placed" % count)
+
+
+# ---------------------------------------------------------------------------
+# Facilities — visitor centers, dining, buildings with named labels
+# ---------------------------------------------------------------------------
+func _build_facilities(facilities: Array) -> void:
+	if facilities.is_empty():
+		return
+	var count := 0
+	var type_colors: Dictionary = {
+		"visitor_center": Color(0.25, 0.50, 0.70, 0.70),
+		"facility":       Color(0.50, 0.45, 0.35, 0.70),
+		"building":       Color(0.55, 0.50, 0.42, 0.70),
+		"dining":         Color(0.70, 0.45, 0.25, 0.70),
+	}
+
+	for fac in facilities:
+		var name_: String = fac.get("name", "")
+		var pos: Array = fac.get("pos", [])
+		var ftype: String = fac.get("type", "facility")
+		if pos.size() < 2:
+			continue
+		var x: float = float(pos[0])
+		var z: float = float(pos[1])
+		if not _loader._in_boundary(x, z):
+			continue
+
+		var ty: float = _loader._terrain_y(x, z)
+		var col: Color = type_colors.get(ftype, Color(0.5, 0.5, 0.5, 0.70))
+
+		# Label
+		if not name_.is_empty():
+			var label := Label3D.new()
+			label.text = name_
+			label.font_size = 28
+			label.position = Vector3(x, ty + 4.0, z)
+			label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+			label.modulate = col
+			label.outline_modulate = Color(0.05, 0.05, 0.05, 0.50)
+			label.outline_size = 5
+			label.no_depth_test = false
+			label.pixel_size = 0.012
+			_loader.add_child(label)
+		count += 1
+	print("  Facilities: %d placed" % count)
+
+
+# ---------------------------------------------------------------------------
+# Decorative fountains — stone basin with water surface
+# ---------------------------------------------------------------------------
+func _build_fountains(amenities: Array) -> void:
+	var fountains: Array = []
+	for am in amenities:
+		if am.get("type", "") == "fountain":
+			fountains.append(am)
+	if fountains.is_empty():
+		return
+
+	# Basin material — granite
+	var basin_mat := StandardMaterial3D.new()
+	basin_mat.albedo_color = Color(0.58, 0.55, 0.50)
+	basin_mat.roughness = 0.75
+	basin_mat.metallic = 0.0
+
+	# Water surface material
+	var water_mat := StandardMaterial3D.new()
+	water_mat.albedo_color = Color(0.15, 0.25, 0.35, 0.75)
+	water_mat.roughness = 0.05
+	water_mat.metallic = 0.3
+	water_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+
+	var count := 0
+	for fnt in fountains:
+		var pos: Array = fnt.get("position", [])
+		if pos.size() < 3:
+			continue
+		var x: float = float(pos[0])
+		var y: float = float(pos[1])
+		var z: float = float(pos[2])
+		if not _loader._in_boundary(x, z):
+			continue
+
+		var ty: float = _loader._terrain_y(x, z)
+		y = maxf(y, ty)
+		var name_: String = fnt.get("name", "")
+
+		# Stone basin — short wide cylinder
+		var basin_r := 2.5
+		if "Bethesda" in name_:
+			basin_r = 5.0  # Bethesda is much larger
+		elif "Untermyer" in name_ or "Cherry Hill" in name_:
+			basin_r = 3.5
+
+		var basin: ArrayMesh = _loader._make_cylinder(basin_r, 0.6, 20)
+		var bmi := MeshInstance3D.new()
+		bmi.mesh = basin
+		bmi.material_override = basin_mat
+		bmi.position = Vector3(x, y + 0.3, z)
+		_loader.add_child(bmi)
+
+		# Water disc inside basin
+		var water_disc: ArrayMesh = _loader._make_cylinder(basin_r - 0.15, 0.02, 20)
+		var wmi := MeshInstance3D.new()
+		wmi.mesh = water_disc
+		wmi.material_override = water_mat
+		wmi.position = Vector3(x, y + 0.55, z)
+		_loader.add_child(wmi)
+
+		# Label for named fountains
+		if not name_.is_empty():
+			var label := Label3D.new()
+			label.text = name_
+			label.font_size = 26
+			label.position = Vector3(x, y + 3.0, z)
+			label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+			label.modulate = Color(0.45, 0.60, 0.75, 0.65)
+			label.outline_modulate = Color(0.05, 0.05, 0.05, 0.45)
+			label.outline_size = 4
+			label.no_depth_test = false
+			label.pixel_size = 0.011
+			_loader.add_child(label)
+
+		count += 1
+	print("  Fountains: %d placed" % count)
