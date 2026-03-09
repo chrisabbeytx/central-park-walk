@@ -7,9 +7,26 @@ uniform sampler2D tex_rgh : hint_default_white, filter_linear_mipmap_anisotropic
 uniform vec4 tint : source_color = vec4(1.0);
 global uniform float rain_wetness;
 global uniform float snow_cover;
+global uniform float season_t;
 
 varying vec3 world_pos;
 varying vec3 world_nrm;
+
+// Simple hash for procedural variation
+float stone_hash(vec2 p) {
+	p = fract(p * vec2(127.1, 311.7));
+	p += dot(p, p + 43.21);
+	return fract(p.x * p.y);
+}
+float stone_noise(vec2 p) {
+	vec2 i = floor(p); vec2 f = fract(p);
+	vec2 u = f * f * (3.0 - 2.0 * f);
+	return mix(mix(stone_hash(i), stone_hash(i+vec2(1.,0.)), u.x),
+	           mix(stone_hash(i+vec2(0.,1.)), stone_hash(i+vec2(1.,1.)), u.x), u.y);
+}
+float stone_fbm(vec2 p) {
+	return stone_noise(p) * 0.5 + stone_noise(p * 2.13) * 0.3 + stone_noise(p * 4.57) * 0.2;
+}
 
 void vertex() {
 	world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
@@ -37,16 +54,57 @@ void fragment() {
 	METALLIC   = 0.0;
 	SPECULAR   = 0.10;
 
+	// Age weathering: dirt accumulation in crevices, staining on faces
+	float weather_noise = stone_fbm(world_pos.xz * 0.12);
+	float stain_noise   = stone_fbm(world_pos.xz * 0.04 + vec2(50.0));
+	// Dirt streaks: darker in low areas and crevices (vertical bias)
+	float vertical_dirt = (1.0 - world_nrm.y) * 0.15 * weather_noise;
+	ALBEDO *= (1.0 - vertical_dirt);
+	// Large-scale staining variation: some blocks darker than others
+	ALBEDO *= (0.92 + stain_noise * 0.16);
+
+	// Moss growth: north-facing surfaces in shaded, moist areas
+	// Moss is more prevalent in spring/summer, dies back in winter
+	float spring_summer = smoothstep(0.0, 1.0, season_t) * (1.0 - smoothstep(2.5, 3.5, season_t));
+	float moss_facing = max(0.0, -world_nrm.z) * 0.5 + max(0.0, -world_nrm.x) * 0.3;
+	// Moss prefers sheltered lower portions of walls and shaded faces
+	float moss_noise = stone_fbm(world_pos.xz * 0.25 + vec2(100.0));
+	float moss_mask = moss_facing * smoothstep(0.4, 0.7, moss_noise) * spring_summer;
+	moss_mask *= smoothstep(3.0, 0.5, world_pos.y);  // more at base of structures
+	if (moss_mask > 0.01) {
+		vec3 moss_col = mix(vec3(0.12, 0.22, 0.08), vec3(0.18, 0.28, 0.10), moss_noise);
+		ALBEDO = mix(ALBEDO, moss_col, moss_mask * 0.4);
+		ROUGHNESS = mix(ROUGHNESS, 0.92, moss_mask * 0.5);
+		SPECULAR = mix(SPECULAR, 0.04, moss_mask * 0.3);
+	}
+
 	// Rain: wet stone darkens and gets reflective sheen
 	if (rain_wetness > 0.01) {
 		ALBEDO *= mix(1.0, 0.60, rain_wetness);
 		ROUGHNESS = mix(ROUGHNESS, max(ROUGHNESS * 0.25, 0.06), rain_wetness);
 		SPECULAR = mix(SPECULAR, 0.45, rain_wetness);
+		// Wet moss becomes more vivid
+		if (moss_mask > 0.01) {
+			ALBEDO = mix(ALBEDO, ALBEDO * vec3(0.85, 1.15, 0.80), moss_mask * rain_wetness * 0.3);
+		}
+	}
+
+	// Winter frost on stone — ice crystals in crevices
+	float winter_t = smoothstep(2.5, 3.5, season_t);
+	if (winter_t > 0.01 && rain_wetness < 0.1) {
+		float frost_noise = stone_hash(floor(world_pos.xz * 6.0));
+		float frost = step(0.5, frost_noise) * winter_t * 0.3;
+		// Frost prefers upward and sheltered faces
+		frost *= (0.3 + world_nrm.y * 0.7);
+		ALBEDO = mix(ALBEDO, vec3(0.82, 0.85, 0.90), frost);
+		ROUGHNESS = mix(ROUGHNESS, 0.10, frost * 0.5);
+		SPECULAR = mix(SPECULAR, 0.5, frost * 0.4);
 	}
 
 	// Snow on upward-facing surfaces
 	if (snow_cover > 0.01 && world_nrm.y > 0.5) {
-		float snow_amt = clamp((world_nrm.y - 0.5) * 2.0 * snow_cover, 0.0, 1.0);
+		float snow_noise = stone_hash(floor(world_pos.xz * 3.0)) * 0.2;
+		float snow_amt = clamp((world_nrm.y - 0.5) * 2.0 * snow_cover + snow_noise, 0.0, 1.0);
 		ALBEDO = mix(ALBEDO, vec3(0.92, 0.93, 0.96), snow_amt * 0.7);
 		ROUGHNESS = mix(ROUGHNESS, 0.90, snow_amt);
 	}
