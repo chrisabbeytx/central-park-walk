@@ -50,7 +50,7 @@ If you know Central Park well, open an "Area Detail" issue. Tell us what's wrong
 ### Getting Started
 
 ```bash
-git clone https://github.com/chrisabbeytx/central-park-walk.git
+git clone https://github.com/central-park-walk/central-park-walk.git
 cd central-park-walk
 # Follow setup in README.md
 ```

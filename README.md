@@ -40,7 +40,7 @@ The project is designed to expand. More places, more data sources, more contribu
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/chrisabbeytx/central-park-walk.git
+git clone https://github.com/central-park-walk/central-park-walk.git
 cd central-park-walk
 
 # 2. Download OSM data
