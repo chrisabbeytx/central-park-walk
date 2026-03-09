@@ -2011,6 +2011,7 @@ def main() -> None:
                         trees_out, benches_out, lampposts_out, trash_cans_out,
                         barriers_out, bridge_outlines, terrain, bridge_centroids)
     prebake_landuse_map(landuse_out, water_out)
+    prebake_boundary_mask(boundary_pts)
 
 
 def prebake_paths(paths, bridge_centroids):
@@ -2565,6 +2566,38 @@ def prebake_landuse_map(landuse_zones, water_bodies):
     img.save("landuse_map.png")
     size_kb = os.path.getsize("landuse_map.png") / 1024
     print(f"  Landuse: saved → landuse_map.png ({RES}×{RES}, {size_kb:.0f} KB)")
+
+
+def prebake_boundary_mask(boundary_pts):
+    """Pre-bake park boundary mask at 2048×2048 → boundary_mask.png.
+
+    White = inside park, black = outside.  Replaces runtime GDScript
+    scanline rasterization (1024×1024) with higher-resolution pre-bake.
+    """
+    from PIL import Image, ImageDraw
+
+    RES = 2048
+    HALF = WORLD_SIZE / 2.0
+
+    def world_to_pixel(wx, wz):
+        px = (wx + HALF) / WORLD_SIZE * RES
+        pz = (wz + HALF) / WORLD_SIZE * RES
+        return px, pz
+
+    print("Pre-baking boundary mask at %d×%d..." % (RES, RES))
+
+    if len(boundary_pts) < 3:
+        print("  Boundary: not enough points, skipping")
+        return
+
+    img = Image.new('L', (RES, RES), 0)
+    draw = ImageDraw.Draw(img)
+    poly = [world_to_pixel(float(bp[0]), float(bp[1])) for bp in boundary_pts]
+    draw.polygon(poly, fill=255)
+
+    img.save("boundary_mask.png")
+    size_kb = os.path.getsize("boundary_mask.png") / 1024
+    print(f"  Boundary: saved → boundary_mask.png ({RES}×{RES}, {size_kb:.0f} KB)")
 
 
 if __name__ == "__main__":
