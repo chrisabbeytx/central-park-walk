@@ -1764,13 +1764,7 @@ func _build_bridge(path: Dictionary) -> void:
 			u = u2
 
 	if not verts.is_empty():
-		var arrays: Array = []
-		arrays.resize(Mesh.ARRAY_MAX)
-		arrays[Mesh.ARRAY_VERTEX] = verts
-		arrays[Mesh.ARRAY_NORMAL] = normals
-		arrays[Mesh.ARRAY_TEX_UV] = uvs
-		var deck_mesh := ArrayMesh.new()
-		deck_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+		var deck_mesh := _make_mesh(verts, normals, uvs)
 		deck_mesh.surface_set_material(0, _make_bridge_deck_material(hw, surf))
 		var deck_mi := MeshInstance3D.new()
 		deck_mi.mesh = deck_mesh
@@ -1887,12 +1881,7 @@ func _build_bridge(path: Dictionary) -> void:
 		sof_normals.append_array(edge_norms)
 		for _j in range(edge_verts.size()):
 			sof_uvs.append(Vector2.ZERO)
-		var sof_arrays: Array = []; sof_arrays.resize(Mesh.ARRAY_MAX)
-		sof_arrays[Mesh.ARRAY_VERTEX] = sof_verts
-		sof_arrays[Mesh.ARRAY_NORMAL] = sof_normals
-		sof_arrays[Mesh.ARRAY_TEX_UV] = sof_uvs
-		var sof_mesh := ArrayMesh.new()
-		sof_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, sof_arrays)
+		var sof_mesh := _make_mesh(sof_verts, sof_normals, sof_uvs)
 		sof_mesh.surface_set_material(0, _make_stone_material(rw_alb, rw_nrm, rw_rgh,
 				soffit_tint))
 		var sof_mi := MeshInstance3D.new()
@@ -1984,11 +1973,7 @@ func _build_bridge(path: Dictionary) -> void:
 				abut_normals.append(face_n)
 
 	if not abut_verts.is_empty():
-		var abut_arrays: Array = []; abut_arrays.resize(Mesh.ARRAY_MAX)
-		abut_arrays[Mesh.ARRAY_VERTEX] = abut_verts
-		abut_arrays[Mesh.ARRAY_NORMAL] = abut_normals
-		var abut_mesh := ArrayMesh.new()
-		abut_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, abut_arrays)
+		var abut_mesh := _make_mesh(abut_verts, abut_normals)
 		abut_mesh.surface_set_material(0, _make_stone_material(rw_alb, rw_nrm, rw_rgh,
 				abut_tint))
 		var abut_mi := MeshInstance3D.new()
@@ -2520,12 +2505,7 @@ func _build_solid_parapets(pts: Array, pt_y: PackedFloat32Array,
 
 	if par_verts.is_empty():
 		return
-	var par_arrays: Array = []
-	par_arrays.resize(Mesh.ARRAY_MAX)
-	par_arrays[Mesh.ARRAY_VERTEX] = par_verts
-	par_arrays[Mesh.ARRAY_NORMAL] = par_normals
-	var par_mesh := ArrayMesh.new()
-	par_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, par_arrays)
+	var par_mesh := _make_mesh(par_verts, par_normals)
 	par_mesh.surface_set_material(0, _make_stone_material(rw_alb, rw_nrm, rw_rgh, tint))
 	var par_mi := MeshInstance3D.new()
 	par_mi.mesh = par_mesh
@@ -2671,11 +2651,7 @@ func _build_iron_railings(pts: Array, pt_y: PackedFloat32Array,
 	mat.metallic = 0.45
 	mat.roughness = 0.40
 	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
-	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
-	arrays[Mesh.ARRAY_VERTEX] = rail_verts
-	arrays[Mesh.ARRAY_NORMAL] = rail_normals
-	var mesh := ArrayMesh.new()
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	var mesh := _make_mesh(rail_verts, rail_normals)
 	mesh.surface_set_material(0, mat)
 	var mi := MeshInstance3D.new()
 	mi.mesh = mesh
@@ -2849,11 +2825,7 @@ func _build_bow_bridge_railings(pts: Array, pt_y: PackedFloat32Array,
 	mat.roughness = 0.45
 	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
 	# Build railing mesh
-	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
-	arrays[Mesh.ARRAY_VERTEX] = rail_verts
-	arrays[Mesh.ARRAY_NORMAL] = rail_normals
-	var mesh := ArrayMesh.new()
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	var mesh := _make_mesh(rail_verts, rail_normals)
 	mesh.surface_set_material(0, mat)
 	var mi := MeshInstance3D.new()
 	mi.mesh = mesh
@@ -2866,10 +2838,7 @@ func _build_bow_bridge_railings(pts: Array, pt_y: PackedFloat32Array,
 		urn_mat.albedo_color = Color(0.48, 0.29, 0.23)  # cast iron, matching bridge paint
 		urn_mat.roughness = 0.50
 		urn_mat.metallic = 0.40
-		var ua: Array = []; ua.resize(Mesh.ARRAY_MAX)
-		ua[Mesh.ARRAY_VERTEX] = urn_verts; ua[Mesh.ARRAY_NORMAL] = urn_normals; ua[Mesh.ARRAY_INDEX] = urn_indices
-		var urn_mesh := ArrayMesh.new()
-		urn_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, ua)
+		var urn_mesh := _make_mesh(urn_verts, urn_normals, null, null, urn_indices)
 		urn_mesh.surface_set_material(0, urn_mat)
 		var umi := MeshInstance3D.new()
 		umi.mesh = urn_mesh
@@ -2877,12 +2846,7 @@ func _build_bow_bridge_railings(pts: Array, pt_y: PackedFloat32Array,
 		add_child(umi)
 	# Baluster post mesh (same warm reddish-brown material)
 	if not post_verts.is_empty():
-		var pa: Array = []; pa.resize(Mesh.ARRAY_MAX)
-		pa[Mesh.ARRAY_VERTEX] = post_verts
-		pa[Mesh.ARRAY_NORMAL] = post_normals
-		pa[Mesh.ARRAY_INDEX] = post_indices
-		var post_mesh := ArrayMesh.new()
-		post_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, pa)
+		var post_mesh := _make_mesh(post_verts, post_normals, null, null, post_indices)
 		post_mesh.surface_set_material(0, mat)
 		var pmi := MeshInstance3D.new()
 		pmi.mesh = post_mesh
@@ -3012,11 +2976,7 @@ func _build_wood_railings(pts: Array, pt_y: PackedFloat32Array,
 	mat.albedo_color = Color(0.38, 0.32, 0.25)  # weathered gray-brown (#614F3F)
 	mat.roughness = 0.88
 	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
-	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
-	arrays[Mesh.ARRAY_VERTEX] = rail_verts
-	arrays[Mesh.ARRAY_NORMAL] = rail_normals
-	var mesh := ArrayMesh.new()
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	var mesh := _make_mesh(rail_verts, rail_normals)
 	mesh.surface_set_material(0, mat)
 	var mi := MeshInstance3D.new()
 	mi.mesh = mesh
@@ -3314,12 +3274,7 @@ func _build_tunnel(path: Dictionary) -> void:
 
 	# --- Create visual mesh ---
 	if not all_verts.is_empty():
-		var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
-		arrays[Mesh.ARRAY_VERTEX] = all_verts
-		arrays[Mesh.ARRAY_NORMAL] = all_normals
-		arrays[Mesh.ARRAY_TEX_UV] = all_uvs
-		var mesh := ArrayMesh.new()
-		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+		var mesh := _make_mesh(all_verts, all_normals, all_uvs)
 		mesh.surface_set_material(0, tun_mat)
 		var mi := MeshInstance3D.new(); mi.mesh = mesh; mi.name = "Tunnel_Structure"
 		add_child(mi)
@@ -3459,11 +3414,7 @@ func _build_tunnel_portals(pts: Array, width: float, height: float, mat: Materia
 			arch_normals.append(face_n)
 
 		if not arch_verts.is_empty():
-			var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
-			arrays[Mesh.ARRAY_VERTEX] = arch_verts
-			arrays[Mesh.ARRAY_NORMAL] = arch_normals
-			var mesh := ArrayMesh.new()
-			mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+			var mesh := _make_mesh(arch_verts, arch_normals)
 			mesh.surface_set_material(0, mat)
 			var mi := MeshInstance3D.new(); mi.mesh = mesh; mi.name = "Tunnel_Portal"
 			add_child(mi)
@@ -3603,11 +3554,7 @@ func _build_fountain_pool(pts: Array, wy: float) -> void:
 		verts.append(Vector3(polygon[indices[i + 2]].x, wy, polygon[indices[i + 2]].y))
 		for _j in range(3):
 			normals.append(Vector3.UP)
-	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
-	arrays[Mesh.ARRAY_VERTEX] = verts
-	arrays[Mesh.ARRAY_NORMAL] = normals
-	var mesh := ArrayMesh.new()
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	var mesh := _make_mesh(verts, normals)
 	var wmat := ShaderMaterial.new()
 	wmat.shader = _get_shader("water", _water_shader_code())
 	mesh.surface_set_material(0, wmat)
@@ -3648,11 +3595,7 @@ func _make_ring_mesh(cx: float, y: float, cz: float,
 		var inv1:= Vector3(-c1, 0.0, -s1)
 		verts.append_array(PackedVector3Array([oi0, ib, oi1, ib, ib1, oi1]))
 		normals.append_array(PackedVector3Array([inv, inv, inv1, inv, inv1, inv1]))
-	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
-	arrays[Mesh.ARRAY_VERTEX] = verts
-	arrays[Mesh.ARRAY_NORMAL] = normals
-	var mesh := ArrayMesh.new()
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	var mesh := _make_mesh(verts, normals)
 	mesh.surface_set_material(0, mat)
 	var mi := MeshInstance3D.new(); mi.mesh = mesh; mi.name = mname
 	add_child(mi)
@@ -3683,11 +3626,7 @@ func _make_cylinder_mesh(cx: float, base_y: float, cz: float,
 		verts.append_array(PackedVector3Array([center, t0, t1]))
 		for _j in range(3):
 			normals.append(Vector3.UP)
-	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
-	arrays[Mesh.ARRAY_VERTEX] = verts
-	arrays[Mesh.ARRAY_NORMAL] = normals
-	var mesh := ArrayMesh.new()
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	var mesh := _make_mesh(verts, normals)
 	mesh.surface_set_material(0, mat)
 	var mi := MeshInstance3D.new(); mi.mesh = mesh; mi.name = mname
 	add_child(mi)
@@ -3925,11 +3864,7 @@ func _build_bethesda_fountain_procedural(cx: float, cz: float, base_y: float, po
 			var bn := Vector3(0.0, 0.0, 1.0)
 			wverts.append_array(PackedVector3Array([p5, p4, p7, p5, p7, p6]))
 			for _j in 6: wnormals.append(bn)
-		var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
-		arrays[Mesh.ARRAY_VERTEX] = wverts
-		arrays[Mesh.ARRAY_NORMAL] = wnormals
-		var mesh := ArrayMesh.new()
-		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+		var mesh := _make_mesh(wverts, wnormals)
 		mesh.surface_set_material(0, wing_mat)
 		var mi := MeshInstance3D.new(); mi.mesh = mesh
 		mi.name = "Bethesda_Wing_%d" % wing_side_i
@@ -4086,12 +4021,7 @@ func _build_imagine_mosaic(cx: float, cy: float, cz: float) -> void:
 		uvs.append(Vector2(0.5, 0.5))
 		uvs.append(Vector2(0.5 + 0.5 * cos(a0), 0.5 + 0.5 * sin(a0)))
 		uvs.append(Vector2(0.5 + 0.5 * cos(a1), 0.5 + 0.5 * sin(a1)))
-	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
-	arrays[Mesh.ARRAY_VERTEX] = verts
-	arrays[Mesh.ARRAY_NORMAL] = normals
-	arrays[Mesh.ARRAY_TEX_UV] = uvs
-	var mesh := ArrayMesh.new()
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	var mesh := _make_mesh(verts, normals, uvs)
 	var mat := ShaderMaterial.new()
 	mat.shader = _get_shader("imagine_mosaic", _imagine_mosaic_shader())
 	mesh.surface_set_material(0, mat)
@@ -4270,13 +4200,7 @@ func _build_water(water: Array) -> void:
 	if verts.is_empty():
 		return
 
-	var arrays: Array = []
-	arrays.resize(Mesh.ARRAY_MAX)
-	arrays[Mesh.ARRAY_VERTEX] = verts
-	arrays[Mesh.ARRAY_NORMAL] = normals
-
-	var mesh := ArrayMesh.new()
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	var mesh := _make_mesh(verts, normals)
 
 	var mat := ShaderMaterial.new()
 	mat.shader = _get_shader("water", _water_shader_code())
@@ -4332,10 +4256,7 @@ func _build_water_curb(pts: Array, tint: Color) -> void:
 		for _j in 6: normals.append(fn)
 	if verts.is_empty():
 		return
-	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
-	arrays[Mesh.ARRAY_VERTEX] = verts; arrays[Mesh.ARRAY_NORMAL] = normals
-	var mesh := ArrayMesh.new()
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	var mesh := _make_mesh(verts, normals)
 	mesh.surface_set_material(0, mat)
 	var mi := MeshInstance3D.new(); mi.mesh = mesh; mi.name = "WaterCurb_Conservatory"
 	add_child(mi)
@@ -4390,13 +4311,7 @@ func _build_streams(streams: Array) -> void:
 	if verts.is_empty():
 		return
 
-	var arrays: Array = []
-	arrays.resize(Mesh.ARRAY_MAX)
-	arrays[Mesh.ARRAY_VERTEX] = verts
-	arrays[Mesh.ARRAY_NORMAL] = normals
-
-	var s_mesh := ArrayMesh.new()
-	s_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	var s_mesh := _make_mesh(verts, normals)
 
 	var mat := ShaderMaterial.new()
 	mat.shader = _get_shader("water", _water_shader_code())
@@ -5002,13 +4917,7 @@ func _build_buildings(buildings: Array) -> void:
 	for s in range(5):
 		if sv[s].is_empty():
 			continue
-		var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
-		arrays[Mesh.ARRAY_VERTEX] = sv[s]
-		arrays[Mesh.ARRAY_NORMAL] = sn[s]
-		arrays[Mesh.ARRAY_TEX_UV] = su[s]
-		arrays[Mesh.ARRAY_COLOR]  = sc[s]
-		var mesh := ArrayMesh.new()
-		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+		var mesh := _make_mesh(sv[s], sn[s], su[s], sc[s])
 		mesh.surface_set_material(0, style_mats[s])
 		var mi := MeshInstance3D.new(); mi.mesh = mesh
 		mi.name = "BuildingWalls_" + style_names[s]
@@ -5016,12 +4925,7 @@ func _build_buildings(buildings: Array) -> void:
 
 	# Roof mesh with per-building vertex colors
 	if not roof_verts.is_empty():
-		var r_arrays: Array = []; r_arrays.resize(Mesh.ARRAY_MAX)
-		r_arrays[Mesh.ARRAY_VERTEX] = roof_verts
-		r_arrays[Mesh.ARRAY_NORMAL] = roof_normals
-		r_arrays[Mesh.ARRAY_COLOR]  = roof_colors
-		var r_mesh := ArrayMesh.new()
-		r_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, r_arrays)
+		var r_mesh := _make_mesh(roof_verts, roof_normals, null, roof_colors)
 		var r_mat := StandardMaterial3D.new()
 		r_mat.vertex_color_use_as_albedo = true
 		r_mat.roughness = 0.92
@@ -5042,12 +4946,7 @@ func _add_batch_mesh(verts: PackedVector3Array, normals: PackedVector3Array,
 					 no_shadow: bool = false) -> void:
 	if verts.is_empty():
 		return
-	var arrays: Array = []
-	arrays.resize(Mesh.ARRAY_MAX)
-	arrays[Mesh.ARRAY_VERTEX] = verts
-	arrays[Mesh.ARRAY_NORMAL] = normals
-	var mesh := ArrayMesh.new()
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	var mesh := _make_mesh(verts, normals)
 	var mat := StandardMaterial3D.new()
 	mat.albedo_color = color
 	mat.roughness    = roughness
@@ -6058,12 +5957,7 @@ func _make_crossed_quad_mesh() -> ArrayMesh:
 			normals.append(n)
 		uvs.append(Vector2(0, 1)); uvs.append(Vector2(1, 1)); uvs.append(Vector2(1, 0))
 		uvs.append(Vector2(0, 1)); uvs.append(Vector2(1, 0)); uvs.append(Vector2(0, 0))
-	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
-	arrays[Mesh.ARRAY_VERTEX] = verts
-	arrays[Mesh.ARRAY_NORMAL] = normals
-	arrays[Mesh.ARRAY_TEX_UV] = uvs
-	var mesh := ArrayMesh.new()
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	var mesh := _make_mesh(verts, normals, uvs)
 	return mesh
 
 
@@ -6525,12 +6419,7 @@ func _add_stone_mesh(v: PackedVector3Array, n: PackedVector3Array,
 		tint: Color, node_name: String) -> void:
 	if v.is_empty():
 		return
-	var arrays: Array = []
-	arrays.resize(Mesh.ARRAY_MAX)
-	arrays[Mesh.ARRAY_VERTEX] = v
-	arrays[Mesh.ARRAY_NORMAL] = n
-	var mesh := ArrayMesh.new()
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	var mesh := _make_mesh(v, n)
 	mesh.surface_set_material(0, _make_stone_material(alb, nrm, rgh, tint))
 	var mi := MeshInstance3D.new()
 	mi.mesh = mesh
@@ -6698,13 +6587,7 @@ func _build_staircases(paths: Array) -> void:
 
 	# Stair mesh
 	if not stair_verts.is_empty():
-		var arrays: Array = []
-		arrays.resize(Mesh.ARRAY_MAX)
-		arrays[Mesh.ARRAY_VERTEX] = stair_verts
-		arrays[Mesh.ARRAY_NORMAL] = stair_normals
-		arrays[Mesh.ARRAY_TEX_UV] = stair_uvs
-		var mesh := ArrayMesh.new()
-		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+		var mesh := _make_mesh(stair_verts, stair_normals, stair_uvs)
 		mesh.surface_set_material(0, _make_path_material("steps", "concrete"))
 		var mi := MeshInstance3D.new()
 		mi.mesh = mesh
@@ -7121,11 +7004,7 @@ func _make_cylinder(radius: float, height: float, segments: int) -> ArrayMesh:
 		verts.append(Vector3(0, hh, 0)); normals.append(Vector3.UP)
 		verts.append(Vector3(x0, hh, z0)); normals.append(Vector3.UP)
 		verts.append(Vector3(x1, hh, z1)); normals.append(Vector3.UP)
-	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
-	arrays[Mesh.ARRAY_VERTEX] = verts
-	arrays[Mesh.ARRAY_NORMAL] = normals
-	var mesh := ArrayMesh.new()
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	var mesh := _make_mesh(verts, normals)
 	return mesh
 
 
@@ -7319,13 +7198,7 @@ func _build_perimeter_wall(boundary: Array, paths: Array) -> void:
 
 	# Manhattan schist: gray with subtle warm weathering (Wikimedia reference)
 	var mat := _make_stone_material(rw_alb, rw_nrm, rw_rgh, Color(0.48, 0.46, 0.42))
-	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
-	arrays[Mesh.ARRAY_VERTEX] = verts
-	arrays[Mesh.ARRAY_NORMAL] = normals
-	arrays[Mesh.ARRAY_TEX_UV] = uvs
-	arrays[Mesh.ARRAY_INDEX] = indices
-	var mesh := ArrayMesh.new()
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	var mesh := _make_mesh(verts, normals, uvs, null, indices)
 	mesh.surface_set_material(0, mat)
 	var mi := MeshInstance3D.new()
 	mi.mesh = mesh
@@ -7428,11 +7301,7 @@ func _build_perimeter_wall(boundary: Array, paths: Array) -> void:
 	if not pillar_verts.is_empty():
 		# Light gray granite for gate pillars (dressed stone, lighter than schist wall)
 		var pillar_mat := _make_stone_material(rw_alb, rw_nrm, rw_rgh, Color(0.62, 0.60, 0.56))
-		var pillar_arrays: Array = []; pillar_arrays.resize(Mesh.ARRAY_MAX)
-		pillar_arrays[Mesh.ARRAY_VERTEX] = pillar_verts
-		pillar_arrays[Mesh.ARRAY_NORMAL] = pillar_normals
-		var pillar_mesh := ArrayMesh.new()
-		pillar_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, pillar_arrays)
+		var pillar_mesh := _make_mesh(pillar_verts, pillar_normals)
 		pillar_mesh.surface_set_material(0, pillar_mat)
 		var pillar_mi := MeshInstance3D.new()
 		pillar_mi.mesh = pillar_mesh
@@ -7733,14 +7602,7 @@ func _build_boundary_facades() -> void:
 	for s in range(5):
 		if sv[s].is_empty():
 			continue
-		var arrays: Array = []
-		arrays.resize(Mesh.ARRAY_MAX)
-		arrays[Mesh.ARRAY_VERTEX] = sv[s]
-		arrays[Mesh.ARRAY_NORMAL] = sn[s]
-		arrays[Mesh.ARRAY_TEX_UV] = su[s]
-		arrays[Mesh.ARRAY_COLOR]  = sc[s]
-		var mesh := ArrayMesh.new()
-		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+		var mesh := _make_mesh(sv[s], sn[s], su[s], sc[s])
 		mesh.surface_set_material(0, style_mats[s])
 		var mi := MeshInstance3D.new()
 		mi.mesh = mesh
@@ -7750,13 +7612,7 @@ func _build_boundary_facades() -> void:
 
 	# Roof mesh
 	if not roof_v.is_empty():
-		var r_arrays: Array = []
-		r_arrays.resize(Mesh.ARRAY_MAX)
-		r_arrays[Mesh.ARRAY_VERTEX] = roof_v
-		r_arrays[Mesh.ARRAY_NORMAL] = roof_n
-		r_arrays[Mesh.ARRAY_COLOR]  = roof_c
-		var r_mesh := ArrayMesh.new()
-		r_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, r_arrays)
+		var r_mesh := _make_mesh(roof_v, roof_n, null, roof_c)
 		var r_mat := StandardMaterial3D.new()
 		r_mat.vertex_color_use_as_albedo = true
 		r_mat.roughness = 0.92
@@ -8081,12 +7937,7 @@ func _make_dirt_circle_mesh() -> ArrayMesh:
 		indices.append(0)
 		indices.append(i + 1)
 		indices.append((i + 1) % seg + 1)
-	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
-	arrays[Mesh.ARRAY_VERTEX] = verts
-	arrays[Mesh.ARRAY_NORMAL] = normals
-	arrays[Mesh.ARRAY_INDEX]  = indices
-	var mesh := ArrayMesh.new()
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	var mesh := _make_mesh(verts, normals, null, null, indices)
 	return mesh
 
 
@@ -8256,10 +8107,7 @@ func _make_boat_mesh() -> ArrayMesh:
 	# 2 oars (thin cylinders angled outward)
 	_add_box_verts(v, n, idx, 0.0, 0.08, hull_w + 0.3, 0.7, 0.015, 0.015)
 	_add_box_verts(v, n, idx, 0.0, 0.08, -hull_w - 0.3, 0.7, 0.015, 0.015)
-	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
-	arrays[Mesh.ARRAY_VERTEX] = v; arrays[Mesh.ARRAY_NORMAL] = n; arrays[Mesh.ARRAY_INDEX] = idx
-	var mesh := ArrayMesh.new()
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	var mesh := _make_mesh(v, n, null, null, idx)
 	return mesh
 
 func _build_boats(water: Array) -> void:
@@ -8348,10 +8196,7 @@ func _make_person_mesh_walker() -> ArrayMesh:
 	v.append(Vector3(0.0, h, hw)); v.append(Vector3(0.0, h, -hw))
 	for _j in 4: n.append(Vector3.RIGHT)
 	var idx := PackedInt32Array([0,1,2, 0,2,3, 4,5,6, 4,6,7])
-	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
-	arrays[Mesh.ARRAY_VERTEX] = v; arrays[Mesh.ARRAY_NORMAL] = n; arrays[Mesh.ARRAY_INDEX] = idx
-	var mesh := ArrayMesh.new()
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	var mesh := _make_mesh(v, n, null, null, idx)
 	return mesh
 
 func _make_person_mesh_sitter() -> ArrayMesh:
@@ -8366,10 +8211,7 @@ func _make_person_mesh_sitter() -> ArrayMesh:
 	v.append(Vector3(0.0, h, hw)); v.append(Vector3(0.0, h, -hw))
 	for _j in 4: n.append(Vector3.RIGHT)
 	var idx := PackedInt32Array([0,1,2, 0,2,3, 4,5,6, 4,6,7])
-	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
-	arrays[Mesh.ARRAY_VERTEX] = v; arrays[Mesh.ARRAY_NORMAL] = n; arrays[Mesh.ARRAY_INDEX] = idx
-	var mesh := ArrayMesh.new()
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	var mesh := _make_mesh(v, n, null, null, idx)
 	return mesh
 
 func _build_pedestrians(paths: Array) -> void:
@@ -8499,10 +8341,7 @@ func _build_waterfowl(water: Array) -> void:
 	dv.append(Vector3(0.0, 0.16, 0.11)); dv.append(Vector3(0.0, 0.16, -0.11))
 	for _j in 4: dn.append(Vector3.RIGHT)
 	var di := PackedInt32Array([0,1,2, 0,2,3, 4,5,6, 4,6,7])
-	var da: Array = []; da.resize(Mesh.ARRAY_MAX)
-	da[Mesh.ARRAY_VERTEX] = dv; da[Mesh.ARRAY_NORMAL] = dn; da[Mesh.ARRAY_INDEX] = di
-	var duck_mesh := ArrayMesh.new()
-	duck_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, da)
+	var duck_mesh := _make_mesh(dv, dn, null, null, di)
 
 	var xforms: Array = []
 	for body in water:
@@ -8548,10 +8387,7 @@ func _build_squirrels(trees: Array) -> void:
 	sv.append(Vector3(0.0, sh, shw)); sv.append(Vector3(0.0, sh, -shw))
 	for _j in 4: sn.append(Vector3.RIGHT)
 	var si := PackedInt32Array([0,1,2, 0,2,3, 4,5,6, 4,6,7])
-	var sa: Array = []; sa.resize(Mesh.ARRAY_MAX)
-	sa[Mesh.ARRAY_VERTEX] = sv; sa[Mesh.ARRAY_NORMAL] = sn; sa[Mesh.ARRAY_INDEX] = si
-	var sq_mesh := ArrayMesh.new()
-	sq_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, sa)
+	var sq_mesh := _make_mesh(sv, sn, null, null, si)
 	var xforms: Array = []
 	for tree_raw in trees:
 		if rng.randf() > 0.05:
@@ -8714,11 +8550,7 @@ func _build_field_markings() -> void:
 				dirt_norms.append(Vector3.UP)
 
 		if not dirt_verts.is_empty():
-			var da: Array = []; da.resize(Mesh.ARRAY_MAX)
-			da[Mesh.ARRAY_VERTEX] = dirt_verts
-			da[Mesh.ARRAY_NORMAL] = dirt_norms
-			var dm := ArrayMesh.new()
-			dm.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, da)
+			var dm := _make_mesh(dirt_verts, dirt_norms)
 			dm.surface_set_material(0, dirt_mat)
 			var dmi := MeshInstance3D.new()
 			dmi.mesh = dm
@@ -8778,11 +8610,7 @@ func _build_field_markings() -> void:
 				line_norms.append(Vector3.UP)
 
 		if not line_verts.is_empty():
-			var la: Array = []; la.resize(Mesh.ARRAY_MAX)
-			la[Mesh.ARRAY_VERTEX] = line_verts
-			la[Mesh.ARRAY_NORMAL] = line_norms
-			var lm := ArrayMesh.new()
-			lm.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, la)
+			var lm := _make_mesh(line_verts, line_norms)
 			lm.surface_set_material(0, line_mat)
 			var lmi := MeshInstance3D.new()
 			lmi.mesh = lm
@@ -8900,11 +8728,7 @@ func _build_field_markings() -> void:
 			_draw_line.call(c2x, c2z, c1x, c1z)
 
 		if not s_verts.is_empty():
-			var sa2: Array = []; sa2.resize(Mesh.ARRAY_MAX)
-			sa2[Mesh.ARRAY_VERTEX] = s_verts
-			sa2[Mesh.ARRAY_NORMAL] = s_norms
-			var sm := ArrayMesh.new()
-			sm.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, sa2)
+			var sm := _make_mesh(s_verts, s_norms)
 			sm.surface_set_material(0, line_mat)
 			var smi := MeshInstance3D.new()
 			smi.mesh = sm
@@ -9012,11 +8836,7 @@ func _build_field_markings() -> void:
 			_draw_bline.call(fc2x, fc2z, fc1x, fc1z)
 
 		if not b_verts.is_empty():
-			var ba3: Array = []; ba3.resize(Mesh.ARRAY_MAX)
-			ba3[Mesh.ARRAY_VERTEX] = b_verts
-			ba3[Mesh.ARRAY_NORMAL] = b_norms
-			var bm2 := ArrayMesh.new()
-			bm2.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, ba3)
+			var bm2 := _make_mesh(b_verts, b_norms)
 			bm2.surface_set_material(0, line_mat)
 			var bmi := MeshInstance3D.new()
 			bmi.mesh = bm2
@@ -9230,11 +9050,7 @@ func _build_field_markings() -> void:
 
 		# Build court surface mesh
 		if not t_verts.is_empty():
-			var ta2: Array = []; ta2.resize(Mesh.ARRAY_MAX)
-			ta2[Mesh.ARRAY_VERTEX] = t_verts
-			ta2[Mesh.ARRAY_NORMAL] = t_norms
-			var tm := ArrayMesh.new()
-			tm.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, ta2)
+			var tm := _make_mesh(t_verts, t_norms)
 			tm.surface_set_material(0, court_mat)
 			var tmi := MeshInstance3D.new()
 			tmi.mesh = tm
@@ -9242,11 +9058,7 @@ func _build_field_markings() -> void:
 			add_child(tmi)
 		# Build court lines mesh
 		if not tl_verts.is_empty():
-			var tla: Array = []; tla.resize(Mesh.ARRAY_MAX)
-			tla[Mesh.ARRAY_VERTEX] = tl_verts
-			tla[Mesh.ARRAY_NORMAL] = tl_norms
-			var tlm := ArrayMesh.new()
-			tlm.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, tla)
+			var tlm := _make_mesh(tl_verts, tl_norms)
 			tlm.surface_set_material(0, line_mat)
 			var tlmi := MeshInstance3D.new()
 			tlmi.mesh = tlm
