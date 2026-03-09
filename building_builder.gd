@@ -463,26 +463,25 @@ func _build_buildings(buildings: Array) -> void:
 # Building facade materials + shaders (5 architectural styles)
 # ---------------------------------------------------------------------------
 
-# Facade shader — two variants loaded from .gdshader files
-func _facade_shader(use_brick: bool) -> String:
-	if use_brick:
-		return "res://shaders/facade_brick.gdshader"
-	return "res://shaders/facade_proc.gdshader"
-func _set_facade_textures(mat: ShaderMaterial) -> void:
-	var fc: ImageTexture = _loader._load_tex("res://textures/Facade011_2K-JPG_Color.jpg")
-	var fn: ImageTexture = _loader._load_tex("res://textures/Facade011_2K-JPG_NormalGL.jpg")
-	var fr: ImageTexture = _loader._load_tex("res://textures/Facade011_2K-JPG_Roughness.jpg")
-	if fc: mat.set_shader_parameter("facade_color", fc)
-	if fn: mat.set_shader_parameter("facade_normal", fn)
-	if fr: mat.set_shader_parameter("facade_rough", fr)
-	mat.set_shader_parameter("facade_tile", 2.0)
+# Unified facade shader — use_brick parameter selects wall rendering mode
+func _facade_shader_path() -> String:
+	return "res://shaders/facade.gdshader"
+
+func _set_wall_textures(mat: ShaderMaterial, alb_path: String, nrm_path: String, rgh_path: String) -> void:
+	var alb: ImageTexture = _loader._load_tex(alb_path)
+	var nrm: ImageTexture = _loader._load_tex(nrm_path)
+	var rgh: ImageTexture = _loader._load_tex(rgh_path)
+	if alb: mat.set_shader_parameter("wall_albedo", alb)
+	if nrm: mat.set_shader_parameter("wall_normal", nrm)
+	if rgh: mat.set_shader_parameter("wall_roughness", rgh)
 	var wg: ImageTexture = _loader._load_tex("res://textures/window_night_gradient.png")
 	if wg: mat.set_shader_parameter("win_gradient", wg)
 
 
 func _make_facade_limestone() -> ShaderMaterial:
 	var mat := ShaderMaterial.new()
-	mat.shader = _loader._get_shader("facade_proc", _facade_shader(false))
+	mat.shader = _loader._get_shader("facade", _facade_shader_path())
+	mat.set_shader_parameter("use_brick", 0.0)
 	mat.set_shader_parameter("wall_tint", Vector3(0.78, 0.72, 0.62))
 	mat.set_shader_parameter("wall_rough", 0.88)
 	mat.set_shader_parameter("wall_metal", 0.0)
@@ -495,13 +494,16 @@ func _make_facade_limestone() -> ShaderMaterial:
 	mat.set_shader_parameter("gap_x", 0.6)
 	mat.set_shader_parameter("gap_y", 0.8)
 	mat.set_shader_parameter("ground_h", 3.5)
-	_set_facade_textures(mat)
+	_set_wall_textures(mat, "res://textures/Facade011_2K-JPG_Color.jpg",
+		"res://textures/Facade011_2K-JPG_NormalGL.jpg",
+		"res://textures/Facade011_2K-JPG_Roughness.jpg")
 	return mat
 
 
 func _make_facade_glass() -> ShaderMaterial:
 	var mat := ShaderMaterial.new()
-	mat.shader = _loader._get_shader("facade_proc", _facade_shader(false))
+	mat.shader = _loader._get_shader("facade", _facade_shader_path())
+	mat.set_shader_parameter("use_brick", 0.0)
 	mat.set_shader_parameter("wall_tint", Vector3(0.50, 0.54, 0.58))
 	mat.set_shader_parameter("wall_rough", 0.40)
 	mat.set_shader_parameter("wall_metal", 0.35)
@@ -514,16 +516,16 @@ func _make_facade_glass() -> ShaderMaterial:
 	mat.set_shader_parameter("gap_x", 0.3)
 	mat.set_shader_parameter("gap_y", 0.5)
 	mat.set_shader_parameter("ground_h", 4.5)
-	_set_facade_textures(mat)
+	_set_wall_textures(mat, "res://textures/Facade011_2K-JPG_Color.jpg",
+		"res://textures/Facade011_2K-JPG_NormalGL.jpg",
+		"res://textures/Facade011_2K-JPG_Roughness.jpg")
 	return mat
 
 
 func _make_facade_red_brick() -> ShaderMaterial:
 	var mat := ShaderMaterial.new()
-	mat.shader = _loader._get_shader("facade_brick", _facade_shader(true))
-	mat.set_shader_parameter("brick_alb", _loader._load_tex("res://textures/Bricks059_2K-JPG_Color.jpg"))
-	mat.set_shader_parameter("brick_nrm", _loader._load_tex("res://textures/Bricks059_2K-JPG_NormalGL.jpg"))
-	mat.set_shader_parameter("brick_rgh", _loader._load_tex("res://textures/Bricks059_2K-JPG_Roughness.jpg"))
+	mat.shader = _loader._get_shader("facade", _facade_shader_path())
+	mat.set_shader_parameter("use_brick", 1.0)
 	mat.set_shader_parameter("tex_scale", 0.5)
 	mat.set_shader_parameter("glass_a", Vector3(0.08, 0.10, 0.14))
 	mat.set_shader_parameter("glass_b", Vector3(0.22, 0.30, 0.40))
@@ -534,17 +536,16 @@ func _make_facade_red_brick() -> ShaderMaterial:
 	mat.set_shader_parameter("gap_x", 0.8)
 	mat.set_shader_parameter("gap_y", 1.0)
 	mat.set_shader_parameter("ground_h", 3.0)
-	var wg: ImageTexture = _loader._load_tex("res://textures/window_night_gradient.png")
-	if wg: mat.set_shader_parameter("win_gradient", wg)
+	_set_wall_textures(mat, "res://textures/Bricks059_2K-JPG_Color.jpg",
+		"res://textures/Bricks059_2K-JPG_NormalGL.jpg",
+		"res://textures/Bricks059_2K-JPG_Roughness.jpg")
 	return mat
 
 
 func _make_facade_buff_brick() -> ShaderMaterial:
 	var mat := ShaderMaterial.new()
-	mat.shader = _loader._get_shader("facade_brick", _facade_shader(true))
-	mat.set_shader_parameter("brick_alb", _loader._load_tex("res://textures/Bricks031_2K-JPG_Color.jpg"))
-	mat.set_shader_parameter("brick_nrm", _loader._load_tex("res://textures/Bricks031_2K-JPG_NormalGL.jpg"))
-	mat.set_shader_parameter("brick_rgh", _loader._load_tex("res://textures/Bricks031_2K-JPG_Roughness.jpg"))
+	mat.shader = _loader._get_shader("facade", _facade_shader_path())
+	mat.set_shader_parameter("use_brick", 1.0)
 	mat.set_shader_parameter("tex_scale", 0.5)
 	mat.set_shader_parameter("glass_a", Vector3(0.10, 0.12, 0.16))
 	mat.set_shader_parameter("glass_b", Vector3(0.30, 0.40, 0.50))
@@ -555,14 +556,16 @@ func _make_facade_buff_brick() -> ShaderMaterial:
 	mat.set_shader_parameter("gap_x", 0.6)
 	mat.set_shader_parameter("gap_y", 0.8)
 	mat.set_shader_parameter("ground_h", 3.5)
-	var wg: ImageTexture = _loader._load_tex("res://textures/window_night_gradient.png")
-	if wg: mat.set_shader_parameter("win_gradient", wg)
+	_set_wall_textures(mat, "res://textures/Bricks031_2K-JPG_Color.jpg",
+		"res://textures/Bricks031_2K-JPG_NormalGL.jpg",
+		"res://textures/Bricks031_2K-JPG_Roughness.jpg")
 	return mat
 
 
 func _make_facade_dark_stone() -> ShaderMaterial:
 	var mat := ShaderMaterial.new()
-	mat.shader = _loader._get_shader("facade_proc", _facade_shader(false))
+	mat.shader = _loader._get_shader("facade", _facade_shader_path())
+	mat.set_shader_parameter("use_brick", 0.0)
 	mat.set_shader_parameter("wall_tint", Vector3(0.58, 0.54, 0.48))
 	mat.set_shader_parameter("wall_rough", 0.92)
 	mat.set_shader_parameter("wall_metal", 0.0)
@@ -575,5 +578,7 @@ func _make_facade_dark_stone() -> ShaderMaterial:
 	mat.set_shader_parameter("gap_x", 1.0)
 	mat.set_shader_parameter("gap_y", 1.2)
 	mat.set_shader_parameter("ground_h", 2.5)
-	_set_facade_textures(mat)
+	_set_wall_textures(mat, "res://textures/Facade011_2K-JPG_Color.jpg",
+		"res://textures/Facade011_2K-JPG_NormalGL.jpg",
+		"res://textures/Facade011_2K-JPG_Roughness.jpg")
 	return mat

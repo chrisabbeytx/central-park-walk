@@ -1,10 +1,23 @@
 shader_type spatial;
 render_mode cull_disabled;
 
-uniform sampler2D brick_alb;
-uniform sampler2D brick_nrm : hint_normal;
-uniform sampler2D brick_rgh;
+// Wall surface — two modes controlled by use_brick:
+//   use_brick=0: procedural wall with tint + facade texture blend
+//   use_brick=1: direct brick/stone texture mapping
+uniform float use_brick = 0.0;
+
+// Shared textures (albedo, normal, roughness)
+uniform sampler2D wall_albedo : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D wall_normal : hint_normal, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D wall_roughness : hint_default_white, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform float tex_scale = 0.5;
+
+// Procedural mode uniforms
+uniform vec3 wall_tint = vec3(0.78, 0.72, 0.62);
+uniform float wall_rough = 0.88;
+uniform float wall_metal = 0.0;
+
+// Window parameters
 uniform vec3 glass_a = vec3(0.10, 0.13, 0.16);
 uniform vec3 glass_b = vec3(0.35, 0.48, 0.58);
 uniform float glass_rough = 0.12;
@@ -128,17 +141,39 @@ void fragment() {
 		ALBEDO = win_col;
 	} else {
 		vec2 tex_uv = UV * tex_scale;
-		vec3 wall_col = texture(brick_alb, tex_uv).rgb * COLOR.rgb;
+		vec3 tex_col = texture(wall_albedo, tex_uv).rgb;
+		vec3 tex_nrm = texture(wall_normal, tex_uv).rgb;
+		float tex_rgh = texture(wall_roughness, tex_uv).r;
+
+		vec3 wall_col;
+		float final_rough;
+		float final_metal;
+		if (use_brick > 0.5) {
+			// Brick/stone mode: direct texture * vertex color
+			wall_col = tex_col * COLOR.rgb;
+			final_rough = tex_rgh;
+			final_metal = 0.0;
+		} else {
+			// Procedural mode: tint blended with facade texture
+			float var_ = hash2(world_pos.xz * 0.15) * 0.08;
+			vec3 base_wall = wall_tint * COLOR.rgb * (0.92 + var_);
+			wall_col = mix(base_wall, tex_col * base_wall * 2.0, 0.35);
+			final_rough = mix(wall_rough, tex_rgh, 0.4);
+			final_metal = wall_metal;
+		}
+
 		if (is_cornice) { wall_col *= 0.78; }
 		if (is_ledge)   { wall_col *= 1.12; }
 		if (is_awning)  { wall_col *= 0.55; }
 		ALBEDO    = clamp(wall_col, 0.0, 1.0);
-		ROUGHNESS = texture(brick_rgh, tex_uv).r;
-		METALLIC  = 0.0;
-		vec3 wall_nrm = texture(brick_nrm, tex_uv).rgb;
-		if (is_ledge) { wall_nrm.g = 0.7; }
-		NORMAL_MAP = wall_nrm;
-		NORMAL_MAP_DEPTH = is_ledge ? 1.2 : 1.0;
+		ROUGHNESS = final_rough;
+		METALLIC  = final_metal;
+		NORMAL_MAP = tex_nrm;
+		NORMAL_MAP_DEPTH = 0.8;
+		if (is_ledge) {
+			NORMAL_MAP = vec3(tex_nrm.r, 0.7, tex_nrm.b);
+			NORMAL_MAP_DEPTH = 1.2;
+		}
 		emission += wall_col * 0.45;
 	}
 
