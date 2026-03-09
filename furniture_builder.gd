@@ -3,28 +3,6 @@ var _loader
 func _init(loader) -> void:
 	_loader = loader
 
-# ---------------------------------------------------------------------------
-# Tree-base dirt circles
-# ---------------------------------------------------------------------------
-func _make_dirt_circle_mesh() -> ArrayMesh:
-	## Flat disc (8-segment fan), radius 1.0 (scaled per-instance)
-	var verts   := PackedVector3Array()
-	var normals := PackedVector3Array()
-	var indices := PackedInt32Array()
-	var seg := 8
-	verts.append(Vector3(0.0, 0.0, 0.0))
-	normals.append(Vector3(0.0, 1.0, 0.0))
-	for i in seg:
-		var a := TAU * float(i) / float(seg)
-		verts.append(Vector3(cos(a), 0.0, sin(a)))
-		normals.append(Vector3(0.0, 1.0, 0.0))
-	for i in seg:
-		indices.append(0)
-		indices.append(i + 1)
-		indices.append((i + 1) % seg + 1)
-	var mesh: ArrayMesh = _loader._make_mesh(verts, normals, null, null, indices)
-	return mesh
-
 
 func _build_furniture(bench_data: Array, lamppost_data: Array, paths: Array) -> void:
 	# --- Load GLB furniture models (cache for reuse by _build_trash_cans) ---

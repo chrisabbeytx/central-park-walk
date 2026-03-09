@@ -383,6 +383,52 @@ def main() -> None:
     else:
         hm_grid, min_elev, origin_height = None, 0.0, 0.0
 
+    # --- Suppress LiDAR tree canopy residuals ---
+    # The structure-enhanced DSM sometimes leaves elevation bumps where tree
+    # canopy was removed.  Flatten the heightmap at known census tree positions
+    # by replacing each tree's footprint with the local ground-level minimum.
+    NYC_TREES_FILE = "lidar_data/central_park_trees.json"
+    if have_terrain and os.path.exists(NYC_TREES_FILE):
+        import numpy as np
+        hm_arr = np.array(hm_grid, dtype=np.float64).reshape(GRID_H, GRID_W)
+        with open(NYC_TREES_FILE) as fh:
+            census_trees = json.load(fh)
+        half = WORLD_SIZE / 2.0
+        scale = GRID_W / WORLD_SIZE
+        suppressed = 0
+        for t in census_trees:
+            tx, tz = project(t["lat"], t["lon"])
+            # Map world coords to pixel coords
+            px = int((tx + half) * scale)
+            pz = int((tz + half) * scale)
+            # Tree crown radius in pixels (~5m radius = ~8 pixels at 0.61m/px)
+            r = 8
+            x0 = max(0, px - r)
+            x1 = min(GRID_W, px + r + 1)
+            z0 = max(0, pz - r)
+            z1 = min(GRID_H, pz + r + 1)
+            if x1 <= x0 or z1 <= z0:
+                continue
+            patch = hm_arr[z0:z1, x0:x1]
+            # Ground level = minimum in a wider ring around the tree
+            r2 = r + 4
+            gx0 = max(0, px - r2)
+            gx1 = min(GRID_W, px + r2 + 1)
+            gz0 = max(0, pz - r2)
+            gz1 = min(GRID_H, pz + r2 + 1)
+            ground = hm_arr[gz0:gz1, gx0:gx1].min()
+            # Only flatten if the peak is notably above ground (>0.5m residual)
+            if patch.max() - ground > 0.5:
+                # Blend to ground level with smooth falloff from center
+                for dz in range(z0, z1):
+                    for dx in range(x0, x1):
+                        dist = ((dx - px)**2 + (dz - pz)**2) ** 0.5
+                        blend = max(0.0, 1.0 - dist / r)
+                        hm_arr[dz, dx] = hm_arr[dz, dx] * (1.0 - blend) + ground * blend
+                suppressed += 1
+        hm_grid = hm_arr.flatten().tolist()
+        print(f"  Tree canopy suppression: {suppressed} of {len(census_trees)} trees flattened")
+
     terrain = make_sampler(hm_grid, min_elev)
 
     if have_terrain:

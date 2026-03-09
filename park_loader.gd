@@ -638,12 +638,6 @@ var _bnd_min_z: float = 0.0
 var _bnd_nx: int = 0
 var _bnd_nz: int = 0
 
-static func _tree_pos(entry) -> Array:
-	## Extract [x, h, z] from tree entry (dict or legacy array).
-	if typeof(entry) == TYPE_DICTIONARY:
-		return entry["pos"]
-	return entry
-
 
 static func _convex_hull(points: PackedVector2Array) -> PackedVector2Array:
 	## Andrew's monotone chain — returns convex hull in CCW order.
@@ -842,8 +836,7 @@ func _ready() -> void:
 	_boundary_builder._build_perimeter_wall(boundary, paths)
 	print("  boundary: %d ms" % (Time.get_ticks_msec() - _tp)); _tp = Time.get_ticks_msec()
 	_infrastructure_builder._build_field_markings()
-	_infrastructure_builder._build_rocks(trees, water)
-	print("  fields+rocks: %d ms" % (Time.get_ticks_msec() - _tp))
+	print("  fields: %d ms" % (Time.get_ticks_msec() - _tp))
 	print("ParkLoader: done in %d ms total" % (Time.get_ticks_msec() - _t0))
 
 
