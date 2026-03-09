@@ -1581,10 +1581,6 @@ func _setup_ground() -> void:
 	add_child(body)
 
 
-render_mode cull_disabled;
-
-// Grass textures
-
 # ---------------------------------------------------------------------------
 # Central Park geometry (paths + boundary walls from park_data.json)
 # ---------------------------------------------------------------------------

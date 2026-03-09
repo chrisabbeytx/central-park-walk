@@ -331,9 +331,9 @@ func _build_trees(trees: Array) -> void:
 		var cd_list: Array = info["cd"]
 		if xf_list.is_empty():
 			continue
-		var parts: PackedStringArray = mesh_key.split("_")
-		var sp_name: String = parts[0]
-		var vi: int = int(parts[1])
+		var last_us := mesh_key.rfind("_")
+		var sp_name: String = mesh_key.substr(0, last_us)
+		var vi: int = int(mesh_key.substr(last_us + 1))
 		var mesh: Mesh = species_meshes[sp_name][vi]
 		var cx_sum := 0.0
 		var cy_sum := 0.0

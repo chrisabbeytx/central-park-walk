@@ -378,6 +378,9 @@ func _build_bridge(path: Dictionary) -> void:
 					_build_solid_parapets(pts, pt_y, cum_len, n_pts, hw2,
 						par_ramp_start, par_ramp_end, rw_alb, rw_nrm, rw_rgh,
 						parapet_tint, bridge_miter)
+		# Parapet collision walls — thin vertical planes on both sides
+		_add_parapet_collision(pts, pt_y, cum_len, n_pts, hw2,
+			par_ramp_start, par_ramp_end, bridge_miter)
 
 	# ----------------------------------------------------------------
 	# Abutment wing walls — only on bridges with real underpasses (>= 15m)
@@ -769,6 +772,47 @@ func _build_gapstow_bridge(pts: Array, cum_len: PackedFloat32Array,
 	lbl.name = "Label_GapstowBridge"
 	_loader.add_child(lbl)
 	print("  Gapstow Bridge: hero treatment applied")
+
+
+# ---------------------------------------------------------------------------
+# Bridge parapet collision — thin vertical wall on each side of the bridge deck
+# ---------------------------------------------------------------------------
+func _add_parapet_collision(pts: Array, pt_y: PackedFloat32Array,
+		cum_len: PackedFloat32Array, n_pts: int, hw2: float,
+		ramp_start: float, ramp_end: float,
+		miter_nv: Array[Vector2] = []) -> void:
+	var col_faces := PackedVector3Array()
+	var _mnv: Array[Vector2] = miter_nv
+	if _mnv.is_empty():
+		_mnv = _loader._compute_miter_normals(pts, n_pts)
+	var par_h: float = _loader.PARAPET_H + 0.1  # slightly taller than visual for safety
+	for i in range(n_pts - 1):
+		if cum_len[i + 1] < ramp_start or cum_len[i] > ramp_end:
+			continue
+		var p1y: float = pt_y[i]
+		var p2y: float = pt_y[i + 1]
+		var p1x := float(pts[i][0]);   var p1z := float(pts[i][2])
+		var p2x := float(pts[i+1][0]); var p2z := float(pts[i+1][2])
+		var m1 := _mnv[i]; var m2 := _mnv[i + 1]
+		for side in [-1.0, 1.0]:
+			var s: float = side
+			var off := hw2 + 0.12  # center of parapet wall
+			var x1 := p1x + m1.x * off * s; var z1 := p1z + m1.y * off * s
+			var x2 := p2x + m2.x * off * s; var z2 := p2z + m2.y * off * s
+			var a := Vector3(x1, p1y - 0.1, z1)
+			var b := Vector3(x2, p2y - 0.1, z2)
+			var c := Vector3(x2, p2y + par_h, z2)
+			var d := Vector3(x1, p1y + par_h, z1)
+			col_faces.append_array(PackedVector3Array([a, b, c, a, c, d]))
+	if not col_faces.is_empty():
+		var body := StaticBody3D.new()
+		body.name = "BridgeParapet_Collision"
+		var shape := ConcavePolygonShape3D.new()
+		shape.set_faces(col_faces)
+		var col := CollisionShape3D.new()
+		col.shape = shape
+		body.add_child(col)
+		_loader.add_child(body)
 
 
 # ---------------------------------------------------------------------------

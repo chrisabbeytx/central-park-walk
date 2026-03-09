@@ -410,6 +410,21 @@ func _build_buildings(buildings: Array) -> void:
 
 	print("Buildings: %d rendered, %d skipped (>%dm from boundary), %d total" % [built_count, skipped_dist, MAX_BUILDING_DIST, buildings.size()])
 
+	# Building collision — combined wall + roof geometry
+	var col_verts := PackedVector3Array()
+	for s in range(5):
+		col_verts.append_array(sv[s])
+	col_verts.append_array(roof_verts)
+	if not col_verts.is_empty():
+		var body := StaticBody3D.new()
+		body.name = "BuildingCollision"
+		var shape := ConcavePolygonShape3D.new()
+		shape.set_faces(col_verts)
+		var col := CollisionShape3D.new()
+		col.shape = shape
+		body.add_child(col)
+		_loader.add_child(body)
+
 	# Build wall meshes per style
 	var style_names := ["Limestone", "Glass", "RedBrick", "BuffBrick", "DarkStone"]
 	var style_mats := [
