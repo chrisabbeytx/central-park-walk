@@ -216,6 +216,67 @@ func _get_shader(key: String, code: String) -> Shader:
 	return sh
 
 
+func _make_mesh(verts: PackedVector3Array, normals: PackedVector3Array,
+				uvs = null, colors = null, indices = null) -> ArrayMesh:
+	## Build an ArrayMesh from packed arrays. Accepts optional UVs, colors, indices.
+	var arrays: Array = []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts
+	arrays[Mesh.ARRAY_NORMAL] = normals
+	if uvs != null:
+		arrays[Mesh.ARRAY_TEX_UV] = uvs
+	if colors != null:
+		arrays[Mesh.ARRAY_COLOR] = colors
+	if indices != null:
+		arrays[Mesh.ARRAY_INDEX] = indices
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	return mesh
+
+
+# Shared GLSL snippets — used by multiple shaders to avoid duplication
+const GLSL_HASH := """
+float hash21(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+vec2  hash2(vec2 p)  { return fract(sin(vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3)))) * 43758.5453); }
+"""
+
+const GLSL_DECODE_TERRAIN := """
+float decode_h(vec4 s) {
+	return s.r * (255.0 / 256.0) + s.g * (1.0 / 256.0);
+}
+float sample_terrain(vec2 world_xz) {
+	float half_ws = hm_world_size * 0.5;
+	vec2 grid = (world_xz + half_ws) / hm_world_size * (hm_res - 1.0);
+	vec2 gi = floor(grid);
+	vec2 gf = grid - gi;
+	vec2 uv00 = (gi + 0.5) / hm_res;
+	vec2 uv10 = (gi + vec2(1.5, 0.5)) / hm_res;
+	vec2 uv01 = (gi + vec2(0.5, 1.5)) / hm_res;
+	vec2 uv11 = (gi + vec2(1.5, 1.5)) / hm_res;
+	float h00 = hm_min_h + decode_h(texture(heightmap_tex, uv00)) * hm_range;
+	float h10 = hm_min_h + decode_h(texture(heightmap_tex, uv10)) * hm_range;
+	float h01 = hm_min_h + decode_h(texture(heightmap_tex, uv01)) * hm_range;
+	float h11 = hm_min_h + decode_h(texture(heightmap_tex, uv11)) * hm_range;
+	float fx = gf.x;
+	float fz = gf.y;
+	if (fz <= fx) {
+		return h00 + (h10 - h00) * fx + (h11 - h10) * fz;
+	} else {
+		return h00 + (h11 - h01) * fx + (h01 - h00) * fz;
+	}
+}
+"""
+
+const GLSL_SNOW := """
+// Snow accumulation — shared across tree/billboard/vegetation shaders
+vec3 apply_snow(vec3 albedo, vec3 world_normal, float snow_cover, float noise) {
+	float upward = max(world_normal.y, 0.0);
+	float snow_amt = clamp((0.3 + upward * 0.7 + noise) * snow_cover, 0.0, 1.0);
+	return mix(albedo, vec3(0.92, 0.93, 0.96), snow_amt);
+}
+"""
+
+
 func _path_tex_prefix(hw: String, surface: String) -> String:
 	match surface:
 		"asphalt":                              return "res://textures/Asphalt012_2K-JPG"
@@ -297,38 +358,7 @@ uniform float hm_min_h      = 0.0;
 uniform float hm_range      = 1.0;
 uniform float hm_res        = 256.0;
 uniform float path_y_offset = 0.08;
-
-float decode_h(vec4 s) {
-	return s.r * (255.0 / 256.0) + s.g * (1.0 / 256.0);
-}
-
-float sample_terrain(vec2 world_xz) {
-	// Replicate the exact same triangle interpolation as the CPU terrain mesh.
-	// The mesh splits each heightmap quad along the i00->i11 diagonal:
-	//   T1 (fz <= fx): i00, i10, i11
-	//   T2 (fz >  fx): i00, i11, i01
-	float half_ws = hm_world_size * 0.5;
-	vec2 grid = (world_xz + half_ws) / hm_world_size * (hm_res - 1.0);
-	vec2 gi = floor(grid);
-	vec2 gf = grid - gi;
-	// Texel centres: pixel (xi, zi) maps to UV = (xi+0.5)/res
-	vec2 uv00 = (gi + 0.5) / hm_res;
-	vec2 uv10 = (gi + vec2(1.5, 0.5)) / hm_res;
-	vec2 uv01 = (gi + vec2(0.5, 1.5)) / hm_res;
-	vec2 uv11 = (gi + vec2(1.5, 1.5)) / hm_res;
-	float h00 = hm_min_h + decode_h(texture(heightmap_tex, uv00)) * hm_range;
-	float h10 = hm_min_h + decode_h(texture(heightmap_tex, uv10)) * hm_range;
-	float h01 = hm_min_h + decode_h(texture(heightmap_tex, uv01)) * hm_range;
-	float h11 = hm_min_h + decode_h(texture(heightmap_tex, uv11)) * hm_range;
-	float fx = gf.x;
-	float fz = gf.y;
-	if (fz <= fx) {
-		return h00 + (h10 - h00) * fx + (h11 - h10) * fz;
-	} else {
-		return h00 + (h11 - h01) * fx + (h01 - h00) * fz;
-	}
-}
-
+""" + GLSL_DECODE_TERRAIN + """
 varying flat float depth_jitter;
 
 float pos_hash(vec2 p) {
@@ -1839,7 +1869,7 @@ func _build_bridge(path: Dictionary) -> void:
 
 		# Side edge beams (deck top to soffit bottom, both sides)
 		for side in [-1.0, 1.0]:
-			var s: float = float(side)
+			var s: float = side
 			var ox := nv.x * hw2 * s
 			var oz := nv.y * hw2 * s
 			var ea := Vector3(p1.x + ox, p1.y,  p1.z + oz)
@@ -1933,7 +1963,7 @@ func _build_bridge(path: Dictionary) -> void:
 
 			# Wing walls: one on each side of the opening, from hw2 outward to ohw
 			for side in [-1.0, 1.0]:
-				var s: float = float(side)
+				var s: float = side
 				# Wing wall: from path edge to outer edge, terrain to deck
 				var wa := Vector3(px + nv.x * hw2 * s, ty,  pz + nv.y * hw2 * s)
 				var wb := Vector3(px + nv.x * ohw * s, ty,  pz + nv.y * ohw * s)
@@ -1994,7 +2024,7 @@ func _build_bridge(path: Dictionary) -> void:
 			var am1 := bridge_miter[i]; var am2 := bridge_miter[i + 1]
 			var ohw := hw2 + PARAPET_T + 0.1
 			for side in [-1.0, 1.0]:
-				var s: float = float(side)
+				var s: float = side
 				var ox1 := am1.x * ohw * s; var oz1 := am1.y * ohw * s
 				var ox2 := am2.x * ohw * s; var oz2 := am2.y * ohw * s
 				var wa := Vector3(p1.x + ox1, ty1, p1.z + oz1)
@@ -2039,7 +2069,7 @@ func _build_bridge(path: Dictionary) -> void:
 		var nv := Vector2(-dv.y, dv.x)
 		var cm1 := bridge_miter[i]; var cm2 := bridge_miter[i + 1]
 		for side in [-1.0, 1.0]:
-			var s: float = float(side)
+			var s: float = side
 			var o_inner := hw2 - curb_w
 			var o_outer := hw2
 			var a := Vector3(p1.x + cm1.x * o_inner * s, p1.y, p1.z + cm1.y * o_inner * s)
@@ -2356,7 +2386,7 @@ func _build_solid_parapets(pts: Array, pt_y: PackedFloat32Array,
 		var m2 := _mnv[i + 1]
 
 		for side in [-1.0, 1.0]:
-			var s: float = float(side)
+			var s: float = side
 			var inner_off := hw2  # inner face at deck edge
 			var outer_off := hw2 + wall_t
 			# Per-point miter offsets (seal gaps between segments)
@@ -2449,7 +2479,7 @@ func _build_solid_parapets(pts: Array, pt_y: PackedFloat32Array,
 		var along := Vector2(dv.x, dv.y)
 
 		for side in [-1.0, 1.0]:
-			var s: float = float(side)
+			var s: float = side
 			var base_off := hw2 + wall_t
 			var pil_off := base_off + pilaster_relief
 			var phw := pilaster_w * 0.5  # half width along path direction
@@ -2534,7 +2564,7 @@ func _build_iron_railings(pts: Array, pt_y: PackedFloat32Array,
 		# Inner rails (outward-facing quads)
 		for rh in rail_h:
 			for side in [-1.0, 1.0]:
-				var s: float = float(side)
+				var s: float = side
 				var ox1 := im1.x * ohw * s; var oz1 := im1.y * ohw * s
 				var ox2 := im2.x * ohw * s; var oz2 := im2.y * ohw * s
 				var ra := Vector3(p1.x + ox1, p1.y + rh, p1.z + oz1)
@@ -2547,7 +2577,7 @@ func _build_iron_railings(pts: Array, pt_y: PackedFloat32Array,
 					rail_normals.append(wall_n)
 		# Cap rail — outward face + top face per side
 		for side in [-1.0, 1.0]:
-			var s: float = float(side)
+			var s: float = side
 			var ox1 := im1.x * ohw * s; var oz1 := im1.y * ohw * s
 			var ox2 := im2.x * ohw * s; var oz2 := im2.y * ohw * s
 			var cap_base := PARAPET_H
@@ -2596,7 +2626,7 @@ func _build_iron_railings(pts: Array, pt_y: PackedFloat32Array,
 		var nv := Vector2(-seg2.normalized().y, seg2.normalized().x)
 
 		for side in [-1.0, 1.0]:
-			var s: float = float(side)
+			var s: float = side
 			var cx := px + nv.x * ohw * s
 			var cz := pz + nv.y * ohw * s
 			var phw := post_w * 0.5
@@ -2683,7 +2713,7 @@ func _build_bow_bridge_railings(pts: Array, pt_y: PackedFloat32Array,
 		var im2 := bmiter[i + 1] if not bmiter.is_empty() else nv
 		for rh in [0.03, PARAPET_H]:
 			for side in [-1.0, 1.0]:
-				var s: float = float(side)
+				var s: float = side
 				var ox1 := im1.x * ohw * s; var oz1 := im1.y * ohw * s
 				var ox2 := im2.x * ohw * s; var oz2 := im2.y * ohw * s
 				var ra := Vector3(p1.x + ox1, p1.y + rh, p1.z + oz1)
@@ -2716,7 +2746,7 @@ func _build_bow_bridge_railings(pts: Array, pt_y: PackedFloat32Array,
 		var nv := Vector2(-seg2.normalized().y, seg2.normalized().x)
 
 		for side in [-1.0, 1.0]:
-			var s := float(side)
+			var s: float = side
 			var cx := px + nv.x * ohw * s
 			var cz := pz + nv.y * ohw * s
 			var cy := py + PARAPET_H * 0.5 + 0.03  # center of circle
@@ -2799,7 +2829,7 @@ func _build_bow_bridge_railings(pts: Array, pt_y: PackedFloat32Array,
 		if seg2.length_squared() > 0.001:
 			var pnv := Vector2(-seg2.normalized().y, seg2.normalized().x)
 			for side in [-1.0, 1.0]:
-				var s := float(side)
+				var s: float = side
 				var pcx := ppx + pnv.x * ohw * s
 				var pcz := ppz + pnv.y * ohw * s
 				# Square post from deck to above parapet
@@ -2889,7 +2919,7 @@ func _build_wood_railings(pts: Array, pt_y: PackedFloat32Array,
 		var wm2 := bmiter[i + 1] if not bmiter.is_empty() else nv
 		for rh in rail_h:
 			for side in [-1.0, 1.0]:
-				var s: float = float(side)
+				var s: float = side
 				var ox1 := wm1.x * ohw * s; var oz1 := wm1.y * ohw * s
 				var ox2 := wm2.x * ohw * s; var oz2 := wm2.y * ohw * s
 				# Outward face
@@ -2938,7 +2968,7 @@ func _build_wood_railings(pts: Array, pt_y: PackedFloat32Array,
 		var nv := Vector2(-seg2.normalized().y, seg2.normalized().x)
 
 		for side in [-1.0, 1.0]:
-			var s: float = float(side)
+			var s: float = side
 			var cx := px + nv.x * ohw * s
 			var cz := pz + nv.y * ohw * s
 			var phw := post_w * 0.5
@@ -3122,7 +3152,7 @@ func _build_tunnel(path: Dictionary) -> void:
 		# Side walls (floor to spring line) — faces inward
 		var u2_w := u_w + seg_len / TUNNEL_H
 		for side in [-1.0, 1.0]:
-			var s: float = float(side)
+			var s: float = side
 			var ox := nv.x * hw2 * s
 			var oz := nv.y * hw2 * s
 			var wa := Vector3(x1 + ox, floor_y1, z1 + oz)
@@ -3143,7 +3173,7 @@ func _build_tunnel(path: Dictionary) -> void:
 		var molding_h := 0.10  # molding height
 		var molding_d := 0.08  # how far it protrudes inward
 		for side in [-1.0, 1.0]:
-			var s: float = float(side)
+			var s: float = side
 			var wall_ox := nv.x * hw2 * s
 			var wall_oz := nv.y * hw2 * s
 			var inner_ox := nv.x * (hw2 - molding_d) * s
@@ -3244,7 +3274,7 @@ func _build_tunnel(path: Dictionary) -> void:
 		# Stairwell side walls (retaining walls alongside stairs)
 		var wall_top_y := maxf(top_y, pe.y + PATH_Y)  # wall height = whichever end is higher
 		for side in [-1.0, 1.0]:
-			var s: float = float(side)
+			var s: float = side
 			var wox := right_dir.x * hw2 * s
 			var woz := right_dir.y * hw2 * s
 			var wa := Vector3(pe.x + wox, floor_y, pe.z + woz)
@@ -3374,7 +3404,7 @@ func _build_tunnel_portals(pts: Array, width: float, height: float, mat: Materia
 
 		# Left and right vertical jambs (from floor to spring line)
 		for side in [-1.0, 1.0]:
-			var s: float = float(side)
+			var s: float = side
 			var ox := right.x * hw2 * s
 			var oz := right.y * hw2 * s
 			# Jamb quad: floor → spring line
@@ -4406,46 +4436,19 @@ varying float v_water_depth;
 float raindrop_ripple(vec2 p) {
 	float t = TIME;
 	float ripple = 0.0;
-	// 6 rain impact layers, offset to avoid synchronization
 	for (int i = 0; i < 6; i++) {
 		vec2 cell = floor(p * (1.5 + float(i) * 0.3)) + vec2(float(i) * 17.3, float(i) * 31.7);
 		vec2 center = cell + vec2(fract(sin(dot(cell, vec2(127.1, 311.7))) * 43758.5453),
 		                          fract(sin(dot(cell, vec2(269.5, 183.3))) * 43758.5453));
 		float phase = fract(sin(dot(cell, vec2(113.5, 271.9))) * 43758.5453) * 3.0;
-		float age = fract(t * 0.4 + phase);  // 0→1 lifecycle
+		float age = fract(t * 0.4 + phase);
 		float dist = length(p * (1.5 + float(i) * 0.3) - center);
 		float ring = sin((dist - age * 3.0) * 18.0) * exp(-dist * 2.5) * (1.0 - age);
 		ripple += ring * 0.15;
 	}
 	return ripple;
 }
-
-// Decode 16-bit height from RG8
-float decode_h(vec4 s) {
-	return s.r * (255.0 / 256.0) + s.g * (1.0 / 256.0);
-}
-
-float sample_terrain(vec2 world_xz) {
-	float half_ws = hm_world_size * 0.5;
-	vec2 grid = (world_xz + half_ws) / hm_world_size * (hm_res - 1.0);
-	vec2 gi = floor(grid);
-	vec2 gf = grid - gi;
-	vec2 uv00 = (gi + 0.5) / hm_res;
-	vec2 uv10 = (gi + vec2(1.5, 0.5)) / hm_res;
-	vec2 uv01 = (gi + vec2(0.5, 1.5)) / hm_res;
-	vec2 uv11 = (gi + vec2(1.5, 1.5)) / hm_res;
-	float h00 = hm_min_h + decode_h(texture(heightmap_tex, uv00)) * hm_range;
-	float h10 = hm_min_h + decode_h(texture(heightmap_tex, uv10)) * hm_range;
-	float h01 = hm_min_h + decode_h(texture(heightmap_tex, uv01)) * hm_range;
-	float h11 = hm_min_h + decode_h(texture(heightmap_tex, uv11)) * hm_range;
-	float fx = gf.x;
-	float fz = gf.y;
-	if (fz <= fx) {
-		return h00 + (h10 - h00) * fx + (h11 - h10) * fz;
-	} else {
-		return h00 + (h11 - h01) * fx + (h01 - h00) * fz;
-	}
-}
+""" + GLSL_DECODE_TERRAIN + """
 
 // Gradient noise (returns -1..1)
 vec2 ghash(vec2 p) {
@@ -4587,9 +4590,9 @@ void fragment() {
 
 	// Foam — white caps at wave peaks (subtle in ponds, more on reservoir)
 	float foam = smoothstep(0.6, 0.85, wave_h);
-	base_col = mix(base_col, vec3(0.85, 0.90, 0.92), foam * 0.7);
+	col = mix(col, vec3(0.85, 0.90, 0.92), foam * 0.7);
 
-	ALBEDO    = base_col;
+	ALBEDO    = col;
 	ROUGHNESS = mix(0.12, 0.02, fresnel);
 	METALLIC  = 0.05;
 	SPECULAR  = 0.5;
@@ -8848,7 +8851,7 @@ func _build_field_markings() -> void:
 			for _j2 in 6: s_norms.append(Vector3.UP)
 		# Touchlines (long sides)
 		for side in [-1.0, 1.0]:
-			var sf := float(side)
+			var sf: float = side
 			var sx: float = cx + short_dx * half_w * sf - long_dx * half_l
 			var sz: float = cz + short_dz * half_w * sf - long_dz * half_l
 			var ex: float = cx + short_dx * half_w * sf + long_dx * half_l
