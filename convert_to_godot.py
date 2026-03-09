@@ -1853,11 +1853,15 @@ def main() -> None:
             continue
         pts = _extract_polygon(nids)
         if len(pts) >= 3:
-            landuse_out.append({
+            entry = {
                 "name": tags.get("name", ""),
                 "type": zone_type,
                 "points": pts,
-            })
+            }
+            sport = tags.get("sport", "")
+            if sport:
+                entry["sport"] = sport
+            landuse_out.append(entry)
     # Relation-based landuse/leisure
     for e in elements:
         if e["type"] != "relation":
@@ -1873,11 +1877,15 @@ def main() -> None:
                 outer_nids.extend(ways_nodes.get(m["ref"], []))
         pts = _extract_polygon(outer_nids)
         if len(pts) >= 3:
-            landuse_out.append({
+            entry = {
                 "name": tags.get("name", ""),
                 "type": zone_type,
                 "points": pts,
-            })
+            }
+            sport = tags.get("sport", "")
+            if sport:
+                entry["sport"] = sport
+            landuse_out.append(entry)
 
     # -------------------------------------------------------------------
     # Write park_data.json

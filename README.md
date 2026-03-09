@@ -126,7 +126,7 @@ All data is freely available. No paid APIs. No API keys.
 | Furniture | 1,004+ | Custom Blender models: lampposts, benches, trash cans, fountains — cast iron shader with rust/rain/snow, wood shader for bridge railings |
 | Statues | 106 positions | 3 photogrammetry scans, labels mark unscanned locations |
 | Perimeter wall | 7,962 segments | Manhattan schist with mica sparkle, glacial striations, moss, 105 gate openings, 210 gate pillars |
-| Sports fields | 60 | Baseball (25), soccer (6), tennis (28), basketball (1) |
+| Sports fields | 147 | Baseball (30), tennis (55), basketball (37), soccer (10), handball (4), croquet (2), plus multi-sport — all from OSM `sport` tags with regulation markings |
 | Landmarks | 16 viewpoints + 42 attractions | OSM-sourced viewpoints, zoo exhibits, museums, historic features with labels |
 | Seasons | 4 | Per-species phenology, fallen leaf scatter, seasonal water/fog/atmosphere/sky/paths, winter frost + ice, stone moss, bark moss, hedge seasonal color |
 | Weather | 5 modes | Rain (wet surfaces/paths/stone/bark/iron/sports, glossy leaves, puddles with sky reflections, facade rain streaks, rain-on-lens), thunderstorm (30K particles, lightning flash + cloud glow + color grade wash), snow (terrain/trees/buildings/paths/stone/water/roofs/iron/hedges), fog, clear — dew, frost |
