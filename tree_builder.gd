@@ -1,5 +1,5 @@
 # tree_builder.gd
-# Tree geometry: GLB-based trees with LOD0 chunked MultiMesh + LOD1 billboard imposters
+# Tree geometry: GLB-based trees with spatially chunked MultiMesh instances
 # Extracted from park_loader.gd — all shared utilities accessed via _loader reference.
 
 var _loader  # Reference to park_loader for shared utilities
@@ -142,9 +142,6 @@ func _build_trees(trees: Array) -> void:
 	# Key: "species_variantIdx" -> Array[Transform3D]
 	var xf_by_key: Dictionary = {}
 	var all_trunk_xf: Array = []  # for collision
-	# LOD1 billboard data: [Transform3D] per color_key for distant imposters
-	var lod1_xf: Array = []  # Array of Transform3D (position + crown scale encoded)
-
 	for i in trees.size():
 		var tree_entry = trees[i]
 		var pt: Array
@@ -225,15 +222,6 @@ func _build_trees(trees: Array) -> void:
 			xf_by_key[key] = []
 		xf_by_key[key].append(tf)
 
-		# LOD1 billboard: encode crown width & height in basis for distant imposter
-		var crown_w := sx * mesh_h * 0.7  # approximate crown width in metres
-		var crown_h := desired_h * 0.65   # canopy portion (top 65%)
-		var bb_basis := Basis(
-			Vector3(crown_w, 0.0, 0.0),
-			Vector3(0.0, crown_h, 0.0),
-			Vector3(0.0, 0.0, crown_w))
-		lod1_xf.append(Transform3D(bb_basis, Vector3(tx, ty + desired_h * 0.5, tz)))
-
 		# Collision: simplified cylinder at trunk position
 		var trunk_r := desired_h * 0.02
 		var col_basis := Basis(
@@ -242,11 +230,10 @@ func _build_trees(trees: Array) -> void:
 			Vector3(0.0,     0.0,      trunk_r))
 		all_trunk_xf.append(Transform3D(col_basis, Vector3(tx, ty + desired_h * 0.5, tz)))
 
-	# --- Spatial chunking for LOD culling ---
+	# --- Spatial chunking for culling ---
 	# Each chunk's MMI is positioned at its spatial centre so that
 	# visibility_range works per-chunk (distance from camera to node).
 	const CHUNK := 80.0
-	const LOD0_END := 150.0
 
 	# Bucket transforms by spatial chunk per-species-variant
 	var lod0_chunks: Dictionary = {}
@@ -291,61 +278,11 @@ func _build_trees(trees: Array) -> void:
 		var mmi := MultiMeshInstance3D.new()
 		mmi.multimesh = mm
 		mmi.position = chunk_origin
-		mmi.name = "TrL0_%s" % ckey.replace("|", "_")
-		mmi.visibility_range_end = LOD0_END
-		mmi.visibility_range_fade_mode = GeometryInstance3D.VISIBILITY_RANGE_FADE_SELF
+		mmi.name = "Tree_%s" % ckey.replace("|", "_")
 		_loader.add_child(mmi)
-
-	# --- LOD1: crossed-quad billboard imposters for distant trees (120–500m) ---
-	# Simple X-shaped billboard per tree, chunked by 300m cells.
-	var bb_mesh := _make_crossed_quad_mesh()
-	var bb_shader: Shader = _loader._get_shader("tree_billboard", _tree_billboard_shader_code())
-	var bb_mat := ShaderMaterial.new()
-	bb_mat.shader = bb_shader
-
-	const LOD1_CHUNK := 80.0
-	const LOD1_BEGIN := 120.0
-	const LOD1_END := 500.0
-	var lod1_chunks: Dictionary = {}
-	for tf: Transform3D in lod1_xf:
-		var cx := int(floorf(tf.origin.x / LOD1_CHUNK))
-		var cz := int(floorf(tf.origin.z / LOD1_CHUNK))
-		var ck := "bb|%d|%d" % [cx, cz]
-		if not lod1_chunks.has(ck):
-			lod1_chunks[ck] = []
-		lod1_chunks[ck].append(tf)
-
-	var lod1_count := 0
-	for ck in lod1_chunks:
-		var xf_list: Array = lod1_chunks[ck]
-		if xf_list.is_empty():
-			continue
-		# Compute centroid
-		var sum_x := 0.0; var sum_y := 0.0; var sum_z := 0.0
-		for tf: Transform3D in xf_list:
-			sum_x += tf.origin.x; sum_y += tf.origin.y; sum_z += tf.origin.z
-		var n := float(xf_list.size())
-		var origin := Vector3(sum_x / n, sum_y / n, sum_z / n)
-		var mm := MultiMesh.new()
-		mm.transform_format = MultiMesh.TRANSFORM_3D
-		mm.mesh = bb_mesh
-		mm.instance_count = xf_list.size()
-		for i in xf_list.size():
-			var tf: Transform3D = xf_list[i]
-			mm.set_instance_transform(i, Transform3D(tf.basis, tf.origin - origin))
-		var mmi := MultiMeshInstance3D.new()
-		mmi.multimesh = mm
-		mmi.material_override = bb_mat
-		mmi.position = origin
-		mmi.name = "TrL1_%s" % ck.replace("|", "_")
-		mmi.visibility_range_begin = LOD1_BEGIN
-		mmi.visibility_range_end = LOD1_END
-		mmi.visibility_range_fade_mode = GeometryInstance3D.VISIBILITY_RANGE_FADE_SELF
-		_loader.add_child(mmi)
-		lod1_count += xf_list.size()
 
 	_build_tree_collision(all_trunk_xf)
-	print("Trees: %d placed, LOD0 chunks=%d, LOD1 billboards=%d (chunks=%d)" % [all_trunk_xf.size(), lod0_chunks.size(), lod1_count, lod1_chunks.size()])
+	print("Trees: %d placed, %d chunks" % [all_trunk_xf.size(), lod0_chunks.size()])
 
 
 func _build_tree_collision(trunk_xf: Array) -> void:
@@ -419,93 +356,3 @@ void fragment() {
 """
 
 
-func _make_crossed_quad_mesh() -> ArrayMesh:
-	## Two quads crossing at 90° forming an X shape, unit size (-0.5 to 0.5).
-	## Transform basis scales to crown dimensions per-instance.
-	var verts := PackedVector3Array()
-	var normals := PackedVector3Array()
-	var uvs := PackedVector2Array()
-	# Quad 1: aligned along X axis
-	for quad_rot in [0.0, PI * 0.5]:
-		var c := cos(quad_rot); var s := sin(quad_rot)
-		var bl := Vector3(-0.5 * c, -0.5, -0.5 * s)
-		var br := Vector3( 0.5 * c, -0.5,  0.5 * s)
-		var tl := Vector3(-0.5 * c,  0.5, -0.5 * s)
-		var tr := Vector3( 0.5 * c,  0.5,  0.5 * s)
-		var n := Vector3(-s, 0.0, c)
-		# Triangle 1
-		verts.append(bl); verts.append(br); verts.append(tr)
-		# Triangle 2
-		verts.append(bl); verts.append(tr); verts.append(tl)
-		for _i in 6:
-			normals.append(n)
-		uvs.append(Vector2(0, 1)); uvs.append(Vector2(1, 1)); uvs.append(Vector2(1, 0))
-		uvs.append(Vector2(0, 1)); uvs.append(Vector2(1, 0)); uvs.append(Vector2(0, 0))
-	var mesh: ArrayMesh = _loader._make_mesh(verts, normals, uvs)
-	return mesh
-
-
-func _tree_billboard_shader_code() -> String:
-	return """shader_type spatial;
-render_mode cull_disabled;
-
-global uniform vec2 wind_vec;
-global uniform float snow_cover;
-
-float hash21(vec2 p) {
-	p = fract(p * vec2(233.34, 851.73));
-	p += dot(p, p + 23.45);
-	return fract(p.x * p.y);
-}
-
-void vertex() {
-	vec3 tree_origin = (MODEL_MATRIX * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
-	float sway = max(VERTEX.y + 0.5, 0.0);
-	float wind_str = length(wind_vec);
-	VERTEX.x += sin(TIME * 0.5 + tree_origin.x * 0.03) * 0.04 * sway * (0.3 + wind_str);
-	VERTEX.z += sin(TIME * 0.7 + tree_origin.z * 0.04) * 0.03 * sway * (0.3 + wind_str);
-}
-
-void fragment() {
-	// Elliptical canopy mask from UV
-	vec2 c = UV - 0.5;
-	float r = length(c * vec2(1.0, 1.3));  // slightly taller than wide
-	if (r > 0.48) discard;
-
-	// Per-tree color variation
-	vec3 tree_pos = (MODEL_MATRIX * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
-	float h = hash21(floor(tree_pos.xz * 0.025));
-
-	// 5-tone impressionist green palette
-	vec3 base_col;
-	if (h < 0.2) {
-		base_col = vec3(0.12, 0.28, 0.06);  // deep forest
-	} else if (h < 0.4) {
-		base_col = vec3(0.18, 0.38, 0.10);  // rich green
-	} else if (h < 0.6) {
-		base_col = vec3(0.22, 0.42, 0.12);  // sap green
-	} else if (h < 0.8) {
-		base_col = vec3(0.16, 0.34, 0.08);  // viridian
-	} else {
-		base_col = vec3(0.20, 0.36, 0.14);  // olive green
-	}
-
-	// Soft edge darkening for crown shape
-	float edge = smoothstep(0.30, 0.48, r);
-	base_col *= 1.0 - edge * 0.4;
-
-	// Snow
-	if (snow_cover > 0.01) {
-		float upward = max(NORMAL.y, 0.0);
-		float noise = sin(tree_pos.x * 0.3 + tree_pos.z * 0.4) * 0.15;
-		float snow_amt = clamp((0.3 + upward * 0.7 + noise) * snow_cover, 0.0, 1.0);
-		base_col = mix(base_col, vec3(0.92, 0.93, 0.96), snow_amt * 0.65);
-	}
-
-	ALBEDO = base_col;
-	ROUGHNESS = 0.85;
-	SPECULAR = 0.05;
-	METALLIC = 0.0;
-	ALPHA = smoothstep(0.48, 0.40, r);  // soft edge
-}
-"""
