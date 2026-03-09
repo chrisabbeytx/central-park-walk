@@ -57,11 +57,14 @@ cd central-park-walk
 
 ### Code Style
 
-**GDScript** (main.gd, park_loader.gd, player.gd):
+**GDScript** (modular architecture):
+- `main.gd` — scene root: terrain, sky, player, HUD, day/night cycle
+- `park_loader.gd` — orchestrator + shared utilities (paths, heightmap, mesh helpers)
+- `*_builder.gd` — 8 focused modules: bridge, water, tunnel, building, tree, boundary, furniture, infrastructure
+- `player.gd` — first-person CharacterBody3D controller
 - Follow Godot's [GDScript style guide](https://docs.godotengine.org/en/stable/tutorials/scripting/gdscript/gdscript_styleguide.html)
 - Use `snake_case` for variables and functions, `PascalCase` for classes
 - Private members prefixed with `_`
-- Keep shader code as inline strings in GDScript (the project has no separate .gdshader files)
 
 **Python** (data pipeline, Blender scripts):
 - Standard PEP 8
@@ -72,7 +75,7 @@ cd central-park-walk
 
 1. **Species-accurate tree models**: We need American Elm, Red Oak, Sugar Maple, Pin Oak models. The park's 4 generic Quaternius models don't capture species character. Blender scripts preferred (following the `scripts/make_*.py` pattern).
 2. **Interior spaces**: Bethesda Arcade (Minton tile ceiling), bridge underpasses, tunnel interiors. The LiDAR terrain creates terrain caves where architectural spaces should be.
-3. **Ground detail**: Terrain tile models for wildflowers, grass, undergrowth, ferns. The systems exist in code but need proper 3D models.
+3. **Ground detail**: Terrain tile models for wildflowers, grass, undergrowth, ferns.
 4. **Cross-platform**: Currently Linux-only with Forward+ renderer. Testing and fixes for Windows/macOS welcome.
 5. **Performance**: No GPU profiling has been done. Help identify bottlenecks.
 
