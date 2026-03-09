@@ -89,7 +89,8 @@ python3 convert_to_godot.py
 ### CLI Options
 
 ```bash
--- --tour              # Automated screenshot tour (204 shots → /tmp/tour/)
+-- --tour              # Automated screenshot tour (340 shots → /tmp/tour/)
+-- --tour-showcase     # Curated showcase (22 shots — ground + aerial views)
 -- --pos "x,z,yaw"    # Spawn at specific coordinates
 -- --time noon         # Set time (dawn/morning/noon/golden_hour/dusk/night)
 -- --weather rain      # Set weather (clear/rain/snow/fog)
@@ -118,16 +119,16 @@ All data is freely available. No paid APIs. No API keys.
 | Terrain | 4096×4096 | LiDAR-accurate, per-pixel normals, structure mask, clipped to park boundary, 2048-res collision |
 | Trees | ~9,500 placed (20K census + woodland scatter) | 12 species archetypes, LiDAR heights, seasonal phenology, foliage zone biasing, wind gusts, subsurface scattering, bark weather response |
 | Paths | 2,624 | Analytical GPU rendering, 58K segments, width-correct, seasonal leaf litter + salt stains, rain puddles with sky reflection, snow sparkle, bridge deck weather, Reservoir cinder track |
-| Water | 27 bodies + 10 streams | Per-body color, seasonal tint, shore alpha, depth tinting, night city reflections, wind waves, winter ice formation |
+| Water | 27 bodies + 10 streams | Per-body color, seasonal tint, shore alpha, depth tinting, night city reflections, wind waves, winter ice formation, stream directional flow with slope turbulence + edge foam |
 | Buildings | 6,557 | NYC Building Footprints + LiDAR heights, 5 facade styles, night window variety (incandescent/LED/TV blue), age patina, seasonal haze, rain streaks, weather-responsive roofs, collision |
 | Bridges | 55 | 5 styles, miter joints, arched soffits, Bow Bridge railings, parapet collision |
 | Tunnels | 15 | Barrel vault interiors, portal lighting |
-| Furniture | 1,004+ | Custom Blender models: lampposts, benches, trash cans, fountains — cast iron shader with rust/rain/snow |
+| Furniture | 1,004+ | Custom Blender models: lampposts, benches, trash cans, fountains — cast iron shader with rust/rain/snow, wood shader for bridge railings |
 | Statues | 106 positions | 3 photogrammetry scans, labels mark unscanned locations |
 | Perimeter wall | 7,962 segments | Manhattan schist with mica sparkle, glacial striations, moss, 105 gate openings, 210 gate pillars |
 | Sports fields | 60 | Baseball (25), soccer (6), tennis (28), basketball (1) |
 | Landmarks | 16 viewpoints + 42 attractions | OSM-sourced viewpoints, zoo exhibits, museums, historic features with labels |
-| Seasons | 4 | Per-species phenology, fallen leaf scatter, seasonal water/fog/atmosphere/sky/paths, winter frost + ice, stone moss, bark moss |
+| Seasons | 4 | Per-species phenology, fallen leaf scatter, seasonal water/fog/atmosphere/sky/paths, winter frost + ice, stone moss, bark moss, hedge seasonal color |
 | Weather | 4 modes | Rain (wet surfaces/paths/stone/bark/iron, glossy leaves, puddles on paths+terrain+roofs, facade rain streaks), snow (terrain/trees/buildings/paths/stone/water/roofs/iron), fog, clear — dew, frost |
 | Day/night | 5 keyframes | 48-light lamp pool, lit windows, directional NYC light pollution, blue hour, moon with maria, dawn mist |
 | Color grading | Time-aware | Golden hour warmth, cool night desaturation, seasonal tint shifts, dynamic vignette, film grain, eye adaptation |
@@ -180,7 +181,7 @@ See [FUNDING.md](FUNDING.md) for details on how funds are used.
 | Data pipeline | Python: GDAL, numpy/scipy, Pillow |
 | 3D modeling | Blender 3.0.1 (headless scripts) |
 | Audio | Not yet implemented (awaiting field recordings) |
-| Rendering | 14 custom GLSL shaders (terrain, water, facade, tree leaf/bark, sky, stone, path, roof, cast iron, IMAGINE mosaic, color grade, lens distortion), shared noise include, MultiMesh instancing, analytical GPU path rendering |
+| Rendering | 17 custom GLSL shaders (terrain, water, stream, facade, tree leaf/bark, sky, stone, path, roof, cast iron, hedge, wood, IMAGINE mosaic, color grade, lens distortion), shared noise include, MultiMesh instancing, analytical GPU path rendering |
 
 ## License
 
