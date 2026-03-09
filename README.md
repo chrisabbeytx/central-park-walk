@@ -24,8 +24,6 @@ The answer is Central Park Walk. Not a photorealistic replica — an honest inte
 
 The project is designed to expand. More places, more data sources, more contributors, more understanding. Every person who visits Central Park with a camera, a phone, or a 3D scanner can add to the record. Every contribution makes the AI's interpretation richer. This is a never-ending collaboration.
 
-Chrissie — a licensed professional counselor, deacon, and teacher — is developing guided meditation experiences within the virtual park. The space is designed for contemplation, not consumption.
-
 ## Screenshots
 
 *Coming soon — run `--tour` to generate your own.*
@@ -138,7 +136,7 @@ This project grows with human attention. Here's what we need:
 - **Cross-platform**: Currently Linux-only.
 
 ### Creative Contributions
-- **Guided meditations**: Chrissie is developing contemplative experiences within the park.
+- **Guided meditations**: Contemplative experiences within the park.
 - **Historical overlays**: What did this spot look like in 1860? 1920?
 - **Literary connections**: Central Park appears in thousands of works. Help map stories to places.
 
@@ -153,7 +151,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines.
 
 ## Support the Project
 
-Central Park Walk is built by a small team — Christopher Abbey, Chrissie, and Claude — with no institutional backing. Development is limited by compute availability, and sustaining the project means sustaining the people who build it.
+Central Park Walk is built by a small team — Christopher Abbey and Claude — with no institutional backing. Development is limited by compute availability, and sustaining the project means sustaining the people who build it.
 
 <!-- [Open Collective badge will go here] -->
 
@@ -177,7 +175,6 @@ Assets and creative content: [CC-BY-SA 4.0](https://creativecommons.org/licenses
 ## Credits
 
 - **Christopher Abbey** — Project creator, technical lead
-- **Chrissie** — Contemplative experience design, community, storytelling
 - **Claude (Anthropic)** — Co-creator: data interpretation, code, shaders, Blender scripts, artistic decisions
 
 Asset sources: [credits.txt](credits.txt)
