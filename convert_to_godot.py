@@ -837,29 +837,48 @@ def main() -> None:
     # -------------------------------------------------------------------
     # Boundary  (stays 2D – used for invisible walls only)
     # -------------------------------------------------------------------
+    # Prefer authoritative boundary from Nominatim GeoJSON (correct 3.35 km² polygon)
+    # over the OSM bicycle-route relation which only covers ~1.96 km².
     boundary_pts: list = []
-    cp_rel = None
-
-    for rel in relations:
-        if rel.get("tags", {}).get("name") == "Central Park":
-            cp_rel = rel
-            break
-    if cp_rel is None and relations:
-        cp_rel = relations[0]
-
-    if cp_rel:
-        members   = cp_rel.get("members", [])
-        outer_ids = [m["ref"] for m in members
-                     if m["type"] == "way" and m.get("role") == "outer"]
-        if not outer_ids:
-            outer_ids = [m["ref"] for m in members if m["type"] == "way"]
-        for nid in assemble_ring(outer_ids, ways_nodes):
-            if nid in nodes_ll:
-                boundary_pts.append(list(project(*nodes_ll[nid])))
+    BOUNDARY_FILE = os.path.join(os.path.dirname(__file__),
+                                 "lidar_data", "central_park_boundary_osm.json")
+    if os.path.exists(BOUNDARY_FILE):
+        with open(BOUNDARY_FILE) as bf:
+            ring = json.load(bf)  # [[lon, lat], ...] GeoJSON order
+        for lon_lat in ring:
+            x, z = project(lon_lat[1], lon_lat[0])
+            boundary_pts.append([round(x, 2), round(z, 2)])
         if boundary_pts and boundary_pts[0] == boundary_pts[-1]:
             boundary_pts.pop()
+        print(f"  Boundary: {len(boundary_pts)} points from {BOUNDARY_FILE}")
     else:
-        print("  WARNING: No boundary relation found – park walls will be skipped.")
+        # Fallback: assemble from OSM relation (may be incomplete)
+        cp_rel = None
+        for rel in relations:
+            tags = rel.get("tags", {})
+            if tags.get("name") == "Central Park" and tags.get("type") == "multipolygon":
+                cp_rel = rel
+                break
+        if cp_rel is None:
+            for rel in relations:
+                if rel.get("tags", {}).get("name") == "Central Park":
+                    cp_rel = rel
+                    break
+        if cp_rel is None and relations:
+            cp_rel = relations[0]
+        if cp_rel:
+            members   = cp_rel.get("members", [])
+            outer_ids = [m["ref"] for m in members
+                         if m["type"] == "way" and m.get("role") == "outer"]
+            if not outer_ids:
+                outer_ids = [m["ref"] for m in members if m["type"] == "way"]
+            for nid in assemble_ring(outer_ids, ways_nodes):
+                if nid in nodes_ll:
+                    boundary_pts.append(list(project(*nodes_ll[nid])))
+            if boundary_pts and boundary_pts[0] == boundary_pts[-1]:
+                boundary_pts.pop()
+        else:
+            print("  WARNING: No boundary relation found – park walls will be skipped.")
 
     # -------------------------------------------------------------------
     # Water bodies  – points stay [x, z]; body gains "water_y"
@@ -1138,40 +1157,45 @@ def main() -> None:
     trash_cans_out = []
 
     # -------------------------------------------------------------------
-    # Trees — NYC census (authoritative) + OSM individual nodes
+    # Trees — NYC census (authoritative) + OSM individual nodes + woodland fill
     #
     # Strategy:
     #   1. Load NYC census trees (real positions, species, DBH)
     #   2. Add OSM individual tree nodes (dedup against census)
-    #   Data-first: no woodland fill — gaps stay visible.
+    #   3. Fill OSM natural=wood polygons with scattered trees
+    #      (census only covers street trees, not park interior)
     # -------------------------------------------------------------------
 
     SPECIES_MAP = {
+        # 12 visual archetypes — each gets distinct crown shape, leaf/bark color, fall colors
         # Deciduous — broad-leaved
-        "quercus":     "oak",
-        "acer":        "maple",
-        "ulmus":       "elm",
-        "betula":      "birch",
-        "gleditsia":   "deciduous",  # honey locust (17% of park) — open, airy canopy
-        "pyrus":       "deciduous",  # callery pear (10%)
-        "ginkgo":      "deciduous",  # ginkgo (9%) — fan-shaped leaves, distinctive
-        "platanus":    "deciduous",  # London plane (8%) — sycamore-like, tall
-        "tilia":       "deciduous",  # linden/basswood
-        "prunus":      "deciduous",  # cherry — spring blossoms
-        "robinia":     "deciduous",  # black locust
-        "celtis":      "deciduous",  # hackberry
-        "fraxinus":    "deciduous",  # ash
-        "liquidambar": "maple",      # sweetgum — star-shaped leaves, maple-like
-        "cornus":      "deciduous",  # dogwood — small ornamental
-        "magnolia":    "deciduous",  # magnolia
-        "cercis":      "deciduous",  # redbud
-        "malus":       "deciduous",  # crabapple
-        "salix":       "deciduous",  # willow
-        "fagus":       "deciduous",  # beech
-        "carpinus":    "deciduous",  # hornbeam
-        "zelkova":     "elm",        # zelkova — elm family, similar shape
-        "sophora":     "deciduous",  # Japanese pagoda tree
-        "catalpa":     "deciduous",  # catalpa — large leaves
+        "quercus":     "oak",           # 7% pin oak + 3% red/swamp/willow oak
+        "acer":        "maple",         # 2% — red maple, sugar maple, Norway maple
+        "ulmus":       "elm",           # 4.4% American elm — iconic vase shape
+        "betula":      "birch",         # 0.1% — white bark
+        "gleditsia":   "honeylocust",   # 17% — airy compound leaves, open canopy
+        "pyrus":       "callery_pear",  # 10% — dense ovoid crown, white spring bloom
+        "ginkgo":      "ginkgo",        # 9% — columnar, fan leaves, golden fall
+        "platanus":    "london_plane",  # 8% — tall broad crown, mottled bark
+        "tilia":       "linden",        # 7% — dense symmetrical, heart-shaped leaves
+        "prunus":      "cherry",        # 2.4% — small ornamental, spring blossoms
+        "zelkova":     "zelkova",       # 3.7% — upright vase, elm family
+        "styphnolobium": "deciduous",   # 5.7% Japanese pagoda — broad, spreading
+        "robinia":     "honeylocust",   # black locust — similar airy compound leaves
+        "celtis":      "deciduous",     # hackberry
+        "fraxinus":    "deciduous",     # ash
+        "liquidambar": "maple",         # sweetgum — star-shaped leaves, maple-like
+        "cornus":      "cherry",        # dogwood — small ornamental, like cherry
+        "magnolia":    "deciduous",     # magnolia
+        "cercis":      "cherry",        # redbud — small ornamental
+        "malus":       "cherry",        # crabapple — small ornamental, spring blooms
+        "salix":       "deciduous",     # willow
+        "fagus":       "deciduous",     # beech
+        "carpinus":    "deciduous",     # hornbeam
+        "sophora":     "deciduous",     # Japanese pagoda tree (old genus name)
+        "catalpa":     "deciduous",     # catalpa — large leaves
+        "gymnocladus": "honeylocust",   # Kentucky coffeetree — similar compound leaves
+        "crataegus":   "cherry",        # hawthorn — small ornamental
         # Conifers
         "picea":       "conifer",
         "pinus":       "conifer",
@@ -1181,8 +1205,8 @@ def main() -> None:
         "thuja":       "conifer",
         "cedrus":      "conifer",
         "taxus":       "conifer",
-        "metasequoia": "conifer",    # dawn redwood
-        "cryptomeria": "conifer",    # Japanese cedar
+        "metasequoia": "conifer",       # dawn redwood
+        "cryptomeria": "conifer",       # Japanese cedar
     }
 
     DEDUP_DIST = 3.0  # metres — avoid exact overlaps between census and OSM
@@ -1275,6 +1299,111 @@ def main() -> None:
         print(f"  Trees: {matched}/{len(trees_out)} matched to LiDAR heights (6M Trees)")
     else:
         print(f"  Trees: LiDAR file not found ({LIDAR_TREES}), using DBH estimates only")
+
+    # --- Step 4: Fill OSM natural=wood polygons with scattered trees ---
+    # NYC census covers street trees only. Park interior woodland needs procedural fill.
+    import random as _rng
+    _rng.seed(42)
+    TREE_DENSITY = 0.015  # trees per m² (~150 trees/hectare, typical temperate woodland)
+    MIN_TREE_SPACING = 4.0  # minimum 4m between trees
+    WOODLAND_SPECIES = ["oak", "maple", "elm", "birch", "cherry", "honeylocust",
+                        "london_plane", "linden", "ginkgo", "deciduous"]
+
+    def _point_in_poly(px, pz, poly):
+        """Point-in-polygon test (ray casting)."""
+        n = len(poly)
+        inside = False
+        j = n - 1
+        for i in range(n):
+            xi, zi = poly[i]
+            xj, zj = poly[j]
+            if ((zi > pz) != (zj > pz)) and (px < (xj - xi) * (pz - zi) / (zj - zi) + xi):
+                inside = not inside
+            j = i
+        return inside
+
+    # Collect woodland polygons from OSM ways
+    woodland_polys = []
+    for e in elements:
+        if e["type"] != "way":
+            continue
+        tags = e.get("tags", {})
+        if tags.get("natural") != "wood":
+            continue
+        nids = e.get("nodes", [])
+        if len(nids) < 3:
+            continue
+        poly = []
+        for nid in nids:
+            if nid in nodes_ll:
+                x, z = project(*nodes_ll[nid])
+                poly.append((x, z))
+        if len(poly) >= 3:
+            woodland_polys.append(poly)
+
+    wood_added = 0
+    wood_total_area = 0.0
+    for poly in woodland_polys:
+        # Bounding box
+        xs = [p[0] for p in poly]
+        zs = [p[1] for p in poly]
+        x_min, x_max = min(xs), max(xs)
+        z_min, z_max = min(zs), max(zs)
+        # Approximate area via shoelace
+        area = 0.0
+        n = len(poly)
+        for i in range(n):
+            j = (i + 1) % n
+            area += poly[i][0] * poly[j][1]
+            area -= poly[j][0] * poly[i][1]
+        area = abs(area) / 2.0
+        wood_total_area += area
+        # Target tree count
+        n_trees = int(area * TREE_DENSITY)
+        placed = []
+        attempts = 0
+        max_attempts = n_trees * 20
+        while len(placed) < n_trees and attempts < max_attempts:
+            attempts += 1
+            tx = _rng.uniform(x_min, x_max)
+            tz = _rng.uniform(z_min, z_max)
+            if not _point_in_poly(tx, tz, poly):
+                continue
+            # Check minimum spacing against already-placed and census trees
+            too_close = False
+            for (px, pz) in placed:
+                if abs(tx - px) < MIN_TREE_SPACING and abs(tz - pz) < MIN_TREE_SPACING:
+                    too_close = True
+                    break
+            if too_close:
+                continue
+            # Also check against census trees
+            tck = (int(tx // CELL), int(tz // CELL))
+            for dx in range(-1, 2):
+                if too_close:
+                    break
+                for dz in range(-1, 2):
+                    for (cx, cz) in tree_hash.get((tck[0] + dx, tck[1] + dz), []):
+                        if abs(tx - cx) < MIN_TREE_SPACING and abs(tz - cz) < MIN_TREE_SPACING:
+                            too_close = True
+                            break
+                    if too_close:
+                        break
+            if too_close:
+                continue
+            placed.append((tx, tz))
+            th = round(terrain(tx, tz), 2)
+            species = _rng.choice(WOODLAND_SPECIES)
+            dbh = _rng.randint(8, 30)
+            trees_out.append({"pos": [round(tx, 2), th, round(tz, 2)],
+                              "species": species, "dbh": dbh})
+            if tck not in tree_hash:
+                tree_hash[tck] = []
+            tree_hash[tck].append((tx, tz))
+            wood_added += 1
+    print(f"  Trees: +{wood_added} scattered in {len(woodland_polys)} woodland polygons "
+          f"({wood_total_area/1e4:.1f} ha)")
+    print(f"  Trees total: {len(trees_out)}")
 
     for e in elements:
         if e["type"] != "node" or "lat" not in e:

@@ -210,6 +210,7 @@ func _build_trees(trees: Array) -> void:
 	var xf_by_key: Dictionary = {}
 	var cd_by_key: Dictionary = {}  # parallel Color arrays for custom_data (season info)
 	var all_trunk_xf: Array = []  # for collision
+	var _skip_surface := 0
 	for i in trees.size():
 		var tree_entry = trees[i]
 		var pt: Array
@@ -223,9 +224,11 @@ func _build_trees(trees: Array) -> void:
 		else:
 			pt = tree_entry
 		var tx := float(pt[0]); var tz := float(pt[2])
-		if not _loader._in_boundary(tx, tz):
-			continue
-		if _loader._is_on_path(tx, tz):
+		# Use atlas surface type instead of boundary polygon — atlas correctly covers
+		# the full park area while the OSM boundary polygon may be undersized.
+		var surf: int = _loader._atlas_surface(tx, tz)
+		if surf != 1 and surf != 7:  # only place on grass (1) or rock (7)
+			_skip_surface += 1
 			continue
 		var ty: float = _loader._terrain_y(tx, tz)
 		rng.seed = i * 1234567891 + 987654321
@@ -361,7 +364,8 @@ func _build_trees(trees: Array) -> void:
 		_loader.add_child(mmi)
 
 	_build_tree_collision(all_trunk_xf)
-	print("Trees: %d placed, %d chunks" % [all_trunk_xf.size(), lod0_chunks.size()])
+	print("Trees: %d placed, %d chunks (skipped %d non-grass)" % [
+		all_trunk_xf.size(), lod0_chunks.size(), _skip_surface])
 
 
 func _build_tree_collision(trunk_xf: Array) -> void:
