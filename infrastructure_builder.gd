@@ -1824,17 +1824,6 @@ func _build_fountains(amenities: Array) -> void:
 		water_mat.set_shader_parameter("hm_range",      _loader._hm_max_h - _loader._hm_min_h)
 		water_mat.set_shader_parameter("hm_res",        float(mini(_loader._hm_width, 4096)))
 
-	# Bethesda Fountain photogrammetry scan (replaces generic basin)
-	var bethesda_glb_path := ProjectSettings.globalize_path("res://models/bethesda_fountain_photogrammetry.glb")
-	var bethesda_scene: Node = null
-	if FileAccess.file_exists(bethesda_glb_path):
-		var gd := GLTFDocument.new()
-		var gs := GLTFState.new()
-		if gd.append_from_file(bethesda_glb_path, gs) == OK:
-			bethesda_scene = gd.generate_scene(gs)
-			if bethesda_scene:
-				print("Fountain: loaded Bethesda photogrammetry scan")
-
 	var count := 0
 	for fnt in fountains:
 		var pos: Array = fnt.get("position", [])
@@ -1850,62 +1839,13 @@ func _build_fountains(amenities: Array) -> void:
 		y = maxf(y, ty)
 		var name_: String = fnt.get("name", "")
 
-		# Bethesda Fountain — use photogrammetry scan if available
-		if "Bethesda" in name_ and bethesda_scene:
-			var scene_dup: Node = bethesda_scene.duplicate()
-			scene_dup.name = "BethesdaFountain_Photogrammetry"
-			if scene_dup is Node3D:
-				var n3d := scene_dup as Node3D
-				n3d.position = Vector3(x, y, z)
-				# Measure AABB to scale to real-world size (~8m diameter basin, ~8m total height)
-				var y_min := 1e9; var y_max := -1e9
-				var x_min := 1e9; var x_max := -1e9
-				var mi_stack: Array = [scene_dup]
-				while not mi_stack.is_empty():
-					var nd: Node = mi_stack.pop_back()
-					if nd is MeshInstance3D:
-						var mi := nd as MeshInstance3D
-						if mi.mesh:
-							var ab: AABB = mi.mesh.get_aabb()
-							for ix in [0, 1]:
-								for iy in [0, 1]:
-									for iz in [0, 1]:
-										var pt := ab.position + ab.size * Vector3(float(ix), float(iy), float(iz))
-										if pt.y < y_min: y_min = pt.y
-										if pt.y > y_max: y_max = pt.y
-										if pt.x < x_min: x_min = pt.x
-										if pt.x > x_max: x_max = pt.x
-					for c in nd.get_children():
-						mi_stack.append(c)
-				var actual_h := y_max - y_min
-				var actual_w := x_max - x_min
-				# Scale so total height ~8m (fountain basin + Angel of the Waters)
-				var desired_h := 8.0
-				var s := desired_h / maxf(actual_h, 0.01)
-				n3d.scale = Vector3(s, s, s)
-				# Position base on terrain
-				n3d.position.y = y - s * y_min
-				_loader.add_child(n3d)
-				print("Bethesda Fountain photogrammetry: actual_h=%.2f scale=%.2f" % [actual_h, s])
-			# Label
-			var lbl := Label3D.new()
-			lbl.text = name_
-			lbl.font_size = 26
-			lbl.position = Vector3(x, y + 9.0, z)
-			lbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-			lbl.modulate = Color(0.45, 0.60, 0.75, 0.65)
-			lbl.outline_modulate = Color(0.05, 0.05, 0.05, 0.45)
-			lbl.outline_size = 4
-			lbl.no_depth_test = false
-			lbl.pixel_size = 0.011
-			_loader.add_child(lbl)
+		# Bethesda Fountain — handled by water_builder (photogrammetry from water body polygon)
+		if "Bethesda" in name_:
 			count += 1
 			continue
 
 		# Stone basin — short wide cylinder
 		var basin_r := 2.5
-		if "Bethesda" in name_:
-			basin_r = 5.0  # Bethesda is much larger (fallback if GLB missing)
 		elif "Untermyer" in name_ or "Cherry Hill" in name_:
 			basin_r = 3.5
 
