@@ -5762,16 +5762,18 @@ func _build_trees(trees: Array) -> void:
 		"birch":     Vector3(0.34, 0.52, 0.22),   # light yellow-green
 		"deciduous": Vector3(0.26, 0.44, 0.16),   # medium green
 		"pine":      Vector3(0.14, 0.30, 0.10),   # dark desaturated green
+		"elm":       Vector3(0.24, 0.42, 0.15),   # medium-warm green (American Elm)
 	}
 	var bark_colors := {
 		"maple":     Color(0.50, 0.40, 0.30),     # medium brown
 		"birch":     Color(0.80, 0.76, 0.68),     # distinctive white bark
 		"deciduous": Color(0.42, 0.34, 0.26),     # dark brown
 		"pine":      Color(0.48, 0.34, 0.22),     # reddish-brown
+		"elm":       Color(0.30, 0.25, 0.18),     # gray-brown (American Elm bark)
 	}
 	var species_meshes: Dictionary = {}  # species_name -> Array[Mesh]
 	var species_heights: Dictionary = {} # species_name -> float (mesh height in raw units)
-	for species in ["maple", "birch", "deciduous", "pine"]:
+	for species in ["maple", "birch", "deciduous", "pine", "elm"]:
 		var abs_path := ProjectSettings.globalize_path("res://models/trees/%s.glb" % species)
 		if not FileAccess.file_exists(abs_path):
 			print("WARNING: tree model not found: %s" % abs_path)
@@ -5811,7 +5813,12 @@ func _build_trees(trees: Array) -> void:
 		var max_h := 0.0
 		for m: Mesh in meshes:
 			var ab: AABB = m.get_aabb()
-			var h := maxf(ab.size.x, maxf(ab.size.y, ab.size.z))
+			# Use Z dimension for height: GLB models preserve Blender Z-up in raw
+			# mesh vertices (axis conversion is a node transform, not baked into verts)
+			var h := ab.size.z
+			# Fallback: if Z is tiny (degenerate), use max dimension
+			if h < 0.001:
+				h = maxf(ab.size.x, maxf(ab.size.y, ab.size.z))
 			max_h = maxf(max_h, h)
 		root.queue_free()
 		if meshes.is_empty():
@@ -5852,7 +5859,7 @@ func _build_trees(trees: Array) -> void:
 	var glb_species_map := {
 		"oak":       "deciduous",
 		"maple":     "maple",
-		"elm":       "maple",    # maple's wider canopy better matches elm's vase shape
+		"elm":       "elm",      # dedicated vase-shaped American Elm model
 		"conifer":   "pine",
 		"deciduous": "deciduous",
 		"birch":     "birch",
@@ -5958,9 +5965,6 @@ func _build_trees(trees: Array) -> void:
 
 		# Crown width: blend uniform scale with LiDAR crown data for subtle variation
 		var sx := sy
-		# Elms get 30% wider crowns — vase-shaped canopy characteristic
-		if effective_species == "elm":
-			sx *= 1.3
 		if typeof(tree_entry) == TYPE_DICTIONARY and tree_entry.has("crown_a"):
 			var crown_a := float(tree_entry["crown_a"])
 			if crown_a > 0.0 and desired_h > 1.0:
@@ -5969,8 +5973,6 @@ func _build_trees(trees: Array) -> void:
 				var crown_ratio := clampf(crown_d / desired_h, 0.3, 1.2)
 				# Apply as a subtle modifier (30% blend) to avoid extreme stretching
 				sx = sy * lerpf(1.0, crown_ratio, 0.3)
-				if effective_species == "elm":
-					sx *= 1.3
 
 		# Random Y rotation for variety
 		var y_rot := rng.randf() * TAU
@@ -6631,7 +6633,7 @@ void fragment() {
 	ROUGHNESS = 0.88;
 	SPECULAR = 0.08;
 	METALLIC = 0.0;
-	BACKLIGHT = vec3(0.15, 0.08, 0.02);
+	BACKLIGHT = vec3(0.28, 0.20, 0.06);
 }
 """
 
