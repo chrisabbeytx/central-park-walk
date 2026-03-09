@@ -74,6 +74,7 @@ func _build_trees(trees: Array) -> void:
 	var base_leaf_textures: Dictionary = {} # model_name -> Array[Texture2D or null]
 	var base_alpha_thresholds: Dictionary = {} # model_name -> Array[float]
 	var leaf_shader: Shader = _loader._get_shader("tree_leaf_glb", _tree_glb_leaf_shader_code())
+	var bark_shader: Shader = _loader._get_shader("tree_bark", "res://shaders/tree_bark.gdshader")
 
 	for model_name in ["maple", "birch", "deciduous", "pine", "elm"]:
 		var abs_path := ProjectSettings.globalize_path("res://models/trees/%s.glb" % model_name)
@@ -167,9 +168,11 @@ func _build_trees(trees: Array) -> void:
 						leaf_mat.set_shader_parameter("alpha_scissor", lalphas[mi])
 						m.surface_set_material(si, leaf_mat)
 					else:
-						sm.albedo_color = bark_col
-						sm.roughness = 0.90
-						sm.metallic = 0.0
+						# Bark: shader for weather/season response
+						var bark_mat := ShaderMaterial.new()
+						bark_mat.shader = bark_shader
+						bark_mat.set_shader_parameter("bark_color", Vector3(bark_col.r, bark_col.g, bark_col.b))
+						m.surface_set_material(si, bark_mat)
 				elif smat is ShaderMaterial:
 					# Already a shader material from a previous archetype's duplicate
 					var sm: ShaderMaterial = smat as ShaderMaterial
