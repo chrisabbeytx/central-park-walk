@@ -4,9 +4,19 @@
 
 var _loader  # Reference to park_loader for shared utilities
 
-# Maps data species archetype → phenology index for GPU seasonal color
+# Maps data species archetype → phenology index for GPU seasonal color (12 species)
 const PHENOLOGY_INDEX := {
 	"oak": 0, "maple": 1, "elm": 2, "birch": 3, "deciduous": 4, "conifer": 5,
+	"honeylocust": 6, "callery_pear": 7, "ginkgo": 8, "london_plane": 9,
+	"linden": 10, "cherry": 11, "zelkova": 2,  # zelkova shares elm phenology
+}
+# Maps archetype → base GLB model name
+const ARCHETYPE_MODEL := {
+	"oak": "deciduous", "maple": "maple", "elm": "elm", "birch": "birch",
+	"deciduous": "deciduous", "conifer": "pine",
+	"honeylocust": "deciduous", "callery_pear": "maple", "ginkgo": "birch",
+	"london_plane": "deciduous", "linden": "maple", "cherry": "birch",
+	"zelkova": "elm",
 }
 
 func _init(loader) -> void:
@@ -23,25 +33,50 @@ func _build_trees(trees: Array) -> void:
 	# Each GLB has 5 tree variants as separate MeshInstance3D children.
 	# Models use centimetre scale (node scale=100 in GLB) and Z-up orientation.
 	# We load at runtime via GLTFDocument since the project has no editor import cache.
-	# Per-species leaf and bark colors
+	# Per-archetype leaf and bark colors (12 species)
 	var leaf_tints := {
-		"maple":     Vector3(0.30, 0.50, 0.18),   # bright green, warm
-		"birch":     Vector3(0.34, 0.52, 0.22),   # light yellow-green
-		"deciduous": Vector3(0.26, 0.44, 0.16),   # medium green
-		"pine":      Vector3(0.14, 0.30, 0.10),   # dark desaturated green
-		"elm":       Vector3(0.24, 0.42, 0.15),   # medium-warm green (American Elm)
+		"oak":           Vector3(0.24, 0.40, 0.14),   # dark green
+		"maple":         Vector3(0.30, 0.50, 0.18),   # bright green, warm
+		"elm":           Vector3(0.24, 0.42, 0.15),   # medium-warm green (American Elm)
+		"birch":         Vector3(0.34, 0.52, 0.22),   # light yellow-green
+		"deciduous":     Vector3(0.26, 0.44, 0.16),   # medium green
+		"pine":          Vector3(0.14, 0.30, 0.10),   # dark desaturated green
+		"honeylocust":   Vector3(0.32, 0.52, 0.20),   # light airy green (compound leaves)
+		"callery_pear":  Vector3(0.28, 0.48, 0.18),   # fresh green, dense crown
+		"ginkgo":        Vector3(0.30, 0.50, 0.22),   # yellow-green (fan-shaped leaves)
+		"london_plane":  Vector3(0.24, 0.44, 0.16),   # medium green, large leaves
+		"linden":        Vector3(0.26, 0.48, 0.18),   # warm green (heart-shaped leaves)
+		"cherry":        Vector3(0.30, 0.50, 0.20),   # fresh green, small ornamental
+		"zelkova":       Vector3(0.22, 0.40, 0.14),   # dark warm green (elm family)
 	}
 	var bark_colors := {
-		"maple":     Color(0.50, 0.40, 0.30),     # medium brown
-		"birch":     Color(0.80, 0.76, 0.68),     # distinctive white bark
-		"deciduous": Color(0.42, 0.34, 0.26),     # dark brown
-		"pine":      Color(0.48, 0.34, 0.22),     # reddish-brown
-		"elm":       Color(0.30, 0.25, 0.18),     # gray-brown (American Elm bark)
+		"oak":           Color(0.40, 0.32, 0.24),     # dark brown, deeply furrowed
+		"maple":         Color(0.50, 0.40, 0.30),     # medium brown
+		"elm":           Color(0.30, 0.25, 0.18),     # gray-brown (American Elm bark)
+		"birch":         Color(0.80, 0.76, 0.68),     # distinctive white bark
+		"deciduous":     Color(0.42, 0.34, 0.26),     # dark brown
+		"pine":          Color(0.48, 0.34, 0.22),     # reddish-brown
+		"honeylocust":   Color(0.45, 0.38, 0.28),     # dark gray-brown
+		"callery_pear":  Color(0.42, 0.36, 0.28),     # gray-brown, smooth
+		"ginkgo":        Color(0.50, 0.42, 0.32),     # gray, furrowed with age
+		"london_plane":  Color(0.60, 0.56, 0.48),     # distinctive mottled cream-gray
+		"linden":        Color(0.42, 0.36, 0.28),     # gray-brown, ridged
+		"cherry":        Color(0.52, 0.32, 0.22),     # reddish-brown, glossy
+		"zelkova":       Color(0.38, 0.30, 0.22),     # gray, exfoliating
 	}
-	var species_meshes: Dictionary = {}  # species_name -> Array[Mesh]
-	var species_heights: Dictionary = {} # species_name -> float (mesh height in raw units)
-	for species in ["maple", "birch", "deciduous", "pine", "elm"]:
-		var abs_path := ProjectSettings.globalize_path("res://models/trees/%s.glb" % species)
+	# --- Load 5 base GLB models, then create per-archetype colored copies ---
+	var species_meshes: Dictionary = {}  # archetype_name -> Array[Mesh]
+	var species_heights: Dictionary = {} # archetype_name -> float (mesh height in raw units)
+
+	# Step 1: Load raw meshes + heights from 5 GLB files
+	var base_meshes: Dictionary = {}     # model_name -> Array[Mesh]
+	var base_heights: Dictionary = {}    # model_name -> float
+	var base_leaf_textures: Dictionary = {} # model_name -> Array[Texture2D or null]
+	var base_alpha_thresholds: Dictionary = {} # model_name -> Array[float]
+	var leaf_shader: Shader = _loader._get_shader("tree_leaf_glb", _tree_glb_leaf_shader_code())
+
+	for model_name in ["maple", "birch", "deciduous", "pine", "elm"]:
+		var abs_path := ProjectSettings.globalize_path("res://models/trees/%s.glb" % model_name)
 		if not FileAccess.file_exists(abs_path):
 			print("WARNING: tree model not found: %s" % abs_path)
 			continue
@@ -53,13 +88,11 @@ func _build_trees(trees: Array) -> void:
 			continue
 		var root: Node = gltf_doc.generate_scene(gltf_state)
 		if root == null:
-			print("WARNING: generate_scene returned null for %s" % species)
+			print("WARNING: generate_scene returned null for %s" % model_name)
 			continue
 		var meshes: Array = []
 		var node_scale := 1.0
 		_loader._collect_meshes(root, meshes)
-		# Detect node scale: Quaternius models have scale=100 on mesh nodes.
-		# Scene tree: root → RootNode → NormalTree_N (scale=100, has mesh).
 		for child in root.get_children():
 			if child is Node3D:
 				var s: Vector3 = (child as Node3D).scale
@@ -74,71 +107,100 @@ func _build_trees(trees: Array) -> void:
 							break
 				if node_scale > 1.0:
 					break
-		# Compute mesh height — use RAW AABB since we need the scale factor
-		# to include the GLB node scale (100x for Quaternius centimetre models).
-		# desired_h / raw_mesh_h gives the correct total scale factor.
 		var max_h := 0.0
 		for m: Mesh in meshes:
 			var ab: AABB = m.get_aabb()
-			# Use Z dimension for height: GLB models preserve Blender Z-up in raw
-			# mesh vertices (axis conversion is a node transform, not baked into verts)
 			var h := ab.size.z
-			# Fallback: if Z is tiny (degenerate), use max dimension
 			if h < 0.001:
 				h = maxf(ab.size.x, maxf(ab.size.y, ab.size.z))
 			max_h = maxf(max_h, h)
-		root.queue_free()
-		if meshes.is_empty():
-			print("WARNING: no meshes found in %s" % species)
-			continue
-		# Per-species colors for leaves and bark
-		var leaf_tint: Vector3 = leaf_tints.get(species, Vector3(0.28, 0.48, 0.18))
-		var bark_col: Color = bark_colors.get(species, Color(0.48, 0.38, 0.28))
-		var leaf_shader: Shader = _loader._get_shader("tree_leaf_glb", _tree_glb_leaf_shader_code())
+		# Extract leaf textures and alpha thresholds before freeing scene
+		var ltexs: Array = []
+		var lalphas: Array = []
 		for m: Mesh in meshes:
+			var tex: Texture2D = null
+			var alpha := 0.5
 			for si in m.get_surface_count():
 				var smat: Material = m.surface_get_material(si)
 				if smat is StandardMaterial3D:
 					var sm: StandardMaterial3D = smat as StandardMaterial3D
 					if sm.transparency != BaseMaterial3D.TRANSPARENCY_DISABLED:
-						# Leaves — replace with snow-aware shader
+						if sm.albedo_texture:
+							tex = sm.albedo_texture
+						if sm.alpha_scissor_threshold > 0.0:
+							alpha = sm.alpha_scissor_threshold
+			ltexs.append(tex)
+			lalphas.append(alpha)
+		root.queue_free()
+		if meshes.is_empty():
+			print("WARNING: no meshes found in %s" % model_name)
+			continue
+		base_meshes[model_name] = meshes
+		base_heights[model_name] = max_h
+		base_leaf_textures[model_name] = ltexs
+		base_alpha_thresholds[model_name] = lalphas
+		print("Trees: loaded %s — %d variants, raw=%.4f actual=%.1fm" % [model_name, meshes.size(), max_h, max_h * node_scale])
+
+	# Step 2: Create per-archetype mesh copies with distinct leaf/bark colors
+	for archetype in ARCHETYPE_MODEL:
+		var model_name: String = ARCHETYPE_MODEL[archetype]
+		if not base_meshes.has(model_name):
+			continue
+		var src_meshes: Array = base_meshes[model_name]
+		var leaf_tint: Vector3 = leaf_tints.get(archetype, Vector3(0.28, 0.48, 0.18))
+		var bark_col: Color = bark_colors.get(archetype, Color(0.48, 0.38, 0.28))
+		var ltexs: Array = base_leaf_textures[model_name]
+		var lalphas: Array = base_alpha_thresholds[model_name]
+		var arch_meshes: Array = []
+		for mi in src_meshes.size():
+			var m: Mesh = src_meshes[mi].duplicate(true)
+			for si in m.get_surface_count():
+				var smat: Material = m.surface_get_material(si)
+				if smat is StandardMaterial3D:
+					var sm: StandardMaterial3D = smat as StandardMaterial3D
+					if sm.transparency != BaseMaterial3D.TRANSPARENCY_DISABLED:
 						var leaf_mat := ShaderMaterial.new()
 						leaf_mat.shader = leaf_shader
 						leaf_mat.set_shader_parameter("albedo_tint", leaf_tint)
-						if sm.albedo_texture:
-							leaf_mat.set_shader_parameter("albedo_tex", sm.albedo_texture)
-						leaf_mat.set_shader_parameter("alpha_scissor", sm.alpha_scissor_threshold if sm.alpha_scissor_threshold > 0.0 else 0.5)
+						if ltexs[mi]:
+							leaf_mat.set_shader_parameter("albedo_tex", ltexs[mi])
+						leaf_mat.set_shader_parameter("alpha_scissor", lalphas[mi])
 						m.surface_set_material(si, leaf_mat)
 					else:
-						# Bark — species-specific color
 						sm.albedo_color = bark_col
 						sm.roughness = 0.90
 						sm.metallic = 0.0
-		species_meshes[species] = meshes
-		species_heights[species] = max_h
-		print("Trees: loaded %s — %d variants, raw=%.4f actual=%.1fm" % [species, meshes.size(), max_h, max_h * node_scale])
+				elif smat is ShaderMaterial:
+					# Already a shader material from a previous archetype's duplicate
+					var sm: ShaderMaterial = smat as ShaderMaterial
+					var new_mat := sm.duplicate()
+					new_mat.set_shader_parameter("albedo_tint", leaf_tint)
+					m.surface_set_material(si, new_mat)
+			arch_meshes.append(m)
+		species_meshes[archetype] = arch_meshes
+		species_heights[archetype] = base_heights[model_name]
+	print("Trees: %d archetypes from %d base models" % [species_meshes.size(), base_meshes.size()])
 
 	if species_meshes.is_empty():
 		print("WARNING: no tree GLB models loaded, falling back skipped")
 		return
 
-	# Map data species to GLB model species
-	var glb_species_map := {
-		"oak":       "deciduous",
-		"maple":     "maple",
-		"elm":       "elm",      # dedicated vase-shaped American Elm model
-		"conifer":   "pine",
-		"deciduous": "deciduous",
-		"birch":     "birch",
-	}
 	# Desired height ranges per species archetype (metres)
-	# [min, max] — mature American Elms are 20-30m; census DBH drives interpolation
+	# [min, max] — census DBH drives interpolation within range
 	var height_ranges := {
-		"oak":       [14.0, 25.0],
-		"maple":     [10.0, 20.0],
-		"elm":       [18.0, 30.0],   # American Elm — tall vase shape
-		"conifer":   [15.0, 30.0],
-		"deciduous": [10.0, 22.0],
+		"oak":           [14.0, 25.0],
+		"maple":         [10.0, 20.0],
+		"elm":           [18.0, 30.0],   # American Elm — tall vase shape
+		"conifer":       [15.0, 30.0],
+		"deciduous":     [10.0, 22.0],
+		"birch":         [10.0, 18.0],
+		"honeylocust":   [12.0, 22.0],   # open, airy crown
+		"callery_pear":  [8.0, 14.0],    # medium street tree
+		"ginkgo":        [12.0, 20.0],   # slow-growing, columnar
+		"london_plane":  [15.0, 30.0],   # tall broad crown, like sycamore
+		"linden":        [12.0, 22.0],   # dense symmetrical crown
+		"cherry":        [6.0, 12.0],    # small ornamental
+		"zelkova":       [12.0, 22.0],   # upright vase shape
 	}
 
 	# Foliage zone data for deciduous sub-species assignment
@@ -169,9 +231,7 @@ func _build_trees(trees: Array) -> void:
 		rng.seed = i * 1234567891 + 987654321
 
 		# Use the species from data as-is (census or OSM archetype)
-		var effective_species := tree_species
-
-		var species: String = glb_species_map.get(effective_species, "deciduous")
+		var species: String = tree_species
 		if not species_meshes.has(species):
 			species = "deciduous"
 			if not species_meshes.has(species):
@@ -191,7 +251,7 @@ func _build_trees(trees: Array) -> void:
 			if desired_h < 3.0:
 				desired_h = 3.0  # clamp tiny LiDAR readings
 		else:
-			var h_range: Array = height_ranges.get(effective_species, [10.0, 22.0])
+			var h_range: Array = height_ranges.get(species, [10.0, 22.0])
 			var h_min := float(h_range[0])
 			var h_max := float(h_range[1])
 			var dbh_t := clampf((float(dbh) - 3.0) / 30.0, 0.0, 1.0)
@@ -229,10 +289,10 @@ func _build_trees(trees: Array) -> void:
 			cd_by_key[key] = []
 		xf_by_key[key].append(tf)
 		# Pack season data: R=species phenology index, G=timing offset, B=evergreen flag
-		var pheno_idx: int = PHENOLOGY_INDEX.get(effective_species, 4)
+		var pheno_idx: int = PHENOLOGY_INDEX.get(species, 4)
 		var timing_off := rng.randf_range(-0.15, 0.15)
-		var is_evergreen := 1.0 if effective_species == "conifer" else 0.0
-		cd_by_key[key].append(Color(float(pheno_idx) / 5.0, timing_off + 0.5, is_evergreen, 0.0))
+		var is_evergreen := 1.0 if species == "conifer" else 0.0
+		cd_by_key[key].append(Color(float(pheno_idx) / 11.0, timing_off + 0.5, is_evergreen, 0.0))
 
 		# Collision: simplified cylinder at trunk position
 		var trunk_r := desired_h * 0.02
@@ -336,24 +396,37 @@ global uniform vec2 wind_vec;
 global uniform float snow_cover;
 global uniform float season_t;
 
-// Species fall colors: oak, maple, elm, birch, deciduous, conifer
-const vec3 FALL_COLORS[6] = vec3[6](
-	vec3(0.55, 0.25, 0.12),  // oak: red-brown
-	vec3(0.85, 0.22, 0.08),  // maple: brilliant red-orange
-	vec3(0.78, 0.72, 0.18),  // elm: golden yellow
-	vec3(0.82, 0.75, 0.22),  // birch: yellow
-	vec3(0.65, 0.45, 0.15),  // deciduous: amber
-	vec3(0.14, 0.30, 0.10)   // conifer: stays green
+// Species fall colors (12): oak, maple, elm, birch, deciduous, conifer,
+// honeylocust, callery_pear, ginkgo, london_plane, linden, cherry
+const vec3 FALL_COLORS[12] = vec3[12](
+	vec3(0.55, 0.25, 0.12),  // 0 oak: russet red-brown
+	vec3(0.85, 0.22, 0.08),  // 1 maple: brilliant red-orange
+	vec3(0.78, 0.72, 0.18),  // 2 elm: golden yellow
+	vec3(0.82, 0.75, 0.22),  // 3 birch: bright yellow
+	vec3(0.65, 0.45, 0.15),  // 4 deciduous: amber
+	vec3(0.14, 0.30, 0.10),  // 5 conifer: stays green
+	vec3(0.80, 0.75, 0.28),  // 6 honeylocust: clear golden yellow
+	vec3(0.72, 0.18, 0.12),  // 7 callery_pear: deep red-purple
+	vec3(0.92, 0.85, 0.20),  // 8 ginkgo: brilliant pure yellow
+	vec3(0.70, 0.52, 0.18),  // 9 london_plane: tawny brown-gold
+	vec3(0.78, 0.70, 0.22),  // 10 linden: warm yellow
+	vec3(0.80, 0.30, 0.15)   // 11 cherry: orange-red
 );
 
 // Phenology timing per species: (fall_start, fall_peak, bare_start, leaf_start)
-const vec4 PHENOLOGY[6] = vec4[6](
-	vec4(2.3, 2.7, 3.1, 0.4),  // oak
-	vec4(2.1, 2.5, 2.9, 0.3),  // maple
-	vec4(2.2, 2.6, 3.0, 0.3),  // elm
-	vec4(2.0, 2.4, 2.8, 0.2),  // birch
-	vec4(2.2, 2.6, 3.0, 0.3),  // deciduous
-	vec4(0.0, 0.0, 0.0, 0.0)   // conifer (unused)
+const vec4 PHENOLOGY[12] = vec4[12](
+	vec4(2.3, 2.7, 3.1, 0.4),  // 0 oak: late, holds leaves
+	vec4(2.1, 2.5, 2.9, 0.3),  // 1 maple: classic mid-fall
+	vec4(2.2, 2.6, 3.0, 0.3),  // 2 elm: mid-fall
+	vec4(2.0, 2.4, 2.8, 0.2),  // 3 birch: early fall, early spring
+	vec4(2.2, 2.6, 3.0, 0.3),  // 4 deciduous: average
+	vec4(0.0, 0.0, 0.0, 0.0),  // 5 conifer (unused — evergreen)
+	vec4(2.0, 2.3, 2.6, 0.4),  // 6 honeylocust: early, drops fast
+	vec4(2.3, 2.7, 3.1, 0.3),  // 7 callery_pear: late, persistent
+	vec4(2.4, 2.6, 2.8, 0.5),  // 8 ginkgo: very late, drops all at once
+	vec4(2.2, 2.6, 3.0, 0.3),  // 9 london_plane: mid-fall, persistent
+	vec4(2.1, 2.5, 2.9, 0.3),  // 10 linden: mid-fall
+	vec4(2.0, 2.4, 2.8, 0.3)   // 11 cherry: early fall
 );
 
 varying float v_leaf_density;
@@ -362,7 +435,7 @@ varying vec3 v_leaf_color;
 void vertex() {
 	// Decode per-instance season data (all INSTANCE_CUSTOM reads in vertex only)
 	float is_evergreen = INSTANCE_CUSTOM.b;
-	int sp_idx = int(INSTANCE_CUSTOM.r * 5.0 + 0.5);
+	int sp_idx = int(INSTANCE_CUSTOM.r * 11.0 + 0.5);
 	float timing_off = INSTANCE_CUSTOM.g - 0.5;
 	float s = mod(season_t + timing_off, 4.0);
 
