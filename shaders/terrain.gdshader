@@ -663,30 +663,6 @@ void fragment() {
 		ROUGHNESS = mix(ROUGHNESS, 0.85, wear * wear_strength * 0.8);
 	}
 
-	// --- Morning dew / frost: subtle sparkle on grass surfaces at dawn ---
-	if (dew_amount > 0.01 && mat_idx == 0) {
-		// Winter frost: dew becomes icy white when season is cold (late autumn/winter)
-		float winter_t = smoothstep(2.5, 3.5, season_t) + smoothstep(0.5, -0.5, season_t - 4.0);
-		winter_t = clamp(winter_t, 0.0, 1.0);
-		float frost_amt = winter_t * dew_amount;
-		if (frost_amt > 0.02) {
-			// Frost: pale white rime on grass tips, very high specular
-			float frost_noise = hash2(floor(world_pos.xz * 8.0));
-			float frost_mask = step(0.4, frost_noise) * frost_amt;
-			ALBEDO = mix(ALBEDO, vec3(0.85, 0.88, 0.92), frost_mask * 0.5);
-			ROUGHNESS = mix(ROUGHNESS, 0.08, frost_mask * 0.7);
-			SPECULAR = mix(SPECULAR, 0.7, frost_mask * 0.6);
-		}
-		// Dew on grass: tiny water droplets create scattered specular highlights
-		float dew_factor = dew_amount * (1.0 - winter_t);  // less dew in frost weather
-		float dew_noise = hash2(floor(world_pos.xz * 12.0));
-		float dew_sparkle = step(0.7, dew_noise) * dew_factor;
-		ROUGHNESS = mix(ROUGHNESS, 0.15, dew_sparkle * 0.6);
-		SPECULAR = mix(SPECULAR, 0.6, dew_sparkle * 0.5);
-		// Slightly brighter green from moisture
-		ALBEDO *= mix(1.0, 1.08, dew_factor * 0.5);
-	}
-
 	// --- Rain wetness: darken surfaces, lower roughness, increase specular ---
 	if (rain_wetness > 0.01) {
 		// Wet surfaces are darker (water absorption) and glossier

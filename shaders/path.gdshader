@@ -15,10 +15,12 @@ uniform float snap_to_terrain = 1.0;  // 0.0 for bridge decks (pre-elevated)
 global uniform float rain_wetness;
 global uniform float snow_cover;
 global uniform float season_t;
+global uniform vec3 sky_reflect_color;
 
 #include "res://shaders/include/decode_terrain.gdshaderinc"
 
 varying flat float depth_jitter;
+varying vec3 world_pos;
 
 #include "res://shaders/include/hash_noise.gdshaderinc"
 
@@ -29,6 +31,7 @@ void vertex() {
 		vec3 snapped = (inverse(MODEL_MATRIX) * vec4(world.x, terrain_h + path_y_offset, world.z, 1.0)).xyz;
 		VERTEX.y = snapped.y;
 	}
+	world_pos = world;
 	// Per-triangle depth jitter to break z-fighting at same-type intersections
 	depth_jitter = hash2(floor(world.xz * 0.5)) * 0.0003;
 }
@@ -66,11 +69,30 @@ void fragment() {
 		ALBEDO = mix(ALBEDO, vec3(path_lum) * 1.05, winter_t * 0.2);
 	}
 
-	// Rain: wet pavement darkens, gets glossy
+	// Rain: wet pavement darkens, gets glossy, puddles form in low spots
 	if (rain_wetness > 0.01) {
 		ALBEDO   *= mix(1.0, 0.60, rain_wetness);   // 40% darker when wet
 		ROUGHNESS = mix(ROUGHNESS, 0.08, rain_wetness);
 		SPECULAR  = mix(SPECULAR, 0.45, rain_wetness);
+		// Puddles: collect in low-frequency noise depressions
+		// Visible at moderate-to-heavy rain, mirror-like reflection of sky
+		if (rain_wetness > 0.3) {
+			float puddle_noise = vnoise(world_pos.xz * 0.12);
+			puddle_noise += vnoise(world_pos.xz * 0.35) * 0.4;
+			float puddle = smoothstep(0.35, 0.55, puddle_noise) * smoothstep(0.3, 0.7, rain_wetness);
+			if (puddle > 0.01) {
+				// Puddle surface: near-mirror reflecting sky color
+				vec3 puddle_col = sky_reflect_color * 0.4 + ALBEDO * 0.15;
+				// Night: puddles reflect warm city light instead
+				float sky_lum = dot(sky_reflect_color, vec3(0.2126, 0.7152, 0.0722));
+				float night_t = smoothstep(0.15, 0.02, sky_lum);
+				puddle_col = mix(puddle_col, vec3(0.10, 0.07, 0.04) + ALBEDO * 0.08, night_t);
+				ALBEDO    = mix(ALBEDO, puddle_col, puddle);
+				ROUGHNESS = mix(ROUGHNESS, 0.02, puddle);  // mirror-smooth
+				SPECULAR  = mix(SPECULAR, 0.60, puddle);
+				METALLIC  = mix(METALLIC, 0.10, puddle);
+			}
+		}
 	}
 
 	// Snow accumulation on paths
@@ -83,7 +105,7 @@ void fragment() {
 		SPECULAR  = mix(SPECULAR, 0.15, snow_amt);
 		// Snow sparkle on paths
 		if (snow_amt > 0.3) {
-			float sparkle = hash2(floor(world.xz * 25.0));
+			float sparkle = hash2(floor(world_pos.xz * 25.0));
 			if (sparkle > 0.96) {
 				float si = (sparkle - 0.96) * 25.0;
 				SPECULAR = mix(SPECULAR, 0.90, si * snow_amt);

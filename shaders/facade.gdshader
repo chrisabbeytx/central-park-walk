@@ -199,7 +199,7 @@ void fragment() {
 
 	EMISSION = emission;
 
-	// Rain wetness: wet walls darken, get reflective; windows streak
+	// Rain wetness: wet walls darken, get reflective; rain streaks on walls
 	if (rain_wetness > 0.01) {
 		float wet = rain_wetness;
 		if (!in_win) {
@@ -207,6 +207,15 @@ void fragment() {
 			ALBEDO *= mix(1.0, 0.60, wet);
 			ROUGHNESS = mix(ROUGHNESS, max(ROUGHNESS * 0.3, 0.10), wet);
 			SPECULAR = mix(0.0, 0.4, wet);
+			// Rain streaks: vertical water trails running down walls
+			// Multiple scales: wide rivulets + fine trickles
+			float streak1 = sin(world_pos.x * 5.0 + hash2(floor(world_pos.xz * 0.3)) * 20.0);
+			float streak2 = sin(world_pos.x * 13.0 + hash2(floor(world_pos.xz * 0.7)) * 30.0);
+			float streak = max(smoothstep(0.6, 0.9, streak1), smoothstep(0.7, 0.95, streak2));
+			// Streaks accumulate going down the building, fade near ground floor
+			streak *= smoothstep(0.0, 4.0, UV.y) * wet;
+			ROUGHNESS = mix(ROUGHNESS, 0.04, streak * 0.6);
+			SPECULAR = mix(SPECULAR, 0.55, streak * 0.5);
 		} else {
 			// Rain on glass: slightly reduced transmission, higher specular
 			ROUGHNESS = mix(ROUGHNESS, 0.05, wet * 0.4);
