@@ -1156,6 +1156,7 @@ def main() -> None:
     benches_out = []
     lampposts_out = []
     trash_cans_out = []
+    flagpoles_out = []
 
     # -------------------------------------------------------------------
     # Trees — NYC census (authoritative) + OSM individual nodes + woodland fill
@@ -1535,6 +1536,11 @@ def main() -> None:
         # Trash cans
         if tags.get("amenity") == "waste_basket":
             trash_cans_out.append([x, h, z])
+            continue
+
+        # Flagpoles
+        if tags.get("man_made") == "flagpole":
+            flagpoles_out.append([x, h, z])
 
     # -------------------------------------------------------------------
     # Barriers  – walls, fences, retaining walls (ways only)
@@ -1907,6 +1913,7 @@ def main() -> None:
         "benches":            benches_out,
         "lampposts":          lampposts_out,
         "trash_cans":         trash_cans_out,
+        "flagpoles":          flagpoles_out,
         "landuse":            landuse_out,
         "bridge_outlines":    bridge_outlines,
         "tunnel_outlines":    tunnel_outlines,
@@ -1935,6 +1942,7 @@ def main() -> None:
     print(f"Benches:    {len(benches_out):5d}")
     print(f"Lampposts:  {len(lampposts_out):5d}")
     print(f"Trash cans: {len(trash_cans_out):5d}")
+    print(f"Flagpoles:  {len(flagpoles_out):5d}")
     print(f"Landuse:    {len(landuse_out):5d}  zones")
     print(f"Bridges:    {len(bridge_outlines):5d}  outlines")
     print(f"Tunnels:    {len(tunnel_outlines):5d}  outlines")

@@ -78,6 +78,8 @@ func _build_barriers(barriers: Array) -> void:
 	var wall_normals := PackedVector3Array()
 	var fence_verts  := PackedVector3Array()
 	var fence_normals := PackedVector3Array()
+	var hedge_verts  := PackedVector3Array()
+	var hedge_normals := PackedVector3Array()
 	var col_verts    := PackedVector3Array()
 
 	for barrier in barriers:
@@ -96,6 +98,8 @@ func _build_barriers(barriers: Array) -> void:
 		match btype:
 			"fence", "guard_rail":
 				_build_fence_segments(pts, height, fence_verts, fence_normals, col_verts)
+			"hedge":
+				_build_wall_segments(pts, maxf(height, 0.8), hedge_verts, hedge_normals, col_verts)
 			_:
 				_build_wall_segments(pts, height, wall_verts, wall_normals, col_verts)
 
@@ -108,6 +112,17 @@ func _build_barriers(barriers: Array) -> void:
 	if not fence_verts.is_empty():
 		_loader._add_iron_mesh(fence_verts, fence_normals,
 						Color(0.15, 0.15, 0.14), "IronFences")
+	# Hedge barrier mesh — uses hedge shader for seasonal foliage
+	if not hedge_verts.is_empty():
+		var hedge_sh: Shader = _loader._get_shader("hedge", "res://shaders/hedge.gdshader")
+		var hedge_mat := ShaderMaterial.new()
+		hedge_mat.shader = hedge_sh
+		var hm: ArrayMesh = _loader._make_mesh(hedge_verts, hedge_normals)
+		hm.surface_set_material(0, hedge_mat)
+		var hmi := MeshInstance3D.new()
+		hmi.mesh = hm
+		hmi.name = "HedgeBarriers"
+		_loader.add_child(hmi)
 	# Combined collision
 	if not col_verts.is_empty():
 		var body := StaticBody3D.new()

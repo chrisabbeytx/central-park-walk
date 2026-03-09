@@ -201,4 +201,29 @@ func _build_trash_cans(trash_data: Array, paths: Array) -> void:
 	print("ParkLoader: trash cans = %d (from OSM)" % xforms.size())
 
 
+func _build_flagpoles(flagpole_data: Array) -> void:
+	## Flagpoles — thin aluminum poles at flag locations
+	if flagpole_data.is_empty():
+		return
+	# Generate a simple tapered pole mesh
+	var pole_mesh := _loader._make_cylinder(0.06, 8.0, 8)
+	# Metallic silver material
+	var iron_shader: Shader = _loader._get_shader("cast_iron", "res://shaders/cast_iron.gdshader")
+	var pole_mat := ShaderMaterial.new()
+	pole_mat.shader = iron_shader
+	pole_mat.set_shader_parameter("iron_color", Vector3(0.55, 0.55, 0.58))
+	pole_mat.set_shader_parameter("base_roughness", 0.30)
+	pole_mat.set_shader_parameter("base_metallic", 0.60)
+	var xforms: Array = []
+	for fp in flagpole_data:
+		var fx := float(fp[0])
+		var fz := float(fp[2])
+		if not _loader._in_boundary(fx, fz):
+			continue
+		var fy: float = _loader._terrain_y(fx, fz)
+		xforms.append(Transform3D(Basis.IDENTITY, Vector3(fx, fy, fz)))
+	if not xforms.is_empty():
+		_loader._spawn_multimesh(pole_mesh, pole_mat, xforms, "Flagpoles")
+	print("ParkLoader: flagpoles = %d" % xforms.size())
+
 

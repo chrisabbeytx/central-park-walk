@@ -914,6 +914,7 @@ func _ready() -> void:
 	var benches: Array = data.get("benches", [])
 	var lampposts: Array = data.get("lampposts", [])
 	var trash_cans: Array = data.get("trash_cans", [])
+	var flagpoles: Array = data.get("flagpoles", [])
 	# Build boundary array from subdivided hull for walls/perimeter
 	var boundary: Array = []
 	for p in boundary_polygon:
@@ -954,6 +955,7 @@ func _ready() -> void:
 	print("  trees: %d ms" % (Time.get_ticks_msec() - _tp)); _tp = Time.get_ticks_msec()
 	_furniture_builder._build_furniture(benches, lampposts, paths)
 	_furniture_builder._build_trash_cans(trash_cans, paths)
+	_furniture_builder._build_flagpoles(flagpoles)
 	print("  furniture: %d ms" % (Time.get_ticks_msec() - _tp)); _tp = Time.get_ticks_msec()
 	_infrastructure_builder._build_barriers(barriers)
 	_infrastructure_builder._build_staircases(paths)
