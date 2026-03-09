@@ -1551,7 +1551,7 @@ func _setup_ground() -> void:
 	add_child(mi)
 
 	# ---- HeightMapShape3D collision (subsampled from full-res heightmap) ----
-	var COL_RES := 1024
+	var COL_RES := 2048
 	var col_cell := _hm_world_size / float(COL_RES - 1)
 	var col_step_x := float(HW - 1) / float(COL_RES - 1)
 	var col_step_z := float(_hm_depth - 1) / float(COL_RES - 1)
