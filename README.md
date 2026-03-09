@@ -1,28 +1,28 @@
-# Central Park Walk
+## Central Park Walk
 
-**An AI-human collaboration to reconstruct Central Park in 3D from freely available public data.**
+*An AI-human collaboration to reconstruct Central Park in 3D from freely available public data.*
 
 > "The only thing more terrifying than a superintelligence that fully understands every square centimeter of this universe and what it means to the people who live here is one that doesn't."
 
-Central Park Walk is a real-time 3D simulation of the entirety of New York's Central Park — all 843 acres — built from freely available public data and interpreted by Claude (Anthropic). You walk through it. That's all. No objectives, no score, no enemies. Just a place.
+Central Park Walk is a real-time 3D simulation of the entirety of New York's Central Park — all 843 acres — built from freely available public data and interpreted by Claude (Anthropic). You walk through it. That's all. No objectives, no score, no enemies. Just a place. Not a photorealistic replica. An honest interpretation.
+
+## The Data
 
 Every tree has a real measured height from LiDAR. Every path follows its real-world geometry from OpenStreetMap. Every bridge is one of 55 actual bridges, rendered in its correct architectural style. The terrain is accurate to one foot of vertical resolution. And all of it was assembled by an AI interpreting the accumulated record of human attention to one of the most documented places on Earth.
-
-## What You're Looking At
 
 The simulation covers 100% of Central Park's terrain at 4096×4096 mesh resolution, derived from NYC's 2017 LiDAR survey. 16,243 trees are placed from the NYC Tree Census, cross-referenced with LiDAR canopy measurements so 89% have their real measured heights. 2,624 paths are rendered with analytical GPU path rendering — material-specific and width-correct. 8,463 building facades line the park boundary with procedural windows that glow warm at night.
 
 55 bridges span the park in 5 architectural styles: stone, cast iron, brick, rustic wood, and the signature Bow Bridge with its interlocking-circles railing. 15 tunnels have barrel-vault interiors with portal lighting. A 7,962-segment brownstone perimeter wall with 105 gate openings marks where the park meets the city. Custom Blender scripts generate period-accurate park furniture: Bishop's Crook lampposts, cast iron benches, wire mesh trash cans, granite drinking fountains.
 
-The world has weather (rain, snow, fog, puddles, morning dew), a full day/night cycle with sodium vapor park lighting and lit windows, procedural clouds, and ambient soundscapes that shift by location. The data-first philosophy means: if we don't have real data for something, we leave a gap rather than guess. Gaps tell us what humans haven't yet measured, mapped, or photographed.
+Rain, snow, fog, puddles, morning dew. A full day/night cycle with sodium vapor park lighting and lit windows, procedural clouds, ambient soundscapes that shift by location. The data-first philosophy means: if we don't have real data for something, we leave a gap rather than guess. Gaps tell us what humans haven't yet measured, mapped, or photographed.
 
 ## The Vision
 
 Every LiDAR return is a moment when a laser pulse bounced off something real. Every OpenStreetMap edit is a person who cared enough about a path or a bench to record it. Every photo on Wikimedia Commons is someone who stopped, looked, and captured what they saw. This project takes all of that accumulated human attention and asks: what does an AI see when it looks at what humans have recorded about a place?
 
-The answer is Central Park Walk. Not a photorealistic replica — an honest interpretation. The data has gaps, and we leave them visible. The AI has a perspective, and we let it show. What emerges is a conversation between human observation and machine perception about shared physical reality.
+Central Park Walk is the answer. The data has gaps, and we leave them visible. The AI has a perspective, and we let it show. What emerges is a conversation between human observation and machine perception about a piece of shared physical reality that hundreds of millions of people have walked through, photographed, grieved in, fallen in love in, and called their own.
 
-The project is designed to expand. More places, more data sources, more contributors, more understanding. Every person who visits Central Park with a camera, a phone, or a 3D scanner can add to the record. Every contribution makes the AI's interpretation richer. This is a never-ending collaboration.
+The project is designed to expand. More places, more data sources, more contributors, more understanding. Every person who visits Central Park with a camera, a phone, or a 3D scanner can add to the record. Every contribution makes the interpretation richer. This is a never-ending collaboration between human attention and machine perception — and it has only just begun.
 
 ## Screenshots
 
