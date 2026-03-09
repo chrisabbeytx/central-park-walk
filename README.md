@@ -116,21 +116,21 @@ All data is freely available. No paid APIs. No API keys.
 | Feature | Count | Detail |
 |---------|-------|--------|
 | Terrain | 4096×4096 | LiDAR-accurate, per-pixel normals, structure mask, clipped to park boundary, 2048-res collision |
-| Trees | ~9,500 placed (20K census + woodland scatter) | 12 species archetypes, LiDAR heights, seasonal phenology, foliage zone biasing |
-| Paths | 2,624 | Analytical GPU rendering, 58K segments, width-correct, seasonal leaf litter + salt stains, rain/snow |
-| Water | 27 bodies + 10 streams | Per-body color, seasonal tint, shore alpha, depth tinting, night city reflections, wind waves |
-| Buildings | 6,557 | NYC Building Footprints + LiDAR heights, 5 facade styles, night emission, age patina, collision |
+| Trees | ~9,500 placed (20K census + woodland scatter) | 12 species archetypes, LiDAR heights, seasonal phenology, foliage zone biasing, wind gusts, subsurface scattering, bark weather response |
+| Paths | 2,624 | Analytical GPU rendering, 58K segments, width-correct, seasonal leaf litter + salt stains, rain/snow, bridge deck weather |
+| Water | 27 bodies + 10 streams | Per-body color, seasonal tint, shore alpha, depth tinting, night city reflections, wind waves, winter ice formation |
+| Buildings | 6,557 | NYC Building Footprints + LiDAR heights, 5 facade styles, night window variety (incandescent/LED/TV blue), age patina, seasonal haze, collision |
 | Bridges | 55 | 5 styles, miter joints, arched soffits, Bow Bridge railings, parapet collision |
 | Tunnels | 15 | Barrel vault interiors, portal lighting |
 | Furniture | 1,004+ | Custom Blender models: lampposts, benches, trash cans, fountains |
 | Statues | 106 positions | 3 photogrammetry scans, labels mark unscanned locations |
-| Perimeter wall | 7,962 segments | Brownstone with 105 gate openings, 210 gate pillars |
+| Perimeter wall | 7,962 segments | Manhattan schist with mica sparkle, glacial striations, moss, 105 gate openings, 210 gate pillars |
 | Sports fields | 60 | Baseball (25), soccer (6), tennis (28), basketball (1) |
 | Landmarks | 16 viewpoints + 42 attractions | OSM-sourced viewpoints, zoo exhibits, museums, historic features with labels |
-| Seasons | 4 | Per-species phenology, fallen leaf scatter, seasonal water/fog/atmosphere/paths, winter frost, stone moss |
-| Weather | 4 modes | Rain (wet surfaces/paths/stone, glossy leaves, puddles), snow (terrain/trees/buildings/paths/stone), fog, clear — mist, dew |
-| Day/night | 5 keyframes | 48-light lamp pool, lit windows, directional NYC light pollution, moon with maria, dawn mist |
-| Color grading | Time-aware | Golden hour warmth, cool night desaturation, seasonal tint shifts, vignette |
+| Seasons | 4 | Per-species phenology, fallen leaf scatter, seasonal water/fog/atmosphere/sky/paths, winter frost + ice, stone moss, bark moss |
+| Weather | 4 modes | Rain (wet surfaces/paths/stone/bark, glossy leaves, puddles), snow (terrain/trees/buildings/paths/stone/water), fog, clear — mist, dew |
+| Day/night | 5 keyframes | 48-light lamp pool, lit windows, directional NYC light pollution, blue hour, moon with maria, dawn mist |
+| Color grading | Time-aware | Golden hour warmth, cool night desaturation, seasonal tint shifts, dynamic vignette, film grain, eye adaptation |
 | Sound | — | Audio not yet implemented (field recordings needed) |
 
 ## How to Contribute
