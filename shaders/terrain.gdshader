@@ -334,14 +334,30 @@ void fragment() {
 		grass_alb.b *= 0.90;
 	}
 
-	// Dirt/mulch for playgrounds(4), dog_parks(6), tracks(9)
-	bool is_dirt = (zone_id == 4 || zone_id == 6 || zone_id == 9);
+	// Dirt/mulch for playgrounds(4), dog_parks(6)
+	bool is_dirt = (zone_id == 4 || zone_id == 6);
 	if (is_dirt) {
 		vec2 duv = world_pos.xz / dirt_tile_m;
 		vec3 d_alb = textureNoTile_c(dirt_albedo, duv);
 		vec3 d_nrm = textureNoTile_n(dirt_normal, duv);
 		float d_rgh = clamp(textureNoTile_r(dirt_rough, duv) * 0.15 + 0.80, 0.0, 1.0);
 		float dirt_blend = clamp(0.85 + edge_noise, 0.0, 1.0);
+		grass_alb = mix(grass_alb, d_alb, dirt_blend);
+		grass_nrm = mix(grass_nrm, d_nrm, dirt_blend);
+		grass_rgh = mix(grass_rgh, d_rgh, dirt_blend);
+	}
+
+	// Running track zones(9): distinctive reddish-brown cinder surface
+	// The Reservoir track is NYC's most iconic running loop
+	if (zone_id == 9) {
+		vec2 duv = world_pos.xz / dirt_tile_m;
+		vec3 d_alb = textureNoTile_c(dirt_albedo, duv);
+		vec3 d_nrm = textureNoTile_n(dirt_normal, duv);
+		float d_rgh = clamp(textureNoTile_r(dirt_rough, duv) * 0.15 + 0.72, 0.0, 1.0);
+		// Cinder track: reddish-brown, compacted, slightly smoother than raw dirt
+		vec3 cinder_tint = vec3(0.52, 0.32, 0.22);  // warm reddish cinder
+		d_alb = mix(d_alb, d_alb * cinder_tint * 2.5, 0.6);
+		float dirt_blend = clamp(0.90 + edge_noise, 0.0, 1.0);
 		grass_alb = mix(grass_alb, d_alb, dirt_blend);
 		grass_nrm = mix(grass_nrm, d_nrm, dirt_blend);
 		grass_rgh = mix(grass_rgh, d_rgh, dirt_blend);
