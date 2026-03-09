@@ -2310,3 +2310,45 @@ func _build_shrubbery(shrubbery_data: Array) -> void:
 		body.add_child(col)
 		_loader.add_child(body)
 	print("  Shrubbery: %d areas" % shrubbery_data.size())
+
+
+func _build_special_zone_labels() -> void:
+	## Labels for notable special landuse zones — nature reserves, sports centres, etc.
+	var label_types := ["nature_reserve", "sports_centre", "industrial"]
+	var type_colors: Dictionary = {
+		"nature_reserve": Color(0.30, 0.55, 0.25, 0.60),  # forest green
+		"sports_centre":  Color(0.45, 0.50, 0.60, 0.55),  # neutral blue-gray
+		"industrial":     Color(0.55, 0.50, 0.45, 0.50),  # neutral warm
+	}
+	var count := 0
+	for zone in _loader.landuse_zones:
+		var ztype: String = zone.get("type", "")
+		if ztype not in label_types:
+			continue
+		var name_: String = zone.get("name", "")
+		if name_.is_empty():
+			continue
+		var pts: Array = zone.get("points", [])
+		if pts.size() < 3:
+			continue
+		var cx := 0.0; var cz := 0.0
+		for pt in pts:
+			cx += float(pt[0]); cz += float(pt[1])
+		cx /= pts.size(); cz /= pts.size()
+		if not _loader._in_boundary(cx, cz):
+			continue
+		var cy: float = _loader._terrain_y(cx, cz)
+		var label := Label3D.new()
+		label.text = name_
+		label.font_size = 32
+		label.position = Vector3(cx, cy + 4.5, cz)
+		label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+		label.modulate = type_colors.get(ztype, Color(0.5, 0.5, 0.5, 0.55))
+		label.outline_modulate = Color(0.05, 0.08, 0.05, 0.40)
+		label.outline_size = 5
+		label.no_depth_test = false
+		label.pixel_size = 0.013
+		_loader.add_child(label)
+		count += 1
+	if count > 0:
+		print("  Special zone labels: %d" % count)

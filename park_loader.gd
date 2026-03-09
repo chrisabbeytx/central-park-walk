@@ -980,6 +980,7 @@ func _ready() -> void:
 	_infrastructure_builder._build_bandstands()
 	_infrastructure_builder._build_meadow_labels()
 	_infrastructure_builder._build_shrubbery(shrubbery)
+	_infrastructure_builder._build_special_zone_labels()
 	print("  fields+gardens: %d ms" % (Time.get_ticks_msec() - _tp)); _tp = Time.get_ticks_msec()
 	_gap_builder._build_gap_markers()
 	print("  gap markers: %d ms" % (Time.get_ticks_msec() - _tp))

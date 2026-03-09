@@ -127,7 +127,7 @@ All data is freely available. No paid APIs. No API keys.
 | Statues | 106 positions | 3 photogrammetry scans (+ Bethesda Fountain), labels mark unscanned locations |
 | Perimeter wall | 7,962 segments | Manhattan schist with mica sparkle, glacial striations, moss, 105 gate openings, 210 gate pillars |
 | Sports fields | 147 | Baseball (30), tennis (55), basketball (37), soccer (10), handball (4), croquet (2), plus multi-sport — all from OSM `sport` tags with regulation markings |
-| Landmarks | 16 viewpoints + 42 attractions | OSM-sourced viewpoints, zoo exhibits, museums, historic features with labels |
+| Landmarks | 16 viewpoints + 42 attractions + 10 labeled zones | OSM-sourced viewpoints, zoo exhibits, museums, historic features, named meadows, nature reserves with labels |
 | Seasons | 4 | Per-species phenology, wind-drifted fallen leaf scatter, seasonal water/fog/atmosphere/sky/paths, winter frost + ice, stone moss, bark moss, hedge seasonal color |
 | Weather | 5 modes | Rain (wet surfaces/paths/stone/bark/iron/sports, glossy leaves, puddles with sky reflections, facade rain streaks, rain-on-lens), thunderstorm (30K particles, lightning flash + cloud glow + color grade wash), snow (terrain/trees/buildings/paths/stone/water/roofs/iron/hedges), fog, clear — dew, frost |
 | Day/night | 5 keyframes | 48-light lamp pool, lit windows, directional NYC light pollution, blue hour, moon with maria, dawn mist |
