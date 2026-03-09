@@ -304,11 +304,15 @@ func _load_tex(path: String) -> ImageTexture:
 	return tex
 
 
-func _get_shader(key: String, code: String) -> Shader:
+func _get_shader(key: String, code_or_path: String) -> Shader:
 	if key in _shader_cache:
 		return _shader_cache[key]
-	var sh := Shader.new()
-	sh.code = code
+	var sh: Shader
+	if code_or_path.begins_with("res://") and code_or_path.ends_with(".gdshader"):
+		sh = load(code_or_path) as Shader
+	else:
+		sh = Shader.new()
+		sh.code = code_or_path
 	_shader_cache[key] = sh
 	return sh
 
@@ -329,49 +333,6 @@ func _make_mesh(verts: PackedVector3Array, normals: PackedVector3Array,
 	var mesh := ArrayMesh.new()
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 	return mesh
-
-
-# Shared GLSL snippets — used by multiple shaders to avoid duplication
-const GLSL_HASH := """
-float hash21(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
-vec2  hash2(vec2 p)  { return fract(sin(vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3)))) * 43758.5453); }
-"""
-
-const GLSL_DECODE_TERRAIN := """
-float decode_h(vec4 s) {
-	return s.r * (255.0 / 256.0) + s.g * (1.0 / 256.0);
-}
-float sample_terrain(vec2 world_xz) {
-	float half_ws = hm_world_size * 0.5;
-	vec2 grid = (world_xz + half_ws) / hm_world_size * (hm_res - 1.0);
-	vec2 gi = floor(grid);
-	vec2 gf = grid - gi;
-	vec2 uv00 = (gi + 0.5) / hm_res;
-	vec2 uv10 = (gi + vec2(1.5, 0.5)) / hm_res;
-	vec2 uv01 = (gi + vec2(0.5, 1.5)) / hm_res;
-	vec2 uv11 = (gi + vec2(1.5, 1.5)) / hm_res;
-	float h00 = hm_min_h + decode_h(texture(heightmap_tex, uv00)) * hm_range;
-	float h10 = hm_min_h + decode_h(texture(heightmap_tex, uv10)) * hm_range;
-	float h01 = hm_min_h + decode_h(texture(heightmap_tex, uv01)) * hm_range;
-	float h11 = hm_min_h + decode_h(texture(heightmap_tex, uv11)) * hm_range;
-	float fx = gf.x;
-	float fz = gf.y;
-	if (fz <= fx) {
-		return h00 + (h10 - h00) * fx + (h11 - h10) * fz;
-	} else {
-		return h00 + (h11 - h01) * fx + (h01 - h00) * fz;
-	}
-}
-"""
-
-const GLSL_SNOW := """
-// Snow accumulation — shared across tree/billboard/vegetation shaders
-vec3 apply_snow(vec3 albedo, vec3 world_normal, float snow_cover, float noise) {
-	float upward = max(world_normal.y, 0.0);
-	float snow_amt = clamp((0.3 + upward * 0.7 + noise) * snow_cover, 0.0, 1.0);
-	return mix(albedo, vec3(0.92, 0.93, 0.96), snow_amt);
-}
-"""
 
 
 func _path_tex_prefix(hw: String, surface: String) -> String:
@@ -442,47 +403,7 @@ func _make_path_material(hw: String, surface: String) -> Material:
 
 
 func _path_shader_code() -> String:
-	return """shader_type spatial;
-render_mode cull_disabled;
-
-uniform sampler2D tex_alb : source_color,      filter_linear_mipmap_anisotropic, repeat_enable;
-uniform sampler2D tex_nrm : hint_normal,        filter_linear_mipmap_anisotropic, repeat_enable;
-uniform sampler2D tex_rgh : hint_default_white, filter_linear_mipmap_anisotropic, repeat_enable;
-uniform sampler2D heightmap_tex : filter_nearest, repeat_disable;
-uniform vec4 tint : source_color = vec4(1.0);
-uniform float hm_world_size = 5000.0;
-uniform float hm_min_h      = 0.0;
-uniform float hm_range      = 1.0;
-uniform float hm_res        = 256.0;
-uniform float path_y_offset = 0.08;
-""" + GLSL_DECODE_TERRAIN + """
-varying flat float depth_jitter;
-
-float pos_hash(vec2 p) {
-	p = fract(p * vec2(127.1, 311.7));
-	p += dot(p, p + 43.21);
-	return fract(p.x * p.y);
-}
-
-void vertex() {
-	vec3 world = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
-	float terrain_h = sample_terrain(world.xz);
-	vec3 snapped = (inverse(MODEL_MATRIX) * vec4(world.x, terrain_h + path_y_offset, world.z, 1.0)).xyz;
-	VERTEX.y = snapped.y;
-	// Per-triangle depth jitter to break z-fighting at same-type intersections
-	depth_jitter = pos_hash(floor(world.xz * 0.5)) * 0.0003;
-}
-
-void fragment() {
-	vec3  alb   = texture(tex_alb, UV).rgb;
-	float rough = texture(tex_rgh, UV).r;
-	ALBEDO     = alb * tint.rgb * COLOR.rgb;
-	NORMAL_MAP = texture(tex_nrm, UV).rgb;
-	ROUGHNESS  = clamp(rough + 0.10, 0.0, 1.0);
-	METALLIC   = 0.0;
-	DEPTH = FRAGCOORD.z - depth_jitter;
-}
-"""
+	return "res://shaders/path.gdshader"
 
 
 # ---------------------------------------------------------------------------
@@ -1641,43 +1562,7 @@ func _make_stone_material(alb: ImageTexture, nrm: ImageTexture, rgh: ImageTextur
 
 
 func _stone_shader_code() -> String:
-	return """shader_type spatial;
-render_mode cull_disabled;
-
-uniform sampler2D tex_alb : source_color,      filter_linear_mipmap_anisotropic, repeat_enable;
-uniform sampler2D tex_nrm : hint_normal,        filter_linear_mipmap_anisotropic, repeat_enable;
-uniform sampler2D tex_rgh : hint_default_white, filter_linear_mipmap_anisotropic, repeat_enable;
-uniform vec4 tint : source_color = vec4(1.0);
-
-varying vec3 world_pos;
-varying vec3 world_nrm;
-
-void vertex() {
-	world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
-	world_nrm = normalize((MODEL_MATRIX * vec4(NORMAL, 0.0)).xyz);
-}
-
-void fragment() {
-	// Triplanar UV: blend XZ (top/ceiling), XY (front/back), YZ (sides)
-	vec3 blend = abs(world_nrm);
-	blend = pow(blend, vec3(4.0));
-	blend /= (blend.x + blend.y + blend.z + 0.001);
-	float tile = 2.0;   // 2 m texture tile
-	vec3 alb = texture(tex_alb, world_pos.xz / tile).rgb * blend.y
-	         + texture(tex_alb, world_pos.xy / tile).rgb * blend.z
-	         + texture(tex_alb, world_pos.yz / tile).rgb * blend.x;
-	vec3 nrm = texture(tex_nrm, world_pos.xz / tile).rgb * blend.y
-	         + texture(tex_nrm, world_pos.xy / tile).rgb * blend.z
-	         + texture(tex_nrm, world_pos.yz / tile).rgb * blend.x;
-	float rgh = texture(tex_rgh, world_pos.xz / tile).r * blend.y
-	          + texture(tex_rgh, world_pos.xy / tile).r * blend.z
-	          + texture(tex_rgh, world_pos.yz / tile).r * blend.x;
-	ALBEDO     = alb * tint.rgb;
-	NORMAL_MAP = nrm;
-	ROUGHNESS  = clamp(rgh + 0.05, 0.0, 1.0);
-	METALLIC   = 0.0;
-}
-"""
+	return "res://shaders/stone.gdshader"
 
 
 # Water functions extracted to water_builder.gd
