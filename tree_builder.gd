@@ -357,9 +357,10 @@ const vec4 PHENOLOGY[6] = vec4[6](
 );
 
 varying float v_leaf_density;
+varying vec3 v_leaf_color;
 
 void vertex() {
-	// Decode per-instance season data
+	// Decode per-instance season data (all INSTANCE_CUSTOM reads in vertex only)
 	float is_evergreen = INSTANCE_CUSTOM.b;
 	int sp_idx = int(INSTANCE_CUSTOM.r * 5.0 + 0.5);
 	float timing_off = INSTANCE_CUSTOM.g - 0.5;
@@ -375,6 +376,21 @@ void vertex() {
 		leaf_density = clamp(leaf_density, 0.08, 1.0);
 	}
 	v_leaf_density = leaf_density;
+
+	// Compute seasonal leaf color in vertex, pass to fragment via varying
+	vec3 leaf_color = albedo_tint;
+	if (is_evergreen < 0.5) {
+		vec4 ph = PHENOLOGY[sp_idx];
+		vec3 fall_col = FALL_COLORS[sp_idx];
+		vec3 spring_tint = albedo_tint * vec3(1.15, 1.2, 0.7);
+		float spring_t = smoothstep(ph.w, ph.w + 0.4, s);
+		leaf_color = mix(spring_tint, albedo_tint, spring_t);
+		float fall_t = smoothstep(ph.x, ph.y, s);
+		leaf_color = mix(leaf_color, fall_col, fall_t);
+		float late_fall = smoothstep(ph.y, ph.z, s);
+		leaf_color = mix(leaf_color, fall_col * 0.5, late_fall * 0.6);
+	}
+	v_leaf_color = leaf_color;
 
 	vec3 tree_origin = (MODEL_MATRIX * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
 	float sway = max(VERTEX.y, 0.0);
@@ -400,33 +416,7 @@ void fragment() {
 	float alpha = tex.a * v_leaf_density;
 	if (alpha < alpha_scissor) discard;
 
-	// Decode per-instance season data
-	int sp_idx = int(INSTANCE_CUSTOM.r * 5.0 + 0.5);
-	float timing_off = INSTANCE_CUSTOM.g - 0.5;
-	float is_evergreen = INSTANCE_CUSTOM.b;
-	float s = mod(season_t + timing_off, 4.0);
-
-	// Seasonal color
-	vec3 leaf_color = albedo_tint;
-	if (is_evergreen < 0.5) {
-		vec4 ph = PHENOLOGY[sp_idx];
-		vec3 fall_col = FALL_COLORS[sp_idx];
-		vec3 spring_tint = albedo_tint * vec3(1.15, 1.2, 0.7);
-
-		// Spring: fresh bright green
-		float spring_t = smoothstep(ph.w, ph.w + 0.4, s);
-		leaf_color = mix(spring_tint, albedo_tint, spring_t);
-
-		// Fall: green to species fall color
-		float fall_t = smoothstep(ph.x, ph.y, s);
-		leaf_color = mix(leaf_color, fall_col, fall_t);
-
-		// Late fall: darken as leaves die
-		float late_fall = smoothstep(ph.y, ph.z, s);
-		leaf_color = mix(leaf_color, fall_col * 0.5, late_fall * 0.6);
-	}
-
-	vec3 col = leaf_color * (0.6 + lum * 0.8);
+	vec3 col = v_leaf_color * (0.6 + lum * 0.8);
 
 	// Snow accumulation
 	if (snow_cover > 0.01) {

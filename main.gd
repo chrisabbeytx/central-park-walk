@@ -261,6 +261,11 @@ const TOUR_TIMES: Array = [7.0, 12.0, 17.0, 22.0]
 
 func _build_tour_shots() -> void:
 	_tour_shots.clear()
+	# Check for --tour-showcase: focused set with weather/season variety
+	for arg in OS.get_cmdline_user_args():
+		if arg == "--tour-showcase":
+			_build_showcase_shots()
+			return
 	for vp in TOUR_VIEWPOINTS:
 		for ti in range(TOUR_TIMES.size()):
 			for ai in range(TOUR_ANGLES.size()):
@@ -273,6 +278,49 @@ func _build_tour_shots() -> void:
 					"hour": TOUR_TIMES[ti],
 					"filename": "%s_%dh%s" % [vp["name"], int(TOUR_TIMES[ti]), TOUR_ANGLES[ai]["suffix"]],
 				})
+
+
+# Showcase tour — curated shots demonstrating time, weather, and season variety
+const SHOWCASE_SHOTS: Array = [
+	# Summer golden hour — flagship shot
+	{"name": "literary_walk_summer_golden", "x": -600.0, "z": 1420.0, "yaw": 30.0, "pitch": 0.0, "hour": 17.5, "season": 1.5, "weather": "clear"},
+	# Autumn morning at Bethesda
+	{"name": "bethesda_autumn_morning", "x": -480.0, "z": 1020.0, "yaw": 180.0, "pitch": 0.0, "hour": 8.0, "season": 2.5, "weather": "clear"},
+	# Winter snow at the Lake — Bow Bridge area
+	{"name": "bow_bridge_winter_snow", "x": -540.0, "z": 740.0, "yaw": 310.0, "pitch": 0.0, "hour": 12.0, "season": 3.5, "weather": "snow"},
+	# Spring dawn at the Ramble
+	{"name": "ramble_spring_dawn", "x": -400.0, "z": 600.0, "yaw": 225.0, "pitch": 0.0, "hour": 6.0, "season": 0.5, "weather": "clear"},
+	# Rain at Conservatory Water
+	{"name": "conservatory_rain_afternoon", "x": -152.0, "z": 958.0, "yaw": 270.0, "pitch": 0.0, "hour": 15.0, "season": 2.0, "weather": "rain"},
+	# Night at Literary Walk — sodium vapor lamps
+	{"name": "literary_walk_night", "x": -600.0, "z": 1420.0, "yaw": 30.0, "pitch": 0.0, "hour": 22.0, "season": 1.5, "weather": "clear"},
+	# Winter fog at Great Lawn
+	{"name": "great_lawn_winter_fog", "x": -200.0, "z": 0.0, "yaw": 0.0, "pitch": 0.0, "hour": 7.0, "season": 3.2, "weather": "fog"},
+	# Autumn golden hour at Cherry Hill
+	{"name": "cherry_hill_autumn_golden", "x": -630.0, "z": 880.0, "yaw": 90.0, "pitch": 0.0, "hour": 17.5, "season": 2.6, "weather": "clear"},
+	# Summer noon skyline from Fifth Ave side
+	{"name": "fifth_ave_summer_noon", "x": 100.0, "z": 200.0, "yaw": 270.0, "pitch": 0.0, "hour": 12.0, "season": 1.5, "weather": "clear"},
+	# Snow at North Woods
+	{"name": "north_woods_snow_morning", "x": 600.0, "z": -1315.0, "yaw": 180.0, "pitch": 0.0, "hour": 9.0, "season": 3.5, "weather": "snow"},
+	# Spring rain at the Mall
+	{"name": "the_mall_spring_rain", "x": -550.0, "z": 1300.0, "yaw": 180.0, "pitch": 0.0, "hour": 14.0, "season": 0.6, "weather": "rain"},
+	# Autumn dusk at CPW skyline
+	{"name": "cpw_skyline_autumn_dusk", "x": -600.0, "z": 1420.0, "yaw": 90.0, "pitch": 0.0, "hour": 19.0, "season": 2.5, "weather": "clear"},
+	# Summer dawn at Reservoir
+	{"name": "reservoir_summer_dawn", "x": -200.0, "z": -300.0, "yaw": 0.0, "pitch": -5.0, "hour": 5.5, "season": 1.5, "weather": "clear"},
+	# Winter afternoon at Sheep Meadow
+	{"name": "sheep_meadow_winter_noon", "x": -700.0, "z": 1600.0, "yaw": 270.0, "pitch": 0.0, "hour": 12.0, "season": 3.5, "weather": "snow"},
+	# Autumn at the Lake
+	{"name": "the_lake_autumn_afternoon", "x": -560.0, "z": 780.0, "yaw": 60.0, "pitch": 0.0, "hour": 15.0, "season": 2.7, "weather": "clear"},
+	# Spring morning at soccer fields
+	{"name": "soccer_fields_spring_morning", "x": 390.0, "z": -1070.0, "yaw": 30.0, "pitch": 0.0, "hour": 9.0, "season": 0.5, "weather": "clear"},
+]
+
+
+func _build_showcase_shots() -> void:
+	for shot in SHOWCASE_SHOTS:
+		_tour_shots.append(shot.duplicate())
+		_tour_shots.back()["filename"] = shot["name"]
 
 
 # ---------------------------------------------------------------------------
@@ -531,8 +579,42 @@ func _tour_teleport(idx: int) -> void:
 		head.rotation_degrees.x = pitch
 	_time_of_day = hour
 	_time_speed = 0.0
+	# Apply weather if specified
+	if shot.has("weather"):
+		_set_weather(shot["weather"])
+	# Apply season if specified
+	if shot.has("season"):
+		_season_t = float(shot["season"])
+		RenderingServer.global_shader_parameter_set("season_t", _season_t)
 	_last_applied_tod = -999.0  # force full lighting update
 	_apply_time_of_day()
+
+
+func _set_weather(mode: String) -> void:
+	## Set weather mode, tearing down previous particles and pre-accumulating cover.
+	if _rain_particles:
+		_rain_particles.queue_free()
+		_rain_particles = null
+	if _snow_particles:
+		_snow_particles.queue_free()
+		_snow_particles = null
+	_weather_mode = mode
+	_setup_weather()
+	# Pre-accumulate snow/rain so screenshots don't need to wait
+	if mode == "snow":
+		_snow_cover = 1.0
+		_rain_wetness = 0.0
+	elif mode == "rain" or mode == "thunderstorm":
+		_rain_wetness = 1.0
+		_snow_cover = 0.0
+	else:
+		_snow_cover = 0.0
+		_rain_wetness = 0.0
+	if _terrain_mat:
+		_terrain_mat.set_shader_parameter("snow_cover", _snow_cover)
+		_terrain_mat.set_shader_parameter("rain_wetness", _rain_wetness)
+	RenderingServer.global_shader_parameter_set("snow_cover", _snow_cover)
+	RenderingServer.global_shader_parameter_set("rain_wetness", _rain_wetness)
 
 
 func _tour_write_manifest() -> void:

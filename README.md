@@ -10,11 +10,11 @@ Central Park Walk is a real-time 3D simulation of the entirety of New York's Cen
 
 Every tree has a real measured height from LiDAR. Every path follows its real-world geometry from OpenStreetMap. Every bridge is one of 55 actual bridges, rendered in its correct architectural style. The terrain is accurate to one foot of vertical resolution. And all of it was assembled by an AI interpreting the accumulated record of human attention to one of the most documented places on Earth.
 
-The simulation covers 100% of Central Park's terrain at 4096×4096 mesh resolution, derived from NYC's 2017 LiDAR survey. 16,243 trees are placed from the NYC Tree Census, cross-referenced with LiDAR canopy measurements so 89% have their real measured heights. 2,624 paths are rendered with analytical GPU path rendering — material-specific and width-correct. 18,368 buildings are rendered from real NYC Building Footprints data — each with its actual measured height, construction year, and footprint polygon — with windows that glow warm at night.
+The simulation covers 100% of Central Park's terrain at 4096×4096 mesh resolution, derived from NYC's 2017 LiDAR survey. Trees are placed from the NYC Tree Census, cross-referenced with LiDAR canopy measurements for real measured heights. 2,624 paths are rendered with analytical GPU path rendering — material-specific and width-correct. 18,368 buildings are rendered from real NYC Building Footprints data — each with its actual measured height, construction year, and footprint polygon — with windows that glow warm at night.
 
 55 bridges span the park in 5 architectural styles: stone, cast iron, brick, rustic wood, and the signature Bow Bridge with its interlocking-circles railing. 15 tunnels have barrel-vault interiors with portal lighting. A 7,962-segment brownstone perimeter wall with 105 gate openings marks where the park meets the city. Custom Blender scripts generate period-accurate park furniture: Bishop's Crook lampposts, cast iron benches, wire mesh trash cans, granite drinking fountains.
 
-Rain, snow, fog, puddles, morning dew. A full day/night cycle with sodium vapor park lighting and lit windows. The data-first philosophy means: if we don't have real data for something, we leave a gap rather than guess. Gaps tell us what humans haven't yet measured, mapped, or photographed.
+Rain, snow, fog, puddles, morning dew. A full day/night cycle with sodium vapor park lighting and lit windows. A seasonal cycle where each tree species changes color on its own phenological schedule — maples turn brilliant red, oaks go brown, elms yellow, birches gold — and the grass shifts from spring green through summer richness to autumn amber to winter dormancy. The data-first philosophy means: if we don't have real data for something, we leave a gap rather than guess. Gaps tell us what humans haven't yet measured, mapped, or photographed.
 
 ## The Vision
 
@@ -26,14 +26,14 @@ The project is designed to expand. More places, more data sources, more contribu
 
 ## Screenshots
 
-![Literary Walk — Golden Hour](screenshots/literary_walk_golden.png)
+![Autumn Dusk — Central Park West Skyline](screenshots/cpw_skyline_autumn_dusk.png)
+*Autumn dusk on the Literary Walk. Per-species fall colors — maple red, oak brown, elm gold — driven by phenology data. 18,368 buildings from NYC Building Footprints.*
+
+![Summer Golden Hour — Literary Walk](screenshots/literary_walk_summer_golden.png)
 *The Literary Walk at golden hour. Every tree placed from NYC Tree Census data, every path from OpenStreetMap.*
 
-![Bethesda Terrace — Sunrise](screenshots/bethesda_sunrise.png)
-*Sunrise over Bethesda Terrace. 18,368 buildings rendered from NYC Building Footprints with real measured heights.*
-
-![The Mall](screenshots/the_mall_path.png)
-*The Mall at midday. 2,624 paths rendered with analytical GPU path rendering — width-correct and material-specific.*
+![Winter Snow — Sheep Meadow](screenshots/sheep_meadow_winter_noon.png)
+*Sheep Meadow under snow. Full seasonal cycle with weather simulation — rain, snow, fog, and puddles.*
 
 ![North Woods Rustic Bridge](screenshots/north_woods_bridge.png)
 *A rustic wood bridge in the North Woods — one of 55 bridges rendered in 5 architectural styles from OSM data.*
@@ -108,7 +108,7 @@ All data is freely available. No paid APIs. No API keys.
 | [NYC Tree Census](https://data.cityofnewyork.us/) | Species, diameter for 39,495 park trees | Public Domain |
 | [Wikimedia Commons](https://commons.wikimedia.org/) | Material colors, architectural reference | CC-BY-SA |
 | [Sketchfab](https://sketchfab.com/) | Photogrammetry statue scans (3 integrated) | CC-BY |
-| [Quaternius](https://quaternius.com/) | Tree 3D models (4 species × 5 variants) | CC0 |
+| [Quaternius](https://quaternius.com/) | Tree 3D models (5 species × 5 variants) | CC0 |
 | [ambientCG](https://ambientcg.com/) / [Polyhaven](https://polyhaven.com/) | PBR textures, HDRI sky | CC0 |
 
 ## Current Coverage
@@ -116,16 +116,17 @@ All data is freely available. No paid APIs. No API keys.
 | Feature | Count | Detail |
 |---------|-------|--------|
 | Terrain | 4096×4096 | LiDAR-accurate, per-pixel normals, structure mask |
-| Trees | 16,243 placed | 4 species models, zone-specific species mapping |
+| Trees | 22,098 in census | 5 species models, LiDAR heights, seasonal phenology |
 | Paths | 2,624 | Analytical GPU rendering, 58K segments, width-correct |
 | Water | 27 bodies | Per-body color, shore alpha, depth tinting |
 | Buildings | 18,368 | Real NYC footprints + measured heights, 5 facade styles, night emission |
 | Bridges | 55 | 5 styles, miter joints, arched soffits, Bow Bridge railings |
 | Tunnels | 15 | Barrel vault interiors, portal lighting |
 | Furniture | 1,004+ | Custom Blender models: lampposts, benches, trash cans, fountains |
-| Statues | 106 positions | 3 photogrammetry scans, generic fallbacks |
+| Statues | 106 positions | 3 photogrammetry scans, labels mark unscanned locations |
 | Perimeter wall | 7,962 segments | Brownstone with 105 gate openings, 210 gate pillars |
 | Sports fields | 60 | Baseball (25), soccer (6), tennis (28), basketball (1) |
+| Seasons | 4 | Per-species phenology: leaf color, density, canopy shape, grass tint |
 | Weather | 4 modes | Rain, snow, fog, clear — with puddles, mist, dew |
 | Day/night | 5 keyframes | Sodium vapor lamps, lit windows, stars, dawn mist |
 | Sound | — | Audio not yet implemented (field recordings needed) |
@@ -142,7 +143,7 @@ This project grows with human attention. Here's what we need:
 - **Rock outcrop mapping**: Central Park has ~170 named outcrops. OSM has 1.
 
 ### Technical Contributions
-- **Species-accurate tree models**: 4 generic models for 100+ real species. The American Elm — the park's signature tree — currently uses a maple model.
+- **Species-accurate tree models**: 5 generic models (maple, elm, birch, pine, deciduous) for 100+ real species. Need species-specific models for Red Oak, Pin Oak, London Plane, and others.
 - **Interior spaces**: Bethesda Arcade, bridge underpasses, tunnel interiors.
 - **Ground detail**: Wildflowers, grass, undergrowth, ferns.
 - **Performance**: No GPU profiling done yet.
@@ -165,7 +166,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines.
 
 Central Park Walk is built by a small team — Christopher Abbey and Claude — with no institutional backing. Development is limited by compute availability, and sustaining the project means sustaining the people who build it.
 
-<!-- [Open Collective badge will go here] -->
+[![Contribute on Open Collective](https://opencollective.com/central-park-walk/contribute/button)](https://opencollective.com/central-park-walk)
 
 See [FUNDING.md](FUNDING.md) for details on how funds are used.
 

@@ -110,7 +110,7 @@ cd central-park-walk
 
 ### Priority Areas
 
-1. **Species-accurate tree models**: We need American Elm, Red Oak, Sugar Maple, Pin Oak models. The park's 4 generic Quaternius models don't capture species character. Blender scripts preferred (following the `scripts/make_*.py` pattern).
+1. **Species-accurate tree models**: We have 5 generic Quaternius models (maple, elm, birch, pine, deciduous) but need species-specific models for Red Oak, Pin Oak, London Plane, Sugar Maple, and others. Each tree has per-species seasonal phenology (fall colors, leaf drop timing). Blender scripts preferred (following the `scripts/make_*.py` pattern).
 2. **Interior spaces**: Bethesda Arcade (Minton tile ceiling), bridge underpasses, tunnel interiors. The LiDAR terrain creates terrain caves where architectural spaces should be.
 3. **Ground detail**: Terrain tile models for wildflowers, grass, undergrowth, ferns.
 4. **Cross-platform**: Currently Linux-only with Forward+ renderer. Testing and fixes for Windows/macOS welcome.
