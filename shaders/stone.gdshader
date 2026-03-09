@@ -54,6 +54,29 @@ void fragment() {
 	METALLIC   = 0.0;
 	SPECULAR   = 0.10;
 
+	// Mica sparkle: Manhattan schist has visible mica flakes catching light
+	float mica = stone_hash(floor(world_pos.xz * 20.0 + world_pos.yy * 15.0));
+	if (mica > 0.92) {
+		SPECULAR = mix(SPECULAR, 0.55, (mica - 0.92) * 12.5);
+		ALBEDO += vec3(0.03, 0.03, 0.04) * (mica - 0.92) * 12.5;
+	}
+
+	// Glacial striations: Wisconsin ice age scoring on exposed horizontal surfaces
+	// Direction ~NNE-SSW (15° east of north) — visible on bridge copings, wall tops
+	if (world_nrm.y > 0.7) {
+		// Rotated UV aligned to glacial flow direction (~15° east of north)
+		float sa = 0.259; float ca = 0.966;  // sin/cos(15°)
+		float glacial_u = world_pos.x * ca + world_pos.z * sa;
+		float glacial_v = -world_pos.x * sa + world_pos.z * ca;
+		// Parallel grooves at ~2cm spacing with variation
+		float groove = sin(glacial_u * 180.0 + stone_noise(vec2(glacial_u, glacial_v) * 8.0) * 3.0);
+		groove = smoothstep(0.3, 0.8, groove);
+		// Only on relatively flat, exposed stone (bridges, outcrops, wall tops)
+		float striation_strength = smoothstep(0.7, 0.95, world_nrm.y) * 0.08;
+		ALBEDO *= (1.0 - groove * striation_strength);
+		ROUGHNESS += groove * striation_strength * 0.5;
+	}
+
 	// Age weathering: dirt accumulation in crevices, staining on faces
 	float weather_noise = stone_fbm(world_pos.xz * 0.12);
 	float stain_noise   = stone_fbm(world_pos.xz * 0.04 + vec2(50.0));
