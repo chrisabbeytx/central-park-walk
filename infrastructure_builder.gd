@@ -258,8 +258,8 @@ func _build_dog_parks() -> void:
 			continue
 
 		# Close the polygon if not already closed
-		var first := pts3d[0]
-		var last := pts3d[pts3d.size() - 1]
+		var first = pts3d[0]
+		var last = pts3d[pts3d.size() - 1]
 		if abs(float(first[0]) - float(last[0])) > 0.5 or abs(float(first[2]) - float(last[2])) > 0.5:
 			pts3d.append(first)
 
@@ -1483,8 +1483,8 @@ func _build_gardens() -> void:
 			var nx := -dz / seg_len * hedge_w
 			var nz := dx / seg_len * hedge_w
 
-			var y1 := _loader._terrain_y(x1, z1)
-			var y2 := _loader._terrain_y(x2, z2)
+			var y1: float = _loader._terrain_y(x1, z1)
+			var y2: float = _loader._terrain_y(x2, z2)
 
 			# Two triangles for top face
 			var a := Vector3(x1 - nx, y1 + hedge_h, z1 - nz)
