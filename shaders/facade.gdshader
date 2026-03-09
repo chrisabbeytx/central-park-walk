@@ -234,6 +234,28 @@ void fragment() {
 		}
 	}
 
+	// Winter frost on windows — ice crystal patterns in corners
+	float winter_f = smoothstep(2.8, 3.5, season_t);
+	if (winter_f > 0.01 && in_win && !in_reveal && snow_cover > 0.05) {
+		// Frost forms at window edges, spreading inward with colder temperatures
+		vec2 win_uv_f = in_win && !gnd_win
+			? vec2(lx / win_frac_x, ly / win_frac_y)
+			: vec2(gnd_lx / 0.65, clamp((UV.y - 1.2) / (ground_h - 1.2), 0.0, 1.0));
+		// Distance from window edge (0 at edge, 0.5 at center)
+		float edge_dist = min(min(win_uv_f.x, 1.0 - win_uv_f.x),
+		                      min(win_uv_f.y, 1.0 - win_uv_f.y));
+		// Frost crystal noise
+		float frost_noise = hash2(floor(world_pos.xz * 8.0 + world_pos.yy * 5.0));
+		float frost = smoothstep(0.15, 0.0, edge_dist) * winter_f * snow_cover;
+		frost *= (0.5 + frost_noise * 0.5);
+		if (frost > 0.01) {
+			ALBEDO = mix(ALBEDO, vec3(0.80, 0.85, 0.92), frost * 0.5);
+			ROUGHNESS = mix(ROUGHNESS, 0.60, frost);
+			SPECULAR = mix(SPECULAR, 0.15, frost * 0.5);
+			EMISSION *= (1.0 - frost * 0.3);  // frost dims interior light
+		}
+	}
+
 	// Atmospheric distance fade — buildings dissolve into haze
 	// Haze color follows sky for time-of-day and seasonal accuracy
 	float bldg_dist = length(world_pos.xyz - INV_VIEW_MATRIX[3].xyz);

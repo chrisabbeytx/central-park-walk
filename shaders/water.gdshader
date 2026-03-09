@@ -205,11 +205,13 @@ void fragment() {
 	vec3 base_col = mix(deep, shallow, smoothstep(-0.3, 0.6, wave_h));
 
 	// Rain ripples — concentric ring disturbance when raining
+	// Intensity scales with rain: gentle drizzle → heavy downpour
 	if (rain_wetness > 0.01) {
-		float rr = raindrop_ripple(world_pos.xz / 6.0);
+		float ripple_scale = mix(0.3, 1.0, rain_wetness);  // gentle at low rain, full at heavy
+		float rr = raindrop_ripple(world_pos.xz / 6.0) * ripple_scale;
 		float e = 0.02;
-		float rr_dx = raindrop_ripple((world_pos.xz + vec2(e, 0.0)) / 6.0);
-		float rr_dz = raindrop_ripple((world_pos.xz + vec2(0.0, e)) / 6.0);
+		float rr_dx = raindrop_ripple((world_pos.xz + vec2(e, 0.0)) / 6.0) * ripple_scale;
+		float rr_dz = raindrop_ripple((world_pos.xz + vec2(0.0, e)) / 6.0) * ripple_scale;
 		vec3 ripple_n = normalize(vec3(
 			-(rr_dx - rr) / e * 0.3,
 			1.0,

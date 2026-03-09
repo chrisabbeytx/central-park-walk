@@ -58,6 +58,9 @@ var _letterbox_top: ColorRect
 var _letterbox_bot: ColorRect
 var _letterbox_on: bool = false
 var _lamp_light_timer: float = 0.0
+var _lightning_timer: float = 0.0
+var _lightning_flash: float = 0.0     # 0-1 current flash intensity (decays rapidly)
+var _lightning_next: float = 5.0      # seconds until next flash
 const LAMP_LIGHT_COUNT := 48
 const LAMP_LIGHT_RANGE := 18.0
 const LAMP_LIGHT_UPDATE_INTERVAL := 0.5  # seconds between position updates
@@ -509,6 +512,20 @@ func _process(delta: float) -> void:
 		_snow_particles.global_position = _player.global_position + Vector3(0, 15, 0)
 		var spm: ParticleProcessMaterial = _snow_particles.process_material
 		spm.gravity = Vector3(_wind_vec.x * 3.0, -1.5, _wind_vec.y * 3.0)
+
+	# Lightning flashes during thunderstorm
+	if _weather_mode == "thunderstorm":
+		_lightning_flash = maxf(_lightning_flash - delta * 4.0, 0.0)  # rapid decay (~0.25s)
+		_lightning_timer += delta
+		if _lightning_timer >= _lightning_next:
+			_lightning_timer = 0.0
+			_lightning_flash = randf_range(0.6, 1.0)
+			# Double flash 20% of the time
+			if randf() < 0.2:
+				_lightning_flash = 1.0
+			_lightning_next = randf_range(3.0, 12.0)
+	elif _lightning_flash > 0.01:
+		_lightning_flash = maxf(_lightning_flash - delta * 4.0, 0.0)
 
 	# Advance clock
 	_time_of_day += _time_speed * delta
@@ -1199,6 +1216,9 @@ func _apply_time_of_day() -> void:
 	_env.adjustment_saturation = _lerp_kf("saturation", a, b, t)
 	_env.adjustment_contrast   = _lerp_kf("contrast", a, b, t)
 	_env.adjustment_brightness = _lerp_kf("brightness", a, b, t) * _user_gamma
+	# Lightning flash boost — multiplicative on top of normal brightness
+	if _lightning_flash > 0.01:
+		_env.adjustment_brightness *= (1.0 + _lightning_flash * 3.0)
 
 	# Fog
 	_env.fog_light_color       = _lerp_kf("fog_color", a, b, t)
@@ -1247,6 +1267,16 @@ func _apply_time_of_day() -> void:
 		_env.adjustment_saturation *= 0.75
 		_sky_mat.set_shader_parameter("cloud_coverage", 0.92)
 		_sky_mat.set_shader_parameter("cloud_density", 0.80)
+
+	# Wind reduces fog density slightly (wind disperses mist)
+	var wind_str: float = _wind_vec.length()
+	if wind_str > 0.1 and _env.fog_density > 0.001:
+		_env.fog_density *= lerpf(1.0, 0.82, clampf(wind_str * 0.3, 0.0, 1.0))
+
+	# Thunderstorm glow boost — lightning briefly illuminates clouds/scene
+	if _lightning_flash > 0.01:
+		_env.glow_bloom = maxf(_env.glow_bloom, _lightning_flash * 0.25)
+		_env.glow_intensity *= (1.0 + _lightning_flash * 0.8)
 
 	# Sky reflection color for water surfaces — tracks time-of-day sky tone
 	var sky_r: Color = _lerp_kf("fog_color", a, b, t)
