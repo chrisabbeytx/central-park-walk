@@ -457,13 +457,12 @@ func _build_buildings(buildings: Array) -> void:
 		mi.name = "BuildingWalls_" + style_names[s]
 		_loader.add_child(mi)
 
-	# Roof mesh with per-building vertex colors
+	# Roof mesh with per-building vertex colors + weather-responsive shader
 	if not roof_verts.is_empty():
 		var r_mesh: ArrayMesh = _loader._make_mesh(roof_verts, roof_normals, null, roof_colors)
-		var r_mat := StandardMaterial3D.new()
-		r_mat.vertex_color_use_as_albedo = true
-		r_mat.roughness = 0.92
-		r_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+		var roof_sh: Shader = _loader._get_shader("roof", "res://shaders/roof.gdshader")
+		var r_mat := ShaderMaterial.new()
+		r_mat.shader = roof_sh
 		r_mesh.surface_set_material(0, r_mat)
 		var r_mi := MeshInstance3D.new()
 		r_mi.mesh = r_mesh
