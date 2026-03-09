@@ -2013,3 +2013,106 @@ func _build_pools() -> void:
 		count += 1
 	if count > 0:
 		print("  Swimming pools: %d placed" % count)
+
+
+# ---------------------------------------------------------------------------
+# Bandstands — raised concrete stage platforms
+# ---------------------------------------------------------------------------
+func _build_bandstands() -> void:
+	var bandstands: Array = []
+	for zone in _loader.landuse_zones:
+		if zone.get("type", "") != "bandstand":
+			continue
+		var pts: Array = zone.get("points", [])
+		if pts.size() < 3:
+			continue
+		bandstands.append(zone)
+
+	if bandstands.is_empty():
+		return
+
+	var stone_mat: Material = _loader._make_stone_material(
+		_loader._load_tex("res://textures/rock_wall_diff.jpg"),
+		_loader._load_tex("res://textures/rock_wall_nrm.jpg"),
+		_loader._load_tex("res://textures/rock_wall_rgh.jpg"),
+		Color(0.78, 0.76, 0.72))
+
+	for zone in bandstands:
+		var name_: String = zone.get("name", "")
+		var pts: Array = zone["points"]
+
+		# Compute centroid
+		var cx := 0.0; var cz := 0.0
+		for pt in pts:
+			cx += float(pt[0]); cz += float(pt[1])
+		cx /= pts.size(); cz /= pts.size()
+		if not _loader._in_boundary(cx, cz):
+			continue
+
+		var base_y: float = _loader._terrain_y(cx, cz)
+		var stage_h := 1.0  # raised 1m above ground
+
+		# Stage floor — triangulated polygon at raised height
+		var floor_verts := PackedVector3Array()
+		var floor_norms := PackedVector3Array()
+		var top_y := base_y + stage_h
+		for i in range(pts.size()):
+			var j := (i + 1) % pts.size()
+			var x0 := float(pts[i][0]); var z0 := float(pts[i][1])
+			var x1 := float(pts[j][0]); var z1 := float(pts[j][1])
+			floor_verts.append(Vector3(cx, top_y, cz))
+			floor_verts.append(Vector3(x0, top_y, z0))
+			floor_verts.append(Vector3(x1, top_y, z1))
+			for _k in 3: floor_norms.append(Vector3.UP)
+
+		if not floor_verts.is_empty():
+			var fm: ArrayMesh = _loader._make_mesh(floor_verts, floor_norms)
+			fm.surface_set_material(0, stone_mat)
+			var fmi := MeshInstance3D.new()
+			fmi.mesh = fm
+			fmi.name = "Bandstand_Floor_%s" % name_.replace(" ", "_")
+			_loader.add_child(fmi)
+
+		# Stage edge walls — vertical faces around perimeter
+		var wall_verts := PackedVector3Array()
+		var wall_norms := PackedVector3Array()
+		for i in range(pts.size()):
+			var j := (i + 1) % pts.size()
+			var x0 := float(pts[i][0]); var z0 := float(pts[i][1])
+			var x1 := float(pts[j][0]); var z1 := float(pts[j][1])
+			var dx := x1 - x0; var dz := z1 - z0
+			var ln := sqrt(dx * dx + dz * dz)
+			if ln < 0.1:
+				continue
+			var fn := Vector3(-dz / ln, 0.0, dx / ln)
+			var by := _loader._terrain_y((x0 + x1) * 0.5, (z0 + z1) * 0.5)
+			var a := Vector3(x0, by, z0)
+			var b := Vector3(x1, by, z1)
+			var c := Vector3(x1, top_y, z1)
+			var d := Vector3(x0, top_y, z0)
+			wall_verts.append_array(PackedVector3Array([a, b, c, a, c, d]))
+			for _k in 6: wall_norms.append(fn)
+
+		if not wall_verts.is_empty():
+			var wm: ArrayMesh = _loader._make_mesh(wall_verts, wall_norms)
+			wm.surface_set_material(0, stone_mat)
+			var wmi := MeshInstance3D.new()
+			wmi.mesh = wm
+			wmi.name = "Bandstand_Wall_%s" % name_.replace(" ", "_")
+			_loader.add_child(wmi)
+
+		# Label
+		if not name_.is_empty():
+			var label := Label3D.new()
+			label.text = name_
+			label.font_size = 28
+			label.position = Vector3(cx, top_y + 3.0, cz)
+			label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+			label.modulate = Color(0.85, 0.80, 0.70, 0.65)
+			label.outline_modulate = Color(0.10, 0.08, 0.05, 0.45)
+			label.outline_size = 4
+			label.no_depth_test = false
+			label.pixel_size = 0.011
+			_loader.add_child(label)
+
+	print("  Bandstands: %d placed" % bandstands.size())

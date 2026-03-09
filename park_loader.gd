@@ -972,6 +972,7 @@ func _ready() -> void:
 	_infrastructure_builder._build_gardens()
 	_infrastructure_builder._build_dog_parks()
 	_infrastructure_builder._build_pools()
+	_infrastructure_builder._build_bandstands()
 	print("  fields+gardens: %d ms" % (Time.get_ticks_msec() - _tp)); _tp = Time.get_ticks_msec()
 	_gap_builder._build_gap_markers()
 	print("  gap markers: %d ms" % (Time.get_ticks_msec() - _tp))
