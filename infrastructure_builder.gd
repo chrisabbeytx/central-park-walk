@@ -2211,7 +2211,7 @@ func _build_bandstands() -> void:
 			if ln < 0.1:
 				continue
 			var fn := Vector3(-dz / ln, 0.0, dx / ln)
-			var by := _loader._terrain_y((x0 + x1) * 0.5, (z0 + z1) * 0.5)
+			var by: float = _loader._terrain_y((x0 + x1) * 0.5, (z0 + z1) * 0.5)
 			var a := Vector3(x0, by, z0)
 			var b := Vector3(x1, by, z1)
 			var c := Vector3(x1, top_y, z1)
@@ -2348,7 +2348,6 @@ func _build_shrubbery(shrubbery_data: Array) -> void:
 		mi.name = "Shrubbery"
 		_loader.add_child(mi)
 	if not col_verts.is_empty():
-		var col_mesh := _loader._make_mesh(col_verts, col_verts)  # normals ignored for collision
 		var body := StaticBody3D.new()
 		body.name = "Shrubbery_Col"
 		var shape := ConcavePolygonShape3D.new()

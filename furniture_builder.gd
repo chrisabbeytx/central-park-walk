@@ -206,7 +206,7 @@ func _build_flagpoles(flagpole_data: Array) -> void:
 	if flagpole_data.is_empty():
 		return
 	# Generate a simple tapered pole mesh
-	var pole_mesh := _loader._make_cylinder(0.06, 8.0, 8)
+	var pole_mesh: ArrayMesh = _loader._make_cylinder(0.06, 8.0, 8)
 	# Metallic silver material
 	var iron_shader: Shader = _loader._get_shader("cast_iron", "res://shaders/cast_iron.gdshader")
 	var pole_mat := ShaderMaterial.new()

@@ -489,7 +489,7 @@ func _build_buildings(buildings: Array) -> void:
 	# NYC rooftop water towers — wooden barrel tanks, iconic skyline element
 	if not water_tower_xf.is_empty():
 		# Barrel mesh — squat cylinder (1.2m radius × 2.5m tall)
-		var wt_mesh := _loader._make_cylinder(1.2, 2.5, 10)
+		var wt_mesh: ArrayMesh = _loader._make_cylinder(1.2, 2.5, 10)
 		var wood_sh: Shader = _loader._get_shader("wood", "res://shaders/wood.gdshader")
 		var wt_mat := ShaderMaterial.new()
 		wt_mat.shader = wood_sh
@@ -497,7 +497,7 @@ func _build_buildings(buildings: Array) -> void:
 		wt_mat.set_shader_parameter("base_roughness", 0.92)
 		_loader._spawn_multimesh(wt_mesh, wt_mat, water_tower_xf, "WaterTowers")
 		# Steel leg frame — thin dark cylinders under each barrel
-		var leg_mesh := _loader._make_cylinder(0.06, 2.8, 6)
+		var leg_mesh: ArrayMesh = _loader._make_cylinder(0.06, 2.8, 6)
 		var iron_sh: Shader = _loader._get_shader("cast_iron", "res://shaders/cast_iron.gdshader")
 		var leg_mat := ShaderMaterial.new()
 		leg_mat.shader = iron_sh
