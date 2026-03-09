@@ -205,6 +205,22 @@ void sky() {
 		cloud_mask *= horizon_fade;
 
 		sky_col = mix(sky_col, cloud_col, cloud_mask);
+
+		// High-altitude cirrus wisps — thin ice-crystal streaks above main clouds
+		// Move faster (jet stream), more directional, semi-transparent
+		if (elev > 0.15) {
+			vec2 cirrus_uv = dir.xz / (cloud_y + 0.05) * 0.3;
+			// Jet stream: moves mostly west-to-east, faster than low clouds
+			cirrus_uv += TIME * vec2(cloud_speed * 3.5, cloud_speed * 0.4);
+			// Stretched noise: elongated in wind direction for wispy streaks
+			float cn = sky_gnoise(cirrus_uv * vec2(2.0, 6.0));
+			cn += sky_gnoise(cirrus_uv * vec2(4.0, 12.0)) * 0.4;
+			float cirrus = smoothstep(0.3, 0.8, cn) * 0.15;
+			cirrus *= smoothstep(0.15, 0.35, elev);  // only high sky
+			// Cirrus are bright white, backlit by sun
+			vec3 cirrus_col = cloud_color_top + LIGHT0_COLOR * 0.15;
+			sky_col = mix(sky_col, cirrus_col, cirrus);
+		}
 	}
 
 	COLOR = sky_col;
