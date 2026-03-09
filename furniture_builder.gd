@@ -16,7 +16,7 @@ func _build_furniture(bench_data: Array, lamppost_data: Array, paths: Array) -> 
 	print("Furniture: loaded %d meshes from GLB" % furn_meshes.size())
 
 	# --- Lamp meshes ---
-	# Load CP-specific lamppost (Bishop's Crook style)
+	# Load CP-specific lamppost (Henry Bacon Type B + Kent Bloomer luminaire)
 	var cp_lamp_path := ProjectSettings.globalize_path("res://models/furniture/cp_lamppost.glb")
 	var cp_lamp_meshes: Dictionary = _loader._load_glb_meshes(cp_lamp_path)
 	var lamp_meshes_formal: Array[Mesh] = []
@@ -29,7 +29,7 @@ func _build_furniture(bench_data: Array, lamppost_data: Array, paths: Array) -> 
 		lamp_meshes_standard.append(cp_mesh)
 		lamp_meshes_simple.append(cp_mesh)
 		_cp_lamp_loaded = true
-		print("Lamp: loaded CP lamppost model (Bishop's Crook)")
+		print("Lamp: loaded CP lamppost model (Type B + Bloomer luminaire)")
 	# Fallback to generic furniture GLB variants
 	if not _cp_lamp_loaded:
 		for lname in ["ParkFurn_Lamp_A", "ParkFurn_Lamp_B"]:
@@ -125,8 +125,8 @@ func _build_furniture(bench_data: Array, lamppost_data: Array, paths: Array) -> 
 	print("  Lamp zones: formal=%d, standard=%d, simple=%d" % [lamp_xf_formal.size(), lamp_xf_standard.size(), lamp_xf_simple.size()])
 	# Spawn lamps per zone with appropriate mesh variants
 	var bulb_mesh := SphereMesh.new()
-	bulb_mesh.radius = 0.07
-	bulb_mesh.height = 0.14
+	bulb_mesh.radius = 0.10
+	bulb_mesh.height = 0.20
 	bulb_mesh.radial_segments = 8
 	bulb_mesh.rings = 4
 	var all_bulb_xf: Array = []
@@ -152,8 +152,8 @@ func _build_furniture(bench_data: Array, lamppost_data: Array, paths: Array) -> 
 			if not var_xf[vi].is_empty():
 				_loader._spawn_multimesh(meshes[vi], lamp_mat_override, var_xf[vi], "%s_%d" % [label, vi])
 		# Bulb positions for all lamps in this zone
-		# CP lamppost globe at (0.45, 3.2, 0), generic at (0.012, 2.79, 0.475)
-		var bulb_offset := Vector3(0.45, 3.2, 0.0) if _cp_lamp_loaded else Vector3(0.012, 2.79, 0.475)
+		# CP lamppost Type B globe center at (0, 3.87, 0), generic at (0.012, 2.79, 0.475)
+		var bulb_offset := Vector3(0.0, 3.87, 0.0) if _cp_lamp_loaded else Vector3(0.012, 2.79, 0.475)
 		for xf in xf_list:
 			var bxf: Transform3D = xf
 			bxf.origin += bulb_offset
