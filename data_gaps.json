@@ -1104,8 +1104,8 @@
     {
       "id": "buildings-citymodel",
       "type": "building_geometry",
-      "name": "All 18368 buildings \u2014 facade only",
-      "description": "All 18368 buildings use procedural facades from OSM footprints + heights. Real 3D geometry from NYC CityGML LOD2 dataset would replace these.",
+      "name": "All 6557 buildings \u2014 facade only",
+      "description": "All 6557 buildings use procedural facades from OSM footprints + heights. Real 3D geometry from NYC CityGML LOD2 dataset would replace these.",
       "pos": [
         0,
         0
