@@ -3,6 +3,7 @@ shader_type canvas_item;
 uniform sampler2D SCREEN_TEXTURE : hint_screen_texture, filter_linear;
 global uniform vec3 sky_reflect_color;
 global uniform float season_t;
+global uniform float lightning_flash;
 
 void fragment() {
 	vec3 c = texture(SCREEN_TEXTURE, SCREEN_UV).rgb;
@@ -95,6 +96,19 @@ void fragment() {
 	float vig_strength = mix(0.18, 0.28, night_t);
 	float vig = 1.0 - dot(vig_uv, vig_uv) * vig_strength;
 	c *= vig;
+
+	// Lightning flash — bright white wash, reduced vignette, desaturated
+	if (lightning_flash > 0.01) {
+		float lf = lightning_flash;
+		// Wash toward blue-white (lightning color temperature ~15000K)
+		vec3 flash_col = vec3(0.85, 0.88, 1.0);
+		c = mix(c, flash_col, lf * 0.4);
+		// Brighten
+		c += flash_col * lf * 0.15;
+		// Desaturate during flash (bright light washes out color)
+		float flash_lum = dot(c, vec3(0.2126, 0.7152, 0.0722));
+		c = mix(c, vec3(flash_lum), lf * 0.5);
+	}
 
 	// Film grain — subtle photographic texture, more visible at night
 	float grain_seed = dot(SCREEN_UV, vec2(12.9898, 78.233)) + TIME * 0.1;

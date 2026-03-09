@@ -178,6 +178,7 @@ func _ready() -> void:
 	RenderingServer.global_shader_parameter_add("rain_wetness", RenderingServer.GLOBAL_VAR_TYPE_FLOAT, 0.0)
 	RenderingServer.global_shader_parameter_add("sky_reflect_color", RenderingServer.GLOBAL_VAR_TYPE_VEC3, Vector3(0.32, 0.38, 0.45))
 	RenderingServer.global_shader_parameter_add("season_t", RenderingServer.GLOBAL_VAR_TYPE_FLOAT, _season_t)
+	RenderingServer.global_shader_parameter_add("lightning_flash", RenderingServer.GLOBAL_VAR_TYPE_FLOAT, 0.0)
 	print("main: environment: %d ms" % (Time.get_ticks_msec() - _mt)); _mt = Time.get_ticks_msec()
 	if not _terrain_only:
 		_setup_park()
@@ -544,6 +545,7 @@ func _process(delta: float) -> void:
 			_lightning_next = randf_range(3.0, 12.0)
 	elif _lightning_flash > 0.01:
 		_lightning_flash = maxf(_lightning_flash - delta * 4.0, 0.0)
+	RenderingServer.global_shader_parameter_set("lightning_flash", _lightning_flash)
 
 	# Advance clock
 	_time_of_day += _time_speed * delta
