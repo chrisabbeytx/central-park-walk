@@ -5599,15 +5599,21 @@ void fragment() {
 	METALLIC  = metal;
 	NORMAL_MAP = norm;
 	NORMAL_MAP_DEPTH = norm_depth;
+	// Ambient sky bounce — ensures facades are visible even in shadow
+	// (urban canyon indirect light from sky + ground + adjacent buildings)
+	if (!in_win) {
+		emission += col * 0.45;
+	}
 	EMISSION = emission;
 
 	// Atmospheric distance fade — buildings dissolve into haze
 	float bldg_dist = length(world_pos.xyz - INV_VIEW_MATRIX[3].xyz);
-	float atm_fade = smoothstep(80.0, 250.0, bldg_dist);
-	ALBEDO = mix(ALBEDO, vec3(0.42, 0.40, 0.38), atm_fade * 0.5);
+	float atm_fade = smoothstep(120.0, 400.0, bldg_dist);
+	vec3 haze_col = vec3(0.58, 0.56, 0.52);
+	ALBEDO = mix(ALBEDO, haze_col, atm_fade * 0.45);
 	ROUGHNESS = mix(ROUGHNESS, 0.95, atm_fade * 0.3);
-	// Fade emission with distance too (don't overlight distant buildings)
-	EMISSION *= (1.0 - atm_fade * 0.7);
+	// Distant buildings: blend emission toward haze brightness (not black)
+	EMISSION = mix(EMISSION, haze_col * 0.3, atm_fade * 0.5);
 }
 """
 
@@ -5761,16 +5767,19 @@ void fragment() {
 		}
 		NORMAL_MAP = brk_nrm;
 		NORMAL_MAP_DEPTH = is_ledge ? 1.2 : 1.0;
+		// Ambient sky bounce for brick facades
+		emission += brick_col * 0.45;
 	}
 
 	EMISSION = emission;
 
 	// Atmospheric distance fade — buildings dissolve into haze
 	float bldg_dist = length(world_pos.xyz - INV_VIEW_MATRIX[3].xyz);
-	float atm_fade = smoothstep(80.0, 250.0, bldg_dist);
-	ALBEDO = mix(ALBEDO, vec3(0.42, 0.40, 0.38), atm_fade * 0.5);
+	float atm_fade = smoothstep(120.0, 400.0, bldg_dist);
+	vec3 haze_col = vec3(0.58, 0.56, 0.52);
+	ALBEDO = mix(ALBEDO, haze_col, atm_fade * 0.45);
 	ROUGHNESS = mix(ROUGHNESS, 0.95, atm_fade * 0.3);
-	EMISSION *= (1.0 - atm_fade * 0.7);
+	EMISSION = mix(EMISSION, haze_col * 0.3, atm_fade * 0.5);
 }
 """
 
@@ -5870,7 +5879,7 @@ func _make_facade_buff_brick() -> ShaderMaterial:
 func _make_facade_dark_stone() -> ShaderMaterial:
 	var mat := ShaderMaterial.new()
 	mat.shader = _get_shader("facade_proc", _facade_shader_procedural())
-	mat.set_shader_parameter("wall_tint", Vector3(0.32, 0.28, 0.24))
+	mat.set_shader_parameter("wall_tint", Vector3(0.58, 0.54, 0.48))
 	mat.set_shader_parameter("wall_rough", 0.92)
 	mat.set_shader_parameter("wall_metal", 0.0)
 	mat.set_shader_parameter("glass_a", Vector3(0.06, 0.08, 0.10))

@@ -37,10 +37,6 @@ var _last_applied_tod: float = -999.0  # tracks last _apply_time_of_day() value
 const TIME_SPEEDS: Array = [0.001, 0.01, 0.1, 0.0]
 const TIME_SPEED_NAMES: Array = ["1x", "10x", "100x", "Paused"]
 
-# Weather state: 0=clear, 1=partly_cloudy, 2=overcast
-var _weather_state: int = 1
-const WEATHER_NAMES: Array = ["Clear", "Partly Cloudy", "Overcast"]
-
 var _env: Environment
 var _sky_mat: ShaderMaterial
 var _sun: DirectionalLight3D
@@ -188,8 +184,8 @@ func _ready() -> void:
 		_setup_lamp_lights()
 		#_setup_falling_leaves()  # procedural — defer to later
 		#_setup_pigeons()         # procedural — defer to later
-		_setup_audio()
-	_setup_weather_audio()
+		#_setup_audio()  # disabled — not working on audio yet
+	#_setup_weather_audio()  # disabled — not working on audio yet
 	_apply_time_of_day()
 	_setup_weather()
 	#_setup_fireflies()  # procedural — defer to later
@@ -207,6 +203,7 @@ func _ready() -> void:
 			break
 var _screenshot_timer := 0.0
 var _screenshot_done  := false
+var _labels_hidden_for_screenshot := false
 
 # ---------------------------------------------------------------------------
 # Tour mode — automated screenshot capture across 10 locations × 3 angles × 3 times
@@ -347,6 +344,9 @@ func _terrain_height(x: float, z: float) -> float:
 func _process(delta: float) -> void:
 	# --- Tour mode state machine ---
 	if _tour_mode:
+		if _hud_canvas and _hud_canvas.visible:
+			_hud_canvas.visible = false  # hide HUD for clean screenshots
+			_set_labels_visible(false)
 		_tour_timer += delta
 		match _tour_state:
 			0:  # WAIT_LOAD — let scene fully build
@@ -388,6 +388,11 @@ func _process(delta: float) -> void:
 		if _screenshot_timer <= delta and _player:
 			_player.set_physics_process(false)
 			_player.velocity = Vector3.ZERO
+		if _screenshot_timer >= 6.0 and _hud_canvas and _hud_canvas.visible:
+			_hud_canvas.visible = false  # hide HUD before capture
+		if _screenshot_timer >= 6.0 and not _labels_hidden_for_screenshot:
+			_labels_hidden_for_screenshot = true
+			_set_labels_visible(false)   # hide Label3D (building names, etc.)
 		if _screenshot_timer >= 8.0:
 			_screenshot_done = true
 			var img := get_viewport().get_texture().get_image()
@@ -396,6 +401,9 @@ func _process(delta: float) -> void:
 				print("Screenshot saved to /tmp/godot_screenshot.png")
 			if _player:
 				_player.set_physics_process(true)
+			if _hud_canvas:
+				_hud_canvas.visible = true  # restore HUD after capture
+				_set_labels_visible(true)
 	# Update lamp lights every 0.5s
 	_lamp_light_timer += delta
 	if _lamp_light_timer >= LAMP_LIGHT_UPDATE_INTERVAL:
@@ -459,9 +467,9 @@ func _process(delta: float) -> void:
 		_lightning_flash = 0.0
 
 	# Ambient audio (birds, wind, city, water)
-	_update_audio(delta)
+	#_update_audio(delta)  # disabled — not working on audio yet
 	# Weather audio (rain, wind, thunder)
-	_update_weather_audio(delta)
+	#_update_weather_audio(delta)  # disabled — not working on audio yet
 
 	# Letterbox bar sizing (adapts to viewport resize)
 	if _letterbox_on and _letterbox_top:
@@ -496,6 +504,11 @@ func _update_hud() -> void:
 		var area := _nearest_area(pos.x, pos.z)
 		_location_label.text = area if area else ""
 		_location_label.visible = not area.is_empty()
+
+
+func _set_labels_visible(vis: bool) -> void:
+	for n: Node in find_children("*", "Label3D", true, false):
+		n.visible = vis
 
 
 func _tour_teleport(idx: int) -> void:
@@ -929,27 +942,27 @@ func _build_keyframes() -> void:
 	_keyframes.append({
 		"hour": 6.5,
 		"sky_top":        Color(0.25, 0.38, 0.62),
-		"sky_horizon":    Color(0.75, 0.55, 0.45),
+		"sky_horizon":    Color(0.68, 0.50, 0.38),
 		"gnd_bottom":     Color(0.10, 0.08, 0.06),
 		"gnd_horizon":    Color(0.42, 0.32, 0.22),
 		"sun_angle_max":  5.0,
 		"sun_curve":      0.08,
-		"ambient_color":  Color(0.50, 0.38, 0.30),
+		"ambient_color":  Color(0.45, 0.35, 0.25),
 		"ambient_energy": 0.60,
 		"exposure":       0.70,
 		"white":          6.0,
-		"glow_intensity": 0.7,
-		"glow_bloom":     0.10,
-		"glow_strength":  0.8,
-		"glow_threshold": 0.65,
-		"glow_cap":       8.0,
+		"glow_intensity": 0.0,
+		"glow_bloom":     0.0,
+		"glow_strength":  0.0,
+		"glow_threshold": 2.0,
+		"glow_cap":       10.0,
 		"ssao_radius":    1.5,
 		"ssao_intensity": 2.5,
 		"ssao_power":     1.8,
 		"ssil_intensity": 0.7,
-		"saturation":     1.10,
-		"contrast":       1.10,
-		"brightness":     0.88,
+		"saturation":     1.08,
+		"contrast":       1.08,
+		"brightness":     0.90,
 		"fog_color":      Color(0.55, 0.42, 0.34),
 		"fog_energy":     0.6,
 		"fog_scatter":    0.20,
@@ -971,38 +984,38 @@ func _build_keyframes() -> void:
 		"cloud_speed":        0.004,
 	})
 
-	# ---- 12.0  Noon (clear, punchy daylight) ----
+	# ---- 12.0  Noon (clear, bright daylight) ----
 	_keyframes.append({
 		"hour": 12.0,
-		"sky_top":        Color(0.28, 0.48, 0.80),
-		"sky_horizon":    Color(0.62, 0.65, 0.72),
+		"sky_top":        Color(0.22, 0.42, 0.75),
+		"sky_horizon":    Color(0.55, 0.60, 0.68),
 		"gnd_bottom":     Color(0.12, 0.12, 0.10),
 		"gnd_horizon":    Color(0.38, 0.36, 0.32),
 		"sun_angle_max":  1.5,
 		"sun_curve":      0.15,
-		"ambient_color":  Color(0.52, 0.48, 0.42),
-		"ambient_energy": 0.75,
+		"ambient_color":  Color(0.50, 0.46, 0.38),
+		"ambient_energy": 0.85,
 		"exposure":       0.68,
 		"white":          6.0,
-		"glow_intensity": 0.5,
-		"glow_bloom":     0.06,
-		"glow_strength":  0.6,
-		"glow_threshold": 0.75,
-		"glow_cap":       10.0,
+		"glow_intensity": 0.0,
+		"glow_bloom":     0.0,
+		"glow_strength":  0.0,
+		"glow_threshold": 2.0,
+		"glow_cap":       12.0,
 		"ssao_radius":    2.0,
-		"ssao_intensity": 2.5,
-		"ssao_power":     2.0,
+		"ssao_intensity": 2.0,
+		"ssao_power":     1.6,
 		"ssil_intensity": 1.0,
-		"saturation":     1.10,
-		"contrast":       1.10,
-		"brightness":     0.85,
+		"saturation":     1.05,
+		"contrast":       1.06,
+		"brightness":     0.90,
 		"fog_color":      Color(0.55, 0.52, 0.48),
 		"fog_energy":     0.6,
 		"fog_scatter":    0.05,
 		"fog_density":    0.0002,
 		"fog_aerial":     0.10,
 		"fog_sky_affect": 0.30,
-		"sun_energy":     0.75,
+		"sun_energy":     0.90,
 		"sun_color":      Color(0.95, 0.92, 0.85),
 		"sun_pitch":      -55.0,
 		"sun_yaw":        -20.0,
@@ -1020,8 +1033,8 @@ func _build_keyframes() -> void:
 	# ---- 19.0  Sunset / Golden hour ----
 	_keyframes.append({
 		"hour": 19.0,
-		"sky_top":        Color(0.30, 0.22, 0.42),
-		"sky_horizon":    Color(0.78, 0.48, 0.38),
+		"sky_top":        Color(0.25, 0.22, 0.38),
+		"sky_horizon":    Color(0.72, 0.46, 0.30),
 		"gnd_bottom":     Color(0.08, 0.06, 0.04),
 		"gnd_horizon":    Color(0.42, 0.32, 0.20),
 		"sun_angle_max":  5.0,
@@ -1030,11 +1043,11 @@ func _build_keyframes() -> void:
 		"ambient_energy": 0.80,
 		"exposure":       0.70,
 		"white":          6.0,
-		"glow_intensity": 0.7,
-		"glow_bloom":     0.10,
-		"glow_strength":  0.8,
-		"glow_threshold": 0.65,
-		"glow_cap":       5.0,
+		"glow_intensity": 0.0,
+		"glow_bloom":     0.0,
+		"glow_strength":  0.0,
+		"glow_threshold": 2.0,
+		"glow_cap":       8.0,
 		"ssao_radius":    2.0,
 		"ssao_intensity": 1.8,
 		"ssao_power":     1.9,
@@ -1048,9 +1061,9 @@ func _build_keyframes() -> void:
 		"fog_density":    0.0004,
 		"fog_aerial":     0.18,
 		"fog_sky_affect": 0.3,
-		"sun_energy":     0.80,
-		"sun_color":      Color(1.0, 0.65, 0.30),
-		"sun_pitch":      -12.0,
+		"sun_energy":     0.85,
+		"sun_color":      Color(1.0, 0.68, 0.35),
+		"sun_pitch":      -15.0,
 		"sun_yaw":        95.0,
 		"shadow_dist":    220.0,
 		"lamp_emission":  0.0,  # lamps off until after sunset (ramp 19h→21h)
@@ -1300,9 +1313,11 @@ func _apply_time_of_day() -> void:
 		if _lamp_emission < 0.01:
 			_lamp_mat.emission = Color(0.0, 0.0, 0.0)
 			_lamp_mat.albedo_color = Color(0.25, 0.22, 0.18)  # dark glass during day
+			_lamp_mat.roughness = 0.85  # matte when off — prevent specular bloom
 		else:
 			_lamp_mat.emission = Color(1.0, 0.72, 0.32) * _lamp_emission
 			_lamp_mat.albedo_color = Color(1.0, 0.72, 0.32)  # warm amber when lit
+			_lamp_mat.roughness = 0.3   # glossy when lit
 
 	# Building window emission — smooth night_factor curve
 	# 0.0 during day (7h-18h), ramps to 1.0 at night (21h-5h)
@@ -1317,14 +1332,6 @@ func _apply_time_of_day() -> void:
 		for fm in _park_loader.facade_materials:
 			if fm is ShaderMaterial:
 				fm.set_shader_parameter("night_factor", nf)
-
-	# Tunnel portal lights: proportional to sun energy (bright at night, dim at day)
-	if _park_loader:
-		var sun_e: float = _lerp_kf("sun_energy", a, b, t)
-		var portal_e := lerpf(2.5, 0.3, clampf(sun_e / 0.6, 0.0, 1.0))
-		for pl in _park_loader._portal_lights:
-			if is_instance_valid(pl):
-				pl.light_energy = portal_e
 
 	# Day/night audio modulation
 	if _audio_birds and _audio_birds.stream:
@@ -1897,12 +1904,8 @@ void fragment() {
 	float path_weight = best_cov;
 	int mat_idx = best_mat;
 
-	// --- Simple parallax offset on grass/meadow UV only (2.5cm depth) ---
-	vec3 view_ws = normalize(INV_VIEW_MATRIX[3].xyz - world_pos);
-	vec2 parallax_off = -view_ws.xz / max(view_ws.y, 0.15) * 0.025;
-
 	// --- Grass shading (textureNoTile — Inigo Quilez anti-tiling) ---
-	vec2 uv  = (world_pos.xz + parallax_off) / tile_m;
+	vec2 uv  = world_pos.xz / tile_m;
 	vec3 grass_alb = textureNoTile_c(grass_albedo, uv);
 	// Natural grass: moderate color correction (texture is quite saturated)
 	float grass_lum = dot(grass_alb, vec3(0.299, 0.587, 0.114));
@@ -2227,9 +2230,6 @@ void fragment() {
 		// Rock surfaces get mica sparkle (higher specular), grass stays subtle
 		SPECULAR        = max(0.15, rock_specular);
 		METALLIC        = 0.0;
-		// Anisotropic specular — directional sheen mimics wind shimmer
-		ANISOTROPY = 0.35;
-		ANISOTROPY_FLOW = vec2(cos(aniso_flow * 6.283), sin(aniso_flow * 6.283));
 	}
 
 	// --- Path edge wear: muddy/worn margins near paths in woodland zones ---
@@ -3524,45 +3524,6 @@ func _setup_falling_leaves() -> void:
 	_falling_leaves = particles
 
 
-func _setup_ramble_fog() -> void:
-	## FogVolume nodes in the Ramble for volumetric god rays.
-	## Hardcoded AABB: X ∈ [-550, -250], Z ∈ [400, 800].
-	var fog_shader_code := """shader_type fog;
-
-void fog() {
-	// Noise-based density for ray-like streaks using UVW (0-1 in volume space)
-	float n = sin(UVW.x * 12.0 + UVW.z * 8.0 + TIME * 0.05) * 0.5 + 0.5;
-	n *= sin(UVW.z * 10.0 + UVW.x * 6.0 + TIME * 0.03) * 0.5 + 0.5;
-	float height_fade = smoothstep(1.0, 0.0, UVW.y);
-	DENSITY = n * height_fade * 0.12;
-	ALBEDO = vec3(0.95, 0.92, 0.85);
-	EMISSION = vec3(0.0);
-}
-"""
-	var fog_sh := Shader.new()
-	fog_sh.code = fog_shader_code
-	var fog_mat := ShaderMaterial.new()
-	fog_mat.shader = fog_sh
-
-	# 2 FogVolume boxes covering the Ramble
-	var positions := [
-		Vector3(-400.0, 15.0, 600.0),  # center of Ramble
-		Vector3(-350.0, 12.0, 500.0),  # southern Ramble
-	]
-	var sizes := [
-		Vector3(200.0, 30.0, 200.0),
-		Vector3(150.0, 25.0, 150.0),
-	]
-	for i in positions.size():
-		var fv := FogVolume.new()
-		fv.position = positions[i]
-		fv.size = sizes[i]
-		fv.material = fog_mat
-		fv.name = "RambleFog_%d" % i
-		add_child(fv)
-	print("Ramble fog: %d volumes" % positions.size())
-
-
 func _setup_pigeons() -> void:
 	## 3 pigeon flocks at key gathering spots as GPUParticles3D.
 	var locations := [
@@ -3622,11 +3583,6 @@ var _audio_footstep_grass: AudioStreamPlayer
 var _audio_footstep_stone: AudioStreamPlayer
 var _footstep_timer: float = 0.0
 var _footstep_interval: float = 0.65  # seconds per step at walk speed
-
-# Audio zone system — smooth crossfading between zones
-var _audio_zone: int = 0  # 0=default, 1=ramble, 2=great_lawn, 3=reservoir, 4=tunnel
-var _zone_blend: float = 0.0  # 0.0-1.0 blend toward target zone
-var _zone_target: int = 0
 
 func _setup_audio() -> void:
 	## Initialize layered ambient soundscape.
@@ -3738,44 +3694,13 @@ func _update_audio(delta: float) -> void:
 		var city_vol := lerpf(-12.0, -22.0, clampf(_cached_boundary_dist / 200.0, 0.0, 1.0))
 		_audio_city.volume_db = city_vol
 
-	# Audio zone detection
-	var new_zone := 0  # default
-	if ppos.x > -550 and ppos.x < -250 and ppos.z > 400 and ppos.z < 800:
-		new_zone = 1  # Ramble — dense birdsong
-	elif ppos.x > -400 and ppos.x < 100 and ppos.z > -200 and ppos.z < 200:
-		new_zone = 2  # Great Lawn — wind, distant city
-	elif ppos.x > -300 and ppos.x < 300 and ppos.z > -900 and ppos.z < -300:
-		new_zone = 3  # Reservoir — water lapping
-	# Tunnel detection: check if player is below terrain by > 1m
-	if _park_loader:
-		var terrain_h := _terrain_height(ppos.x, ppos.z)
-		if ppos.y < terrain_h - 1.0:
-			new_zone = 4  # tunnel
-	_zone_target = new_zone
-	# Crossfade zone blend
-	if _audio_zone != _zone_target:
-		_zone_blend -= delta * 0.25  # fade out over ~4s
-		if _zone_blend <= 0.0:
-			_audio_zone = _zone_target
-			_zone_blend = 0.0
-	else:
-		_zone_blend = minf(_zone_blend + delta * 0.25, 1.0)
-
-	# Zone-aware audio modulation
+	# Birds louder in dense tree areas (use tree density heuristic)
 	if _audio_birds and _audio_birds.stream:
 		var bird_vol := -10.0  # base volume
-		if _audio_zone == 1:  # Ramble
-			bird_vol = lerpf(-10.0, -3.0, _zone_blend)  # dense birdsong
-		elif _audio_zone == 4:  # Tunnel
-			bird_vol = lerpf(-10.0, -25.0, _zone_blend)  # muffled
+		# Louder in The Ramble area (dense trees)
+		if ppos.x > -550 and ppos.x < -250 and ppos.z > 400 and ppos.z < 800:
+			bird_vol = -5.0
 		_audio_birds.volume_db = bird_vol
-	if _audio_wind and _audio_wind.stream:
-		var wind_adj := 0.0
-		if _audio_zone == 2:  # Great Lawn — open wind
-			wind_adj = lerpf(0.0, 4.0, _zone_blend)
-		elif _audio_zone == 4:  # Tunnel — no wind
-			wind_adj = lerpf(0.0, -10.0, _zone_blend)
-		_audio_wind.volume_db = -14.0 + wind_adj
 
 	# Water proximity
 	if _audio_water and _audio_water.stream and _park_loader:
