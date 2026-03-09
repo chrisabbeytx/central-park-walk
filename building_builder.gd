@@ -1,11 +1,63 @@
 # building_builder.gd
-# Building geometry: extruded footprint polygons, 5 facade styles, water towers
+# Building geometry: extruded footprint polygons, 5 facade styles
 # Extracted from park_loader.gd — all shared utilities accessed via _loader reference.
 
 var _loader  # Reference to park_loader for shared utilities
+const MAX_BUILDING_DIST := 200.0  # metres — skip buildings farther than this from park boundary
 
 func _init(loader) -> void:
 	_loader = loader
+
+
+var _bnd_aabb_min := Vector2.ZERO
+var _bnd_aabb_max := Vector2.ZERO
+var _bnd_aabb_valid := false
+
+func _ensure_boundary_aabb() -> void:
+	if _bnd_aabb_valid:
+		return
+	var poly: PackedVector2Array = _loader.boundary_polygon
+	if poly.is_empty():
+		return
+	_bnd_aabb_min = poly[0]
+	_bnd_aabb_max = poly[0]
+	for i in range(1, poly.size()):
+		var p: Vector2 = poly[i]
+		_bnd_aabb_min.x = minf(_bnd_aabb_min.x, p.x)
+		_bnd_aabb_min.y = minf(_bnd_aabb_min.y, p.y)
+		_bnd_aabb_max.x = maxf(_bnd_aabb_max.x, p.x)
+		_bnd_aabb_max.y = maxf(_bnd_aabb_max.y, p.y)
+	_bnd_aabb_valid = true
+
+func _near_boundary(px: float, pz: float) -> bool:
+	## Fast check: is this point within MAX_BUILDING_DIST of the park boundary?
+	## Uses AABB pre-check, then polygon segment distance for edge cases.
+	_ensure_boundary_aabb()
+	# Quick AABB reject: if outside expanded AABB, definitely too far
+	if px < _bnd_aabb_min.x - MAX_BUILDING_DIST or px > _bnd_aabb_max.x + MAX_BUILDING_DIST:
+		return false
+	if pz < _bnd_aabb_min.y - MAX_BUILDING_DIST or pz > _bnd_aabb_max.y + MAX_BUILDING_DIST:
+		return false
+	# Inside AABB with margin: check actual polygon distance
+	var poly: PackedVector2Array = _loader.boundary_polygon
+	var n: int = poly.size()
+	var pt := Vector2(px, pz)
+	var thresh_sq := MAX_BUILDING_DIST * MAX_BUILDING_DIST
+	for i in n:
+		var a: Vector2 = poly[i]
+		var b: Vector2 = poly[(i + 1) % n]
+		var ab := b - a
+		var len_sq := ab.length_squared()
+		var dsq: float
+		if len_sq < 0.001:
+			dsq = (pt - a).length_squared()
+		else:
+			var t := clampf((pt - a).dot(ab) / len_sq, 0.0, 1.0)
+			var closest := a + ab * t
+			dsq = (pt - closest).length_squared()
+		if dsq < thresh_sq:
+			return true
+	return false
 
 
 func _building_style(cx: float, cz: float, h: float, year: int) -> int:
@@ -72,25 +124,42 @@ func _build_buildings(buildings: Array) -> void:
 	var roof_colors  := PackedColorArray()
 
 	var rng := RandomNumberGenerator.new()
+	var built_count := 0
+	var skipped_dist := 0
 
 	for bld in buildings:
 		var pts:  Array = bld["points"]
 		var h:    float = float(bld["height"])
-		var base := INF
-		for pt in pts:
-			base = minf(base, _loader._terrain_y(float(pt[0]), float(pt[1])))
-		if base == INF:
-			base = float(bld.get("base", 0.0))
-		var top:  float = base + h
 		var n:    int   = pts.size()
 		if n < 3:
 			continue
 
-		# Centroid for style assignment
+		# Centroid for style assignment + LOD classification
 		var cx := 0.0; var cz := 0.0
 		for pt in pts:
 			cx += float(pt[0]); cz += float(pt[1])
 		cx /= float(n); cz /= float(n)
+
+		# LOD: in-park buildings get full detail; outside buildings get simple extrusion
+		var in_park: bool = _loader._in_boundary(cx, cz)
+
+		# Skip buildings too far from the park — only render the visible facade ring
+		if not in_park and not _near_boundary(cx, cz):
+			skipped_dist += 1
+			continue
+		built_count += 1
+
+		# Base height: full per-vertex sampling for in-park, centroid-only for outside
+		var base := INF
+		if in_park:
+			for pt in pts:
+				base = minf(base, _loader._terrain_y(float(pt[0]), float(pt[1])))
+		else:
+			base = _loader._terrain_y(cx, cz)
+		if base == INF:
+			base = float(bld.get("base", 0.0))
+		var top:  float = base + h
+
 		var bld_name: String = str(bld.get("name", "")).to_lower()
 		var year_built: int = int(bld.get("year_built", 0))
 		var style := _building_style(cx, cz, h, year_built)
@@ -119,15 +188,16 @@ func _build_buildings(buildings: Array) -> void:
 		var bv := rng.randf_range(-0.08, 0.08)
 		var bld_tint := Color(1.0 + rv, 1.0 + gv, 1.0 + bv)
 
-		# Mark building footprint cells
-		var grid_cell: float = _loader.BUILDING_GRID_CELL
-		for pt in pts:
-			var bx := float(pt[0]); var bz := float(pt[1])
-			for di in range(-1, 2):
-				for dj in range(-1, 2):
-					var key := Vector2i(int(floor(bx / grid_cell)) + di,
-										int(floor(bz / grid_cell)) + dj)
-					_loader._building_grid[key] = true
+		# Mark building footprint cells (only for in-park buildings; outside don't affect vegetation)
+		if in_park:
+			var grid_cell: float = _loader.BUILDING_GRID_CELL
+			for pt in pts:
+				var bx := float(pt[0]); var bz := float(pt[1])
+				for di in range(-1, 2):
+					for dj in range(-1, 2):
+						var key := Vector2i(int(floor(bx / grid_cell)) + di,
+											int(floor(bz / grid_cell)) + dj)
+						_loader._building_grid[key] = true
 
 		# --- Setback for tall towers (>40m): upper 35% recedes 1.5m ---
 		var setback_h := 0.0  # height where setback begins (0 = no setback)
@@ -146,7 +216,22 @@ func _build_buildings(buildings: Array) -> void:
 			var seg_len := seg.length()
 			var norm := Vector3(-seg.y, 0.0, seg.x).normalized()
 
-			if has_setback:
+			if not in_park and not has_setback:
+				# Outside park, no setback: single wall quad, no ground floor detail
+				var a := Vector3(p1.x, base, p1.y)
+				var b := Vector3(p2.x, base, p2.y)
+				var c := Vector3(p2.x, top, p2.y)
+				var d := Vector3(p1.x, top, p1.y)
+				sv[style].append_array(PackedVector3Array([a, b, c, a, c, d]))
+				for _j in range(6):
+					sn[style].append(norm)
+					sc[style].append(bld_tint)
+				su[style].append_array(PackedVector2Array([
+					Vector2(0.0, 0.0), Vector2(seg_len, 0.0),
+					Vector2(seg_len, h), Vector2(0.0, 0.0),
+					Vector2(seg_len, h), Vector2(0.0, h),
+				]))
+			elif has_setback:
 				# Lower portion: base → setback
 				var sb_y := base + setback_h
 				var a := Vector3(p1.x, base, p1.y)
@@ -181,7 +266,7 @@ func _build_buildings(buildings: Array) -> void:
 					Vector2(seg_len, h), Vector2(0.0, h),
 				]))
 			else:
-				# Ground floor setback for buildings >8m — 0.3m recess below 4m
+				# In-park buildings: ground floor setback for buildings >8m
 				var gf_h := 4.0  # ground floor height
 				var gf_inset := 0.3  # how much the upper wall protrudes past ground floor
 				if h > 8.0:
@@ -247,7 +332,7 @@ func _build_buildings(buildings: Array) -> void:
 						Vector2(seg_len, h), Vector2(0.0, h),
 					]))
 
-				# Cornice ledge at roofline — 0.15m protruding, 0.2m tall
+				# Cornice ledge at roofline — 0.15m protruding, 0.2m tall (in-park only)
 				if h > 6.0:
 					var corn_d := 0.15  # cornice protrusion
 					var corn_h := 0.20  # cornice height
@@ -282,9 +367,9 @@ func _build_buildings(buildings: Array) -> void:
 						Vector2(seg_len, 0.15), Vector2(0.0, 0.15),
 					]))
 
-		# --- Rooftop parapet for buildings >10m ---
+		# --- Rooftop parapet for buildings >10m (in-park only; outside skips for perf) ---
 		var parapet_h := 0.8
-		if h > 10.0:
+		if h > 10.0 and in_park:
 			for i in n:
 				var p1 := Vector2(float(pts[i][0]),           float(pts[i][1]))
 				var p2 := Vector2(float(pts[(i + 1) % n][0]), float(pts[(i + 1) % n][1]))
@@ -351,6 +436,8 @@ func _build_buildings(buildings: Array) -> void:
 			for _j in range(3):
 				roof_normals.append(Vector3.UP)
 				roof_colors.append(roof_col)
+
+	print("Buildings: %d rendered, %d skipped (>%dm from boundary), %d total" % [built_count, skipped_dist, MAX_BUILDING_DIST, buildings.size()])
 
 	# Build wall meshes per style
 	var style_names := ["Limestone", "Glass", "RedBrick", "BuffBrick", "DarkStone"]
