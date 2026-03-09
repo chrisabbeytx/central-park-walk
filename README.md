@@ -108,7 +108,7 @@ All data is freely available. No paid APIs. No API keys.
 | [OpenStreetMap](https://www.openstreetmap.org/) | Paths, water, buildings, bridges, tunnels, barriers, furniture | ODbL |
 | [NYC Tree Census](https://data.cityofnewyork.us/) | Species, diameter for 39,495 park trees | Public Domain |
 | [Wikimedia Commons](https://commons.wikimedia.org/) | Material colors, architectural reference | CC-BY-SA |
-| [Sketchfab](https://sketchfab.com/) | Photogrammetry statue scans (3 integrated) | CC-BY |
+| [Sketchfab](https://sketchfab.com/) | Photogrammetry scans (3 statues + Bethesda Fountain) | CC-BY |
 | [Quaternius](https://quaternius.com/) | Tree 3D models (5 species × 5 variants) | CC0 |
 | [ambientCG](https://ambientcg.com/) / [Polyhaven](https://polyhaven.com/) | PBR textures, HDRI sky | CC0 |
 

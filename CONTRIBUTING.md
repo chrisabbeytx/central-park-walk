@@ -16,9 +16,9 @@ The gap list regenerates automatically — when you fill a gap, it disappears fr
 
 ## Data Contributions (No coding required)
 
-### 3D Scans (66 statues + 3 fountains needed)
+### 3D Scans (65 statues + 3 fountains needed)
 
-We have scans of 3 out of 69 scannable objects. The rest show only floating labels in the simulation.
+We have scans of 4 out of 69 scannable objects (3 statues + Bethesda Fountain). The rest show only floating labels in the simulation.
 
 **What you need:** iPhone 12 Pro+ or iPad Pro (has LiDAR), or DSLR with 50+ photos
 
