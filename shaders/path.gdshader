@@ -79,13 +79,21 @@ void fragment() {
 
 	// Snow accumulation on paths
 	if (snow_cover > 0.01) {
-		// Upward-facing surfaces collect snow (paths are mostly flat)
 		vec3 world_n = mat3(INV_VIEW_MATRIX) * NORMAL;
 		float upward = max(world_n.y, 0.0);
 		float snow_amt = snow_cover * smoothstep(0.3, 0.8, upward);
 		ALBEDO    = mix(ALBEDO, vec3(0.90, 0.91, 0.94), snow_amt * 0.85);
 		ROUGHNESS = mix(ROUGHNESS, 0.70, snow_amt);
 		SPECULAR  = mix(SPECULAR, 0.15, snow_amt);
+		// Snow sparkle on paths
+		if (snow_amt > 0.3) {
+			float sparkle = pos_hash(floor(world.xz * 25.0));
+			if (sparkle > 0.96) {
+				float si = (sparkle - 0.96) * 25.0;
+				SPECULAR = mix(SPECULAR, 0.90, si * snow_amt);
+				ROUGHNESS = mix(ROUGHNESS, 0.05, si * snow_amt * 0.4);
+			}
+		}
 	}
 
 	DEPTH = FRAGCOORD.z - depth_jitter;
