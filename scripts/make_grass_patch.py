@@ -172,10 +172,10 @@ GRASS_TYPES = [
     #    PIL analysis: avg (0.42, 0.46, 0.30), bright (0.64, 0.68, 0.58)
     {
         "name": "Grass_Tile_SheepMeadow",
-        "blade_count": 350,
-        "radius": 0.95,
-        "height_range": (0.05, 0.10),
-        "width_range": (0.030, 0.055),
+        "blade_count": 550,
+        "radius": 1.0,
+        "height_range": (0.06, 0.12),
+        "width_range": (0.045, 0.075),
         "arch_range": (0.03, 0.08),
         "segments": 2,
         "base_rgb": (0.22, 0.42, 0.08),
@@ -186,10 +186,10 @@ GRASS_TYPES = [
     # 1: Great Lawn — rich green maintained turf
     {
         "name": "Grass_Tile_GreatLawn",
-        "blade_count": 320,
-        "radius": 0.95,
-        "height_range": (0.06, 0.11),
-        "width_range": (0.028, 0.050),
+        "blade_count": 500,
+        "radius": 1.0,
+        "height_range": (0.06, 0.12),
+        "width_range": (0.042, 0.070),
         "arch_range": (0.03, 0.09),
         "segments": 2,
         "base_rgb": (0.20, 0.40, 0.07),
@@ -200,10 +200,10 @@ GRASS_TYPES = [
     # 2: North Meadow — open meadow, slightly wilder
     {
         "name": "Grass_Tile_NorthMeadow",
-        "blade_count": 260,
-        "radius": 0.90,
-        "height_range": (0.08, 0.14),
-        "width_range": (0.030, 0.055),
+        "blade_count": 420,
+        "radius": 0.95,
+        "height_range": (0.08, 0.16),
+        "width_range": (0.045, 0.075),
         "arch_range": (0.04, 0.12),
         "segments": 2,
         "base_rgb": (0.20, 0.38, 0.07),
@@ -214,10 +214,10 @@ GRASS_TYPES = [
     # 3: Formal garden — Conservatory Garden, Shakespeare Garden
     {
         "name": "Grass_Tile_FormalGarden",
-        "blade_count": 300,
-        "radius": 0.90,
+        "blade_count": 480,
+        "radius": 0.95,
         "height_range": (0.04, 0.08),
-        "width_range": (0.025, 0.045),
+        "width_range": (0.040, 0.065),
         "arch_range": (0.02, 0.05),
         "segments": 2,
         "base_rgb": (0.22, 0.40, 0.10),
@@ -228,10 +228,10 @@ GRASS_TYPES = [
     # 4: Sports field — tennis, basketball, baseball turf
     {
         "name": "Grass_Tile_SportsTurf",
-        "blade_count": 380,
-        "radius": 0.95,
-        "height_range": (0.03, 0.06),
-        "width_range": (0.025, 0.042),
+        "blade_count": 600,
+        "radius": 1.0,
+        "height_range": (0.03, 0.07),
+        "width_range": (0.038, 0.060),
         "arch_range": (0.01, 0.04),
         "segments": 2,
         "base_rgb": (0.25, 0.45, 0.10),
@@ -239,13 +239,13 @@ GRASS_TYPES = [
         "color_var": 0.02,
         "seed": 197,
     },
-    # 5: North Woods understory — sparse, shade-adapted but still green
+    # 5: North Woods understory — sparse but present
     {
         "name": "Grass_Tile_NorthWoods",
-        "blade_count": 70,
-        "radius": 0.55,
-        "height_range": (0.03, 0.08),
-        "width_range": (0.025, 0.045),
+        "blade_count": 150,
+        "radius": 0.65,
+        "height_range": (0.03, 0.10),
+        "width_range": (0.035, 0.060),
         "arch_range": (0.02, 0.06),
         "segments": 2,
         "base_rgb": (0.10, 0.25, 0.05),
@@ -256,10 +256,10 @@ GRASS_TYPES = [
     # 6: Ramble / Dene — moderate woodland floor
     {
         "name": "Grass_Tile_Ramble",
-        "blade_count": 120,
-        "radius": 0.60,
-        "height_range": (0.04, 0.10),
-        "width_range": (0.025, 0.048),
+        "blade_count": 250,
+        "radius": 0.75,
+        "height_range": (0.04, 0.12),
+        "width_range": (0.038, 0.065),
         "arch_range": (0.02, 0.07),
         "segments": 2,
         "base_rgb": (0.12, 0.28, 0.06),
@@ -270,10 +270,10 @@ GRASS_TYPES = [
     # 7: Waterside — near lakes/ponds, taller moisture-loving, richer green
     {
         "name": "Grass_Tile_Waterside",
-        "blade_count": 180,
-        "radius": 0.80,
-        "height_range": (0.08, 0.16),
-        "width_range": (0.030, 0.055),
+        "blade_count": 350,
+        "radius": 0.90,
+        "height_range": (0.08, 0.18),
+        "width_range": (0.045, 0.075),
         "arch_range": (0.04, 0.12),
         "segments": 2,
         "base_rgb": (0.14, 0.34, 0.06),
@@ -281,14 +281,14 @@ GRASS_TYPES = [
         "color_var": 0.05,
         "seed": 313,
     },
-    # 8: Wild meadow — nature reserve, tall unmowed, golden tips
+    # 8: Wild meadow — nature reserve, tall unmowed, golden tips (BotW-style)
     {
         "name": "Grass_Tile_WildMeadow",
-        "blade_count": 140,
-        "radius": 0.80,
-        "height_range": (0.18, 0.35),
-        "width_range": (0.028, 0.048),
-        "arch_range": (0.06, 0.18),
+        "blade_count": 280,
+        "radius": 0.90,
+        "height_range": (0.20, 0.40),
+        "width_range": (0.040, 0.065),
+        "arch_range": (0.06, 0.20),
         "segments": 3,
         "base_rgb": (0.14, 0.32, 0.05),
         "tip_rgb": (0.45, 0.48, 0.20),
@@ -298,10 +298,10 @@ GRASS_TYPES = [
     # 9: Open lawn — default maintained grass for unzoned areas
     {
         "name": "Grass_Tile_OpenLawn",
-        "blade_count": 300,
-        "radius": 0.90,
+        "blade_count": 480,
+        "radius": 1.0,
         "height_range": (0.06, 0.12),
-        "width_range": (0.028, 0.052),
+        "width_range": (0.042, 0.070),
         "arch_range": (0.03, 0.09),
         "segments": 2,
         "base_rgb": (0.20, 0.40, 0.07),

@@ -1415,15 +1415,16 @@ func _apply_time_of_day() -> void:
 # Falls back to a flat plane when heightmap.json is absent.
 # ---------------------------------------------------------------------------
 func _setup_ground() -> void:
-	var tex_alb := _load_img_tex("res://textures/lawn_grass_Color.jpg")
+	# grass_albedo is dense green turf; lawn_grass is sparse brown/dead — use green
+	var tex_alb := _load_img_tex("res://textures/grass_albedo.jpg")
 	if tex_alb == null:
-		tex_alb = _load_img_tex("res://textures/grass_albedo.jpg")
-	var tex_nrm := _load_img_tex("res://textures/lawn_grass_NormalGL.jpg")
+		tex_alb = _load_img_tex("res://textures/lawn_grass_Color.jpg")
+	var tex_nrm := _load_img_tex("res://textures/grass_normal.jpg")
 	if tex_nrm == null:
-		tex_nrm = _load_img_tex("res://textures/grass_normal.jpg")
-	var tex_rgh := _load_img_tex("res://textures/lawn_grass_Roughness.jpg")
+		tex_nrm = _load_img_tex("res://textures/lawn_grass_NormalGL.jpg")
+	var tex_rgh := _load_img_tex("res://textures/grass_rough.jpg")
 	if tex_rgh == null:
-		tex_rgh = _load_img_tex("res://textures/grass_rough.jpg")
+		tex_rgh = _load_img_tex("res://textures/lawn_grass_Roughness.jpg")
 	var shader: Shader = load("res://shaders/terrain.gdshader")
 	_terrain_mat = ShaderMaterial.new()
 	_terrain_mat.shader = shader
