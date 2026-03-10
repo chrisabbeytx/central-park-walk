@@ -140,12 +140,18 @@ func _build_trash_cans(trash_data: Array, paths: Array) -> void:
 
 
 func _build_flagpoles(flagpole_data: Array) -> void:
-	## Flagpoles — thin aluminum poles at flag locations
+	## Flagpoles — aluminum tapered poles with ball finial
 	if flagpole_data.is_empty():
 		return
-	# Generate a simple tapered pole mesh
-	var pole_mesh: ArrayMesh = _loader._make_cylinder(0.06, 8.0, 8)
-	# Metallic silver material
+	var fp_path := ProjectSettings.globalize_path("res://models/furniture/cp_flagpole.glb")
+	var fp_meshes: Dictionary = _loader._load_glb_meshes(fp_path)
+	var pole_mesh: Mesh = null
+	if fp_meshes.has("CP_Flagpole"):
+		pole_mesh = fp_meshes["CP_Flagpole"] as Mesh
+	else:
+		# Fallback: simple cylinder
+		pole_mesh = _loader._make_cylinder(0.06, 9.0, 8)
+	# Aluminum material via cast iron shader (silver metallic)
 	var iron_shader: Shader = _loader._get_shader("cast_iron", "res://shaders/cast_iron.gdshader")
 	var pole_mat := ShaderMaterial.new()
 	pole_mat.shader = iron_shader
@@ -162,6 +168,6 @@ func _build_flagpoles(flagpole_data: Array) -> void:
 		xforms.append(Transform3D(Basis.IDENTITY, Vector3(fx, fy, fz)))
 	if not xforms.is_empty():
 		_loader._spawn_multimesh(pole_mesh, pole_mat, xforms, "Flagpoles")
-	print("ParkLoader: flagpoles = %d" % xforms.size())
+	print("ParkLoader: flagpoles = %d (GLB model)" % xforms.size())
 
 
