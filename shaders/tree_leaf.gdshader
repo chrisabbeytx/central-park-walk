@@ -200,9 +200,10 @@ void fragment() {
 	vec4 tex = texture(albedo_tex, UV);
 	float lum = dot(tex.rgb, vec3(0.3, 0.6, 0.1));
 	float alpha = tex.a * v_leaf_density;
-	// Screen-space dithered alpha: breaks up hard billboard edges into soft stipple
-	float dither = fract(sin(dot(FRAGCOORD.xy, vec2(12.9898, 78.233))) * 43758.5453);
-	float adaptive_scissor = alpha_scissor + (dither - 0.5) * 0.30;
+	// Stable dithered alpha: per-texel variation that doesn't shimmer with camera movement.
+	// Uses UV (stable per-vertex) + leaf_color (per-tree variation) instead of FRAGCOORD.
+	float dither = fract(sin(dot(UV * 100.0 + v_leaf_color.xy * 50.0, vec2(12.9898, 78.233))) * 43758.5453);
+	float adaptive_scissor = alpha_scissor + (dither - 0.5) * 0.20;
 	if (alpha < adaptive_scissor) discard;
 
 	vec3 col = v_leaf_color * (0.4 + lum * 0.6);  // reduced: Blender vertex colors are too bright for PBR
