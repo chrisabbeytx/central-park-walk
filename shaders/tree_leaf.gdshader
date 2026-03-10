@@ -200,12 +200,12 @@ void fragment() {
 	float alpha = tex.a * v_leaf_density;
 	if (alpha < alpha_scissor) discard;
 
-	vec3 col = v_leaf_color * (0.5 + lum * 0.7);  // slightly reduced from 0.6+0.8
+	vec3 col = v_leaf_color * (0.4 + lum * 0.6);  // reduced: Blender vertex colors are too bright for PBR
 	int sp = int(v_species_idx + 0.5);
-	// Desaturate and warm-shift — real tree leaves aren't neon in PBR linear space
+	// Desaturate and darken — real tree canopy is dark olive/forest green, not lime
 	float leaf_lum = dot(col, vec3(0.299, 0.587, 0.114));
-	col = mix(vec3(leaf_lum), col, 0.75);  // 25% desaturation
-	col *= vec3(1.02, 0.98, 0.88);  // warm shift: reduce blue, slightly warm
+	col = mix(vec3(leaf_lum), col, 0.65);  // 35% desaturation
+	col *= vec3(0.92, 0.88, 0.78);  // darken + warm: real leaves are darker than Blender colors
 
 	// --- Species-specific material properties ---
 	// Broad-leaved trees (maple, london plane) have smoother, more reflective leaves
