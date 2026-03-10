@@ -381,11 +381,13 @@ void fragment() {
 		water_near = smoothstep(3.0, 0.5, shore_dist_m);
 	}
 	if (water_near > 0.01) {
-		// Underwater/waterside silt/mud: dark brown-gray, organic sediment
+		// Underwater/waterside silt: sandy brown sediment, not pitch black.
+		// Real Central Park pond bottoms are silty sand with organic matter,
+		// visible in shallow areas and through water alpha near shores.
 		float mud_noise = vnoise(world_pos.xz * 0.3);
-		vec3 mud_col = vec3(0.08, 0.07, 0.05) + mud_noise * vec3(0.04, 0.03, 0.02);
+		vec3 mud_col = vec3(0.16, 0.13, 0.09) + mud_noise * vec3(0.04, 0.03, 0.02);
 		grass_alb = mix(grass_alb, mud_col, clamp(water_near, 0.0, 1.0));
-		grass_rgh = mix(grass_rgh, 0.95, clamp(water_near, 0.0, 1.0));
+		grass_rgh = mix(grass_rgh, 0.92, clamp(water_near, 0.0, 1.0));
 	}
 
 	// Rock on steep slopes — Manhattan schist outcrops
@@ -868,12 +870,22 @@ void fragment() {
 	// Central Park is never in complete darkness: sky light, bounce light from
 	// buildings, and diffuse ambient all contribute. Without this, shadowed
 	// grass becomes an opaque black void.
+	// Steep faces (banks, retaining walls, steps) receive less direct light
+	// but still get ambient sky hemisphere light — boost their emission.
 	{
 		float sky_lum = dot(sky_reflect_color, vec3(0.2126, 0.7152, 0.0722));
 		float night_t = smoothstep(0.15, 0.02, sky_lum);
 		// Day: subtle green-tinted ambient from sky/foliage bounce
 		// Night: warm amber from NYC light pollution
 		vec3 ambient = mix(ALBEDO * 0.12, vec3(0.020, 0.015, 0.010), night_t);
+		// Steep faces get boosted ambient — they still receive diffuse sky light
+		// even when facing away from the sun. Without this, pond banks and
+		// retaining walls render as pitch-black voids.
+		float steepness = 1.0 - terrain_n.y;  // 0=flat, 1=vertical
+		float steep_boost = smoothstep(0.3, 0.8, steepness) * 0.08;
+		ambient = max(ambient, ALBEDO * (0.12 + steep_boost));
+		// Absolute minimum: no terrain fragment should be completely invisible
+		ambient = max(ambient, vec3(0.012, 0.010, 0.008));
 		EMISSION = ambient;
 	}
 
