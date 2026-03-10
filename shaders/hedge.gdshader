@@ -4,6 +4,7 @@ shader_type spatial;
 global uniform float season_t;
 global uniform float rain_wetness;
 global uniform float snow_cover;
+global uniform vec2 wind_vec;
 
 #include "res://shaders/include/hash_noise.gdshaderinc"
 
@@ -11,6 +12,21 @@ varying vec3 world_pos;
 
 void vertex() {
 	world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+
+	// Wind sway: hedges rustle gently in wind, stiffer than grass
+	float sway = max(VERTEX.y, 0.0);
+	float wind_str = length(wind_vec);
+	float flex = 0.15;  // much stiffer than grass (trimmed, dense)
+
+	// Base rustle: continuous small oscillation
+	vec3 origin = (MODEL_MATRIX * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+	float px = origin.x * 0.12 + origin.z * 0.18;
+	VERTEX.x += sin(TIME * 1.2 + px) * 0.03 * sway * (0.2 + wind_str * 0.8) * flex;
+	VERTEX.z += sin(TIME * 1.7 + origin.z * 0.15) * 0.02 * sway * (0.2 + wind_str * 0.8) * flex;
+
+	// Wind push: constant lean in wind direction
+	VERTEX.x += wind_vec.x * sway * 0.08 * flex;
+	VERTEX.z += wind_vec.y * sway * 0.08 * flex;
 }
 
 void fragment() {
@@ -69,6 +85,12 @@ void fragment() {
 			ROUGHNESS = mix(ROUGHNESS, 0.90, snow_amt);
 		}
 	}
+
+	// Subsurface scattering: light passing through outer hedge leaves
+	// Green glow visible when sun is behind the hedge
+	float sss_strength = mix(0.10, 0.30, summer_f);  // stronger in summer (more leaves)
+	sss_strength *= (1.0 - winter_f * 0.8);  // minimal in winter (bare)
+	BACKLIGHT = col * sss_strength;
 
 	// Subtle emission for visibility in shadow
 	EMISSION = ALBEDO * 0.15;
