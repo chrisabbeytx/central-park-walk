@@ -45,6 +45,41 @@ const vec4 PHENOLOGY[12] = vec4[12](
 
 varying float v_leaf_density;
 varying vec3 v_leaf_color;
+varying float v_blossom;     // 0-1 blossom intensity (cherry/callery pear spring bloom)
+varying float v_species_idx; // species index for fragment shader
+
+// Spring blossom colors: cherry = pink, callery_pear = white
+const vec3 BLOSSOM_COLORS[12] = vec3[12](
+	vec3(0.0),                     // 0 oak: no blossoms
+	vec3(0.0),                     // 1 maple: no blossoms
+	vec3(0.0),                     // 2 elm: no blossoms
+	vec3(0.0),                     // 3 birch: no blossoms
+	vec3(0.0),                     // 4 deciduous: no blossoms
+	vec3(0.0),                     // 5 conifer: no blossoms
+	vec3(0.0),                     // 6 honeylocust: no blossoms
+	vec3(0.92, 0.90, 0.85),       // 7 callery_pear: white blossoms (Bradford pear)
+	vec3(0.0),                     // 8 ginkgo: no blossoms
+	vec3(0.0),                     // 9 london_plane: no blossoms
+	vec3(0.0),                     // 10 linden: no blossoms
+	vec3(0.88, 0.68, 0.72)        // 11 cherry: Yoshino pale pink blossoms
+);
+
+// Blossom timing: (start, peak, end) — before leaf-out
+// season_t 0=spring start, 1=summer, 2=autumn, 3=winter
+const vec3 BLOSSOM_TIMING[12] = vec3[12](
+	vec3(0.0),                     // 0 oak
+	vec3(0.0),                     // 1 maple
+	vec3(0.0),                     // 2 elm
+	vec3(0.0),                     // 3 birch
+	vec3(0.0),                     // 4 deciduous
+	vec3(0.0),                     // 5 conifer
+	vec3(0.0),                     // 6 honeylocust
+	vec3(0.15, 0.30, 0.50),       // 7 callery_pear: early spring, short bloom
+	vec3(0.0),                     // 8 ginkgo
+	vec3(0.0),                     // 9 london_plane
+	vec3(0.0),                     // 10 linden
+	vec3(0.05, 0.20, 0.42)        // 11 cherry: very early, 2-week bloom peak
+);
 
 void vertex() {
 	// Decode per-instance season data (all INSTANCE_CUSTOM reads in vertex only)
@@ -52,6 +87,7 @@ void vertex() {
 	int sp_idx = int(INSTANCE_CUSTOM.r * 11.0 + 0.5);
 	float timing_off = INSTANCE_CUSTOM.g - 0.5;
 	float s = mod(season_t + timing_off, 4.0);
+	v_species_idx = float(sp_idx);
 
 	// Compute leaf density for vertex shrinking and fragment alpha
 	float leaf_density = 1.0;
@@ -63,6 +99,20 @@ void vertex() {
 		leaf_density = clamp(leaf_density, 0.08, 1.0);
 	}
 	v_leaf_density = leaf_density;
+
+	// Spring blossom phase (cherry, callery pear)
+	float blossom = 0.0;
+	vec3 bt = BLOSSOM_TIMING[sp_idx];
+	if (bt.y > 0.0) {  // species has blossoms
+		// Ramp up to peak, then fade
+		float bloom_up = smoothstep(bt.x, bt.y, s);
+		float bloom_dn = 1.0 - smoothstep(bt.y, bt.z, s);
+		blossom = bloom_up * bloom_dn;
+		// Blossoms boost density during bloom (full canopy of flowers)
+		leaf_density = max(leaf_density, blossom * 0.85);
+		v_leaf_density = leaf_density;
+	}
+	v_blossom = blossom;
 
 	// Compute seasonal leaf color in vertex, pass to fragment via varying
 	vec3 leaf_color = albedo_tint;
@@ -76,6 +126,13 @@ void vertex() {
 		leaf_color = mix(leaf_color, fall_col, fall_t);
 		float late_fall = smoothstep(ph.y, ph.z, s);
 		leaf_color = mix(leaf_color, fall_col * 0.5, late_fall * 0.6);
+	}
+	// Blend blossom color during bloom
+	if (blossom > 0.01) {
+		vec3 blossom_col = BLOSSOM_COLORS[sp_idx];
+		// Per-tree variation: some trees slightly pinker/whiter
+		blossom_col += (timing_off * 0.06) * vec3(0.08, -0.04, -0.02);
+		leaf_color = mix(leaf_color, blossom_col, blossom * 0.9);
 	}
 	v_leaf_color = leaf_color;
 
@@ -115,6 +172,29 @@ void fragment() {
 	if (alpha < alpha_scissor) discard;
 
 	vec3 col = v_leaf_color * (0.6 + lum * 0.8);
+	int sp = int(v_species_idx + 0.5);
+
+	// --- Species-specific material properties ---
+	// Broad-leaved trees (maple, london plane) have smoother, more reflective leaves
+	// Compound-leaved (honeylocust) and small-leaved (birch) are finer-textured
+	float rough = 0.88;
+	float spec = 0.08;
+	if (sp == 1) { rough = 0.78; spec = 0.12; }        // maple: waxy broad leaf
+	else if (sp == 3) { rough = 0.92; spec = 0.06; }    // birch: small matte leaves
+	else if (sp == 5) { rough = 0.95; spec = 0.04; }    // conifer: needle texture
+	else if (sp == 6) { rough = 0.90; spec = 0.07; }    // honeylocust: tiny compound leaflets
+	else if (sp == 8) { rough = 0.75; spec = 0.14; }    // ginkgo: smooth fan-shaped
+	else if (sp == 9) { rough = 0.80; spec = 0.11; }    // london plane: large waxy leaves
+
+	// --- Blossom rendering: petals are smoother, more translucent ---
+	if (v_blossom > 0.01) {
+		// Petals have a delicate translucent quality
+		rough = mix(rough, 0.55, v_blossom);    // smooth petal surface
+		spec = mix(spec, 0.22, v_blossom);       // subtle sheen on petals
+		// Slight per-petal color variation from texture luminance
+		float petal_var = lum * 0.15;
+		col += vec3(petal_var, petal_var * 0.8, petal_var * 0.7) * v_blossom;
+	}
 
 	// Snow accumulation
 	if (snow_cover > 0.01) {
@@ -127,8 +207,8 @@ void fragment() {
 	}
 
 	ALBEDO = col;
-	ROUGHNESS = 0.88;
-	SPECULAR = 0.08;
+	ROUGHNESS = rough;
+	SPECULAR = spec;
 	METALLIC = 0.0;
 
 	// Rain: wet leaves darken and get glossier (water film on surface)
@@ -138,9 +218,23 @@ void fragment() {
 		SPECULAR = mix(SPECULAR, 0.35, rain_wetness);
 	}
 
-	// Subsurface scattering: seasonal — green in summer, warm amber in fall, pale in spring
+	// --- Enhanced subsurface scattering ---
+	// Light passing through thin leaves creates warm glow
+	// Stronger in spring (fresh thin leaves), reduced in fall (dry/thick), absent in winter
 	vec3 backlight_col = vec3(0.28, 0.20, 0.06);  // base warm SSS
 	// Tint backlight with leaf color: autumn leaves glow warm amber/red
 	backlight_col = mix(backlight_col, v_leaf_color * 0.5, 0.4);
-	BACKLIGHT = backlight_col * v_leaf_density;
+	float sss_strength = v_leaf_density;
+	// Spring leaves are thinner, more translucent
+	float spring_boost = (1.0 - smoothstep(0.3, 0.8, season_t)) * 0.3;
+	sss_strength += spring_boost;
+	// Conifer needles have minimal SSS
+	if (sp == 5) sss_strength *= 0.3;
+	// Blossom petals: strong pink/white translucency (backlit cherry blossoms are iconic)
+	if (v_blossom > 0.01) {
+		vec3 petal_sss = BLOSSOM_COLORS[sp] * 0.7;  // petal color glows through
+		backlight_col = mix(backlight_col, petal_sss, v_blossom);
+		sss_strength = mix(sss_strength, 1.2, v_blossom);  // petals are very translucent
+	}
+	BACKLIGHT = backlight_col * sss_strength;
 }
