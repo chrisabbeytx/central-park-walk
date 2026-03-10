@@ -82,14 +82,14 @@ python3 convert_to_godot.py
 | Feature | Count | Source |
 |---------|-------|--------|
 | Terrain | 8192×8192 mesh (14M verts) | NYC LiDAR 2017 (1ft resolution, 0.61m cells) |
-| Trees | ~9,300 | NYC Tree Census + OSM + woodland scatter in 12 ecological zones. 12 species-specific Blender models (oak, elm, maple, birch, cherry, ginkgo, honeylocust, linden, london plane, pine, deciduous, conifer) |
+| Trees | ~9,300 | NYC Tree Census + OSM + woodland scatter in 12 ecological zones. 13 species-specific Blender models (oak, elm, maple, birch, cherry, ginkgo, honeylocust, linden, london plane, callery pear, pine, deciduous, conifer). Cherry blossom + callery pear spring bloom rendering |
 | Water | 23 bodies + 10 streams | OpenStreetMap polygons |
 | Buildings | 6,557 | NYC Building Footprints + LiDAR heights |
 | Furniture | 1,022+ | Lampposts (201), benches (610), trash cans (166), fountains (19), flagpoles (18), water towers (45), iron fences (207 segments) |
 | Statues | 106 positions | 4 photogrammetry scans + Cleopatra's Needle model, rest labeled |
 | Sports fields | 147 | Tennis, basketball, baseball, soccer, handball |
 | Grass | ~762K tiles | 10 CPC-data-driven types with narrow 3D blades (8–15mm), wildflowers, clover. Mowed=1-segment spikes, woodland=2-segment curves, meadow=3-segment arches |
-| Seasons | 4 | Per-species phenology, leaf scatter, water color, atmosphere |
+| Seasons | 4 | Per-species phenology, cherry/callery pear spring blossoms, leaf scatter, water color, atmosphere |
 | Weather | 5 modes | Rain, thunderstorm, snow, fog, clear — with surface response |
 | Day/night | Full cycle | 48-lamp pool, lit windows, NYC light pollution, moon |
 
@@ -113,7 +113,7 @@ This project grows with human attention.
 
 **No coding required**: Map furniture in OSM (only ~10% of real lampposts/benches are mapped). Take photogrammetry scans of statues (4 of 106 scanned). Record field audio. Photograph landmarks and materials. Map rock outcrops (~170 named, 1 in OSM).
 
-**Technical**: 10 species-specific tree models (oak, elm, maple, birch, cherry, ginkgo, honeylocust, linden, pine, deciduous). Interior spaces. Performance profiling. Cross-platform support.
+**Technical**: 13 species-specific tree models (oak, elm, maple, birch, cherry, ginkgo, honeylocust, linden, london plane, callery pear, pine, deciduous, conifer). Interior spaces. Performance profiling. Cross-platform support.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines.
 
