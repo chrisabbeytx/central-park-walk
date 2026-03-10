@@ -202,7 +202,7 @@ void fragment() {
 	float alpha = tex.a * v_leaf_density;
 	// Screen-space dithered alpha: breaks up hard billboard edges into soft stipple
 	float dither = fract(sin(dot(FRAGCOORD.xy, vec2(12.9898, 78.233))) * 43758.5453);
-	float adaptive_scissor = alpha_scissor + (dither - 0.5) * 0.20;
+	float adaptive_scissor = alpha_scissor + (dither - 0.5) * 0.30;
 	if (alpha < adaptive_scissor) discard;
 
 	vec3 col = v_leaf_color * (0.4 + lum * 0.6);  // reduced: Blender vertex colors are too bright for PBR
@@ -211,6 +211,16 @@ void fragment() {
 	float leaf_lum = dot(col, vec3(0.299, 0.587, 0.114));
 	col = mix(vec3(leaf_lum), col, 0.65);  // 35% desaturation
 	col *= vec3(0.92, 0.88, 0.78);  // darken + warm: real leaves are darker than Blender colors
+
+	// Within-canopy detail: simulate individual leaf shadows, overlap, light pockets
+	// This breaks up the flat billboard read with high-frequency variation
+	vec3 tree_pos = (MODEL_MATRIX * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+	float detail_n = vnoise(UV * 12.0 + tree_pos.xz * 0.5);  // per-leaf-scale noise
+	float pocket_n = vnoise(UV * 4.0 + tree_pos.xz * 0.3);   // shadow pocket scale
+	// Dark shadow pockets in canopy interior (20% of area, 30% darker)
+	col *= mix(1.0, 0.70, smoothstep(0.3, 0.6, pocket_n) * 0.30);
+	// Per-leaf brightness variation (some leaves catch more light)
+	col *= (0.90 + detail_n * 0.20);
 
 	// --- Species-specific material properties ---
 	// Broad-leaved trees (maple, london plane) have smoother, more reflective leaves
