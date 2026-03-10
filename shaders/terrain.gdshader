@@ -186,18 +186,18 @@ void fragment() {
 
 	// Scale 2: large patches (25-40m) — drainage, irrigation, sun/shade
 	float lawn_large = fbm(world_pos.xz * 0.006, 3);
-	grass_alb *= 0.75 + lawn_large * 0.50;  // wider brightness range for aerial visibility
+	grass_alb *= 0.85 + lawn_large * 0.30;  // gentle brightness variation
 
 	// Scale 3: medium patches (8-15m) — mowing age, species dominance
 	float lawn_med = fbm(world_pos.xz * 0.025 + 37.0, 2);
 	// Yellow stress patches where grass is thin
 	float stress_mask = smoothstep(0.55, 0.80, lawn_med);
-	grass_alb = mix(grass_alb, yellow_stress, stress_mask * 0.25);
-	grass_alb *= 0.88 + lawn_med * 0.24;
+	grass_alb = mix(grass_alb, yellow_stress, stress_mask * 0.15);
+	grass_alb *= 0.92 + lawn_med * 0.16;
 
 	// Scale 4: warm/cool hue patches — Kentucky bluegrass vs perennial ryegrass
 	float temp_shift = fbm(world_pos.xz * 0.01 + 91.0, 2) - 0.5;
-	grass_alb *= vec3(1.0 + temp_shift * 0.28, 1.0, 1.0 - temp_shift * 0.22);
+	grass_alb *= vec3(1.0 + temp_shift * 0.15, 1.0, 1.0 - temp_shift * 0.12);
 
 	// Scale 5: small-scale thinning (2-4m) — bare spots, compaction, foot traffic
 	// Reduced from 0.30 to 0.15 to prevent dark spots that contrast with 3D grass blades
@@ -388,12 +388,16 @@ void fragment() {
 		grass_rgh = mix(grass_rgh, 0.95, clamp(water_near, 0.0, 1.0));
 	}
 
-	// Rock on steep slopes + vertex color rock blend — Manhattan schist outcrops
+	// Rock on steep slopes — Manhattan schist outcrops
 	// Schist: gray base + mica sparkle (slight specular) + rusty weathering patches
 	// LiDAR at 2.4m/cell smooths real slopes significantly, so use low thresholds.
 	float rock_noise = fbm(world_pos.xz * 0.05, 2) * 0.06;
 	float rock_blend = smoothstep(0.10, 0.25, slope + rock_noise);
-	// Rock detection: slope only (vertex color rock channel removed — paths are 3D meshes now)
+	// Suppress natural rock where structure mask is active — built structures
+	// (Bethesda Terrace, bridges, retaining walls) have their own stone/concrete
+	// materials and should NOT be painted as Manhattan schist rock outcrops
+	float struct_pre = texture(structure_mask, splat_uv).r * 254.0;
+	rock_blend *= (1.0 - smoothstep(0.5, 4.0, struct_pre));
 	float rock_specular = 0.0;
 	if (rock_blend > 0.01) {
 		vec2 ruv = world_pos.xz / rock_tile_m;
@@ -768,9 +772,10 @@ void fragment() {
 			// Wildflowers prefer meadows, woodland edges, and unmowed areas
 			float flower_zone = is_woodland ? 0.30 : (meadow_blend > 0.3 ? 0.60 : 0.15);
 			// Noise determines where flowers appear (patchy, natural distribution)
+			// Use continuous noise (not hash grid) to avoid visible rectangular cells
 			float f_noise = vnoise(world_pos.xz * 0.25 + vec2(55.0, 88.0));
-			float f_detail = hash2(floor(world_pos.xz * 3.0));
-			float f_mask = smoothstep(0.35, 0.65, f_noise) * step(0.60, f_detail) * flower_zone;
+			float f_detail = vnoise(world_pos.xz * 1.5 + vec2(17.0, 41.0));
+			float f_mask = smoothstep(0.35, 0.65, f_noise) * smoothstep(0.45, 0.70, f_detail) * flower_zone;
 			if (f_mask > 0.01) {
 				// Species selection: deterministic per-patch
 				float sp_hash = hash2(floor(world_pos.xz * 0.5 + vec2(33.0)));

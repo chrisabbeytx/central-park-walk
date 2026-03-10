@@ -182,17 +182,17 @@ void fragment() {
 
 	// Scale 2: large patches (166m) — matches terrain lawn_large
 	float lawn_large = fbm3(v_world_pos.xz * 0.006);
-	col *= 0.80 + lawn_large * 0.40;  // similar range to terrain's 0.75 + 0.50
+	col *= 0.85 + lawn_large * 0.30;  // match terrain's 0.85 + 0.30
 
 	// Scale 3: medium patches (40m) — matches terrain lawn_med
 	float lawn_med = fbm3(v_world_pos.xz * 0.025 + 37.0);
 	float stress = smoothstep(0.55, 0.80, lawn_med);
-	col = mix(col, col * vec3(1.06, 0.94, 0.74), stress * 0.20);
-	col *= 0.90 + lawn_med * 0.20;
+	col = mix(col, col * vec3(1.06, 0.94, 0.74), stress * 0.12);
+	col *= 0.92 + lawn_med * 0.16;  // match terrain's 0.92 + 0.16
 
 	// Scale 4: warm/cool hue (100m) — matches terrain temp_shift
 	float temp_shift = fbm3(v_world_pos.xz * 0.01 + 91.0) - 0.5;
-	col *= vec3(1.0 + temp_shift * 0.20, 1.0, 1.0 - temp_shift * 0.16);
+	col *= vec3(1.0 + temp_shift * 0.15, 1.0, 1.0 - temp_shift * 0.12);  // match terrain
 
 	// Scale 5: per-clump variation (2m) — sub-tile, doesn't need to match terrain
 	// Kept small to preserve close-up visual interest without affecting aerial pattern
