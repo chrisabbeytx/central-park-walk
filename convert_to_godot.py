@@ -3019,14 +3019,14 @@ def prebake_grass_instances(landuse_zones):
         if len(gz_sel) == 0:
             continue
 
-        # Deterministic jitter per cell
-        seeds = (gx_sel.astype(np.int64) * 73856093 + gz_sel.astype(np.int64) * 19349663) & 0x7FFFFFFF
-        jx = np.zeros(len(gz_sel), dtype=np.float32)
-        jz = np.zeros(len(gz_sel), dtype=np.float32)
-        for j in range(len(gz_sel)):
-            rng.seed(int(seeds[j]))
-            jx[j] = rng.uniform(-0.3, 0.3) * cell_m
-            jz[j] = rng.uniform(-0.3, 0.3) * cell_m
+        # Deterministic jitter per cell — scale with stride to break grid
+        # ±40% of grid spacing in each axis fully eliminates visible rows
+        n = len(gz_sel)
+        seed = 73856093 * stride_val + 19349663
+        jrng = np.random.RandomState(seed)
+        jitter_range = 0.4 * stride_val * cell_m
+        jx = jrng.uniform(-jitter_range, jitter_range, n).astype(np.float32)
+        jz = jrng.uniform(-jitter_range, jitter_range, n).astype(np.float32)
 
         wx = gx_sel * cell_m - HALF + jx
         wz = gz_sel * cell_m - HALF + jz
@@ -3042,10 +3042,6 @@ def prebake_grass_instances(landuse_zones):
     z_arr = np.array(zs, dtype=np.float32)
     type_arr = np.array(types, dtype=np.uint8)
 
-    n_lawn = int(np.sum(type_arr == 0))
-    n_woodland = int(np.sum(type_arr == 1))
-    n_meadow = int(np.sum(type_arr == 2))
-
     out_path = "grass_instances.bin"
     with open(out_path, 'wb') as f:
         f.write(struct.pack('<I', count))
@@ -3054,7 +3050,11 @@ def prebake_grass_instances(landuse_zones):
         f.write(type_arr.tobytes())
 
     size_mb = os.path.getsize(out_path) / (1024 * 1024)
-    print(f"  Grass: {count} instances ({n_lawn} lawn, {n_woodland} woodland, {n_meadow} meadow) → {size_mb:.1f} MB")
+    names = ["SheepMeadow","GreatLawn","NorthMeadow","FormalGarden","SportsTurf",
+             "NorthWoods","Ramble","Waterside","WildMeadow","OpenLawn"]
+    breakdown = ", ".join(f"{names[i]}={int(np.sum(type_arr==i))}" for i in range(10) if np.sum(type_arr==i) > 0)
+    print(f"  Grass: {count} instances → {size_mb:.1f} MB")
+    print(f"    {breakdown}")
 
 
 def prebake_landuse_map(landuse_zones, water_bodies):
