@@ -107,11 +107,11 @@ cd central-park-walk
 - Standard PEP 8
 - Blender scripts follow the `make_*.py` pattern: build geometry, apply materials, export GLB
 - Data pipeline scripts are idempotent: safe to re-run
-- `convert_to_godot.py` pre-bakes: park_data.json/bin, heightmap.bin, heightmap_gpu.bin, path_gpu.bin, world_atlas.bin, landuse_map.png, boundary_mask.png — all spatial grids at 4096×4096 (~1.22m/cell) except heightmap source (8K)
+- `convert_to_godot.py` pre-bakes: park_data.json/bin, heightmap.bin, terrain_mesh.bin, world_atlas.bin, landuse_map.png, boundary_mask.png — all spatial grids at 8192×8192 (0.61m/cell) matching LiDAR resolution
 
 ### Priority Areas
 
-1. **Species-accurate tree models**: We have 5 generic Quaternius models (maple, elm, birch, pine, deciduous) but need species-specific models for Red Oak, Pin Oak, London Plane, Sugar Maple, and others. Each tree has per-species seasonal phenology (fall colors, leaf drop timing). Blender scripts preferred (following the `scripts/make_*.py` pattern).
+1. **Additional tree species models**: We now have 15 custom Blender tree models (oak, elm, maple, birch, cherry, ginkgo, honeylocust, linden, london plane, callery pear, pine, + generic deciduous/conifer). More species detail welcome — subspecies variants, size classes, seasonal accuracy. Blender scripts follow the `scripts/make_*.py` pattern.
 2. **Interior spaces**: Bethesda Arcade (Minton tile ceiling), bridge underpasses, tunnel interiors. The LiDAR terrain creates terrain caves where architectural spaces should be.
 3. **Ground detail**: Terrain tile models for wildflowers, grass, undergrowth, ferns.
 4. **Cross-platform**: Currently Linux-only with Forward+ renderer. Testing and fixes for Windows/macOS welcome.
