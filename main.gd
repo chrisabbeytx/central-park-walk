@@ -981,13 +981,13 @@ func _build_keyframes() -> void:
 	# NYC light pollution: horizon never fully dark, ambient glow from city
 	_keyframes.append({
 		"hour": 5.0,
-		"sky_top":        Color(0.04, 0.05, 0.14),
-		"sky_horizon":    Color(0.16, 0.13, 0.22),  # light pollution glow
-		"gnd_bottom":     Color(0.025, 0.025, 0.04),
-		"gnd_horizon":    Color(0.12, 0.09, 0.14),
+		"sky_top":        Color(0.03, 0.04, 0.12),
+		"sky_horizon":    Color(0.14, 0.11, 0.20),  # light pollution glow
+		"gnd_bottom":     Color(0.02, 0.02, 0.035),
+		"gnd_horizon":    Color(0.10, 0.07, 0.12),
 		"ambient_color":  Color(0.16, 0.14, 0.22),
-		"ambient_energy": 0.50,   # NYC ambient from light pollution — never dim
-		"exposure":       0.90,
+		"ambient_energy": 0.40,   # NYC ambient from light pollution
+		"exposure":       0.85,
 		"white":          6.0,
 		"glow_intensity": 0.6,
 		"glow_bloom":     0.08,
@@ -1163,18 +1163,18 @@ func _build_keyframes() -> void:
 	# Real nighttime in CP: you can see paths, grass, trees clearly. The city bathes everything in warm glow.
 	_keyframes.append({
 		"hour": 21.0,
-		"sky_top":        Color(0.07, 0.05, 0.04),  # warm gray-brown — NYC Bortle 9, never blue
-		"sky_horizon":    Color(0.20, 0.14, 0.09),  # bright warm amber light pollution glow
-		"gnd_bottom":     Color(0.03, 0.025, 0.02),
-		"gnd_horizon":    Color(0.10, 0.07, 0.05),  # warm ground glow from city
+		"sky_top":        Color(0.03, 0.02, 0.02),  # dark warm brown — NYC Bortle 9
+		"sky_horizon":    Color(0.14, 0.10, 0.06),  # warm amber light pollution glow
+		"gnd_bottom":     Color(0.02, 0.015, 0.01),
+		"gnd_horizon":    Color(0.08, 0.06, 0.04),  # warm ground glow from city
 		"ambient_color":  Color(0.85, 0.65, 0.40),  # warm amber city glow — NYC sodium vapor spill
-		"ambient_energy": 0.22,   # NYC ambient — enough to see shapes, not enough for green trees
-		"exposure":       1.05,   # compensate for lower ambient — eye adapts at night
+		"ambient_energy": 0.15,   # NYC ambient — shapes visible but dark
+		"exposure":       0.92,   # darker overall — night IS dark even in NYC
 		"white":          6.0,
-		"glow_intensity": 0.7,
-		"glow_bloom":     0.10,
-		"glow_strength":  0.8,
-		"glow_threshold": 0.45,
+		"glow_intensity": 0.45,   # restrained — only lampposts and windows bloom
+		"glow_bloom":     0.06,
+		"glow_strength":  0.6,
+		"glow_threshold": 0.65,   # high threshold — only bright light sources bloom
 		"glow_cap":       5.0,
 		"ssao_radius":    2.0,
 		"ssao_intensity": 2.2,
