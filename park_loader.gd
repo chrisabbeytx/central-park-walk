@@ -985,18 +985,24 @@ func _ready() -> void:
 
 	print("  furniture: %d ms" % (Time.get_ticks_msec() - _tp)); _tp = Time.get_ticks_msec()
 	_infrastructure_builder._build_barriers(barriers)
+	print("    barriers: %d ms" % (Time.get_ticks_msec() - _tp)); _tp = Time.get_ticks_msec()
 	_infrastructure_builder._build_staircases(paths)
+	print("    staircases: %d ms" % (Time.get_ticks_msec() - _tp)); _tp = Time.get_ticks_msec()
 	_infrastructure_builder._build_statues(statues)
+	print("    statues: %d ms" % (Time.get_ticks_msec() - _tp)); _tp = Time.get_ticks_msec()
 	_infrastructure_builder._build_amenities(amenities)
 	_infrastructure_builder._build_fountains(amenities)
+	print("    amenities+fountains: %d ms" % (Time.get_ticks_msec() - _tp)); _tp = Time.get_ticks_msec()
 	_infrastructure_builder._build_playgrounds(playgrounds)
+	print("    playgrounds: %d ms" % (Time.get_ticks_msec() - _tp)); _tp = Time.get_ticks_msec()
 	_infrastructure_builder._build_facilities(facilities)
 	_infrastructure_builder._build_viewpoints(viewpoints)
 	_infrastructure_builder._build_attractions(attractions)
-	print("  infrastructure: %d ms" % (Time.get_ticks_msec() - _tp)); _tp = Time.get_ticks_msec()
+	print("    facilities+views+attractions: %d ms" % (Time.get_ticks_msec() - _tp)); _tp = Time.get_ticks_msec()
 	_boundary_builder._build_boundary(boundary)
 	print("  boundary: %d ms" % (Time.get_ticks_msec() - _tp)); _tp = Time.get_ticks_msec()
 	_infrastructure_builder._build_field_markings()
+	print("    field_markings: %d ms" % (Time.get_ticks_msec() - _tp)); _tp = Time.get_ticks_msec()
 	_infrastructure_builder._build_gardens()
 	_infrastructure_builder._build_dog_parks()
 	_infrastructure_builder._build_pools()
@@ -1447,12 +1453,45 @@ func _collect_meshes(node: Node, out: Array, _depth: int = 0) -> void:
 		_collect_meshes(child, out, _depth + 1)
 
 
-## Load a GLB file at runtime via GLTFDocument, return dict of {mesh_name: Mesh}.
+## Load a GLB file at runtime. Uses .res cache to skip GLTFDocument on repeat loads.
+var _glb_cache: Dictionary = {}  # abs_path -> Dictionary of {mesh_name: Mesh}
 func _load_glb_meshes(abs_path: String) -> Dictionary:
+	if _glb_cache.has(abs_path):
+		return _glb_cache[abs_path]
 	var result: Dictionary = {}
 	if not FileAccess.file_exists(abs_path):
 		print("WARNING: GLB not found: %s" % abs_path)
 		return result
+
+	# Derive cache path from GLB filename
+	var fname := abs_path.get_file().get_basename()
+	var cache_dir := "res://cache/glb"
+	var cache_meta := "%s/%s.txt" % [cache_dir, fname]
+
+	# Try .res cache (much faster than GLTFDocument parsing)
+	if FileAccess.file_exists(cache_meta):
+		var glb_mod := FileAccess.get_modified_time(abs_path)
+		var cache_mod := FileAccess.get_modified_time(ProjectSettings.globalize_path(cache_meta))
+		if cache_mod >= glb_mod:
+			var mfa := FileAccess.open(cache_meta, FileAccess.READ)
+			var count := int(mfa.get_line())
+			var names: Array = []
+			for _i in count:
+				names.append(mfa.get_line())
+			mfa.close()
+			var all_ok := true
+			for i in count:
+				var mpath := "%s/%s_%d.res" % [cache_dir, fname, i]
+				if not ResourceLoader.exists(mpath):
+					all_ok = false
+					break
+				result[names[i]] = ResourceLoader.load(mpath)
+			if all_ok and result.size() == count:
+				_glb_cache[abs_path] = result
+				return result
+			result.clear()
+
+	# GLB loading (slow path — first run only)
 	var gltf_doc := GLTFDocument.new()
 	var gltf_state := GLTFState.new()
 	var err := gltf_doc.append_from_file(abs_path, gltf_state)
@@ -1464,6 +1503,21 @@ func _load_glb_meshes(abs_path: String) -> Dictionary:
 		return result
 	_collect_named_meshes(root, result)
 	root.queue_free()
+
+	# Save to .res cache for next run
+	if not result.is_empty():
+		DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(cache_dir))
+		var mfa := FileAccess.open(cache_meta, FileAccess.WRITE)
+		mfa.store_line(str(result.size()))
+		for mname in result:
+			mfa.store_line(mname)
+		mfa.close()
+		var idx := 0
+		for mname in result:
+			ResourceSaver.save(result[mname], "%s/%s_%d.res" % [cache_dir, fname, idx])
+			idx += 1
+		print("GLB: cached %s (%d meshes)" % [fname, result.size()])
+	_glb_cache[abs_path] = result
 	return result
 
 

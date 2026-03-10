@@ -24,6 +24,9 @@ lidar_data/
 *.bin
 !project.godot
 
+# Mesh cache (auto-generated from GLB models, speeds up load times)
+cache/
+
 # Python cache
 __pycache__/
 *.pyc

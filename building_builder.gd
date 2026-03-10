@@ -4,9 +4,83 @@
 
 var _loader  # Reference to park_loader for shared utilities
 const MAX_BUILDING_DIST := 350.0  # metres — first 1-2 rows of skyline buildings
+const BLDG_CACHE_PATH := "res://cache/buildings.bin"
 
 func _init(loader) -> void:
 	_loader = loader
+
+
+func _try_load_building_cache(n_buildings: int) -> Dictionary:
+	## Load cached building geometry (skips per-building extrusion loop).
+	## Returns empty dict on cache miss.
+	if not FileAccess.file_exists(BLDG_CACHE_PATH):
+		return {}
+	var fa := FileAccess.open(BLDG_CACHE_PATH, FileAccess.READ)
+	if fa == null:
+		return {}
+	# Header: magic + version + building count
+	if fa.get_32() != 0x48434342:  # "BCCH" little-endian
+		fa.close(); return {}
+	if fa.get_32() != 1:
+		fa.close(); return {}
+	if fa.get_32() != n_buildings:
+		print("Buildings: cache stale (count mismatch), rebuilding")
+		fa.close(); return {}
+	var sv: Array = []; var sn: Array = []; var su: Array = []; var sc: Array = []
+	for s in range(5):
+		sv.append(fa.get_var())
+		sn.append(fa.get_var())
+		su.append(fa.get_var())
+		sc.append(fa.get_var())
+	var roof_verts: PackedVector3Array = fa.get_var()
+	var roof_normals: PackedVector3Array = fa.get_var()
+	var roof_colors: PackedColorArray = fa.get_var()
+	var built_count: int = fa.get_32()
+	var skipped_dist: int = fa.get_32()
+	# Water tower positions
+	var wt_positions: PackedVector3Array = fa.get_var()
+	fa.close()
+	var water_tower_xf: Array = []
+	for p in wt_positions:
+		water_tower_xf.append(Transform3D(Basis.IDENTITY, p))
+	return {
+		"sv": sv, "sn": sn, "su": su, "sc": sc,
+		"roof_verts": roof_verts, "roof_normals": roof_normals, "roof_colors": roof_colors,
+		"water_tower_xf": water_tower_xf,
+		"built_count": built_count, "skipped_dist": skipped_dist,
+	}
+
+
+func _save_building_cache(n_buildings: int, sv: Array, sn: Array, su: Array, sc: Array,
+		roof_verts: PackedVector3Array, roof_normals: PackedVector3Array,
+		roof_colors: PackedColorArray, water_tower_xf: Array,
+		built_count: int, skipped_dist: int) -> void:
+	var abs_dir := ProjectSettings.globalize_path("res://cache/")
+	DirAccess.make_dir_recursive_absolute(abs_dir)
+	var fa := FileAccess.open(BLDG_CACHE_PATH, FileAccess.WRITE)
+	if fa == null:
+		print("WARNING: cannot write building cache")
+		return
+	fa.store_32(0x48434342)  # magic "BCCH"
+	fa.store_32(1)           # version
+	fa.store_32(n_buildings)
+	for s in range(5):
+		fa.store_var(sv[s])
+		fa.store_var(sn[s])
+		fa.store_var(su[s])
+		fa.store_var(sc[s])
+	fa.store_var(roof_verts)
+	fa.store_var(roof_normals)
+	fa.store_var(roof_colors)
+	fa.store_32(built_count)
+	fa.store_32(skipped_dist)
+	# Water tower positions (all use Basis.IDENTITY)
+	var wt_positions := PackedVector3Array()
+	for xf in water_tower_xf:
+		wt_positions.append(xf.origin)
+	fa.store_var(wt_positions)
+	fa.close()
+	print("Buildings: saved cache (%d buildings)" % n_buildings)
 
 
 var _bnd_aabb_min := Vector2.ZERO
@@ -121,6 +195,17 @@ func _build_buildings(buildings: Array) -> void:
 
 	var built_count := 0
 	var skipped_dist := 0
+
+	# Try loading from cache (skips the entire per-building extrusion loop)
+	var _n_buildings := buildings.size()
+	var _bc := _try_load_building_cache(_n_buildings)
+	if not _bc.is_empty():
+		sv = _bc["sv"]; sn = _bc["sn"]; su = _bc["su"]; sc = _bc["sc"]
+		roof_verts = _bc["roof_verts"]; roof_normals = _bc["roof_normals"]; roof_colors = _bc["roof_colors"]
+		water_tower_xf = _bc["water_tower_xf"]
+		built_count = _bc["built_count"]; skipped_dist = _bc["skipped_dist"]
+		print("Buildings: loaded from cache (%d built)" % built_count)
+		buildings = []  # empty so the loop below is naturally skipped
 
 	for bld in buildings:
 		var pts:  Array = bld["points"]
@@ -438,7 +523,11 @@ func _build_buildings(buildings: Array) -> void:
 				var wt_y := top  # GLB model legs start at Z=0, sit on roof
 				water_tower_xf.append(Transform3D(Basis.IDENTITY, Vector3(cx + ox, wt_y, cz + oz)))
 
-	print("Buildings: %d rendered, %d skipped (>%dm from boundary), %d total" % [built_count, skipped_dist, MAX_BUILDING_DIST, buildings.size()])
+	# Save cache on first build (cache miss path)
+	if _bc.is_empty() and built_count > 0:
+		_save_building_cache(_n_buildings, sv, sn, su, sc, roof_verts, roof_normals,
+			roof_colors, water_tower_xf, built_count, skipped_dist)
+	print("Buildings: %d rendered, %d skipped (>%dm from boundary), %d total" % [built_count, skipped_dist, MAX_BUILDING_DIST, _n_buildings])
 
 	# Building collision — combined wall + roof geometry
 	var col_verts := PackedVector3Array()
