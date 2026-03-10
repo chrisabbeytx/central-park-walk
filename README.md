@@ -88,7 +88,7 @@ python3 convert_to_godot.py
 | Furniture | 1,022+ | Lampposts (201), benches (610), trash cans (166), fountains (19), flagpoles (18), water towers (45), iron fences (207 segments) |
 | Statues | 106 positions | 4 photogrammetry scans + Cleopatra's Needle model + 61 stone pedestals, rest labeled |
 | Sports fields | 147 | Tennis, basketball, baseball, soccer, handball |
-| Grass | ~762K tiles | 10 CPC-data-driven types with narrow 3D blades (8–15mm), wildflowers, clover. Mowed=1-segment spikes, woodland=2-segment curves, meadow=3-segment arches. Mowing stripes on formal lawns, path-edge wear, multi-scale color variation |
+| Grass | ~762K tiles | 10 CPC-data-driven types with narrow 3D blades (8–15mm), wildflowers, clover. Mowed=1-segment spikes, woodland=2-segment curves, meadow=3-segment arches. Mowing stripes on formal lawns, path-edge wear (shorter/browner near paths), multi-scale color variation (5 scales from field-level drainage to per-clump species mix), dandelion + clover weeds in maintained lawns, winter dormancy |
 | Seasons | 4 | Per-species phenology, cherry/callery pear/magnolia spring blossoms, spring cherry blossom petal drift, autumn falling leaf particles, leaf scatter, water color, atmosphere |
 | Weather | 5 modes | Rain, thunderstorm, snow, fog, clear — with surface response |
 | Day/night | Full cycle | 48-lamp pool, lit windows, NYC warm ambient light pollution, moon, golden hour bloom, atmospheric haze |
