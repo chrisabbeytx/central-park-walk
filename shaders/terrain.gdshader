@@ -236,12 +236,13 @@ void fragment() {
 
 	vec3 grass_nrm = textureNoTile_n(grass_normal, uv);
 	float grass_rgh = clamp(textureNoTile_r(grass_rough, uv) * 0.20 + 0.65, 0.0, 1.0);
-	// Winter: flatten normal map and increase roughness — dormant grass is a flat mat
-	// of straw, not textured blades. Eliminates anti-tiling checkerboard in normals.
+	// Winter: completely flatten normal map and force roughness — dormant grass is
+	// a flat mat of straw with no texture detail. Fully flattened normals eliminate
+	// anti-tiling cell boundaries that become visible as checkerboard in winter fog.
 	{
 		float w_t = smoothstep(2.7, 3.1, season_t);
-		grass_nrm = mix(grass_nrm, vec3(0.5, 0.5, 1.0), w_t * 0.85);
-		grass_rgh = mix(grass_rgh, 0.95, w_t * 0.6);
+		grass_nrm = mix(grass_nrm, vec3(0.5, 0.5, 1.0), w_t);  // 100% flat in full winter
+		grass_rgh = mix(grass_rgh, 0.95, w_t);  // fully rough
 	}
 
 	// Meadow/wild grass blend — driven by landuse zones from OSM
