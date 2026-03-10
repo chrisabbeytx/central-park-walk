@@ -181,6 +181,18 @@ func _build_trees(trees: Array) -> void:
 						var bark_mat := ShaderMaterial.new()
 						bark_mat.shader = bark_shader
 						bark_mat.set_shader_parameter("bark_color", Vector3(bark_col.r, bark_col.g, bark_col.b))
+						# Species-specific bark pattern: 0=furrows, 1=smooth+lenticels,
+						# 2=exfoliating patches, 3=scaled plates, 4=smooth gray
+						var bstyle := 0
+						if archetype in ["birch", "cherry"]:
+							bstyle = 1
+						elif archetype in ["london_plane", "zelkova"]:
+							bstyle = 2
+						elif archetype == "pine":
+							bstyle = 3
+						elif archetype in ["magnolia", "callery_pear"]:
+							bstyle = 4
+						bark_mat.set_shader_parameter("bark_style", bstyle)
 						m.surface_set_material(si, bark_mat)
 				elif smat is ShaderMaterial:
 					# Already a shader material from a previous archetype's duplicate
