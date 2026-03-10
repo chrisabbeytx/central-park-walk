@@ -74,6 +74,15 @@ void fragment() {
 	// Vertex colors from Blender model provide base albedo
 	vec3 col = COLOR.rgb;
 
+	// --- Height-based shading: darker at base, brighter at tip ---
+	// UV.y from Blender: 0.0 at base, 1.0 at tip (set in make_grass_patch.py)
+	float blade_t = clamp(UV.y, 0.0, 1.0);
+	// Ambient occlusion at blade base — creates depth in the grass carpet
+	float ao = mix(0.55, 1.0, smoothstep(0.0, 0.4, blade_t));
+	col *= ao;
+	// Tip brightening: sun catches blade tips, not shaded bases
+	col *= mix(1.0, 1.12, smoothstep(0.5, 1.0, blade_t));
+
 	// --- Seasonal colour modulation ---
 	float spring_t = 1.0 - smoothstep(0.0, 1.0, season_t);
 	float autumn_t = smoothstep(2.0, 2.8, season_t) * (1.0 - smoothstep(3.2, 4.0, season_t));
@@ -90,8 +99,8 @@ void fragment() {
 	col *= 0.88 + clump_var * 0.24;
 
 	ALBEDO    = col;
-	ROUGHNESS = 0.82;
-	SPECULAR  = 0.08;
+	ROUGHNESS = mix(0.85, 0.70, blade_t);  // tips smoother (catch specular)
+	SPECULAR  = mix(0.05, 0.15, blade_t);  // tips more reflective
 	METALLIC  = 0.0;
 
 	// Rain: wet darkening + gloss
@@ -110,6 +119,7 @@ void fragment() {
 		ROUGHNESS = mix(ROUGHNESS, 0.90,                   snow_on * 0.5);
 	}
 
-	// Backlight / subsurface scattering
-	BACKLIGHT = col * 0.35;
+	// Backlight / subsurface scattering — stronger at blade tips
+	// Light passing through thin grass blade tips creates warm glow
+	BACKLIGHT = col * mix(0.15, 0.50, blade_t);
 }
