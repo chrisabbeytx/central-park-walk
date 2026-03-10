@@ -27,9 +27,34 @@ void fragment() {
 	// Surface texture: tar paper seams, gravel aggregate
 	float tex_noise = vnoise(world_pos.xz * 3.0);
 	col *= (0.94 + tex_noise * 0.12);
+	// Gravel aggregate: fine-scale stippling on flat tar roofs
+	float gravel = hash2(floor(world_pos.xz * 15.0));
+	col *= (0.95 + gravel * 0.10);
+	rough += gravel * 0.04;
 	// Tar seam lines running roughly east-west
 	float seam = smoothstep(0.42, 0.48, fract(world_pos.z * 0.25 + bld_hash * 5.0));
 	col *= mix(1.0, 0.85, seam * 0.3);
+
+	// HVAC equipment shadows: rectangular darker patches (roof machinery footprints)
+	// ~50% of buildings have visible rooftop equipment
+	float equip_hash = fract(bld_hash * 11.3);
+	if (equip_hash < 0.50) {
+		// Equipment positioned at hash-determined location on roof
+		vec2 equip_center = vec2(fract(bld_hash * 5.7), fract(bld_hash * 8.9)) * 0.6 + 0.2;
+		vec2 local_uv = fract(world_pos.xz * 0.04 + bld_hash * 10.0);
+		vec2 d = abs(local_uv - equip_center);
+		float equip_size = 0.06 + equip_hash * 0.08;
+		float equip_mask = step(d.x, equip_size) * step(d.y, equip_size * 0.7);
+		// Equipment is slightly lighter (silver/gray metal units)
+		col = mix(col, col * 1.15 + vec3(0.02), equip_mask * 0.4);
+		rough = mix(rough, 0.70, equip_mask * 0.3);
+	}
+
+	// Roof edge staining: drainage lines darken the perimeter
+	// Water runs toward edges and stains the tar darker over years
+	float edge_noise = vnoise(world_pos.xz * 0.8);
+	float edge_dark = smoothstep(0.4, 0.2, edge_noise) * 0.06;
+	col *= (1.0 - edge_dark);
 
 	ALBEDO = col;
 	ROUGHNESS = clamp(rough, 0.0, 1.0);
