@@ -147,17 +147,16 @@ void fragment() {
 	// --- Grass shading (textureNoTile — Inigo Quilez anti-tiling) ---
 	vec2 uv  = world_pos.xz / tile_m;
 	vec3 grass_alb = textureNoTile_c(grass_albedo, uv);
-	// Natural grass: keep saturation, boost green for summer lushness
+	// Summer lawn: strong green — terrain IS the grass carpet, 3D blades add depth.
+	// The Great Lawn looks correct; push all grass surfaces to match.
 	float grass_lum = dot(grass_alb, vec3(0.299, 0.587, 0.114));
-	grass_alb = mix(vec3(grass_lum), grass_alb, 0.92);  // 8% desaturation (was 12%)
-	grass_alb.g *= 1.08;  // green boost for lush lawn look
-	grass_alb.r *= 0.95;  // reduce warmth — real CP grass is cool green in summer
-	// Large-scale color variation: breaks up uniformity across wide lawns
+	grass_alb = mix(vec3(grass_lum), grass_alb, 0.95);  // minimal desaturation
+	grass_alb.g *= 1.18;  // strong green push — Kentucky bluegrass in summer
+	grass_alb.r *= 0.85;  // cut red/golden warmth
+	grass_alb.b *= 0.92;  // slight blue reduction for natural green
+	// Large-scale color variation: subtle brightness, no warm patches
 	float lawn_noise = fbm(world_pos.xz * 0.006, 2);
-	float lawn_warm  = fbm(world_pos.xz * 0.003 + vec2(100.0), 2);
-	grass_alb *= 0.94 + lawn_noise * 0.12;  // ±6% brightness variation
-	grass_alb.r += lawn_warm * 0.015;       // subtle warm/cool patches
-	grass_alb.b -= lawn_warm * 0.01;
+	grass_alb *= 0.95 + lawn_noise * 0.10;  // ±5% brightness variation
 
 	// --- Seasonal grass color modulation ---
 	// Spring (0-1): fresh bright green, Summer (1-2): rich green (baseline),
