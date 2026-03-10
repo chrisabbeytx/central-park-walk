@@ -220,36 +220,18 @@ func _build_grass() -> void:
 
 
 func _load_tile_model(mname: String, shader: Shader) -> Mesh:
-	var path := "res://models/vegetation/%s.glb" % mname
-	var abs_path := ProjectSettings.globalize_path(path)
+	var abs_path := ProjectSettings.globalize_path("res://models/vegetation/%s.glb" % mname)
 	if not FileAccess.file_exists(abs_path):
 		return null
-
-	var gltf_doc := GLTFDocument.new()
-	var gltf_state := GLTFState.new()
-	var err := gltf_doc.append_from_file(abs_path, gltf_state)
-	if err != OK:
-		print("WARNING: failed to load GLB %s (error %d)" % [abs_path, err])
+	# Use shared GLB loader with .res caching (much faster on repeat loads)
+	var meshes: Dictionary = _loader._load_glb_meshes(abs_path)
+	if meshes.is_empty():
 		return null
-
-	var root: Node = gltf_doc.generate_scene(gltf_state)
-	if root == null:
-		return null
-
-	var mesh_list: Array = []
-	_loader._collect_meshes(root, mesh_list)
-	if mesh_list.is_empty():
-		root.queue_free()
-		return null
-
-	var mesh: Mesh = mesh_list[0]
-
+	var mesh: Mesh = meshes.values()[0]
 	for si in mesh.get_surface_count():
 		var new_mat := ShaderMaterial.new()
 		new_mat.shader = shader
 		mesh.surface_set_material(si, new_mat)
-
-	root.queue_free()
 	return mesh
 
 
