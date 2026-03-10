@@ -2879,7 +2879,7 @@ def prebake_grass_instances(landuse_zones):
     import struct
     from PIL import Image
 
-    STRIDE = 4
+    STRIDE = 3
     RES = ATLAS_RES
     HALF = WORLD_SIZE / 2.0
     cell_m = WORLD_SIZE / RES

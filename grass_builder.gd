@@ -8,7 +8,7 @@
 var _loader  # Reference to park_loader for shared utilities
 
 const CHUNK := 40.0      # spatial chunk size in metres
-const VIS_END := 80.0    # grass visibility range
+const VIS_END := 60.0    # grass visibility range
 
 
 func _init(loader) -> void:
