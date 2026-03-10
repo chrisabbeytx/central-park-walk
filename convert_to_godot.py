@@ -1990,6 +1990,46 @@ def main() -> None:
             landuse_out.append(entry)
 
     # -------------------------------------------------------------------
+    # Orient benches toward nearest path (OSM rarely has direction tags)
+    # -------------------------------------------------------------------
+    # Build flat list of path segments for nearest-segment search
+    path_segs = []  # [(x0, z0, x1, z1), ...]
+    for p in paths_out:
+        pts = p.get("points", [])
+        for i in range(len(pts) - 1):
+            # pts are [x, h, z] (3 elements)
+            if len(pts[i]) >= 3 and len(pts[i+1]) >= 3:
+                path_segs.append((pts[i][0], pts[i][2], pts[i+1][0], pts[i+1][2]))
+
+    oriented = 0
+    for b in benches_out:
+        if len(b) < 4 or b[3] != 0.0:
+            continue  # already has a direction from OSM
+        bx, bz = b[0], b[2]
+        best_dist_sq = float('inf')
+        best_dx, best_dz = 0.0, -1.0  # default: face north
+        for sx0, sz0, sx1, sz1 in path_segs:
+            # Closest point on segment to bench
+            abx, abz = sx1 - sx0, sz1 - sz0
+            len_sq = abx * abx + abz * abz
+            if len_sq < 0.01:
+                continue
+            t = max(0.0, min(1.0, ((bx - sx0) * abx + (bz - sz0) * abz) / len_sq))
+            cx, cz = sx0 + t * abx, sz0 + t * abz
+            dsq = (bx - cx) ** 2 + (bz - cz) ** 2
+            if dsq < best_dist_sq:
+                best_dist_sq = dsq
+                best_dx = cx - bx
+                best_dz = cz - bz
+        # Convert direction vector to compass bearing (0=N, 90=E)
+        if best_dist_sq < 400.0:  # within 20m of a path
+            bearing = math.degrees(math.atan2(best_dx, -best_dz)) % 360.0
+            b[3] = round(bearing, 1)
+            oriented += 1
+    if oriented:
+        print(f"  Bench orientation: {oriented} / {len(benches_out)} oriented toward nearest path")
+
+    # -------------------------------------------------------------------
     # Write park_data.json
     # -------------------------------------------------------------------
     out = {
