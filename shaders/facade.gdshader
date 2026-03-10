@@ -117,6 +117,22 @@ void fragment() {
 		NORMAL_MAP = vec3(0.5, 0.5, 1.0);
 		NORMAL_MAP_DEPTH = 0.0;
 
+		// Daytime sky reflections — NYC glass facades reflecting the sky
+		// Especially dramatic at golden hour when windows glow orange/pink
+		if (night_factor < 0.95 && !in_reveal) {
+			float day_factor = 1.0 - night_factor;
+			// Fresnel: more sky reflection at oblique angles
+			vec3 view_dir = normalize(world_pos - INV_VIEW_MATRIX[3].xyz);
+			vec3 face_n = mat3(INV_VIEW_MATRIX) * NORMAL;
+			float fres = pow(1.0 - max(dot(-view_dir, face_n), 0.0), 3.0);
+			// Tint reflection with sky color — golden hour windows are iconic
+			vec3 sky_refl = sky_reflect_color * (0.3 + fres * 0.5);
+			// Upper floors catch more sky, lower floors reflect ground/trees
+			float height_fac = smoothstep(ground_h, ground_h + 30.0, UV.y);
+			sky_refl *= mix(0.4, 1.0, height_fac);
+			win_col = mix(win_col, sky_refl, day_factor * mix(0.35, 0.65, fres));
+		}
+
 		// Night window emission — NYC window light variety
 		if (night_factor > 0.01 && !in_reveal) {
 			// ~65% of windows lit (80% ground floor)
@@ -184,6 +200,21 @@ void fragment() {
 		if (is_cornice) { wall_col *= 0.78; }
 		if (is_ledge)   { wall_col *= 1.12; }
 		if (is_awning)  { wall_col *= 0.55; }
+
+		// Permanent weathering stains — decades of NYC grime
+		// Dirt accumulates below ledges and cornices, vertical water stains
+		float grime_base = hash2(floor(world_pos.xz * 0.08)) * 0.06;
+		// Drip stains below window sills and ledges
+		float drip = sin(world_pos.x * 4.2 + hash2(floor(world_pos.xz * 0.2)) * 15.0);
+		drip = smoothstep(0.5, 0.85, drip);
+		// Drips visible below ledge/cornice positions
+		float below_ledge = fract(floor_pos + 0.05);
+		drip *= smoothstep(0.0, 0.15, below_ledge) * smoothstep(0.35, 0.15, below_ledge);
+		// Grime darkens lower floors more (pollution, splash, foot traffic)
+		float low_grime = smoothstep(8.0, 0.0, UV.y) * 0.04;
+		float total_grime = grime_base + drip * 0.05 + low_grime;
+		wall_col *= (1.0 - total_grime);
+
 		ALBEDO    = clamp(wall_col, 0.0, 1.0);
 		ROUGHNESS = final_rough;
 		METALLIC  = final_metal;
