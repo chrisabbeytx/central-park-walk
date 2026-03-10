@@ -192,11 +192,17 @@ void fragment() {
 	float thin_patch = smoothstep(0.50, 0.70, thin_noise);
 	grass_alb = mix(grass_alb, brown_dirt, thin_patch * 0.30);
 
-	// Distance-based darkening — grass appears darker from far away/aerial.
-	// Individual blade highlights average out, self-shadowing reduces canopy albedo.
+	// Distance-based darkening + aerial perspective.
+	// Far grass darkens (blade highlights average out, self-shadowing).
+	// Also desaturate + shift slightly blue to simulate atmospheric scattering.
 	float cam_dist = length(world_pos - INV_VIEW_MATRIX[3].xyz);
 	float dist_darken = smoothstep(30.0, 150.0, cam_dist) * 0.25;
 	grass_alb *= (1.0 - dist_darken);
+	// Aerial perspective: desaturate + cool shift at distance
+	float aerial_t = smoothstep(60.0, 300.0, cam_dist);
+	float g_lum = dot(grass_alb, vec3(0.2126, 0.7152, 0.0722));
+	grass_alb = mix(grass_alb, vec3(g_lum), aerial_t * 0.25);  // 25% desaturation at 300m
+	grass_alb = mix(grass_alb, grass_alb * vec3(0.94, 0.96, 1.04), aerial_t);  // subtle blue shift
 
 	// --- Seasonal grass color modulation ---
 	// Spring (0-1): fresh bright green, Summer (1-2): rich green (baseline),

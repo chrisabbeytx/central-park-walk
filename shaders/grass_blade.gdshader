@@ -225,6 +225,13 @@ void fragment() {
 		}
 	}
 
+	// Aerial perspective: desaturate + cool shift at distance (match terrain)
+	float blade_dist = length(v_world_pos - INV_VIEW_MATRIX[3].xyz);
+	float blade_aerial = smoothstep(60.0, 300.0, blade_dist);
+	float col_lum = dot(col, vec3(0.2126, 0.7152, 0.0722));
+	col = mix(col, vec3(col_lum), blade_aerial * 0.25);
+	col = mix(col, col * vec3(0.94, 0.96, 1.04), blade_aerial);
+
 	ALBEDO    = col;
 	ROUGHNESS = mix(0.85, 0.70, blade_t);  // tips smoother (catch specular)
 	SPECULAR  = mix(0.05, 0.15, blade_t);  // tips more reflective
