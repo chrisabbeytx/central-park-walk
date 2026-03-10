@@ -86,7 +86,7 @@ python3 convert_to_godot.py
 | Water | 23 bodies + 10 streams | OpenStreetMap polygons |
 | Buildings | 6,557 | NYC Building Footprints + LiDAR heights |
 | Furniture | 1,022+ | Lampposts (201), benches (610), trash cans (166), fountains (19), flagpoles (18), water towers (45), iron fences (207 segments) |
-| Statues | 106 positions | 4 photogrammetry scans + Cleopatra's Needle model, rest labeled |
+| Statues | 106 positions | 4 photogrammetry scans + Cleopatra's Needle model + 61 stone pedestals, rest labeled |
 | Sports fields | 147 | Tennis, basketball, baseball, soccer, handball |
 | Grass | ~762K tiles | 10 CPC-data-driven types with narrow 3D blades (8–15mm), wildflowers, clover. Mowed=1-segment spikes, woodland=2-segment curves, meadow=3-segment arches |
 | Seasons | 4 | Per-species phenology, cherry/callery pear spring blossoms, leaf scatter, water color, atmosphere |
