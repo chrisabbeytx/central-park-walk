@@ -198,7 +198,10 @@ void fragment() {
 	vec4 tex = texture(albedo_tex, UV);
 	float lum = dot(tex.rgb, vec3(0.3, 0.6, 0.1));
 	float alpha = tex.a * v_leaf_density;
-	if (alpha < alpha_scissor) discard;
+	// Screen-space dithered alpha: breaks up hard billboard edges into soft stipple
+	float dither = fract(sin(dot(FRAGCOORD.xy, vec2(12.9898, 78.233))) * 43758.5453);
+	float adaptive_scissor = alpha_scissor + (dither - 0.5) * 0.20;
+	if (alpha < adaptive_scissor) discard;
 
 	vec3 col = v_leaf_color * (0.4 + lum * 0.6);  // reduced: Blender vertex colors are too bright for PBR
 	int sp = int(v_species_idx + 0.5);

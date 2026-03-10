@@ -225,8 +225,9 @@ void fragment() {
 			NORMAL_MAP = vec3(tex_nrm.r, 0.7, tex_nrm.b);
 			NORMAL_MAP_DEPTH = 1.2;
 		}
-		// Reduce wall emission at night — dark walls make lit windows pop
-		float wall_em = mix(0.45, 0.06, night_factor);
+		// Wall ambient emission: enough to fill shadows without washing out detail
+		// 0.45 was too high — made buildings look flat, no window contrast
+		float wall_em = mix(0.20, 0.06, night_factor);
 		emission += wall_col * wall_em;
 	}
 
