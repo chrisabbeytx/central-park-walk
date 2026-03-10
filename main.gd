@@ -66,6 +66,7 @@ const LAMP_LIGHT_UPDATE_INTERVAL := 0.5  # seconds between position updates
 # Weather particles
 var _rain_particles: GPUParticles3D
 var _snow_particles: GPUParticles3D
+var _leaf_particles: GPUParticles3D  # autumn falling leaves
 var _lens_canvas: CanvasLayer   # barrel distortion overlay
 
 # 5 keyframes defining the full day/night cycle
@@ -548,6 +549,21 @@ func _process(delta: float) -> void:
 		_snow_particles.global_position = _player.global_position + Vector3(0, 15, 0)
 		var spm: ParticleProcessMaterial = _snow_particles.process_material
 		spm.gravity = Vector3(_wind_vec.x * 3.0, -1.5, _wind_vec.y * 3.0)
+
+	# Autumn falling leaves — activate during fall season (2.0-3.2)
+	var autumn_strength := smoothstep(1.8, 2.3, _season_t) * (1.0 - smoothstep(2.8, 3.2, _season_t))
+	if autumn_strength > 0.05 and not _leaf_particles:
+		_setup_leaf_particles()
+	elif autumn_strength < 0.02 and _leaf_particles:
+		_leaf_particles.queue_free()
+		_leaf_particles = null
+	if _leaf_particles and _player:
+		_leaf_particles.global_position = _player.global_position + Vector3(0, 12, 0)
+		var lpm: ParticleProcessMaterial = _leaf_particles.process_material
+		# Wind pushes leaves strongly — they drift on the breeze
+		lpm.gravity = Vector3(_wind_vec.x * 4.0, -0.3, _wind_vec.y * 4.0)
+		# Vary amount by autumn intensity (sparse early/late, dense at peak)
+		_leaf_particles.amount = int(lerpf(200.0, 2000.0, autumn_strength))
 
 	# Lightning flashes during thunderstorm
 	if _weather_mode == "thunderstorm":
@@ -2153,6 +2169,60 @@ func _setup_snow() -> void:
 
 	print("Snow: 3000 particles")
 
+
+
+func _setup_leaf_particles() -> void:
+	## Autumn falling leaves — warm-colored quads drifting down through canopy.
+	## Active only during autumn season (season_t 2.0-3.2). Amount varies
+	## with season intensity: sparse at start/end, dense at peak color.
+	_leaf_particles = GPUParticles3D.new()
+	_leaf_particles.amount = 800  # adjusted dynamically in _process
+	_leaf_particles.lifetime = 8.0  # slow drift down
+	_leaf_particles.visibility_aabb = AABB(Vector3(-30, -15, -30), Vector3(60, 30, 60))
+
+	var pm := ParticleProcessMaterial.new()
+	pm.direction = Vector3(0, -1, 0)
+	pm.spread = 45.0  # wide spread — leaves tumble in all directions
+	pm.initial_velocity_min = 0.3
+	pm.initial_velocity_max = 0.8
+	pm.gravity = Vector3(0, -0.3, 0)  # very slow fall (wind does most of the work)
+	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
+	pm.emission_box_extents = Vector3(30.0, 2.0, 30.0)
+	# Orbit for tumbling/spinning as leaves fall
+	pm.orbit_velocity_min = 0.15
+	pm.orbit_velocity_max = 0.45
+	# Angular velocity for spinning
+	pm.angular_velocity_min = -90.0
+	pm.angular_velocity_max = 90.0
+	# Scale variation — different leaf sizes
+	pm.scale_min = 0.6
+	pm.scale_max = 1.4
+	# Randomize color: fall palette from warm yellow to deep red
+	pm.color = Color(0.85, 0.55, 0.20, 0.85)
+	var color_ramp := GradientTexture1D.new()
+	var grad := Gradient.new()
+	grad.set_color(0, Color(0.90, 0.80, 0.25, 0.90))  # golden yellow
+	grad.add_point(0.3, Color(0.85, 0.50, 0.15, 0.85))  # orange
+	grad.add_point(0.6, Color(0.75, 0.25, 0.10, 0.80))  # red-brown
+	grad.set_color(1, Color(0.50, 0.30, 0.15, 0.70))  # dark brown (old leaves)
+	color_ramp.gradient = grad
+	pm.color_initial_ramp = color_ramp
+	_leaf_particles.process_material = pm
+
+	var mesh := QuadMesh.new()
+	mesh.size = Vector2(0.035, 0.025)  # small leaf shape — wider than tall
+	_leaf_particles.draw_pass_1 = mesh
+
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(0.85, 0.55, 0.20, 0.85)
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.billboard_mode = BaseMaterial3D.BILLBOARD_PARTICLES
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_PER_PIXEL
+	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	_leaf_particles.material_override = mat
+
+	add_child(_leaf_particles)
+	print("Autumn leaves: drifting fall particles")
 
 
 func _setup_fog_weather() -> void:
