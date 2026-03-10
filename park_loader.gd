@@ -55,6 +55,7 @@ var _furniture_builder                   # furniture_builder.gd instance
 var _infrastructure_builder              # infrastructure_builder.gd instance
 var _gap_builder                         # gap_builder.gd instance
 var _grass_builder                       # grass_builder.gd instance
+var _path_builder                        # path_builder.gd instance
 
 
 # ---------------------------------------------------------------------------
@@ -942,6 +943,7 @@ func _ready() -> void:
 	_infrastructure_builder = preload("res://infrastructure_builder.gd").new(self)
 	_gap_builder = preload("res://gap_builder.gd").new(self)
 	_grass_builder = preload("res://grass_builder.gd").new(self)
+	_path_builder = preload("res://path_builder.gd").new(self)
 
 	var _t0 := Time.get_ticks_msec()
 	var _tp := _t0
@@ -958,6 +960,8 @@ func _ready() -> void:
 	print("  trees: %d ms" % (Time.get_ticks_msec() - _tp)); _tp = Time.get_ticks_msec()
 	_grass_builder._build_grass()
 	print("  grass: %d ms" % (Time.get_ticks_msec() - _tp)); _tp = Time.get_ticks_msec()
+	_path_builder._build_paths(paths)
+	print("  paths: %d ms" % (Time.get_ticks_msec() - _tp)); _tp = Time.get_ticks_msec()
 	_furniture_builder._build_furniture(benches, lampposts, paths)
 	_furniture_builder._build_trash_cans(trash_cans, paths)
 	_furniture_builder._build_flagpoles(flagpoles)
