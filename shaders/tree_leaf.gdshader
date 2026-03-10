@@ -200,8 +200,12 @@ void fragment() {
 	float alpha = tex.a * v_leaf_density;
 	if (alpha < alpha_scissor) discard;
 
-	vec3 col = v_leaf_color * (0.6 + lum * 0.8);
+	vec3 col = v_leaf_color * (0.5 + lum * 0.7);  // slightly reduced from 0.6+0.8
 	int sp = int(v_species_idx + 0.5);
+	// Desaturate and warm-shift — real tree leaves aren't neon in PBR linear space
+	float leaf_lum = dot(col, vec3(0.299, 0.587, 0.114));
+	col = mix(vec3(leaf_lum), col, 0.75);  // 25% desaturation
+	col *= vec3(1.02, 0.98, 0.88);  // warm shift: reduce blue, slightly warm
 
 	// --- Species-specific material properties ---
 	// Broad-leaved trees (maple, london plane) have smoother, more reflective leaves
@@ -252,8 +256,8 @@ void fragment() {
 		SPECULAR = mix(SPECULAR, 0.50, droplet * 0.4);
 	}
 
-	// Ambient emission for shadow fill — leaves should never be pitch black
-	EMISSION = ALBEDO * 0.08;
+	// Ambient emission for shadow fill — minimal, just prevents pitch black shadows
+	EMISSION = ALBEDO * 0.04;
 
 	// --- Enhanced subsurface scattering ---
 	// Light passing through thin leaves creates warm glow
