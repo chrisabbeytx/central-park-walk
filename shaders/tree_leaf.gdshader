@@ -216,7 +216,15 @@ void fragment() {
 		ALBEDO *= mix(1.0, 0.70, rain_wetness);
 		ROUGHNESS = mix(ROUGHNESS, 0.25, rain_wetness);
 		SPECULAR = mix(SPECULAR, 0.35, rain_wetness);
+		// Rain droplets clinging to leaf surfaces — individual water beads
+		float droplet = sin(UV.x * 28.0) * sin(UV.y * 35.0);
+		droplet = smoothstep(0.85, 0.95, droplet) * rain_wetness;
+		ROUGHNESS = mix(ROUGHNESS, 0.04, droplet * 0.3);
+		SPECULAR = mix(SPECULAR, 0.50, droplet * 0.4);
 	}
+
+	// Ambient emission for shadow fill — leaves should never be pitch black
+	EMISSION = ALBEDO * 0.08;
 
 	// --- Enhanced subsurface scattering ---
 	// Light passing through thin leaves creates warm glow
