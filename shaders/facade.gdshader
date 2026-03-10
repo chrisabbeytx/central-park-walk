@@ -158,8 +158,8 @@ void fragment() {
 					// Dim amber (nightlight, hallway, bathroom)
 					win_light = vec3(0.85, 0.55, 0.18) * 0.6;
 				}
-				float em_strength = gnd_win ? 0.60 : 0.50;
-				em_strength *= (0.6 + wrand * 0.5);
+				float em_strength = gnd_win ? 0.85 : 0.70;
+				em_strength *= (0.65 + wrand * 0.45);
 				// Some windows are dimmer (curtains, blinds partially drawn)
 				float curtain = fract(wrand * 23.1);
 				if (curtain < 0.25) em_strength *= 0.45;  // partially curtained
@@ -225,8 +225,8 @@ void fragment() {
 			NORMAL_MAP = vec3(tex_nrm.r, 0.7, tex_nrm.b);
 			NORMAL_MAP_DEPTH = 1.2;
 		}
-		// Reduce wall emission at night — window glow provides building visibility
-		float wall_em = mix(0.45, 0.12, night_factor);
+		// Reduce wall emission at night — dark walls make lit windows pop
+		float wall_em = mix(0.45, 0.06, night_factor);
 		emission += wall_col * wall_em;
 	}
 
@@ -306,5 +306,7 @@ void fragment() {
 	haze_col = mix(haze_col, haze_col * vec3(0.90, 0.95, 1.08), winter_s * 0.3);
 	ALBEDO = mix(ALBEDO, haze_col, atm_fade * 0.45);
 	ROUGHNESS = mix(ROUGHNESS, 0.95, atm_fade * 0.3);
-	EMISSION = mix(EMISSION, haze_col * 0.3, atm_fade * 0.5);
+	// At night, reduce haze dampening so distant lit windows stay visible in skyline
+	float em_haze = mix(0.5, 0.25, night_t);
+	EMISSION = mix(EMISSION, haze_col * 0.3, atm_fade * em_haze);
 }
