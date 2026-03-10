@@ -40,12 +40,52 @@ void fragment() {
 	METALLIC   = 0.0;
 	SPECULAR   = 0.10;
 
+	// --- Foliation banding: metamorphic layering (Manhattan schist's signature) ---
+	// Schist has alternating light (quartz/feldspar) and dark (mica/hornblende) bands
+	// Foliation dips ~25° to the SE in Central Park bedrock exposures
+	float fold_sa = 0.423; float fold_ca = 0.906;  // sin/cos(25°)
+	float fold_u = world_pos.x * fold_ca + world_pos.y * fold_sa;
+	// Multi-frequency banding: major bands ~10cm, minor bands ~3cm
+	float band_major = sin(fold_u * 35.0 + vnoise(world_pos.xz * 0.5) * 2.0);
+	float band_minor = sin(fold_u * 110.0 + vnoise(world_pos.xz * 1.5) * 1.5) * 0.4;
+	float banding = (band_major + band_minor) * 0.5;
+	// Light bands (quartz-rich): slightly lighter and pinker
+	// Dark bands (mica-rich): darker, with subtle green-gray
+	vec3 light_band = ALBEDO * vec3(1.08, 1.05, 1.02);
+	vec3 dark_band = ALBEDO * vec3(0.88, 0.90, 0.92);
+	ALBEDO = mix(dark_band, light_band, smoothstep(-0.3, 0.3, banding));
+
+	// --- Quartz veins: white mineral veins cutting through dark schist ---
+	// Common in CP outcrops, especially Rat Rock and Umpire Rock
+	float vein_seed = hash2(floor(world_pos.xz * 0.3));
+	if (vein_seed > 0.75) {  // ~25% of rock areas have visible veins
+		float vein_angle = vein_seed * 6.28;
+		float vein_sa = sin(vein_angle); float vein_ca = cos(vein_angle);
+		float vein_u = world_pos.x * vein_ca + world_pos.z * vein_sa +
+		               world_pos.y * 0.5;
+		float vein_noise = vnoise(vec2(vein_u * 0.8, world_pos.y * 1.2));
+		float vein = smoothstep(0.02, 0.0, abs(sin(vein_u * 8.0 + vein_noise * 3.0) - 0.95));
+		// Quartz is milky white, very smooth
+		if (vein > 0.01) {
+			ALBEDO = mix(ALBEDO, vec3(0.82, 0.80, 0.76), vein * 0.7);
+			ROUGHNESS = mix(ROUGHNESS, 0.35, vein * 0.5);
+			SPECULAR = mix(SPECULAR, 0.25, vein * 0.4);
+		}
+	}
+
 	// Mica sparkle: Manhattan schist has visible mica flakes catching light
 	float mica = hash2(floor(world_pos.xz * 20.0 + world_pos.yy * 15.0));
 	if (mica > 0.92) {
 		SPECULAR = mix(SPECULAR, 0.55, (mica - 0.92) * 12.5);
 		ALBEDO += vec3(0.03, 0.03, 0.04) * (mica - 0.92) * 12.5;
 	}
+
+	// --- Iron staining: rust-colored patches from pyrite weathering ---
+	float iron_noise = fbm3(world_pos.xz * 0.15 + vec2(77.0, 33.0));
+	float iron = smoothstep(0.55, 0.75, iron_noise) * 0.12;
+	// Iron stains are more visible on horizontal surfaces (water pooling)
+	iron *= (0.5 + world_nrm.y * 0.5);
+	ALBEDO = mix(ALBEDO, ALBEDO * vec3(1.15, 0.85, 0.65), iron);
 
 	// Glacial striations: Wisconsin ice age scoring on exposed horizontal surfaces
 	// Direction ~NNE-SSW (15° east of north) — visible on bridge copings, wall tops
