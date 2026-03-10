@@ -248,16 +248,37 @@ void fragment() {
 	float sky_lum = dot(sky_col, vec3(0.2126, 0.7152, 0.0722));
 	float night_boost = smoothstep(0.15, 0.02, sky_lum);  // 1.0 at night
 	if (night_boost > 0.01) {
-		// Warm amber city glow reflected in water
-		vec3 city_reflect = vec3(0.12, 0.08, 0.04);
-		// Buildings on east/west edges contribute brighter reflections
-		float edge_factor = abs(world_pos.x) / 1200.0;  // brighter near park edges
-		city_reflect *= (1.0 + clamp(edge_factor, 0.0, 1.0) * 0.5);
+		// Warm amber city glow reflected in water — brighter, more vivid
+		vec3 city_reflect = vec3(0.16, 0.10, 0.05);
+		// Directional: west side (CPW) is residential high-rises, warm yellow windows
+		// East side (5th Ave) is commercial, cooler white-blue
+		float west_bias = smoothstep(0.0, -600.0, world_pos.x);  // west edge of park
+		float east_bias = smoothstep(0.0, 600.0, world_pos.x);    // east edge
+		city_reflect += vec3(0.04, 0.03, 0.01) * west_bias;       // warmer west
+		city_reflect += vec3(0.02, 0.02, 0.03) * east_bias;       // cooler east
+		// Distance from park edges increases reflected light
+		float edge_factor = abs(world_pos.x) / 1000.0;
+		city_reflect *= (1.0 + clamp(edge_factor, 0.0, 1.0) * 0.6);
 		sky_col += city_reflect * night_boost;
-		// Specular highlights: occasional bright "sparkle" patches (window reflections)
+		// Window sparkle: bright warm points dancing on wave crests
 		float sparkle = gnoise(world_pos.xz * 0.3 + vec2(TIME * 0.02, 0.0));
-		sparkle = smoothstep(0.6, 0.9, sparkle) * night_boost * 0.08;
+		sparkle = smoothstep(0.6, 0.9, sparkle) * night_boost * 0.10;
 		sky_col += vec3(1.0, 0.72, 0.32) * sparkle;
+		// Occasional cool-white sparkle (modern buildings)
+		float sparkle2 = gnoise(world_pos.xz * 0.45 + vec2(-TIME * 0.015, TIME * 0.01));
+		sparkle2 = smoothstep(0.7, 0.95, sparkle2) * night_boost * 0.05;
+		sky_col += vec3(0.70, 0.80, 1.0) * sparkle2;
+	}
+
+	// Golden hour water: warm orange-gold reflection during sunset/sunrise
+	// Detect golden hour from sky_reflect_color warmth (warm R > cool B)
+	float sky_warmth = sky_reflect_color.r - sky_reflect_color.b;
+	float golden_w = smoothstep(0.05, 0.20, sky_warmth) * smoothstep(0.02, 0.10, sky_lum);
+	if (golden_w > 0.01) {
+		// Warm amber-gold amplified by fresnel at glancing angles
+		vec3 golden_reflect = sky_reflect_color * vec3(1.10, 0.85, 0.65);
+		float golden_path = fresnel * golden_w * 0.20;
+		sky_col += golden_reflect * golden_path;
 	}
 
 	vec3 col = mix(base_col, sky_col, fresnel * (0.6 + extra_reflect));
