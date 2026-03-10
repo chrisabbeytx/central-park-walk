@@ -194,8 +194,10 @@ func _ready() -> void:
 		print("main: landuse map: %d ms" % (Time.get_ticks_msec() - _mt)); _mt = Time.get_ticks_msec()
 		_apply_structure_mask()
 		print("main: structure mask: %d ms" % (Time.get_ticks_msec() - _mt)); _mt = Time.get_ticks_msec()
-		_apply_surface_atlas()
-		print("main: surface atlas: %d ms" % (Time.get_ticks_msec() - _mt)); _mt = Time.get_ticks_msec()
+		# Surface atlas GPU texture no longer needed — vertex colors in terrain mesh
+		# provide smooth surface blending. CPU-side atlas still used by builders.
+		# _apply_surface_atlas()
+		print("main: vertex colors replace surface atlas GPU texture")
 	_player = _setup_player()
 	if _park_loader and _park_loader.boundary_polygon.size() > 2:
 		_player.boundary_polygon = _park_loader.boundary_polygon
@@ -1550,6 +1552,8 @@ func _setup_ground() -> void:
 	# At 8192×8192 (0.61m cells), LiDAR detail is preserved: bridge decks,
 	# parapets, steps, retaining walls, rock outcrops — all in the geometry.
 	# Shader heightmap texture provides per-pixel normals for sub-cell shading.
+	# V2 format: vertex colors encode smoothed surface blend weights — GPU
+	# interpolation creates smooth transitions, eliminating the splat map grid.
 	var mesh_path := "res://terrain_mesh.bin"
 	if not FileAccess.file_exists(mesh_path):
 		print("ERROR: terrain_mesh.bin not found — run convert_to_godot.py")
@@ -1558,6 +1562,8 @@ func _setup_ground() -> void:
 	var n_verts := mf.get_32()
 	var n_indices := mf.get_32()
 	var world_sz := mf.get_float()
+	# Check for v2 format (has vertex colors)
+	var mesh_version := mf.get_32()  # v2 = vertex colors present
 	# Read positions: n_verts × 3 floats (x, y, z interleaved)
 	var pos_buf := mf.get_buffer(n_verts * 12)
 	var pos_f32 := pos_buf.to_float32_array()
@@ -1570,6 +1576,19 @@ func _setup_ground() -> void:
 		var pz := pos_f32[i * 3 + 2]
 		verts[i] = Vector3(px, pos_f32[i * 3 + 1], pz)
 		uvs[i] = Vector2((px + half) * inv_ws, (pz + half) * inv_ws)
+	# Read vertex colors if v2 format: n_verts × 4 bytes (RGBA8)
+	# R=paved path blend, G=unpaved blend, B=rock blend, A=building blend
+	var vert_colors := PackedColorArray()
+	if mesh_version >= 2:
+		var col_buf := mf.get_buffer(n_verts * 4)
+		vert_colors.resize(n_verts)
+		for i in n_verts:
+			vert_colors[i] = Color(
+				col_buf[i * 4] / 255.0,
+				col_buf[i * 4 + 1] / 255.0,
+				col_buf[i * 4 + 2] / 255.0,
+				col_buf[i * 4 + 3] / 255.0)
+		print("Terrain: vertex colors loaded (v2 — smooth surface blending)")
 	# Read indices: n_indices × uint32
 	var idx_buf := mf.get_buffer(n_indices * 4)
 	var indices := idx_buf.to_int32_array()
@@ -1580,6 +1599,8 @@ func _setup_ground() -> void:
 	var arrays: Array = []; arrays.resize(Mesh.ARRAY_MAX)
 	arrays[Mesh.ARRAY_VERTEX]  = verts
 	arrays[Mesh.ARRAY_TEX_UV]  = uvs
+	if not vert_colors.is_empty():
+		arrays[Mesh.ARRAY_COLOR] = vert_colors
 	arrays[Mesh.ARRAY_INDEX]   = indices
 	var mesh := ArrayMesh.new()
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)

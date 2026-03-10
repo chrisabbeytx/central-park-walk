@@ -67,11 +67,16 @@ uniform sampler2D shore_distance : filter_linear, repeat_disable;
 // Structure mask from LiDAR (HH - BE difference): 0=ground, 1-254=height in half-feet
 uniform sampler2D structure_mask : filter_linear, repeat_disable;
 
-// World atlas surface type (R channel from world_atlas.bin, 8K):
-// 0=outside, 1=grass, 2=paved_path, 3=unpaved_path, 4=water, 5=building, 6=bridge, 7=rock
-uniform sampler2D surface_atlas : filter_nearest, repeat_disable;
+// Vertex colors encode smoothed surface blend weights (from convert_to_godot.py):
+// R = paved path/bridge blend (0-1, Gaussian smoothed)
+// G = unpaved trail blend (0-1, Gaussian smoothed)
+// B = rock blend (0-1, slope + atlas smoothed)
+// A = building area blend (0-1)
+// GPU hardware interpolation across triangle faces creates smooth transitions —
+// no more 0.61m grid artifacts from the old splat map atlas.
 
 varying vec3 world_pos;
+varying vec4 vert_color;
 
 #include "res://shaders/include/hash_noise.gdshaderinc"
 
@@ -122,6 +127,7 @@ float textureNoTile_r(sampler2D tex, vec2 uv) {
 
 void vertex() {
 	world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+	vert_color = COLOR;  // GPU interpolates across triangle face → smooth transitions
 }
 
 void fragment() {
@@ -337,123 +343,84 @@ void fragment() {
 		grass_rgh = mix(grass_rgh, d_rgh, dirt_blend);
 	}
 
-	// --- Path-edge wear: grass thins out near heavily-used paths ---
-	// Sample atlas neighbors to detect nearby path surfaces
-	float atlas_val = texture(surface_atlas, splat_uv).r * 255.0;
-	int surface_type = int(atlas_val + 0.5);
-	float slope = 1.0 - terrain_n.y;  // 0=flat, 1=vertical (used by paths and rock sections)
-	if (surface_type == 1 && slope < 0.15) {
-		// Count path neighbors within 2-cell radius — detects proximity to paths
-		float path_near = 0.0;
-		float s2 = htexel * 2.0;
-		float sn = texture(surface_atlas, splat_uv + vec2(0.0, -s2)).r * 255.0;
-		float ss = texture(surface_atlas, splat_uv + vec2(0.0,  s2)).r * 255.0;
-		float se = texture(surface_atlas, splat_uv + vec2( s2, 0.0)).r * 255.0;
-		float sw = texture(surface_atlas, splat_uv + vec2(-s2, 0.0)).r * 255.0;
-		int isn = int(sn + 0.5); int iss = int(ss + 0.5);
-		int ise = int(se + 0.5); int isw = int(sw + 0.5);
-		if (isn == 2 || isn == 3 || isn == 6) path_near += 1.0;
-		if (iss == 2 || iss == 3 || iss == 6) path_near += 1.0;
-		if (ise == 2 || ise == 3 || ise == 6) path_near += 1.0;
-		if (isw == 2 || isw == 3 || isw == 6) path_near += 1.0;
-		if (path_near > 0.5) {
-			// Worn grass at path edges: browner, lighter, trampled, bare dirt showing through
-			float wear = path_near * 0.30;
-			float wear_noise = vnoise(world_pos.xz * 0.3) * 0.35;
-			wear = clamp(wear + wear_noise - 0.10, 0.0, 0.65);
-			vec3 worn_grass = grass_alb * vec3(1.18, 0.95, 0.62);  // brown, trampled dirt
-			grass_alb = mix(grass_alb, worn_grass, wear);
-			// Desaturate worn areas — exposed soil is less green
-			float worn_lum = dot(grass_alb, vec3(0.299, 0.587, 0.114));
-			grass_alb = mix(grass_alb, vec3(worn_lum) * vec3(1.04, 1.0, 0.92), wear * 0.3);
-			grass_rgh = mix(grass_rgh, grass_rgh + 0.12, wear);
-		}
+	// --- Surface blend weights from vertex colors (replaces splat map atlas) ---
+	// Vertex colors are Gaussian-smoothed in Python → GPU hardware interpolation
+	// creates natural ~2m transitions at surface boundaries. No grid artifacts.
+	float paved_w = vert_color.r;    // paved path / bridge deck blend
+	float unpaved_w = vert_color.g;  // unpaved trail blend
+	float rock_w = vert_color.b;     // rock blend (slope + atlas combined)
+	float bldg_w = vert_color.a;     // building area suppression
+	float path_proximity = max(paved_w, unpaved_w);  // near any path type
+	float slope = 1.0 - terrain_n.y;  // 0=flat, 1=vertical
+
+	// --- Path-edge wear: grass thins out near paths ---
+	// Vertex color interpolation gives smooth proximity — no neighbor sampling needed
+	if (path_proximity > 0.02 && path_proximity < 0.6 && slope < 0.15) {
+		// Transition zone: vertex color is between 0 (pure grass) and 1 (pure path)
+		// This IS the worn grass-to-path edge, naturally smooth
+		float wear = path_proximity * 0.50;
+		float wear_noise = vnoise(world_pos.xz * 0.3) * 0.25;
+		wear = clamp(wear + wear_noise - 0.05, 0.0, 0.55);
+		vec3 worn_grass = grass_alb * vec3(1.18, 0.95, 0.62);  // brown, trampled dirt
+		grass_alb = mix(grass_alb, worn_grass, wear);
+		float worn_lum = dot(grass_alb, vec3(0.299, 0.587, 0.114));
+		grass_alb = mix(grass_alb, vec3(worn_lum) * vec3(1.04, 1.0, 0.92), wear * 0.3);
+		grass_rgh = mix(grass_rgh, grass_rgh + 0.12, wear);
 	}
 
-	// --- Paths from world atlas: paved (2) and unpaved (3) surfaces ---
-	// This makes paths visually distinct from grass — the biggest single visual improvement.
-	bool is_paved = (surface_type == 2 || surface_type == 6);   // paved path or bridge deck
-	bool is_unpaved = (surface_type == 3);
-	if (is_paved && slope < 0.20) {
+	// --- Paths: paved and unpaved surfaces (vertex color blended) ---
+	// Vertex colors provide smooth blend weights — no neighbor sampling needed.
+	// paved_w smoothly transitions from 0 (grass) through edge zone to 1 (path center).
+	if (paved_w > 0.02 && slope < 0.20) {
 		// Asphalt paving — dark gray, slightly rough
 		vec2 puv = world_pos.xz / path_tile_m;
 		vec3 p_alb = texture(path_alb_arr, vec3(puv, 0.0)).rgb;  // layer 0 = Asphalt
 		vec3 p_nrm = texture(path_nrm_arr, vec3(puv, 0.0)).rgb;
 		float p_rgh = clamp(texture(path_rgh_arr, vec3(puv, 0.0)).r + 0.05, 0.0, 1.0);
 		// NYC Parks asphalt: neutral medium gray, slightly weathered
-		// PBR asphalt textures are ~0.08-0.12 in linear space; real sun-worn
-		// Central Park paths read ~0.20-0.30 — neutral gray, not pinkish
-		// Desaturate texture to remove colored aggregate speckles
 		float p_lum = dot(p_alb, vec3(0.2126, 0.7152, 0.0722));
 		p_alb = mix(p_alb, vec3(p_lum), 0.5);  // 50% desaturation
 		p_alb *= vec3(2.5, 2.5, 2.45);
-		// Asphalt patch repairs — NYC Parks constantly patches paths with fresh
-		// asphalt that's darker than the weathered surface around it. This creates
-		// a distinctive mosaic of different-age repair patches.
+		// Asphalt patch repairs — distinctive NYC Parks mosaic
 		float patch_hash = hash2(floor(world_pos.xz * 0.25));  // 4m patch grid
-		float is_patch = step(0.72, patch_hash);  // ~28% of surface is repaired
-		float patch_age = fract(patch_hash * 7.3);  // age variation within patches
-		// Fresh patches are darker (0.75×), old patches blend back to normal
+		float is_patch = step(0.72, patch_hash);  // ~28% repaired
+		float patch_age = fract(patch_hash * 7.3);
 		p_alb *= mix(1.0, mix(0.72, 0.92, patch_age), is_patch);
-		// Fine hairline cracks — stress fractures in old asphalt
+		// Fine hairline cracks
 		float crack_n = vnoise(world_pos.xz * 2.5);
 		float crack = smoothstep(0.48, 0.50, crack_n) * smoothstep(0.52, 0.50, crack_n);
-		p_alb *= mix(1.0, 0.70, crack * 0.5);  // cracks are darker
-		// Patchy wear — lighter in high-traffic center, darker at edges
+		p_alb *= mix(1.0, 0.70, crack * 0.5);
+		// Patchy wear
 		float wear = fbm(world_pos.xz * 0.05, 2);
 		p_alb *= (0.90 + wear * 0.20);
-		// Edge softening: blend with surrounding grass at path borders
-		// Sample atlas neighbors to detect path-grass boundary
-		float edge_n = texture(surface_atlas, splat_uv + vec2(0.0, -htexel * 2.0)).r * 255.0;
-		float edge_s = texture(surface_atlas, splat_uv + vec2(0.0,  htexel * 2.0)).r * 255.0;
-		float edge_e = texture(surface_atlas, splat_uv + vec2( htexel * 2.0, 0.0)).r * 255.0;
-		float edge_w = texture(surface_atlas, splat_uv + vec2(-htexel * 2.0, 0.0)).r * 255.0;
-		float neighbors_path = 0.0;
-		if (int(edge_n + 0.5) == 2 || int(edge_n + 0.5) == 6) neighbors_path += 1.0;
-		if (int(edge_s + 0.5) == 2 || int(edge_s + 0.5) == 6) neighbors_path += 1.0;
-		if (int(edge_e + 0.5) == 2 || int(edge_e + 0.5) == 6) neighbors_path += 1.0;
-		if (int(edge_w + 0.5) == 2 || int(edge_w + 0.5) == 6) neighbors_path += 1.0;
-		// Full blend at path center (4 neighbors also path), softer at edges
-		float path_blend = clamp(neighbors_path * 0.25 + 0.15 + edge_noise * 0.1, 0.0, 1.0);
-		grass_alb = mix(grass_alb, p_alb, path_blend);
-		grass_nrm = mix(grass_nrm, p_nrm, path_blend);
-		grass_rgh = mix(grass_rgh, p_rgh, path_blend);
+		// Smooth blend from vertex color — natural grass-to-asphalt transition
+		grass_alb = mix(grass_alb, p_alb, paved_w);
+		grass_nrm = mix(grass_nrm, p_nrm, paved_w);
+		grass_rgh = mix(grass_rgh, p_rgh, paved_w);
 	}
-	if (is_unpaved && slope < 0.20) {
+	if (unpaved_w > 0.02 && slope < 0.20) {
 		// Unpaved trail: compacted gravel/dirt — brown-gray
 		vec2 puv = world_pos.xz / path_tile_m;
 		vec3 p_alb = texture(path_alb_arr, vec3(puv, 3.0)).rgb;  // layer 3 = Gravel
 		vec3 p_nrm = texture(path_nrm_arr, vec3(puv, 3.0)).rgb;
 		float p_rgh = clamp(texture(path_rgh_arr, vec3(puv, 3.0)).r + 0.08, 0.0, 1.0);
-		// Compacted earth tone: warm tan-gray (packed gravel/decomposed granite)
-		// PBR gravel textures are too dark — Central Park bridle paths and
-		// unpaved trails are light tan-gray decomposed granite
+		// Compacted earth tone: warm tan-gray decomposed granite
 		p_alb *= vec3(2.2, 1.9, 1.6);
-		// Exposed pebbles and stones — scattered lighter specks in gravel
+		// Exposed pebbles and stones
 		float pebble = hash2(floor(world_pos.xz * 4.0));
 		if (pebble > 0.85) {
-			p_alb *= mix(1.0, 1.25, fract(pebble * 7.1));  // bright pebble
+			p_alb *= mix(1.0, 1.25, fract(pebble * 7.1));
 		}
-		// Ruts and puddle-prone depressions — trails have more organic wear pattern
+		// Ruts and puddle-prone depressions
 		float rut = vnoise(world_pos.xz * 0.12);
 		p_alb *= mix(0.85, 1.05, smoothstep(0.3, 0.7, rut));
-		// Foot traffic variation — center lighter from compaction
+		// Foot traffic variation
 		float wear = fbm(world_pos.xz * 0.04, 2);
 		p_alb *= (0.88 + wear * 0.24);
-		// Edge softening (same neighbor sampling)
-		float edge_n = texture(surface_atlas, splat_uv + vec2(0.0, -htexel * 2.0)).r * 255.0;
-		float edge_s = texture(surface_atlas, splat_uv + vec2(0.0,  htexel * 2.0)).r * 255.0;
-		float edge_e = texture(surface_atlas, splat_uv + vec2( htexel * 2.0, 0.0)).r * 255.0;
-		float edge_w = texture(surface_atlas, splat_uv + vec2(-htexel * 2.0, 0.0)).r * 255.0;
-		float neighbors_path = 0.0;
-		if (int(edge_n + 0.5) == 3) neighbors_path += 1.0;
-		if (int(edge_s + 0.5) == 3) neighbors_path += 1.0;
-		if (int(edge_e + 0.5) == 3) neighbors_path += 1.0;
-		if (int(edge_w + 0.5) == 3) neighbors_path += 1.0;
-		float path_blend = clamp(neighbors_path * 0.25 + 0.15 + edge_noise * 0.1, 0.0, 1.0);
-		grass_alb = mix(grass_alb, p_alb, path_blend);
-		grass_nrm = mix(grass_nrm, p_nrm, path_blend);
-		grass_rgh = mix(grass_rgh, p_rgh, path_blend);
+		// Smooth blend from vertex color — natural grass-to-gravel transition
+		grass_alb = mix(grass_alb, p_alb, unpaved_w);
+		grass_nrm = mix(grass_nrm, p_nrm, unpaved_w);
+		grass_rgh = mix(grass_rgh, p_rgh, unpaved_w);
 	}
 
 	// Running track zones(9): distinctive reddish-brown cinder surface
@@ -489,25 +456,14 @@ void fragment() {
 		grass_rgh = mix(grass_rgh, sh_rgh, shore_blend);
 	}
 
-	// Water zone (12) OR atlas water surface (4) — dark muddy ground under water surface
-	// Without this, water-edge terrain cells render as bright grass through transparent water.
-	// Also check if ANY neighbor is water — eliminates checkerboard at water/grass boundaries.
+	// Water zone (12) — dark muddy ground under/near water surface.
+	// Uses shore_distance for smooth proximity (no atlas neighbor sampling needed).
 	float water_near = 0.0;
-	if (surface_type == 4 || zone_id == 12) {
+	if (zone_id == 12) {
 		water_near = 1.0;
-	} else if (surface_type == 1) {
-		// Check 4 neighbors for water — catches the alternating grass cells at water edge
-		float htx = 1.0 / float(textureSize(surface_atlas, 0).x);
-		float sn2 = texture(surface_atlas, splat_uv + vec2(0.0, -htx)).r * 255.0;
-		float ss2 = texture(surface_atlas, splat_uv + vec2(0.0,  htx)).r * 255.0;
-		float se2 = texture(surface_atlas, splat_uv + vec2( htx, 0.0)).r * 255.0;
-		float sw2 = texture(surface_atlas, splat_uv + vec2(-htx, 0.0)).r * 255.0;
-		float w_count = 0.0;
-		if (int(sn2 + 0.5) == 4) w_count += 1.0;
-		if (int(ss2 + 0.5) == 4) w_count += 1.0;
-		if (int(se2 + 0.5) == 4) w_count += 1.0;
-		if (int(sw2 + 0.5) == 4) w_count += 1.0;
-		water_near = w_count * 0.3;  // partial blend based on how many neighbors are water
+	} else if (shore_dist_m < 3.0) {
+		// Very close to water — smooth transition from shore distance field
+		water_near = smoothstep(3.0, 0.5, shore_dist_m);
 	}
 	if (water_near > 0.01) {
 		// Underwater/waterside silt/mud: dark brown-gray, organic sediment
@@ -517,15 +473,13 @@ void fragment() {
 		grass_rgh = mix(grass_rgh, 0.95, clamp(water_near, 0.0, 1.0));
 	}
 
-	// Rock on steep slopes + atlas rock (type 7) — Manhattan schist outcrops
+	// Rock on steep slopes + vertex color rock blend — Manhattan schist outcrops
 	// Schist: gray base + mica sparkle (slight specular) + rusty weathering patches
 	// LiDAR at 2.4m/cell smooths real slopes significantly, so use low thresholds.
 	float rock_noise = fbm(world_pos.xz * 0.05, 2) * 0.06;
 	float rock_blend = smoothstep(0.10, 0.25, slope + rock_noise);
-	// Atlas surface type 7 = rock: boost rock blend for flat exposed bedrock
-	if (surface_type == 7) {
-		rock_blend = max(rock_blend, 0.85);
-	}
+	// Vertex color B = pre-computed rock blend (slope + atlas, Gaussian smoothed)
+	rock_blend = max(rock_blend, rock_w);
 	float rock_specular = 0.0;
 	if (rock_blend > 0.01) {
 		vec2 ruv = world_pos.xz / rock_tile_m;
@@ -605,8 +559,8 @@ void fragment() {
 		float struct_slope = 1.0 - terrain_n.y;  // 0=flat, 1=vertical
 		// Large-scale warm/cool variation — some areas sandstone-warm, others schist-gray
 		float warmth = fbm(world_pos.xz * 0.004, 2);
-		// Atlas rock outcrops are Manhattan schist — always cool gray
-		if (surface_type == 7) warmth = 0.12;
+		// Vertex color rock areas are Manhattan schist — always cool gray
+		if (rock_w > 0.5) warmth = mix(warmth, 0.12, rock_w);
 		// Named structure overrides — force warmth for known materials
 		// Bethesda Terrace: New Brunswick sandstone (warm mustard-olive)
 		float d_beth_s = length(world_pos.xz - vec2(-458.0, 949.0));
@@ -896,7 +850,7 @@ void fragment() {
 		float summer_bloom = smoothstep(0.5, 1.0, season_t) * smoothstep(2.3, 1.8, season_t);
 		float late_summer = smoothstep(1.3, 1.8, season_t) * smoothstep(2.5, 2.0, season_t);
 		float any_bloom = max(spring_bloom, max(summer_bloom, late_summer));
-		if (any_bloom > 0.01 && slope < 0.15 && !is_paved && !is_unpaved && !is_dirt) {
+		if (any_bloom > 0.01 && slope < 0.15 && path_proximity < 0.3 && !is_dirt) {
 			// Wildflowers prefer meadows, woodland edges, and unmowed areas
 			float flower_zone = is_woodland ? 0.30 : (meadow_blend > 0.3 ? 0.60 : 0.15);
 			// Noise determines where flowers appear (patchy, natural distribution)
