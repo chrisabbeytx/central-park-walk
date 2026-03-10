@@ -693,12 +693,23 @@ func _build_amenities(amenities: Array) -> void:
 	if amenities.is_empty():
 		return
 
-	# Load drinking fountain GLB
+	# Load drinking fountain GLB (surface 0=Stone, surface 1=Iron)
 	var df_path := ProjectSettings.globalize_path("res://models/furniture/cp_drinking_fountain.glb")
 	var df_meshes: Dictionary = _loader._load_glb_meshes(df_path)
 	var df_mesh: Mesh = null
 	if df_meshes.has("CP_DrinkingFountain"):
 		df_mesh = df_meshes["CP_DrinkingFountain"] as Mesh
+		# Apply weather-responsive materials to fountain surfaces
+		if df_mesh and df_mesh.get_surface_count() >= 2:
+			var rw_alb: ImageTexture = _loader._load_tex("res://textures/rock_wall_diff.jpg")
+			var rw_nrm: ImageTexture = _loader._load_tex("res://textures/rock_wall_nrm.jpg")
+			var rw_rgh: ImageTexture = _loader._load_tex("res://textures/rock_wall_rgh.jpg")
+			df_mesh.surface_set_material(0, _loader._make_stone_material(rw_alb, rw_nrm, rw_rgh, Color(0.55, 0.52, 0.48)))
+			var iron_sh: Shader = _loader._get_shader("cast_iron", "res://shaders/cast_iron.gdshader")
+			var df_iron := ShaderMaterial.new()
+			df_iron.shader = iron_sh
+			df_iron.set_shader_parameter("iron_color", Vector3(0.08, 0.08, 0.06))
+			df_mesh.surface_set_material(1, df_iron)
 	var df_xforms: Array = []
 
 	var count := 0
