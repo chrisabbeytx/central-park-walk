@@ -1,5 +1,5 @@
 shader_type spatial;
-render_mode cull_disabled, depth_prepass_alpha;
+render_mode cull_disabled, depth_prepass_alpha, alpha_to_coverage;
 
 uniform vec3 albedo_tint = vec3(0.28, 0.48, 0.18);
 uniform sampler2D albedo_tex : source_color, filter_linear_mipmap_anisotropic;
@@ -200,9 +200,10 @@ void fragment() {
 	vec4 tex = texture(albedo_tex, UV);
 	float lum = dot(tex.rgb, vec3(0.3, 0.6, 0.1));
 	float alpha = tex.a * v_leaf_density;
-	// Fixed-threshold alpha test: no dither, no per-frame variation.
-	// Each texel deterministically passes or fails regardless of wind sway.
-	if (alpha < 0.35) discard;
+	// depth_prepass_alpha uses this discard for the depth buffer pass.
+	// alpha_to_coverage then distributes remaining alpha across 4x MSAA samples
+	// in the main pass — smooth edges without binary popping.
+	if (alpha < 0.15) discard;
 
 	vec3 col = v_leaf_color * (0.4 + lum * 0.6);  // reduced: Blender vertex colors are too bright for PBR
 	int sp = int(v_species_idx + 0.5);
@@ -305,4 +306,8 @@ void fragment() {
 		sss_strength = mix(sss_strength, 1.2, v_blossom);  // petals are very translucent
 	}
 	BACKLIGHT = backlight_col * sss_strength;
+
+	// Feed continuous alpha to alpha_to_coverage (4x MSAA).
+	// Depth prepass already wrote depth for fragments above 0.15 threshold.
+	ALPHA = alpha;
 }
