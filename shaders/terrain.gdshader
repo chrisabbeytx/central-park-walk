@@ -387,7 +387,19 @@ void fragment() {
 		float p_lum = dot(p_alb, vec3(0.2126, 0.7152, 0.0722));
 		p_alb = mix(p_alb, vec3(p_lum), 0.5);  // 50% desaturation
 		p_alb *= vec3(2.5, 2.5, 2.45);
-		// Subtle patchy wear — lighter in high-traffic center, darker at edges
+		// Asphalt patch repairs — NYC Parks constantly patches paths with fresh
+		// asphalt that's darker than the weathered surface around it. This creates
+		// a distinctive mosaic of different-age repair patches.
+		float patch_hash = hash2(floor(world_pos.xz * 0.25));  // 4m patch grid
+		float is_patch = step(0.72, patch_hash);  // ~28% of surface is repaired
+		float patch_age = fract(patch_hash * 7.3);  // age variation within patches
+		// Fresh patches are darker (0.75×), old patches blend back to normal
+		p_alb *= mix(1.0, mix(0.72, 0.92, patch_age), is_patch);
+		// Fine hairline cracks — stress fractures in old asphalt
+		float crack_n = vnoise(world_pos.xz * 2.5);
+		float crack = smoothstep(0.48, 0.50, crack_n) * smoothstep(0.52, 0.50, crack_n);
+		p_alb *= mix(1.0, 0.70, crack * 0.5);  // cracks are darker
+		// Patchy wear — lighter in high-traffic center, darker at edges
 		float wear = fbm(world_pos.xz * 0.05, 2);
 		p_alb *= (0.90 + wear * 0.20);
 		// Edge softening: blend with surrounding grass at path borders
@@ -417,6 +429,14 @@ void fragment() {
 		// PBR gravel textures are too dark — Central Park bridle paths and
 		// unpaved trails are light tan-gray decomposed granite
 		p_alb *= vec3(2.2, 1.9, 1.6);
+		// Exposed pebbles and stones — scattered lighter specks in gravel
+		float pebble = hash2(floor(world_pos.xz * 4.0));
+		if (pebble > 0.85) {
+			p_alb *= mix(1.0, 1.25, fract(pebble * 7.1));  // bright pebble
+		}
+		// Ruts and puddle-prone depressions — trails have more organic wear pattern
+		float rut = vnoise(world_pos.xz * 0.12);
+		p_alb *= mix(0.85, 1.05, smoothstep(0.3, 0.7, rut));
 		// Foot traffic variation — center lighter from compaction
 		float wear = fbm(world_pos.xz * 0.04, 2);
 		p_alb *= (0.88 + wear * 0.24);
