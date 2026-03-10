@@ -131,6 +131,7 @@ void fragment() {
 	float tD = texture(heightmap_tex, hm_uv + vec2(0.0,  htexel)).r;
 	vec3 terrain_n = normalize(vec3(tL - tR, 2.0 * cell_m, tU - tD));
 
+
 	// --- Park boundary mask: outside = NYC sidewalk ---
 	vec2 mask_uv = (world_pos.xz + world_size * 0.5) / world_size;
 	float park_inside = texture(park_mask, mask_uv).r;

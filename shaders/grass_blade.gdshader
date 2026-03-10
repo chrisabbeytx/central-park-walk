@@ -327,4 +327,10 @@ void fragment() {
 	// Backlight / subsurface scattering — subtle, only at blade tips.
 	// Reduced to prevent grass tiles appearing brighter than terrain underneath.
 	BACKLIGHT = col * mix(0.05, 0.20, blade_t);
+
+	// Ambient emission — match terrain shader's fill light to prevent grass
+	// from rendering as pitch-black voids in shadows. Without this, grass
+	// billboard bases (AO-darkened, side-facing normals) appear nearly black
+	// from ground level, creating large dark patches across the terrain.
+	EMISSION = ALBEDO * 0.12;
 }
