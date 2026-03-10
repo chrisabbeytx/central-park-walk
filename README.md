@@ -83,7 +83,7 @@ python3 convert_to_godot.py
 |---------|-------|--------|
 | Terrain | 8192×8192 mesh (14M verts) | NYC LiDAR 2017 (1ft resolution, 0.61m cells) |
 | Trees | ~9,300 | NYC Tree Census + OSM + woodland scatter in 12 ecological zones. 17 custom Blender models: 15 species (oak, elm, maple, birch, cherry, ginkgo, honeylocust, linden, london plane, callery pear, pine, willow, magnolia) + generic deciduous + standing dead snag. Cherry blossom + callery pear + magnolia spring bloom. 5 species-specific bark textures (birch lenticels, london plane mottled exfoliation, pine scaled plates). Frost sparkle, morning dew |
-| Water | 23 bodies + 10 streams | OpenStreetMap polygons |
+| Water | 23 bodies + 10 streams | OpenStreetMap polygons. Dawn/dusk mist (8 localized fog volumes) |
 | Buildings | 6,557 | NYC Building Footprints + LiDAR heights |
 | Furniture | 1,022+ | Lampposts (201), benches (610), trash cans (166), fountains (19), flagpoles (18), water towers (45), iron fences (207 segments) |
 | Statues | 106 positions | 4 photogrammetry scans + Cleopatra's Needle model + 61 stone pedestals, rest labeled |
@@ -91,7 +91,7 @@ python3 convert_to_godot.py
 | Grass | ~762K tiles | 10 CPC-data-driven types with narrow 3D blades (8–15mm), wildflowers, clover. Mowed=1-segment spikes, woodland=2-segment curves, meadow=3-segment arches. Mowing stripes on formal lawns, path-edge wear, multi-scale color variation |
 | Seasons | 4 | Per-species phenology, cherry/callery pear/magnolia spring blossoms, spring cherry blossom petal drift, autumn falling leaf particles, leaf scatter, water color, atmosphere |
 | Weather | 5 modes | Rain, thunderstorm, snow, fog, clear — with surface response |
-| Day/night | Full cycle | 48-lamp pool, lit windows, NYC light pollution, moon, golden hour bloom |
+| Day/night | Full cycle | 48-lamp pool, lit windows, NYC warm ambient light pollution, moon, golden hour bloom, atmospheric haze |
 
 ## Data Sources
 
@@ -139,7 +139,7 @@ See [FUNDING.md](FUNDING.md) for details on how funds are used.
 | Engine | Godot 4.6.1 (Forward+, GDScript) |
 | Data pipeline | Python (GDAL, numpy/scipy, Pillow) |
 | 3D modeling | Blender 3.0.1 (headless scripts) |
-| Rendering | 19 custom GLSL shaders (terrain, water, stream, facade, stone, tree leaf/bark, grass, hedge, wood, cast iron, roof, sky, weather), MultiMesh instancing, 8K prebaked terrain mesh, world atlas path rendering |
+| Rendering | 20 custom GLSL shaders (terrain, water, water mist, stream, facade, stone, tree leaf/bark, grass, hedge, wood, cast iron, roof, sky, weather), MultiMesh instancing, 8K prebaked terrain mesh, world atlas path rendering |
 
 ## License
 
