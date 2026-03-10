@@ -189,12 +189,41 @@ void fragment() {
 			final_rough = tex_rgh;
 			final_metal = 0.0;
 		} else {
-			// Procedural mode: tint blended with facade texture
+			// Per-building material variety — NYC buildings aren't all the same
+			float mat_hash = fract(bld_hash * 11.3);
+			vec3 bld_tint;
+			float bld_rough;
+			if (mat_hash < 0.30) {
+				// Limestone/buff — pre-war Upper West & East Side (Beresford, San Remo, etc.)
+				float w = fract(bld_hash * 9.1);
+				bld_tint = mix(vec3(0.72, 0.66, 0.52), vec3(0.82, 0.76, 0.62), w);
+				bld_rough = 0.85;
+			} else if (mat_hash < 0.55) {
+				// Red/brown brick — classic NYC brownstones and apartment buildings
+				float w = fract(bld_hash * 13.7);
+				bld_tint = mix(vec3(0.52, 0.32, 0.22), vec3(0.62, 0.42, 0.30), w);
+				bld_rough = 0.92;
+			} else if (mat_hash < 0.72) {
+				// Gray concrete — mid-century modern, post-war
+				float w = fract(bld_hash * 17.3);
+				bld_tint = mix(vec3(0.52, 0.50, 0.48), vec3(0.62, 0.60, 0.56), w);
+				bld_rough = 0.88;
+			} else if (mat_hash < 0.88) {
+				// Dark glass/granite — modern towers (Time Warner, etc.)
+				float w = fract(bld_hash * 19.1);
+				bld_tint = mix(vec3(0.22, 0.24, 0.28), vec3(0.32, 0.34, 0.38), w);
+				bld_rough = 0.35;
+			} else {
+				// White/cream — newer luxury condos, 15 CPW style
+				float w = fract(bld_hash * 23.7);
+				bld_tint = mix(vec3(0.78, 0.76, 0.72), vec3(0.88, 0.86, 0.82), w);
+				bld_rough = 0.80;
+			}
 			float var_ = hash2(world_pos.xz * 0.15) * 0.08;
-			vec3 base_wall = wall_tint * COLOR.rgb * (0.92 + var_);
+			vec3 base_wall = bld_tint * COLOR.rgb * (0.92 + var_);
 			wall_col = mix(base_wall, tex_col * base_wall * 2.0, 0.35);
-			final_rough = mix(wall_rough, tex_rgh, 0.4);
-			final_metal = wall_metal;
+			final_rough = mix(bld_rough, tex_rgh, 0.4);
+			final_metal = mat_hash > 0.72 ? 0.15 : wall_metal;  // glass/granite gets slight metallic
 		}
 
 		if (is_cornice) { wall_col *= 0.78; }
