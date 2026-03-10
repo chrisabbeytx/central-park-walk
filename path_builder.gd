@@ -57,9 +57,9 @@ func _build_paths(paths: Array) -> void:
 
 	# Build ground-level path meshes
 	for key in ground_groups:
-		var parts := key.split("|")
-		var hw := parts[0]
-		var surface := parts[1]
+		var parts: PackedStringArray = str(key).split("|")
+		var hw: String = parts[0]
+		var surface: String = parts[1]
 		var group_paths: Array = ground_groups[key]
 
 		var result := _build_group_mesh(group_paths)
@@ -80,9 +80,9 @@ func _build_paths(paths: Array) -> void:
 
 	# Build bridge deck path meshes (no terrain snapping)
 	for key in bridge_groups:
-		var parts := key.split("|")
-		var hw := parts[0]
-		var surface := parts[1]
+		var parts: PackedStringArray = str(key).split("|")
+		var hw: String = parts[0]
+		var surface: String = parts[1]
 		var group_paths: Array = bridge_groups[key]
 
 		var result := _build_group_mesh(group_paths)

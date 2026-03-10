@@ -9,6 +9,8 @@ models/
 !models/furniture/cp_trash_can.glb
 !models/furniture/cp_drinking_fountain.glb
 !models/furniture/cp_rocks.glb
+!models/furniture/cp_bow_bridge.glb
+!models/furniture/cp_gapstow_bridge.glb
 textures/
 sounds/
 

@@ -74,7 +74,7 @@ void fragment() {
 	col += col * fresnel * 0.14;
 
 	// Fine-scale leaf edge variation: alternating light/dark spots for individual leaf impression
-	float leaf_edge = vnoise(world_pos * 12.0);
+	float leaf_edge = vnoise(world_pos.xz * 12.0);
 	col *= (0.96 + leaf_edge * 0.08);
 
 	ALBEDO = col;

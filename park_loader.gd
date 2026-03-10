@@ -951,7 +951,8 @@ func _ready() -> void:
 	print("  buildings: %d ms" % (Time.get_ticks_msec() - _tp)); _tp = Time.get_ticks_msec()
 	_boundary_builder._label_boundary_buildings(buildings)
 	_build_bridge_tunnel_labels(paths)
-	print("  labels: %d ms" % (Time.get_ticks_msec() - _tp)); _tp = Time.get_ticks_msec()
+	_build_bridge_models()
+	print("  labels+bridges: %d ms" % (Time.get_ticks_msec() - _tp)); _tp = Time.get_ticks_msec()
 	_water_builder._build_water(water)
 	_water_builder._build_streams(streams)
 	print("  water: %d ms" % (Time.get_ticks_msec() - _tp)); _tp = Time.get_ticks_msec()
@@ -1039,8 +1040,86 @@ func _splat_mat_idx(hw: String, surface: String) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Bridge / tunnel labels only — geometry now baked into 8K LiDAR terrain mesh
+# Bridge / tunnel labels — geometry now baked into 8K LiDAR terrain mesh
+# Bridge 3D models placed on top of bare earth DEM terrain
 # ---------------------------------------------------------------------------
+
+## Map of bridge name → GLB filename (models/furniture/)
+const BRIDGE_GLBS: Dictionary = {
+	"Bow Bridge": "cp_bow_bridge.glb",
+	"Gapstow Bridge": "cp_gapstow_bridge.glb",
+}
+
+
+func _build_bridge_models() -> void:
+	## Load and place bridge GLB models at positions from bridge_outlines.
+	## Each model was built with origin at deck center, bridge along Y axis.
+	## We compute centroid + principal axis from the outline polygon, then
+	## rotate the model to align with the real-world orientation.
+	var count := 0
+	for bo in _bridge_outlines:
+		var bname: String = bo.get("name", "")
+		if bname.is_empty() or not BRIDGE_GLBS.has(bname):
+			continue
+		var bpts: Array = bo.get("points", [])
+		if bpts.size() < 3:
+			continue
+
+		# Centroid
+		var cx := 0.0; var cy := 0.0; var cz := 0.0
+		for pt in bpts:
+			cx += float(pt[0]); cy += float(pt[1]); cz += float(pt[2])
+		cx /= bpts.size(); cy /= bpts.size(); cz /= bpts.size()
+
+		if not _in_boundary(cx, cz):
+			continue
+
+		# Use terrain height at centroid (bare earth DEM) as base,
+		# but prefer the outline's average Y (from DSM) for deck height
+		var ty := _terrain_y(cx, cz)
+		# Use the outline Y which represents the deck surface height
+		var deck_y := cy
+
+		# Principal axis from covariance of outline XZ coordinates
+		var cov_xx := 0.0; var cov_xz := 0.0; var cov_zz := 0.0
+		for pt in bpts:
+			var dx := float(pt[0]) - cx
+			var dz := float(pt[2]) - cz
+			cov_xx += dx * dx
+			cov_xz += dx * dz
+			cov_zz += dz * dz
+		var angle := 0.5 * atan2(2.0 * cov_xz, cov_xx - cov_zz)
+
+		# Load GLB as scene
+		var glb_file: String = BRIDGE_GLBS[bname]
+		var abs_path := ProjectSettings.globalize_path("res://models/furniture/" + glb_file)
+		if not FileAccess.file_exists(abs_path):
+			print("WARNING: bridge GLB not found: %s" % abs_path)
+			continue
+
+		var gltf_doc := GLTFDocument.new()
+		var gltf_state := GLTFState.new()
+		if gltf_doc.append_from_file(abs_path, gltf_state) != OK:
+			print("WARNING: failed to load bridge GLB: %s" % abs_path)
+			continue
+		var root: Node3D = gltf_doc.generate_scene(gltf_state)
+		if root == null:
+			continue
+
+		# Position at deck height, rotated to match outline principal axis
+		# Blender bridge runs along Y → in Godot that's Z axis
+		# angle is the principal axis direction in XZ plane
+		root.position = Vector3(cx, deck_y, cz)
+		root.rotation.y = -angle
+		root.name = bname.replace(" ", "_")
+		add_child(root)
+		count += 1
+		print("  Bridge model: %s at (%.0f, %.1f, %.0f) rot=%.1f°" % [
+			bname, cx, deck_y, cz, rad_to_deg(-angle)])
+
+	print("ParkLoader: bridge models = %d" % count)
+
+
 func _build_bridge_tunnel_labels(paths: Array) -> void:
 	# Collect named bridges from path data
 	var labelled: Dictionary = {}
