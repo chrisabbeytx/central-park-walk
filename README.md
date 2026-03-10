@@ -113,7 +113,7 @@ This project grows with human attention.
 
 **No coding required**: Map furniture in OSM (only ~10% of real lampposts/benches are mapped). Take photogrammetry scans of statues (4 of 106 scanned). Record field audio. Photograph landmarks and materials. Map rock outcrops (~170 named, 1 in OSM).
 
-**Technical**: Species-accurate tree models (5 generic for 100+ species). Interior spaces. Ground detail. Performance profiling. Cross-platform support.
+**Technical**: 10 species-specific tree models (oak, elm, maple, birch, cherry, ginkgo, honeylocust, linden, pine, deciduous). Interior spaces. Performance profiling. Cross-platform support.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines.
 
