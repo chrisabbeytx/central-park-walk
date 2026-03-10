@@ -207,20 +207,33 @@ void fragment() {
 
 	vec3 col = v_leaf_color * (0.4 + lum * 0.6);  // reduced: Blender vertex colors are too bright for PBR
 	int sp = int(v_species_idx + 0.5);
-	// Desaturate and darken — real tree canopy is dark olive/forest green, not lime
+	// Desaturate slightly — preserve species hue while keeping it natural
 	float leaf_lum = dot(col, vec3(0.299, 0.587, 0.114));
-	col = mix(vec3(leaf_lum), col, 0.65);  // 35% desaturation
-	col *= vec3(0.92, 0.88, 0.78);  // darken + warm: real leaves are darker than Blender colors
+	col = mix(vec3(leaf_lum), col, 0.72);  // 28% desaturation (was 35%)
+	col *= vec3(0.94, 0.90, 0.80);  // subtle warm darken
+
+	// --- Top-lit canopy gradient: world-space normal creates 3D depth ---
+	// Sunlit top = bright, shaded underside = darker blue-shifted.
+	// This is the single biggest cue for 3D canopy shape.
+	vec3 world_n = mat3(INV_VIEW_MATRIX) * NORMAL;
+	float top_lit = world_n.y * 0.5 + 0.5;  // 0=facing down, 1=facing up
+	col *= mix(0.72, 1.12, top_lit);  // 72% dark underneath, 112% bright on top
+	// Shaded underside shifts slightly cool (sky ambient is blue)
+	col = mix(col, col * vec3(0.92, 0.95, 1.06), (1.0 - top_lit) * 0.25);
+
+	// --- Fresnel rim light: leaf edges glow at grazing view angles ---
+	// Real leaves show bright translucent edges when viewed at shallow angles
+	float fresnel = pow(1.0 - abs(dot(NORMAL, VIEW)), 3.0);
+	col += col * fresnel * 0.18;
 
 	// Within-canopy detail: simulate individual leaf shadows, overlap, light pockets
-	// This breaks up the flat billboard read with high-frequency variation
 	vec3 tree_pos = (MODEL_MATRIX * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
 	float detail_n = vnoise(UV * 12.0 + tree_pos.xz * 0.5);  // per-leaf-scale noise
 	float pocket_n = vnoise(UV * 4.0 + tree_pos.xz * 0.3);   // shadow pocket scale
-	// Dark shadow pockets in canopy interior (20% of area, 30% darker)
-	col *= mix(1.0, 0.70, smoothstep(0.3, 0.6, pocket_n) * 0.30);
+	// Dark shadow pockets in canopy interior (softer than before)
+	col *= mix(1.0, 0.78, smoothstep(0.3, 0.6, pocket_n) * 0.22);
 	// Per-leaf brightness variation (some leaves catch more light)
-	col *= (0.90 + detail_n * 0.20);
+	col *= (0.92 + detail_n * 0.16);
 
 	// --- Species-specific material properties ---
 	// Broad-leaved trees (maple, london plane) have smoother, more reflective leaves
@@ -277,9 +290,9 @@ void fragment() {
 	// --- Enhanced subsurface scattering ---
 	// Light passing through thin leaves creates warm glow
 	// Stronger in spring (fresh thin leaves), reduced in fall (dry/thick), absent in winter
-	vec3 backlight_col = vec3(0.28, 0.20, 0.06);  // base warm SSS
+	vec3 backlight_col = vec3(0.42, 0.30, 0.08);  // warm green-gold SSS glow
 	// Tint backlight with leaf color: autumn leaves glow warm amber/red
-	backlight_col = mix(backlight_col, v_leaf_color * 0.5, 0.4);
+	backlight_col = mix(backlight_col, v_leaf_color * 0.6, 0.45);
 	float sss_strength = v_leaf_density;
 	// Spring leaves are thinner, more translucent
 	float spring_boost = (1.0 - smoothstep(0.3, 0.8, season_t)) * 0.3;
