@@ -385,10 +385,11 @@ func _load_heightmap() -> void:
 		var buf := fa.get_buffer(byte_count)
 		fa.close()
 		_hm_data = buf.to_float32_array()
-		# Mesh capped at 1024 (~4.9m cells); shader heightmap texture uses
-		# full resolution for per-pixel normals, so mesh just needs shape.
-		_mesh_width = mini(_hm_width, 1024)
-		_mesh_depth = mini(_hm_depth, 1024)
+		# Mesh at 2048 (~2.4m cells): captures bridge decks, steps, retaining
+		# walls from LiDAR. Shader heightmap texture (8K) provides per-pixel
+		# normals for sub-cell shading detail.
+		_mesh_width = mini(_hm_width, 2048)
+		_mesh_depth = mini(_hm_depth, 2048)
 		print("Heightmap loaded (bin): %d×%d  mesh=%d×%d  origin_y=%.1f m" % [
 			_hm_width, _hm_depth, _mesh_width, _mesh_depth, _hm_origin_height])
 		return
