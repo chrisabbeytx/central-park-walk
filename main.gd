@@ -355,12 +355,12 @@ func _build_showcase_shots() -> void:
 const README_SHOTS: Array = [
 	# Autumn dusk on Literary Walk looking west toward CPW skyline
 	{"name": "cpw_skyline_autumn_dusk", "x": -600.0, "z": 1420.0, "yaw": 90.0, "pitch": 0.0, "hour": 19.0, "season": 2.5, "weather": "clear"},
-	# Summer golden hour on Literary Walk
-	{"name": "literary_walk_summer_golden", "x": -600.0, "z": 1420.0, "yaw": 30.0, "pitch": 0.0, "hour": 17.5, "season": 1.5, "weather": "clear"},
+	# Rain at Conservatory Water — atmosphere + weather showcase
+	{"name": "conservatory_rain_afternoon", "x": -152.0, "z": 958.0, "yaw": 270.0, "pitch": 0.0, "hour": 15.0, "season": 2.0, "weather": "rain"},
 	# Winter snow at Sheep Meadow
 	{"name": "sheep_meadow_winter_noon", "x": -700.0, "z": 1600.0, "yaw": 270.0, "pitch": 0.0, "hour": 12.0, "season": 3.5, "weather": "snow"},
-	# Rustic wood bridge in the North Woods — view from path approaching the bridge
-	{"name": "north_woods_bridge", "x": 610.0, "z": -1285.0, "yaw": 200.0, "pitch": -8.0, "hour": 15.0, "season": 2.0, "weather": "clear"},
+	# North Woods winter morning — snow + woodland
+	{"name": "north_woods_snow_morning", "x": 600.0, "z": -1315.0, "yaw": 180.0, "pitch": 0.0, "hour": 9.0, "season": 3.5, "weather": "snow"},
 ]
 
 func _build_readme_shots() -> void:
