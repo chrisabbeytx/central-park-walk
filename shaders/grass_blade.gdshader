@@ -144,6 +144,36 @@ void fragment() {
 		ROUGHNESS = mix(ROUGHNESS, 0.90,                   snow_on * 0.5);
 	}
 
+	// Frost sparkle: ice crystals on blade surfaces in winter
+	// Each crystal is a tiny mirror — creates bright specular pinpoints
+	if (winter_t > 0.1 && snow_cover < 0.6) {
+		// Frost forms preferentially on blade tips (exposed, cools fastest)
+		float frost_mask = winter_t * smoothstep(0.2, 0.8, blade_t);
+		// Ice crystal facets: high-frequency hash gives random sparkle per blade position
+		float crystal = hash2(floor(v_world_pos.xz * 12.0 + vec2(blade_t * 5.0)));
+		// Only ~20% of positions sparkle (discrete crystal facets)
+		float sparkle = step(0.80, crystal) * frost_mask;
+		// Frost coating: thin rime ice makes surface smoother and more reflective
+		ALBEDO    = mix(ALBEDO, ALBEDO * vec3(1.10, 1.12, 1.18), frost_mask * 0.4);
+		ROUGHNESS = mix(ROUGHNESS, 0.10, sparkle * 0.8);
+		SPECULAR  = mix(SPECULAR,  0.60, sparkle * 0.9);
+		// Broad frost reduces roughness subtly even without sparkle
+		ROUGHNESS = mix(ROUGHNESS, 0.40, frost_mask * 0.3);
+	}
+
+	// Dew drops: morning moisture on blades in spring/summer
+	// Small water droplets at blade tips catch and refract light
+	if (spring_t > 0.2 || (season_t > 0.5 && season_t < 2.5)) {
+		float dew_season = max(spring_t, smoothstep(0.5, 1.0, season_t) * smoothstep(2.5, 2.0, season_t));
+		float dew_pos = hash2(floor(v_world_pos.xz * 8.0));
+		// ~12% of blade tips hold a visible dew drop
+		float dew_drop = step(0.88, dew_pos) * smoothstep(0.6, 0.9, blade_t) * dew_season;
+		ROUGHNESS = mix(ROUGHNESS, 0.05, dew_drop * 0.7);
+		SPECULAR  = mix(SPECULAR,  0.50, dew_drop * 0.8);
+		// Dew slightly darkens the blade (wet surface)
+		ALBEDO   *= mix(1.0, 0.85, dew_drop * 0.5);
+	}
+
 	// Backlight / subsurface scattering — stronger at blade tips
 	// Light passing through thin grass blade tips creates warm glow
 	BACKLIGHT = col * mix(0.15, 0.50, blade_t);
