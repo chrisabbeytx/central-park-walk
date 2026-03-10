@@ -67,6 +67,7 @@ const LAMP_LIGHT_UPDATE_INTERVAL := 0.5  # seconds between position updates
 var _rain_particles: GPUParticles3D
 var _snow_particles: GPUParticles3D
 var _leaf_particles: GPUParticles3D  # autumn falling leaves
+var _blossom_particles: GPUParticles3D  # spring cherry blossom petals
 var _lens_canvas: CanvasLayer   # barrel distortion overlay
 
 # 5 keyframes defining the full day/night cycle
@@ -564,6 +565,24 @@ func _process(delta: float) -> void:
 		lpm.gravity = Vector3(_wind_vec.x * 4.0, -0.3, _wind_vec.y * 4.0)
 		# Vary amount by autumn intensity (sparse early/late, dense at peak)
 		_leaf_particles.amount = int(lerpf(200.0, 2000.0, autumn_strength))
+
+	# Spring cherry blossom petals — activate during bloom season (0.2-1.0)
+	# Peak bloom around season_t 0.5 (mid-spring), tapering off into summer
+	var bloom_strength := smoothstep(0.1, 0.4, _season_t) * (1.0 - smoothstep(0.7, 1.1, _season_t))
+	# Also catch late-winter to spring wrap (season_t near 4.0→0)
+	if _season_t > 3.8:
+		bloom_strength = maxf(bloom_strength, smoothstep(3.8, 3.95, _season_t) * 0.5)
+	if bloom_strength > 0.05 and not _blossom_particles:
+		_setup_blossom_particles()
+	elif bloom_strength < 0.02 and _blossom_particles:
+		_blossom_particles.queue_free()
+		_blossom_particles = null
+	if _blossom_particles and _player:
+		_blossom_particles.global_position = _player.global_position + Vector3(0, 10, 0)
+		var bpm: ParticleProcessMaterial = _blossom_particles.process_material
+		# Petals drift gently on the breeze — lighter than autumn leaves
+		bpm.gravity = Vector3(_wind_vec.x * 3.0, -0.15, _wind_vec.y * 3.0)
+		_blossom_particles.amount = int(lerpf(100.0, 1200.0, bloom_strength))
 
 	# Lightning flashes during thunderstorm
 	if _weather_mode == "thunderstorm":
@@ -2228,6 +2247,69 @@ func _setup_leaf_particles() -> void:
 
 	add_child(_leaf_particles)
 	print("Autumn leaves: drifting fall particles")
+
+
+func _setup_blossom_particles() -> void:
+	## Spring cherry blossom petals — pale pink quads floating down like snow.
+	## Active during spring bloom (season_t 0.2-1.0). Yoshino cherry, callery pear,
+	## and magnolia all shed petals in Central Park's April bloom.
+	_blossom_particles = GPUParticles3D.new()
+	_blossom_particles.amount = 600  # adjusted dynamically in _process
+	_blossom_particles.lifetime = 12.0  # very slow drift — petals are light
+	_blossom_particles.visibility_aabb = AABB(Vector3(-35, -15, -35), Vector3(70, 30, 70))
+
+	var pm := ParticleProcessMaterial.new()
+	pm.direction = Vector3(0, -1, 0)
+	pm.spread = 60.0  # wide spread — petals flutter in all directions
+	pm.initial_velocity_min = 0.1
+	pm.initial_velocity_max = 0.5
+	pm.gravity = Vector3(0, -0.15, 0)  # extremely slow fall (petals are featherlight)
+	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
+	pm.emission_box_extents = Vector3(35.0, 3.0, 35.0)
+	# Gentle orbit for graceful fluttering descent
+	pm.orbit_velocity_min = 0.08
+	pm.orbit_velocity_max = 0.25
+	# Slow spin — petals rotate gracefully, not chaotically
+	pm.angular_velocity_min = -45.0
+	pm.angular_velocity_max = 45.0
+	# Scale variation — small petals
+	pm.scale_min = 0.5
+	pm.scale_max = 1.2
+	# Color: cherry blossom pink palette
+	pm.color = Color(0.95, 0.82, 0.85, 0.90)
+	var color_ramp := GradientTexture1D.new()
+	var grad := Gradient.new()
+	grad.set_color(0, Color(1.0, 0.92, 0.94, 0.95))    # almost white (fresh petal)
+	grad.add_point(0.25, Color(0.98, 0.82, 0.86, 0.92)) # pale pink (Yoshino cherry)
+	grad.add_point(0.5, Color(0.95, 0.72, 0.78, 0.88))  # medium pink
+	grad.add_point(0.75, Color(0.92, 0.65, 0.72, 0.80)) # deeper pink (aging petal)
+	grad.set_color(1, Color(0.88, 0.60, 0.65, 0.50))    # browning edge (ground)
+	color_ramp.gradient = grad
+	pm.color_initial_ramp = color_ramp
+	# Damping so petals slow down as they drift
+	pm.damping_min = 1.0
+	pm.damping_max = 3.0
+	_blossom_particles.process_material = pm
+
+	var mesh := QuadMesh.new()
+	mesh.size = Vector2(0.018, 0.016)  # tiny petal shape — slightly wider than tall
+
+	_blossom_particles.draw_pass_1 = mesh
+
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(0.97, 0.85, 0.88, 0.90)
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.billboard_mode = BaseMaterial3D.BILLBOARD_PARTICLES
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_PER_PIXEL
+	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	# Slight emission for that ethereal glow of sunlit petals
+	mat.emission_enabled = true
+	mat.emission = Color(0.95, 0.80, 0.82)
+	mat.emission_energy_multiplier = 0.15
+	_blossom_particles.material_override = mat
+
+	add_child(_blossom_particles)
+	print("Cherry blossoms: spring petal drift particles")
 
 
 func _setup_fog_weather() -> void:
