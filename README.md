@@ -88,7 +88,7 @@ python3 convert_to_godot.py
 | Furniture | 1,022+ | Lampposts (201), benches (610), trash cans (166), fountains (19), flagpoles (18), water towers (45) |
 | Statues | 106 positions | 4 photogrammetry scans + Cleopatra's Needle model, rest labeled |
 | Sports fields | 147 | Tennis, basketball, baseball, soccer, handball |
-| Grass | ~524K patches | 3 data-driven types: lawn (Kentucky bluegrass), woodland floor, wild meadow — density from Conservancy zone data |
+| Grass | ~762K tiles | 10 area-specific types: Sheep Meadow, Great Lawn, North Meadow, formal garden, sports turf, North Woods, Ramble, waterside, wild meadow, open lawn |
 | Seasons | 4 | Per-species phenology, leaf scatter, water color, atmosphere |
 | Weather | 5 modes | Rain, thunderstorm, snow, fog, clear — with surface response |
 | Day/night | Full cycle | 48-lamp pool, lit windows, NYC light pollution, moon |
