@@ -359,8 +359,8 @@ const README_SHOTS: Array = [
 	{"name": "literary_walk_summer_golden", "x": -600.0, "z": 1420.0, "yaw": 30.0, "pitch": 0.0, "hour": 17.5, "season": 1.5, "weather": "clear"},
 	# Winter snow at Sheep Meadow
 	{"name": "sheep_meadow_winter_noon", "x": -700.0, "z": 1600.0, "yaw": 270.0, "pitch": 0.0, "hour": 12.0, "season": 3.5, "weather": "snow"},
-	# Rustic wood bridge in the North Woods
-	{"name": "north_woods_bridge", "x": 525.0, "z": -1360.0, "yaw": 240.0, "pitch": -5.0, "hour": 14.0, "season": 2.0, "weather": "clear"},
+	# Rustic wood bridge in the North Woods — view from path approaching the bridge
+	{"name": "north_woods_bridge", "x": 610.0, "z": -1285.0, "yaw": 200.0, "pitch": -8.0, "hour": 15.0, "season": 2.0, "weather": "clear"},
 ]
 
 func _build_readme_shots() -> void:
