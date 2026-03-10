@@ -962,13 +962,13 @@ func _build_keyframes() -> void:
 	# NYC light pollution: horizon never fully dark, ambient glow from city
 	_keyframes.append({
 		"hour": 5.0,
-		"sky_top":        Color(0.03, 0.04, 0.12),
-		"sky_horizon":    Color(0.14, 0.12, 0.20),  # light pollution glow
-		"gnd_bottom":     Color(0.02, 0.02, 0.03),
-		"gnd_horizon":    Color(0.10, 0.08, 0.12),
-		"ambient_color":  Color(0.12, 0.12, 0.20),
-		"ambient_energy": 0.30,   # NYC ambient from light pollution
-		"exposure":       0.75,
+		"sky_top":        Color(0.04, 0.05, 0.14),
+		"sky_horizon":    Color(0.16, 0.13, 0.22),  # light pollution glow
+		"gnd_bottom":     Color(0.025, 0.025, 0.04),
+		"gnd_horizon":    Color(0.12, 0.09, 0.14),
+		"ambient_color":  Color(0.16, 0.14, 0.22),
+		"ambient_energy": 0.50,   # NYC ambient from light pollution — never dim
+		"exposure":       0.90,
 		"white":          6.0,
 		"glow_intensity": 0.6,
 		"glow_bloom":     0.08,
@@ -1136,29 +1136,30 @@ func _build_keyframes() -> void:
 	})
 
 	# ---- 21.0  Night ----
-	# NYC light pollution: never truly dark, warm orange-pink skyglow on horizon
+	# NYC light pollution: never truly dark. Central Park is surrounded by 6,557 lit buildings.
+	# Real nighttime in CP: you can see paths, grass, trees clearly. The city bathes everything in warm glow.
 	_keyframes.append({
 		"hour": 21.0,
-		"sky_top":        Color(0.03, 0.04, 0.10),
-		"sky_horizon":    Color(0.10, 0.08, 0.14),  # light pollution horizon
-		"gnd_bottom":     Color(0.015, 0.015, 0.025),
-		"gnd_horizon":    Color(0.05, 0.04, 0.08),
-		"ambient_color":  Color(0.14, 0.12, 0.20),  # blue-shifted city glow
-		"ambient_energy": 0.30,   # NYC ambient — never below 0.3 at night
-		"exposure":       0.75,
+		"sky_top":        Color(0.04, 0.05, 0.14),
+		"sky_horizon":    Color(0.14, 0.11, 0.18),  # stronger light pollution horizon
+		"gnd_bottom":     Color(0.025, 0.025, 0.04),
+		"gnd_horizon":    Color(0.08, 0.06, 0.10),
+		"ambient_color":  Color(0.18, 0.15, 0.24),  # blue-shifted city glow, stronger
+		"ambient_energy": 0.55,   # NYC ambient — city light bathes the park
+		"exposure":       0.95,
 		"white":          6.0,
-		"glow_intensity": 0.6,
-		"glow_bloom":     0.08,
-		"glow_strength":  0.7,
-		"glow_threshold": 0.55,
+		"glow_intensity": 0.7,
+		"glow_bloom":     0.10,
+		"glow_strength":  0.8,
+		"glow_threshold": 0.45,
 		"glow_cap":       5.0,
 		"ssao_radius":    2.0,
 		"ssao_intensity": 2.2,
 		"ssao_power":     1.8,
 		"ssil_intensity": 0.6,
-		"saturation":     0.75,
-		"contrast":       1.06,   # less crush — preserves shadow detail
-		"brightness":     0.88,   # brighter — NYC is never pitch black
+		"saturation":     0.70,
+		"contrast":       1.02,   # less crush — preserves shadow detail in dark areas
+		"brightness":     1.0,    # full brightness — NYC is never pitch black
 		"fog_color":      Color(0.08, 0.07, 0.11),
 		"fog_energy":     0.20,
 		"fog_scatter":    0.05,
