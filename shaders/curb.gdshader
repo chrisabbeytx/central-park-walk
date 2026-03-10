@@ -9,7 +9,6 @@ uniform float hm_range       = 1.0;
 uniform float hm_res         = 256.0;
 uniform float curb_top_offset = 0.08;   // flush with path surface (matches path_y_offset)
 uniform float curb_below_grade = 0.04;  // extend below terrain to prevent gaps
-uniform float sample_offset = 0.30;     // how far inward/outward to sample terrain (metres)
 
 global uniform float rain_wetness;
 global uniform float snow_cover;
@@ -27,18 +26,15 @@ void vertex() {
 
 	// COLOR.r encodes position in curb cross-section:
 	//   1.0 = top vertex (path surface level)
-	//   0.0 = bottom vertex (terrain/grass level)
+	//   0.0 = bottom vertex (below grade)
 	//
-	// Both top and bottom vertices share the same XZ position (at the path edge),
-	// producing a perfectly vertical face. To get the correct height for each:
-	//   Top: sample terrain 30cm INWARD (toward path center) → path surface height
-	//   Bottom: sample terrain 30cm OUTWARD (toward grass) → grass height
-	// This captures the real grade change between path and grass from LiDAR.
-	vec2 outward_xz = normalize(NORMAL.xz + vec2(0.0001));
-	float sample_dir = mix(1.0, -1.0, COLOR.r);  // +1 outward (bottom), -1 inward (top)
-	vec2 sample_xz = world.xz + outward_xz * sample_dir * sample_offset;
-	float terrain_h = sample_terrain(sample_xz);
-
+	// Both vertices sample terrain at their own XZ position — no offset sampling.
+	// A granite curb is a fixed-height stone: top = terrain + offset (flush with
+	// path surface), bottom = terrain - below_grade (buried slightly underground).
+	// Face height = curb_top_offset + curb_below_grade ≈ 12-14cm, always.
+	// This prevents giant curb walls at terrain features (transverse road cuttings,
+	// ravines) where nearby terrain differs by meters.
+	float terrain_h = sample_terrain(world.xz);
 	float y_offset = mix(-curb_below_grade, curb_top_offset, COLOR.r);
 	vec3 snapped = (inverse(MODEL_MATRIX) * vec4(world.x, terrain_h + y_offset, world.z, 1.0)).xyz;
 	VERTEX.y = snapped.y;

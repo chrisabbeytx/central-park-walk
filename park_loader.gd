@@ -403,7 +403,6 @@ func _make_curb_material() -> Material:
 	mat.shader = _get_shader("curb", "res://shaders/curb.gdshader")
 	mat.set_shader_parameter("curb_top_offset", PATH_Y + 0.04)  # average hw priority
 	mat.set_shader_parameter("curb_below_grade", 0.04)
-	mat.set_shader_parameter("sample_offset", 0.30)
 	if _hm_texture:
 		mat.set_shader_parameter("heightmap_tex", _hm_texture)
 		mat.set_shader_parameter("hm_world_size", _hm_world_size)
