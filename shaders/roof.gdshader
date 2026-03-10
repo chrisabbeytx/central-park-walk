@@ -87,4 +87,7 @@ void fragment() {
 		ROUGHNESS = mix(ROUGHNESS, 0.80, snow_amt);
 		SPECULAR = mix(SPECULAR, 0.15, snow_amt);
 	}
+
+	// Ambient emission for shadow fill
+	EMISSION = ALBEDO * 0.08;
 }
