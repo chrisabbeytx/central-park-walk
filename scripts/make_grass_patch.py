@@ -98,6 +98,62 @@ def make_blade(bm, color_layer, uv_layer,
 
 
 # ---------------------------------------------------------------------------
+# Small wildflower / clover element
+# ---------------------------------------------------------------------------
+def make_flower(bm, color_layer, uv_layer, fx, fz, height, size, rgb):
+    """Create a small flower as a horizontal quad at the given height."""
+    hs = size * 0.5
+    y = height
+    v0 = bm.verts.new((fx - hs, y, fz - hs))
+    v1 = bm.verts.new((fx + hs, y, fz - hs))
+    v2 = bm.verts.new((fx + hs, y, fz + hs))
+    v3 = bm.verts.new((fx - hs, y, fz + hs))
+    try:
+        face = bm.faces.new([v0, v1, v2, v3])
+    except ValueError:
+        return
+    col = (rgb[0], rgb[1], rgb[2], 1.0)
+    for loop in face.loops:
+        loop[color_layer] = col
+        loop[uv_layer].uv = (0.5, 0.5)
+
+
+def make_clover_leaf(bm, color_layer, uv_layer, cx, cz, height, size):
+    """Create a 3-leaf clover cluster as 3 tiny tilted quads."""
+    leaf_rgb = (0.15, 0.38, 0.08)
+    for i in range(3):
+        angle = i * 2.094 + 0.3  # 120° apart
+        lx = cx + math.cos(angle) * size * 0.6
+        lz = cz + math.sin(angle) * size * 0.6
+        hs = size * 0.35
+        y = height
+        # Slightly tilted leaf
+        v0 = bm.verts.new((lx - hs, y,        lz - hs))
+        v1 = bm.verts.new((lx + hs, y,        lz - hs))
+        v2 = bm.verts.new((lx + hs, y + 0.003, lz + hs))
+        v3 = bm.verts.new((lx - hs, y + 0.003, lz + hs))
+        try:
+            face = bm.faces.new([v0, v1, v2, v3])
+        except ValueError:
+            continue
+        col = (leaf_rgb[0], leaf_rgb[1], leaf_rgb[2], 1.0)
+        for loop in face.loops:
+            loop[color_layer] = col
+            loop[uv_layer].uv = (0.5, 0.5)
+
+
+# Flower types with colors (Central Park lawn weeds/wildflowers)
+FLOWER_PALETTE = [
+    # (rgb, size_mult, name)
+    ((0.90, 0.90, 0.85), 0.8, "white_clover_bloom"),
+    ((0.85, 0.78, 0.15), 1.0, "dandelion"),
+    ((0.50, 0.30, 0.70), 0.7, "violet"),
+    ((0.85, 0.85, 0.80), 0.5, "chickweed"),
+    ((0.80, 0.55, 0.70), 0.6, "henbit"),
+]
+
+
+# ---------------------------------------------------------------------------
 # Distributed grass tile builder
 # ---------------------------------------------------------------------------
 def build_grass_tile(cfg, seed):
@@ -105,7 +161,8 @@ def build_grass_tile(cfg, seed):
 
     Blades are randomly placed within the tile radius, each with its
     own random rotation and arch direction. This creates uniform ground
-    cover, not a single clump.
+    cover, not a single clump. Wildflowers/clover mixed in based on
+    lawn maintenance level.
     """
     rng = random.Random(seed)
     bm = bmesh.new()
@@ -121,6 +178,8 @@ def build_grass_tile(cfg, seed):
     base_rgb = cfg["base_rgb"]
     tip_rgb = cfg["tip_rgb"]
     color_var = cfg.get("color_var", 0.04)
+    flower_pct = cfg.get("flower_pct", 0.0)
+    clover_pct = cfg.get("clover_pct", 0.0)
 
     for _ in range(blade_count):
         # Random position within tile radius (uniform disk sampling)
@@ -153,6 +212,34 @@ def build_grass_tile(cfg, seed):
                    bx, bz, h, w, rot, arch,
                    segments, b_rgb, t_rgb)
 
+    # Wildflowers — small colored quads at grass height
+    n_flowers = int(blade_count * flower_pct)
+    for _ in range(n_flowers):
+        r = radius * math.sqrt(rng.random())
+        theta = rng.random() * 2 * math.pi
+        fx = r * math.cos(theta)
+        fz = r * math.sin(theta)
+        fh = rng.uniform(h_lo * 0.8, h_hi * 1.1)
+        ftype = rng.choice(FLOWER_PALETTE)
+        fsize = rng.uniform(0.012, 0.022) * ftype[1]
+        make_flower(bm, color_layer, uv_layer, fx, fz, fh, fsize, ftype[0])
+
+    # Clover patches — 3-leaf clusters nestled in grass
+    n_clover = int(blade_count * clover_pct)
+    for _ in range(n_clover):
+        r = radius * math.sqrt(rng.random())
+        theta = rng.random() * 2 * math.pi
+        cx = r * math.cos(theta)
+        cz = r * math.sin(theta)
+        ch = rng.uniform(h_lo * 0.5, h_lo * 0.9)
+        csize = rng.uniform(0.015, 0.025)
+        make_clover_leaf(bm, color_layer, uv_layer, cx, cz, ch, csize)
+        # 30% chance of white clover bloom on top
+        if rng.random() < 0.3:
+            make_flower(bm, color_layer, uv_layer, cx, cz,
+                        ch + 0.01, rng.uniform(0.008, 0.014),
+                        (0.90, 0.90, 0.85))
+
     return bm
 
 
@@ -169,18 +256,20 @@ def build_grass_tile(cfg, seed):
 
 GRASS_TYPES = [
     # 0: Sheep Meadow — iconic bright Kentucky bluegrass (A Lawn, mowed 2x/week)
-    #    CPC: 3 inches (7.6cm). PIL analysis: avg (0.42, 0.46, 0.30)
+    #    CPC: 3 inches (7.6cm). Tight range = uniform mowed look.
     {
         "name": "Grass_Tile_SheepMeadow",
         "blade_count": 550,
         "radius": 1.0,
-        "height_range": (0.04, 0.08),
+        "height_range": (0.06, 0.08),
         "width_range": (0.045, 0.075),
         "arch_range": (0.02, 0.05),
         "segments": 2,
         "base_rgb": (0.22, 0.42, 0.08),
         "tip_rgb": (0.48, 0.68, 0.30),
         "color_var": 0.04,
+        "flower_pct": 0.01,   # A Lawn: almost no weeds
+        "clover_pct": 0.02,
         "seed": 42,
     },
     # 1: Great Lawn — rich green maintained turf (A Lawn, mowed 2x/week)
@@ -188,13 +277,15 @@ GRASS_TYPES = [
         "name": "Grass_Tile_GreatLawn",
         "blade_count": 500,
         "radius": 1.0,
-        "height_range": (0.04, 0.08),
+        "height_range": (0.06, 0.08),
         "width_range": (0.042, 0.070),
         "arch_range": (0.02, 0.05),
         "segments": 2,
         "base_rgb": (0.20, 0.40, 0.07),
         "tip_rgb": (0.42, 0.62, 0.25),
         "color_var": 0.05,
+        "flower_pct": 0.01,
+        "clover_pct": 0.02,
         "seed": 73,
     },
     # 2: North Meadow — open meadow (A Lawn, heavily used soccer fields)
@@ -202,13 +293,15 @@ GRASS_TYPES = [
         "name": "Grass_Tile_NorthMeadow",
         "blade_count": 420,
         "radius": 0.95,
-        "height_range": (0.05, 0.09),
+        "height_range": (0.06, 0.08),
         "width_range": (0.045, 0.075),
         "arch_range": (0.02, 0.06),
         "segments": 2,
         "base_rgb": (0.20, 0.38, 0.07),
         "tip_rgb": (0.45, 0.60, 0.26),
         "color_var": 0.06,
+        "flower_pct": 0.02,   # A Lawn but heavy use = some weeds
+        "clover_pct": 0.04,
         "seed": 109,
     },
     # 3: Formal garden — Conservatory Garden, Shakespeare Garden (A Lawn)
@@ -216,13 +309,15 @@ GRASS_TYPES = [
         "name": "Grass_Tile_FormalGarden",
         "blade_count": 480,
         "radius": 0.95,
-        "height_range": (0.03, 0.06),
+        "height_range": (0.04, 0.055),
         "width_range": (0.040, 0.065),
         "arch_range": (0.015, 0.04),
         "segments": 2,
         "base_rgb": (0.22, 0.40, 0.10),
         "tip_rgb": (0.40, 0.58, 0.24),
         "color_var": 0.03,
+        "flower_pct": 0.005,  # Formal: almost pristine
+        "clover_pct": 0.01,
         "seed": 151,
     },
     # 4: Sports field — tennis, basketball, baseball turf (A Lawn, shortest)
@@ -230,16 +325,18 @@ GRASS_TYPES = [
         "name": "Grass_Tile_SportsTurf",
         "blade_count": 600,
         "radius": 1.0,
-        "height_range": (0.02, 0.05),
+        "height_range": (0.03, 0.04),
         "width_range": (0.038, 0.060),
         "arch_range": (0.01, 0.03),
         "segments": 2,
         "base_rgb": (0.25, 0.45, 0.10),
         "tip_rgb": (0.45, 0.65, 0.28),
         "color_var": 0.02,
+        "flower_pct": 0.005,
+        "clover_pct": 0.01,
         "seed": 197,
     },
-    # 5: North Woods understory — sparse but present
+    # 5: North Woods understory — sparse, shade-adapted (D Lawn)
     {
         "name": "Grass_Tile_NorthWoods",
         "blade_count": 150,
@@ -251,9 +348,11 @@ GRASS_TYPES = [
         "base_rgb": (0.10, 0.25, 0.05),
         "tip_rgb": (0.25, 0.42, 0.15),
         "color_var": 0.05,
+        "flower_pct": 0.06,   # D Lawn: violets, chickweed
+        "clover_pct": 0.04,
         "seed": 233,
     },
-    # 6: Ramble / Dene — moderate woodland floor
+    # 6: Ramble / Dene — moderate woodland floor (D Lawn)
     {
         "name": "Grass_Tile_Ramble",
         "blade_count": 250,
@@ -265,6 +364,8 @@ GRASS_TYPES = [
         "base_rgb": (0.12, 0.28, 0.06),
         "tip_rgb": (0.30, 0.48, 0.18),
         "color_var": 0.05,
+        "flower_pct": 0.05,
+        "clover_pct": 0.05,
         "seed": 277,
     },
     # 7: Waterside — near lakes/ponds, taller moisture-loving (C Lawn)
@@ -279,6 +380,8 @@ GRASS_TYPES = [
         "base_rgb": (0.14, 0.34, 0.06),
         "tip_rgb": (0.35, 0.55, 0.20),
         "color_var": 0.05,
+        "flower_pct": 0.03,   # C Lawn: some wildflowers near water
+        "clover_pct": 0.03,
         "seed": 313,
     },
     # 8: Wild meadow — nature reserve, tall unmowed, golden tips (BotW-style)
@@ -293,6 +396,8 @@ GRASS_TYPES = [
         "base_rgb": (0.14, 0.32, 0.05),
         "tip_rgb": (0.45, 0.48, 0.20),
         "color_var": 0.06,
+        "flower_pct": 0.10,   # Nature reserve: abundant wildflowers
+        "clover_pct": 0.06,
         "seed": 359,
     },
     # 9: Open lawn — default maintained grass (B/C Lawn)
@@ -300,13 +405,15 @@ GRASS_TYPES = [
         "name": "Grass_Tile_OpenLawn",
         "blade_count": 480,
         "radius": 1.0,
-        "height_range": (0.05, 0.08),
+        "height_range": (0.06, 0.08),
         "width_range": (0.042, 0.070),
         "arch_range": (0.02, 0.05),
         "segments": 2,
         "base_rgb": (0.20, 0.40, 0.07),
         "tip_rgb": (0.44, 0.62, 0.26),
         "color_var": 0.05,
+        "flower_pct": 0.03,   # B/C Lawn: some clover + dandelions
+        "clover_pct": 0.05,
         "seed": 401,
     },
 ]
