@@ -238,6 +238,7 @@ func _build_trees(trees: Array) -> void:
 	var cd_by_key: Dictionary = {}  # parallel Color arrays for custom_data (season info)
 	var all_trunk_xf: Array = []  # for collision
 	var _skip_surface := 0
+	var _nudged := 0
 	for i in trees.size():
 		var tree_entry = trees[i]
 		var pt: Array
@@ -254,9 +255,36 @@ func _build_trees(trees: Array) -> void:
 		# Use atlas surface type instead of boundary polygon — atlas correctly covers
 		# the full park area while the OSM boundary polygon may be undersized.
 		var surf: int = _loader._atlas_surface(tx, tz)
-		if surf != 1 and surf != 7:  # only place on grass (1) or rock (7)
-			_skip_surface += 1
-			continue
+		if surf != 1 and surf != 7:  # not on grass (1) or rock (7)
+			# Trees on paths/bridges are common — GPS offset or canopy overlap.
+			# Nudge to nearest grass/rock cell within ~3m (5 cells at 0.61m).
+			if surf == 2 or surf == 3 or surf == 6:
+				var nudged: bool = false
+				var cell_m: float = _loader._hm_world_size / float(_loader._atlas_res)
+				for radius in range(1, 6):
+					if nudged:
+						break
+					for dx in range(-radius, radius + 1):
+						if nudged:
+							break
+						for dz in range(-radius, radius + 1):
+							if abs(dx) != radius and abs(dz) != radius:
+								continue  # only check perimeter of each ring
+							var nx: float = tx + float(dx) * cell_m
+							var nz: float = tz + float(dz) * cell_m
+							var ns: int = _loader._atlas_surface(nx, nz)
+							if ns == 1 or ns == 7:
+								tx = nx; tz = nz
+								nudged = true
+								_nudged += 1
+								break
+				if not nudged:
+					_skip_surface += 1
+					continue
+			else:
+				# water (4), building (5), outside (0) — truly skip
+				_skip_surface += 1
+				continue
 		var ty: float = _loader._terrain_y(tx, tz)
 		rng.seed = i * 1234567891 + 987654321
 
@@ -397,8 +425,8 @@ func _build_trees(trees: Array) -> void:
 		_loader.add_child(mmi)
 
 	_build_tree_collision(all_trunk_xf)
-	print("Trees: %d placed, %d chunks (skipped %d non-grass)" % [
-		all_trunk_xf.size(), lod0_chunks.size(), _skip_surface])
+	print("Trees: %d placed, %d chunks (skipped %d non-grass, nudged %d from paths)" % [
+		all_trunk_xf.size(), lod0_chunks.size(), _skip_surface, _nudged])
 
 
 func _build_tree_collision(trunk_xf: Array) -> void:
