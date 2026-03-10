@@ -13,11 +13,13 @@ var head: Node3D    # pitch pivot at eye height
 var _stair_offset: float = 0.0  # camera smoothing for stair steps
 var boundary_polygon: PackedVector2Array  # XZ park boundary (set by main.gd)
 var tour_freeze := false  # when true, physics runs but player doesn't move/look
+var terrain_height_fn: Callable  # set by main.gd → _terrain_height(x, z) -> float
 
 
 func _ready() -> void:
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
-	floor_snap_length = 0.3  # snap down stairs (STEP_RISE = 0.17m)
+	floor_snap_length = 0.5  # snap to ground on slopes and stairs
+	safe_margin = 0.05       # wider collision margin prevents tunneling on steep terrain
 
 	# Capsule collider
 	var col := CollisionShape3D.new()
@@ -151,6 +153,14 @@ func _handle_movement(delta: float) -> void:
 						# floor_snap_length pulls us back down after move_and_slide
 
 		move_and_slide()
+
+	# Safety net: never let the player fall below the terrain surface.
+	# Prevents tunneling through HeightMapShape3D on steep slopes at speed.
+	if terrain_height_fn.is_valid():
+		var floor_y: float = terrain_height_fn.call(position.x, position.z)
+		if position.y < floor_y + 0.1:
+			position.y = floor_y + 0.1
+			velocity.y = maxf(velocity.y, 0.0)
 
 
 func _point_in_polygon(px: float, pz: float) -> bool:

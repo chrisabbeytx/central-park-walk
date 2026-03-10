@@ -1951,6 +1951,7 @@ func _setup_player() -> CharacterBody3D:
 		p.position = Vector3(-400.0, _terrain_height(-400.0, 600.0) + 1.8, 600.0)
 	if not _cli_pos_set:
 		p.rotation_degrees.y = 30.0
+	p.terrain_height_fn = Callable(self, "_terrain_height")
 	add_child(p)
 	if _terrain_only and p.head:
 		p.head.rotation_degrees.x = -55.0  # look down at terrain
