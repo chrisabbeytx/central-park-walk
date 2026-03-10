@@ -250,6 +250,7 @@ void fragment() {
 	// This makes paths visually distinct from grass — the biggest single visual improvement.
 	float atlas_val = texture(surface_atlas, splat_uv).r * 255.0;
 	int surface_type = int(atlas_val + 0.5);
+	float slope = 1.0 - terrain_n.y;  // 0=flat, 1=vertical (used by paths and rock sections)
 	bool is_paved = (surface_type == 2 || surface_type == 6);   // paved path or bridge deck
 	bool is_unpaved = (surface_type == 3);
 	if (is_paved && slope < 0.20) {
@@ -349,7 +350,6 @@ void fragment() {
 	// Rock on steep slopes + atlas rock (type 7) — Manhattan schist outcrops
 	// Schist: gray base + mica sparkle (slight specular) + rusty weathering patches
 	// LiDAR at 2.4m/cell smooths real slopes significantly, so use low thresholds.
-	float slope = 1.0 - terrain_n.y;  // 0=flat, 1=vertical
 	float rock_noise = fbm(world_pos.xz * 0.05, 2) * 0.06;
 	float rock_blend = smoothstep(0.10, 0.25, slope + rock_noise);
 	// Atlas surface type 7 = rock: boost rock blend for flat exposed bedrock

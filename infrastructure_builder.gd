@@ -626,6 +626,35 @@ func _build_statues(statues: Array) -> void:
 				print("Statues: failed to generate scene for '%s'" % skey)
 	print("Statues: %d named GLBs loaded" % named_statue_glbs.size())
 
+	# Load stone pedestal GLB — 3 variant meshes for label-only statues
+	# Variant 0: Standard (statues, sculptures) ~1.08m
+	# Variant 1: Column (busts) ~1.36m
+	# Variant 2: Memorial (memorials, monuments) ~0.68m
+	var pedestal_meshes: Array = []  # [Mesh, Mesh, Mesh]
+	var pedestal_heights: Array = [1.08, 1.36, 0.68]
+	var ped_path := ProjectSettings.globalize_path("res://models/furniture/cp_pedestal.glb")
+	if FileAccess.file_exists(ped_path):
+		var gd_p := GLTFDocument.new()
+		var gs_p := GLTFState.new()
+		if gd_p.append_from_file(ped_path, gs_p) == OK:
+			var ped_root: Node = gd_p.generate_scene(gs_p)
+			if ped_root:
+				for child in ped_root.get_children():
+					if child is MeshInstance3D and child.mesh:
+						pedestal_meshes.append(child.mesh)
+				ped_root.queue_free()
+	print("Statues: %d pedestal variants loaded" % pedestal_meshes.size())
+
+	# Stone material for pedestals (gray granite)
+	var ped_rw_alb: ImageTexture = _loader._load_tex("res://textures/rock_wall_diff.jpg")
+	var ped_rw_nrm: ImageTexture = _loader._load_tex("res://textures/rock_wall_nrm.jpg")
+	var ped_rw_rgh: ImageTexture = _loader._load_tex("res://textures/rock_wall_rgh.jpg")
+	var ped_stone_mat: Material = _loader._make_stone_material(
+		ped_rw_alb, ped_rw_nrm, ped_rw_rgh, Color(0.55, 0.53, 0.50))
+	var ped_limestone_mat: Material = _loader._make_stone_material(
+		ped_rw_alb, ped_rw_nrm, ped_rw_rgh, Color(0.65, 0.60, 0.52))
+	var pedestal_count := 0
+
 	var statue_col_shapes: Array = []
 
 	for statue in statues:
@@ -718,15 +747,45 @@ func _build_statues(statues: Array) -> void:
 			_loader._water_builder._build_imagine_mosaic(sx, sy, sz)
 			continue
 
-		# No photogrammetry scan available — skip procedural geometry,
-		# just place a label so the data gap stays visible.
-		# Material-tinted label: bronze → warm amber, granite → cool gray
+		# No photogrammetry scan available — place stone pedestal with label.
+		# The pedestal is real infrastructure (every CP statue sits on one);
+		# the missing statue itself remains a visible data gap.
 		var smat: String = str(statue.get("material", ""))
 		var mat_col := Color(0.75, 0.72, 0.68, 0.65)  # default neutral
 		if "bronze" in smat:
 			mat_col = Color(0.72, 0.58, 0.35, 0.65)  # warm bronze
 		elif "granite" in smat or "stone" in smat:
 			mat_col = Color(0.62, 0.62, 0.60, 0.65)  # cool granite
+
+		# Choose pedestal variant by type:
+		# bust → column (1), memorial/monument → wide memorial (2), else → standard (0)
+		var ped_idx := 0
+		var ped_h := 1.08
+		if stype == "bust":
+			ped_idx = 1; ped_h = 1.36
+		elif stype in ["memorial", "monument"]:
+			ped_idx = 2; ped_h = 0.68
+
+		# Place pedestal mesh
+		if pedestal_meshes.size() > ped_idx:
+			var mi := MeshInstance3D.new()
+			mi.mesh = pedestal_meshes[ped_idx]
+			mi.position = Vector3(sx, sy, sz)
+			# Apply stone material (limestone for memorials, granite otherwise)
+			var ped_mat: Material = ped_limestone_mat if ped_idx == 2 else ped_stone_mat
+			for surf_i in range(mi.mesh.get_surface_count()):
+				mi.mesh.surface_set_material(surf_i, ped_mat)
+			mi.cast_shadow = MeshInstance3D.SHADOW_CASTING_SETTING_ON
+			_loader.add_child(mi)
+			pedestal_count += 1
+			# Collision cylinder for the pedestal
+			var pcyl := CylinderShape3D.new()
+			pcyl.radius = 0.55 if ped_idx != 1 else 0.35
+			pcyl.height = ped_h
+			var pcol := CollisionShape3D.new()
+			pcol.shape = pcyl
+			pcol.position = Vector3(sx, sy + ped_h * 0.5, sz)
+			statue_col_shapes.append(pcol)
 
 		var label_text: String = sname if sname else stype.capitalize()
 		# Add inscription snippet if available (first 60 chars)
@@ -745,7 +804,7 @@ func _build_statues(statues: Array) -> void:
 		lbl.modulate = mat_col
 		lbl.outline_size = 6
 		lbl.outline_modulate = Color(0.0, 0.0, 0.0, 0.50)
-		lbl.position = Vector3(sx, sy + 2.0, sz)
+		lbl.position = Vector3(sx, sy + ped_h + 0.5, sz)
 		_loader.add_child(lbl)
 
 	# Single StaticBody3D for all statue collision shapes
@@ -756,7 +815,7 @@ func _build_statues(statues: Array) -> void:
 			body.add_child(shape)
 		_loader.add_child(body)
 
-	print("ParkLoader: statues/monuments = %d" % [statues.size()])
+	print("ParkLoader: statues/monuments = %d (%d with pedestals)" % [statues.size(), pedestal_count])
 
 
 # ---------------------------------------------------------------------------
