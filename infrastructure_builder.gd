@@ -74,10 +74,18 @@ func _build_barriers(barriers: Array) -> void:
 	var rw_nrm: ImageTexture = _loader._load_tex("res://textures/rock_wall_nrm.jpg")
 	var rw_rgh: ImageTexture = _loader._load_tex("res://textures/rock_wall_rgh.jpg")
 
+	# Load fence panel GLB (Blender-generated spear-picket iron fence)
+	var fence_panel_mesh: Mesh = null
+	var fence_glb_path := ProjectSettings.globalize_path("res://models/furniture/fence_panel.glb")
+	var fence_meshes: Dictionary = _loader._load_glb_meshes(fence_glb_path)
+	if fence_meshes.has("FencePanel"):
+		fence_panel_mesh = fence_meshes["FencePanel"] as Mesh
+
 	var wall_verts   := PackedVector3Array()
 	var wall_normals := PackedVector3Array()
 	var fence_verts  := PackedVector3Array()
 	var fence_normals := PackedVector3Array()
+	var fence_xforms: Array = []  # Transform3D array for GLB-based fence panels
 	var hedge_verts  := PackedVector3Array()
 	var hedge_normals := PackedVector3Array()
 	var col_verts    := PackedVector3Array()
@@ -97,7 +105,10 @@ func _build_barriers(barriers: Array) -> void:
 
 		match btype:
 			"fence", "guard_rail":
-				_build_fence_segments(pts, height, fence_verts, fence_normals, col_verts)
+				if fence_panel_mesh:
+					_collect_fence_panels(pts, height, fence_xforms, col_verts)
+				else:
+					_build_fence_segments(pts, height, fence_verts, fence_normals, col_verts)
 			"hedge":
 				_build_wall_segments(pts, maxf(height, 0.8), hedge_verts, hedge_normals, col_verts)
 			_:
@@ -108,8 +119,18 @@ func _build_barriers(barriers: Array) -> void:
 		# Manhattan schist: gray stone with subtle warm weathering
 		_loader._add_stone_mesh(wall_verts, wall_normals, rw_alb, rw_nrm, rw_rgh,
 						Color(0.50, 0.48, 0.44), "StoneWalls")
-	# Iron fence mesh — cast iron shader for weather response
-	if not fence_verts.is_empty():
+	# Iron fence panels via MultiMesh (GLB model with pickets + finials)
+	if fence_panel_mesh and not fence_xforms.is_empty():
+		var iron_shader: Shader = _loader._get_shader("cast_iron", "res://shaders/cast_iron.gdshader")
+		var iron_mat := ShaderMaterial.new()
+		iron_mat.shader = iron_shader
+		iron_mat.set_shader_parameter("iron_color", Vector3(0.05, 0.05, 0.06))
+		iron_mat.set_shader_parameter("base_roughness", 0.65)
+		iron_mat.set_shader_parameter("base_metallic", 0.85)
+		_loader._spawn_multimesh(fence_panel_mesh, iron_mat, fence_xforms, "IronFences")
+		print("ParkLoader: iron fences = %d panels (GLB MultiMesh)" % fence_xforms.size())
+	elif not fence_verts.is_empty():
+		# Fallback to procedural if GLB not found
 		_loader._add_iron_mesh(fence_verts, fence_normals,
 						Color(0.15, 0.15, 0.14), "IronFences")
 	# Hedge barrier mesh — uses hedge shader for seasonal foliage
@@ -134,8 +155,8 @@ func _build_barriers(barriers: Array) -> void:
 		body.add_child(col)
 		_loader.add_child(body)
 
-	print("ParkLoader: barriers = %d wall tris, %d fence tris" % [
-		wall_verts.size() / 3, fence_verts.size() / 3])
+	print("ParkLoader: barriers = %d wall tris, %d hedge tris" % [
+		wall_verts.size() / 3, hedge_verts.size() / 3])
 
 
 func _build_wall_segments(pts: Array, height: float,
@@ -181,6 +202,57 @@ func _build_wall_segments(pts: Array, height: float,
 		col_verts.append_array(cap)
 		for _j in range(6):
 			normals.append(Vector3.UP)
+
+
+func _collect_fence_panels(pts: Array, height: float,
+		fence_xforms: Array, col_verts: PackedVector3Array) -> void:
+	## Place fence panel GLB instances along a polyline.
+	## Panel model is 2.0m wide × 1.0m tall, centered at origin, extending along X.
+	var panel_width := 2.0
+	var h_scale: float = height  # model is 1.0m tall, scale Y to match data height
+
+	for i in range(pts.size() - 1):
+		var p1x := float(pts[i][0]);   var p1z := float(pts[i][2])
+		var p2x := float(pts[i+1][0]); var p2z := float(pts[i+1][2])
+		var p1y: float = _loader._terrain_y(p1x, p1z)
+		var p2y: float = _loader._terrain_y(p2x, p2z)
+		var seg := Vector2(p2x - p1x, p2z - p1z)
+		var seg_len := seg.length()
+		if seg_len < 0.1:
+			continue
+		var d := seg / seg_len
+		var n := Vector2(-d.y, d.x)
+
+		# How many panels fit in this segment
+		var n_panels := int(round(seg_len / panel_width))
+		if n_panels < 1:
+			n_panels = 1
+		var x_scale: float = (seg_len / float(n_panels)) / panel_width
+
+		# Panel local X axis is (1,0,0). Rotate around Y to align with segment.
+		# After Basis(UP, a): local X → (cos(a), 0, -sin(a))
+		# Want (cos(a), 0, -sin(a)) = (d.x, 0, d.y) where d.y is world dz
+		# So cos(a)=d.x, -sin(a)=d.y → a = atan2(-d.y, d.x)
+		var rot_angle := atan2(-d.y, d.x)
+
+		for pi in range(n_panels):
+			var t: float = (float(pi) + 0.5) / float(n_panels)
+			var px: float = p1x + (p2x - p1x) * t
+			var pz: float = p1z + (p2z - p1z) * t
+			var py: float = lerpf(p1y, p2y, t)
+			var basis := Basis(Vector3.UP, rot_angle)
+			basis = basis.scaled(Vector3(x_scale, h_scale, 1.0))
+			fence_xforms.append(Transform3D(basis, Vector3(px, py, pz)))
+
+		# Collision: thin quad wall for the full segment
+		for side in [-1.0, 1.0]:
+			var ox: float = n.x * 0.02 * side
+			var oz: float = n.y * 0.02 * side
+			var a := Vector3(p1x + ox, p1y, p1z + oz)
+			var b := Vector3(p2x + ox, p2y, p2z + oz)
+			var c := Vector3(p2x + ox, p2y + height, p2z + oz)
+			var dd := Vector3(p1x + ox, p1y + height, p1z + oz)
+			col_verts.append_array(PackedVector3Array([a, b, c, a, c, dd]))
 
 
 func _build_fence_segments(pts: Array, height: float,
