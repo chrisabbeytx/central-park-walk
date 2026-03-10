@@ -51,13 +51,27 @@ func _build_furniture(bench_data: Array, lamppost_data: Array, paths: Array) -> 
 	lamp_globe_mat.emission_energy_multiplier = 0.0
 	_loader.lamppost_material = lamp_globe_mat
 
-	# --- Bench mesh (CP-specific model with iron + wood materials baked in) ---
+	# --- Bench mesh (CP-specific model: surface 0=Iron, surface 1=Wood) ---
 	var cp_bench_path := ProjectSettings.globalize_path("res://models/furniture/cp_bench.glb")
 	var cp_bench_meshes: Dictionary = _loader._load_glb_meshes(cp_bench_path)
 	var bench_mesh: Mesh = null
 	if cp_bench_meshes.has("ParkFurn_Bench_CP"):
 		bench_mesh = cp_bench_meshes["ParkFurn_Bench_CP"] as Mesh
-		print("Bench: loaded CP bench model (iron + wood)")
+		# Apply weather-responsive shaders to each surface
+		if bench_mesh.get_surface_count() >= 2:
+			# Surface 0: Iron frame (cast iron shader with weather)
+			var bench_iron_mat := ShaderMaterial.new()
+			bench_iron_mat.shader = iron_shader
+			bench_iron_mat.set_shader_parameter("iron_color", Vector3(0.04, 0.04, 0.035))
+			bench_mesh.surface_set_material(0, bench_iron_mat)
+			# Surface 1: Wood slats (wood shader with weather)
+			var wood_sh: Shader = _loader._get_shader("wood", "res://shaders/wood.gdshader")
+			var bench_wood_mat := ShaderMaterial.new()
+			bench_wood_mat.shader = wood_sh
+			bench_wood_mat.set_shader_parameter("wood_color", Vector3(0.45, 0.30, 0.18))
+			bench_wood_mat.set_shader_parameter("base_roughness", 0.75)
+			bench_mesh.surface_set_material(1, bench_wood_mat)
+		print("Bench: loaded CP bench model (iron + wood, weather-responsive)")
 	else:
 		# Fallback: first available bench from furniture GLB
 		for bname in ["ParkFurn_Bench_A", "ParkFurn_Bench_B", "ParkFurn_Bench_C"]:
@@ -82,7 +96,7 @@ func _build_furniture(bench_data: Array, lamppost_data: Array, paths: Array) -> 
 	var bench_xf: Array = []
 	for b in bench_data:
 		var bx := float(b[0])
-		var by := float(b[1]) + 0.42  # pre-baked height + bench seat lift
+		var by := float(b[1])  # pre-baked LiDAR height (model bottom at Y=0)
 		var bz := float(b[2])
 		if not _loader._in_boundary(bx, bz):
 			continue
