@@ -1,8 +1,10 @@
 # path_builder.gd
-# Builds 3D path mesh strips from OSM polyline data.
+# Builds 3D path mesh strips and granite curb geometry from OSM polyline data.
 # Each path is extruded as a flat ribbon following the terrain surface.
+# Paved paths get granite curb faces along both edges — vertical strips whose
+# height reflects the real LiDAR grade change between path surface and grass.
 # The path.gdshader snaps vertices to terrain height and adds weather effects.
-# Replaces the old vertex-color path blending in the terrain shader.
+# The curb.gdshader samples terrain inward/outward to produce accurate curb height.
 
 var _loader  # Reference to park_loader for shared utilities
 
@@ -55,6 +57,14 @@ func _build_paths(paths: Array) -> void:
 	var total_verts := 0
 	var total_groups := 0
 
+	# Curb geometry accumulator — all paved curbs share one granite mesh
+	var curb_verts := PackedVector3Array()
+	var curb_normals := PackedVector3Array()
+	var curb_uvs := PackedVector2Array()
+	var curb_colors := PackedColorArray()
+	var curb_indices := PackedInt32Array()
+	var curb_path_count := 0
+
 	# Build ground-level path meshes
 	for key in ground_groups:
 		var parts: PackedStringArray = str(key).split("|")
@@ -86,11 +96,17 @@ func _build_paths(paths: Array) -> void:
 			col_body.add_child(col_node)
 			_loader.add_child(col_body)
 
+		# Generate granite curbs for paved paths (not gravel, dirt, etc.)
+		if _is_curbed(hw, surface):
+			for path in group_paths:
+				_extrude_curbs(path, curb_verts, curb_normals, curb_uvs, curb_colors, curb_indices)
+			curb_path_count += group_paths.size()
+
 		total_paths += group_paths.size()
 		total_verts += result.verts.size()
 		total_groups += 1
 
-	# Build bridge deck path meshes (no terrain snapping)
+	# Build bridge deck path meshes (no terrain snapping, no curbs)
 	for key in bridge_groups:
 		var parts: PackedStringArray = str(key).split("|")
 		var hw: String = parts[0]
@@ -125,9 +141,36 @@ func _build_paths(paths: Array) -> void:
 		total_verts += result.verts.size()
 		total_groups += 1
 
+	# Build single granite curb mesh for all paved paths
+	if not curb_verts.is_empty():
+		var curb_mesh := _build_curb_mesh(curb_verts, curb_normals, curb_uvs, curb_colors, curb_indices)
+		var curb_mi := MeshInstance3D.new()
+		curb_mi.mesh = curb_mesh
+		curb_mi.material_override = _loader._make_curb_material()
+		curb_mi.name = "PathCurbs"
+		curb_mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		_loader.add_child(curb_mi)
+		print("  curbs: %d paths → %d verts" % [curb_path_count, curb_verts.size()])
+
 	print("Paths: %d paths → %d verts (%d groups, %d steps skipped, %d grass skipped) in %d ms" % [
 		total_paths, total_verts, total_groups, skipped_steps, skipped_grass,
 		Time.get_ticks_msec() - t0])
+
+
+func _is_curbed(hw: String, surface: String) -> bool:
+	## Returns true if this path type gets granite curbs.
+	## Paved surfaces get curbs. Unpaved (gravel, dirt) do not.
+	match surface:
+		"gravel", "fine_gravel", "compacted", "pebblestone", \
+		"unpaved", "dirt", "ground", "woodchips", "mulch", "sand", \
+		"wood", "tartan", "grass", "rock", "metal":
+			return false
+	# If surface tag is empty, decide by highway type
+	if surface.is_empty():
+		match hw:
+			"path", "track", "bridleway":
+				return false  # default paths in CP are often gravel/unpaved
+	return true
 
 
 func _build_group_mesh(group_paths: Array) -> Dictionary:
@@ -149,6 +192,21 @@ func _build_array_mesh(verts: PackedVector3Array, normals: PackedVector3Array,
 	arrays[Mesh.ARRAY_VERTEX] = verts
 	arrays[Mesh.ARRAY_NORMAL] = normals
 	arrays[Mesh.ARRAY_TEX_UV] = mesh_uvs
+	arrays[Mesh.ARRAY_INDEX] = indices
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	return mesh
+
+
+func _build_curb_mesh(verts: PackedVector3Array, normals: PackedVector3Array,
+		mesh_uvs: PackedVector2Array, colors: PackedColorArray,
+		indices: PackedInt32Array) -> ArrayMesh:
+	var arrays: Array = []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts
+	arrays[Mesh.ARRAY_NORMAL] = normals
+	arrays[Mesh.ARRAY_TEX_UV] = mesh_uvs
+	arrays[Mesh.ARRAY_COLOR] = colors
 	arrays[Mesh.ARRAY_INDEX] = indices
 	var mesh := ArrayMesh.new()
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
@@ -224,6 +282,97 @@ func _extrude_path(path: Dictionary, verts: PackedVector3Array, normals: PackedV
 			indices.append(br)
 			indices.append(tl)
 			indices.append(tr)
+
+
+func _extrude_curbs(path: Dictionary, verts: PackedVector3Array, normals: PackedVector3Array,
+		mesh_uvs: PackedVector2Array, colors: PackedColorArray,
+		indices: PackedInt32Array) -> void:
+	## Generate curb face geometry along both edges of a path.
+	## Each curb is a vertical strip at the path edge: top vertex at path surface
+	## height, bottom vertex at adjacent terrain height. The shader handles the
+	## actual height computation — top samples terrain inward (path surface),
+	## bottom samples outward (grass level). Both vertices share the same XZ.
+	var pts: Array = path.get("points", [])
+	if pts.size() < 2:
+		return
+
+	pts = _subdivide_points(pts, 2.0)
+	var n_pts := pts.size()
+	if n_pts < 2:
+		return
+
+	var half_w: float = _loader._path_width(path) * 0.5
+	half_w = minf(half_w, 8.0)
+
+	var miter: Array[Vector2] = _loader._compute_miter_normals(pts, n_pts)
+	var base_idx := verts.size()
+
+	# Vertex layout per path point: 4 vertices
+	#   0: left face top    (path edge, COLOR.r = 1.0, normal = +miter)
+	#   1: left face bottom  (path edge, COLOR.r = 0.0, normal = +miter)
+	#   2: right face top   (path edge, COLOR.r = 1.0, normal = -miter)
+	#   3: right face bottom (path edge, COLOR.r = 0.0, normal = -miter)
+	var top_color := Color(1.0, 0.0, 0.0, 1.0)
+	var bot_color := Color(0.0, 0.0, 0.0, 1.0)
+
+	for i in n_pts:
+		var px := float(pts[i][0])
+		var py := float(pts[i][1])
+		var pz := float(pts[i][2])
+		var m: Vector2 = miter[i]
+
+		# Path edge positions
+		var lx := px + m.x * half_w
+		var lz := pz + m.y * half_w
+		var rx := px - m.x * half_w
+		var rz := pz - m.y * half_w
+
+		# Outward-facing normals for each side
+		var left_nrm := Vector3(m.x, 0.0, m.y)
+		var right_nrm := Vector3(-m.x, 0.0, -m.y)
+
+		# Left face top
+		verts.append(Vector3(lx, py, lz))
+		normals.append(left_nrm)
+		mesh_uvs.append(Vector2(1.0, float(i)))
+		colors.append(top_color)
+		# Left face bottom
+		verts.append(Vector3(lx, py - 0.3, lz))  # Y offset for bounding box; shader overrides
+		normals.append(left_nrm)
+		mesh_uvs.append(Vector2(0.0, float(i)))
+		colors.append(bot_color)
+
+		# Right face top
+		verts.append(Vector3(rx, py, rz))
+		normals.append(right_nrm)
+		mesh_uvs.append(Vector2(1.0, float(i)))
+		colors.append(top_color)
+		# Right face bottom
+		verts.append(Vector3(rx, py - 0.3, rz))
+		normals.append(right_nrm)
+		mesh_uvs.append(Vector2(0.0, float(i)))
+		colors.append(bot_color)
+
+		# Two quads per segment (left face + right face)
+		if i > 0:
+			var prev := base_idx + (i - 1) * 4
+			var curr := base_idx + i * 4
+
+			# Left curb face: top→bottom strip
+			indices.append(prev + 0)  # prev top
+			indices.append(curr + 0)  # curr top
+			indices.append(prev + 1)  # prev bottom
+			indices.append(prev + 1)
+			indices.append(curr + 0)
+			indices.append(curr + 1)  # curr bottom
+
+			# Right curb face: top→bottom strip (reversed winding for outward normal)
+			indices.append(prev + 2)  # prev top
+			indices.append(prev + 3)  # prev bottom
+			indices.append(curr + 2)  # curr top
+			indices.append(prev + 3)
+			indices.append(curr + 3)  # curr bottom
+			indices.append(curr + 2)
 
 
 func _subdivide_points(pts: Array, max_seg: float) -> Array:

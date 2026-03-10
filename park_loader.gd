@@ -396,6 +396,23 @@ func _path_shader_code() -> String:
 	return "res://shaders/path.gdshader"
 
 
+func _make_curb_material() -> Material:
+	## Granite curb material — terrain-snapped with per-vertex height offset.
+	## Shared by all paved path curbs (single draw call for all curbs).
+	var mat := ShaderMaterial.new()
+	mat.shader = _get_shader("curb", "res://shaders/curb.gdshader")
+	mat.set_shader_parameter("curb_top_offset", PATH_Y + 0.04)  # average hw priority
+	mat.set_shader_parameter("curb_below_grade", 0.04)
+	mat.set_shader_parameter("sample_offset", 0.30)
+	if _hm_texture:
+		mat.set_shader_parameter("heightmap_tex", _hm_texture)
+		mat.set_shader_parameter("hm_world_size", _hm_world_size)
+		mat.set_shader_parameter("hm_min_h",      _hm_min_h)
+		mat.set_shader_parameter("hm_range",      _hm_max_h - _hm_min_h)
+		mat.set_shader_parameter("hm_res",        float(mini(_hm_width, 4096)))
+	return mat
+
+
 # ---------------------------------------------------------------------------
 # Heightmap terrain sampler — matches the bilinear interpolation used by the
 # terrain mesh in main.gd so paths/water sit exactly on the rendered surface.
