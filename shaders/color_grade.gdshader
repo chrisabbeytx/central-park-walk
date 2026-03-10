@@ -56,13 +56,14 @@ void fragment() {
 	c *= mix(vec3(1.0), shadow_tint, shadow_blend * 0.45);
 	c *= mix(vec3(1.0), highlight_tint, highlight_blend * 0.40);
 
-	// Enrich greens — lush foliage (less at night, more in spring)
-	float green_boost = 0.14 * (1.0 - night_t * 0.7);
+	// Enrich greens — foliage pop (less at night, more in spring)
+	// 0.14 was too aggressive — combined with terrain/grass shader green, made everything neon
+	float green_boost = 0.06 * (1.0 - night_t * 0.7);
 	green_boost *= (1.0 + spring_s * 0.3);            // spring: lusher greens
 	green_boost *= (1.0 - winter_s * 0.5);            // winter: muted foliage
 	c.g *= 1.0 + green_boost * smoothstep(0.08, 0.4, c.g);
 	// Deepen blues — rich sky and shadows
-	float blue_boost = 0.12 * (1.0 - night_t * 0.5);
+	float blue_boost = 0.10 * (1.0 - night_t * 0.5);
 	c.b *= 1.0 + blue_boost * smoothstep(0.06, 0.35, c.b);
 	// Soften reds toward warm brown (less at night)
 	float red_excess = max(c.r - (c.g + c.b) * 0.5, 0.0);
@@ -72,17 +73,18 @@ void fragment() {
 	// Softer S-curve — luminous midtones, visible shadows
 	c = c * c / (c * c + 0.08) * 1.08;
 
-	// Saturate — reduce at night and winter for mood
+	// Saturate — 1.35 was too aggressive, combined with environment saturation
+	// made greens/warm tones oversaturated. 1.18 gives natural vibrance.
 	float lum2 = dot(c, vec3(0.2126, 0.7152, 0.0722));
-	float sat = 1.35;
-	sat = mix(sat, 1.10, night_t);     // less saturated at night
+	float sat = 1.18;
+	sat = mix(sat, 1.05, night_t);     // less saturated at night
 	sat = mix(sat, sat * 0.85, winter_s * 0.4);  // cooler winter
 	c = mix(vec3(lum2), c, sat);
 
-	// Warm amber cast — less at night (more blue-gray)
-	vec3 cast = mix(vec3(1.05, 1.01, 0.92), vec3(0.98, 0.98, 1.02), night_t);
-	// Golden hour: stronger warm cast
-	cast = mix(cast, vec3(1.10, 1.03, 0.86), golden_t * 0.4);
+	// Warm amber cast — subtle, less at night (more blue-gray)
+	vec3 cast = mix(vec3(1.03, 1.01, 0.94), vec3(0.98, 0.98, 1.02), night_t);
+	// Golden hour: moderate warm cast (sun color already handles warmth)
+	cast = mix(cast, vec3(1.06, 1.02, 0.90), golden_t * 0.3);
 	c *= cast;
 
 	// Eye adaptation — lift shadows in very dark scenes (NYC never pitch black)
