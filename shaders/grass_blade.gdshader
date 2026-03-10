@@ -122,6 +122,16 @@ void fragment() {
 		if (edge_dither < v_edge_fade * 0.85) discard;  // 85% discard chance at very edge
 	}
 
+	// Aerial height-based fade — from above, individual grass blades would be
+	// sub-pixel, but the tile grid pattern becomes visible as colored blocks.
+	// Stochastically discard grass when camera is high above the terrain.
+	float cam_h = INV_VIEW_MATRIX[3].y - v_world_pos.y;
+	if (cam_h > 12.0) {
+		float aerial_discard = smoothstep(12.0, 35.0, cam_h);
+		float ad = fract(sin(dot(FRAGCOORD.xy, vec2(41.231, 63.917))) * 28947.1293);
+		if (ad < aerial_discard) discard;
+	}
+
 	// Vertex colors from Blender model provide base albedo
 	vec3 col = COLOR.rgb;
 

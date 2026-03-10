@@ -148,7 +148,21 @@ void fragment() {
 
 	// --- Grass shading (textureNoTile — Inigo Quilez anti-tiling) ---
 	vec2 uv  = world_pos.xz / tile_m;
+	float cam_dist = length(world_pos - INV_VIEW_MATRIX[3].xyz);
 	vec3 grass_alb = textureNoTile_c(grass_albedo, uv);
+	// Aerial texture fade — at distance, the 3m texture tile creates visible
+	// anti-tiling cell boundaries from above. Use camera height to detect aerial
+	// views (looking down) vs ground views (looking across). From ground level
+	// texture stays sharp even at distance; from aerial, flatten aggressively.
+	float cam_height = INV_VIEW_MATRIX[3].y - world_pos.y;
+	float tex_fade = max(
+		smoothstep(15.0, 50.0, cam_height),          // aerial: aggressive fade from height
+		smoothstep(100.0, 250.0, cam_dist)            // ground: gentle fade at extreme distance
+	);
+	{
+		float avg_g = dot(grass_alb, vec3(0.299, 0.587, 0.114));
+		grass_alb = mix(grass_alb, vec3(avg_g), tex_fade);
+	}
 	// Summer lawn: strong green — terrain IS the grass carpet, 3D blades add depth.
 	// The Great Lawn looks correct; push all grass surfaces to match.
 	float grass_lum = dot(grass_alb, vec3(0.299, 0.587, 0.114));
@@ -198,7 +212,7 @@ void fragment() {
 	// Distance-based darkening + aerial perspective.
 	// Far grass darkens (blade highlights average out, self-shadowing).
 	// Also desaturate + shift slightly blue to simulate atmospheric scattering.
-	float cam_dist = length(world_pos - INV_VIEW_MATRIX[3].xyz);
+	// cam_dist computed above (before texture sample)
 	float dist_darken = smoothstep(30.0, 150.0, cam_dist) * 0.25;
 	grass_alb *= (1.0 - dist_darken);
 	// Aerial perspective: desaturate + cool shift at distance
@@ -235,6 +249,8 @@ void fragment() {
 	}
 
 	vec3 grass_nrm = textureNoTile_n(grass_normal, uv);
+	// Flatten normal detail at distance — anti-tiling creates lighting cell artifacts
+	grass_nrm = mix(grass_nrm, vec3(0.5, 0.5, 1.0), tex_fade);
 	float grass_rgh = clamp(textureNoTile_r(grass_rough, uv) * 0.20 + 0.65, 0.0, 1.0);
 	// Winter: completely flatten normal map and force roughness — dormant grass is
 	// a flat mat of straw with no texture detail. Fully flattened normals eliminate
@@ -251,11 +267,17 @@ void fragment() {
 	float s60 = 0.866; float c60 = 0.5;
 	vec2 muv_rot = vec2(muv.x * c60 + muv.y * s60, -muv.x * s60 + muv.y * c60);
 	vec3 m_alb = texture(meadow_albedo, muv_rot).rgb;
+	// Distance fade for meadow texture too — prevents tiling from aerial views
+	{
+		float m_lum = dot(m_alb, vec3(0.299, 0.587, 0.114));
+		m_alb = mix(m_alb, vec3(m_lum), tex_fade);
+	}
 	vec3 m_nrm_raw = texture(meadow_normal, muv_rot).rgb;
 	vec3 m_nrm = vec3(
 		(m_nrm_raw.r - 0.5) * c60 + (m_nrm_raw.g - 0.5) * s60 + 0.5,
 		-(m_nrm_raw.r - 0.5) * s60 + (m_nrm_raw.g - 0.5) * c60 + 0.5,
 		m_nrm_raw.b);
+	m_nrm = mix(m_nrm, vec3(0.5, 0.5, 1.0), tex_fade);  // flatten at distance
 	float m_rgh = clamp(texture(meadow_rough, muv).r * 0.20 + 0.65, 0.0, 1.0);
 
 	// Landuse lookup: woodland zones get meadow texture, everything else is mowed lawn
