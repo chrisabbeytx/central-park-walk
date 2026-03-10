@@ -183,8 +183,7 @@ func _ready() -> void:
 	_setup_ground()
 	print("main: ground mesh: %d ms" % (Time.get_ticks_msec() - _mt)); _mt = Time.get_ticks_msec()
 	if not _terrain_only:
-		if _park_loader and _park_loader.path_segs_texture:
-			_apply_gpu_path_textures()
+		_apply_structure_textures()
 		if _park_loader and _park_loader.boundary_polygon.size() > 2:
 			_apply_boundary_mask(_park_loader.boundary_polygon)
 		print("main: boundary mask: %d ms" % (Time.get_ticks_msec() - _mt)); _mt = Time.get_ticks_msec()
@@ -1596,18 +1595,11 @@ func _setup_park() -> void:
 		_lamp_mat = loader.lamppost_material
 
 
-func _apply_gpu_path_textures() -> void:
-	## Wire analytical GPU path textures + path material arrays into the terrain shader.
-	_terrain_mat.set_shader_parameter("path_segs", _park_loader.path_segs_texture)
-	_terrain_mat.set_shader_parameter("path_grid", _park_loader.path_grid_texture)
-	_terrain_mat.set_shader_parameter("path_list", _park_loader.path_list_texture)
-	_terrain_mat.set_shader_parameter("grid_cell_size", _park_loader.gpu_path_grid_cell)
-	_terrain_mat.set_shader_parameter("grid_w", _park_loader.gpu_path_grid_w)
-	_terrain_mat.set_shader_parameter("seg_tex_w", _park_loader.gpu_path_seg_tex_w)
-	_terrain_mat.set_shader_parameter("list_tex_w", _park_loader.gpu_path_list_tex_w)
+func _apply_structure_textures() -> void:
+	## Load material texture arrays (asphalt, concrete, stone, gravel, wood)
+	## used by the terrain shader's structure mask system.
 	_terrain_mat.set_shader_parameter("world_size", _hm_world_size)
 	_terrain_mat.set_shader_parameter("path_tile_m", 2.5)
-	# Load path material texture arrays (albedo, normal, roughness)
 	var prefixes: Array = [
 		"res://textures/Asphalt012_2K-JPG",
 		"res://textures/Concrete034_2K-JPG",
@@ -1622,7 +1614,7 @@ func _apply_gpu_path_textures() -> void:
 			var path: String = prefixes[pi] + suffixes[si]
 			var img := Image.load_from_file(path)
 			if not img:
-				push_warning("Path texture missing: " + path)
+				push_warning("Structure texture missing: " + path)
 				img = Image.create(64, 64, false, Image.FORMAT_RGB8)
 			if pi > 0:
 				var target_size := images[0].get_size()
@@ -1636,7 +1628,7 @@ func _apply_gpu_path_textures() -> void:
 		tex2d_arr.create_from_images(images)
 		var param_name: String = ["path_alb_arr", "path_nrm_arr", "path_rgh_arr"][si]
 		_terrain_mat.set_shader_parameter(param_name, tex2d_arr)
-	print("Terrain: GPU path textures + material arrays applied")
+	print("Terrain: structure material textures loaded")
 
 
 func _apply_boundary_mask(poly: PackedVector2Array) -> void:

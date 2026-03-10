@@ -39,16 +39,7 @@ var _atlas_data: PackedByteArray   # raw RG8 bytes
 var _atlas_res: int = 0            # atlas width/height (square)
 
 # Path feather width for GPU analytical rendering
-const PATH_FEATHER := 1.2  # metres — soft edge transition width
 
-# Analytical GPU path textures (sharp edges at any zoom)
-var path_segs_texture: ImageTexture   # RGBA32F — segment endpoints + properties
-var path_grid_texture: ImageTexture   # RG32F  — spatial grid (start, count)
-var path_list_texture: ImageTexture   # R32F   — flat list of segment indices
-var gpu_path_grid_cell: float = 16.0
-var gpu_path_grid_w: int = 313
-var gpu_path_seg_tex_w: int = 256
-var gpu_path_list_tex_w: int = 512
 var boundary_polygon: PackedVector2Array  # XZ boundary for player clamping
 var landuse_zones: Array = []             # from park_data.json: type, name, points
 var _bridge_outlines: Array = []          # bridge outline polygons for deck shapes
@@ -56,10 +47,7 @@ var _tunnel_outlines: Array = []          # tunnel outline polygons for labels
 
 var water_bodies: Array = []              # water body polygons for shore blending
 var _water_polygons: Array = []           # water polygon outlines for proximity baking
-var _portal_lights: Array = []            # tunnel portal OmniLight3D nodes
 var _water_builder                        # water_builder.gd instance
-var _bridge_builder                       # bridge_builder.gd instance
-var _tunnel_builder                       # tunnel_builder.gd instance
 var _building_builder                     # building_builder.gd instance
 var _tree_builder                        # tree_builder.gd instance
 var _boundary_builder                    # boundary_builder.gd instance
@@ -946,8 +934,6 @@ func _ready() -> void:
 	var attractions: Array = data.get("attractions", [])
 
 	_water_builder = preload("res://water_builder.gd").new(self)
-	_bridge_builder = preload("res://bridge_builder.gd").new(self)
-	_tunnel_builder = preload("res://tunnel_builder.gd").new(self)
 	_building_builder = preload("res://building_builder.gd").new(self)
 	_tree_builder = preload("res://tree_builder.gd").new(self)
 	_boundary_builder = preload("res://boundary_builder.gd").new(self)
@@ -960,8 +946,8 @@ func _ready() -> void:
 	_building_builder._build_buildings(buildings)
 	print("  buildings: %d ms" % (Time.get_ticks_msec() - _tp)); _tp = Time.get_ticks_msec()
 	_boundary_builder._label_boundary_buildings(buildings)
-	_build_paths(paths)
-	print("  paths+splat+GPU: %d ms" % (Time.get_ticks_msec() - _tp)); _tp = Time.get_ticks_msec()
+	_build_bridge_tunnel_labels(paths)
+	print("  labels: %d ms" % (Time.get_ticks_msec() - _tp)); _tp = Time.get_ticks_msec()
 	_water_builder._build_water(water)
 	_water_builder._build_streams(streams)
 	print("  water: %d ms" % (Time.get_ticks_msec() - _tp)); _tp = Time.get_ticks_msec()
@@ -984,7 +970,6 @@ func _ready() -> void:
 	_infrastructure_builder._build_attractions(attractions)
 	print("  infrastructure: %d ms" % (Time.get_ticks_msec() - _tp)); _tp = Time.get_ticks_msec()
 	_boundary_builder._build_boundary(boundary)
-	_boundary_builder._build_perimeter_wall(boundary, paths)
 	print("  boundary: %d ms" % (Time.get_ticks_msec() - _tp)); _tp = Time.get_ticks_msec()
 	_infrastructure_builder._build_field_markings()
 	_infrastructure_builder._build_gardens()
@@ -1002,7 +987,7 @@ func _ready() -> void:
 
 
 # ---------------------------------------------------------------------------
-# Splat map rasterizer — paints path footprints onto a 4096×4096 R8 texture
+# Path material lookup — retained for future use
 # ---------------------------------------------------------------------------
 func _splat_mat_idx(hw: String, surface: String) -> int:
 	## Maps (highway, surface) to material index 1-30 (0 = grass).
@@ -1044,273 +1029,25 @@ func _splat_mat_idx(hw: String, surface: String) -> int:
 		_:            return 16  # gravel
 
 
-func _load_prebaked_gpu_textures() -> bool:
-	## Load pre-baked GPU path textures from path_gpu.bin.
-	var fh := FileAccess.open("res://path_gpu.bin", FileAccess.READ)
-	if not fh:
-		return false
-	var seg_count := fh.get_32()
-	var seg_tex_w := fh.get_32()
-	var seg_tex_h := fh.get_32()
-	var grid_w := fh.get_32()
-	var grid_h := fh.get_32()
-	var list_tex_w := fh.get_32()
-	var list_tex_h := fh.get_32()
-	var list_count := fh.get_32()
-
-	gpu_path_seg_tex_w = seg_tex_w
-	gpu_path_grid_w = grid_w
-	gpu_path_grid_cell = 16.0
-	gpu_path_list_tex_w = list_tex_w
-
-	# Segment texture (RGBA32F)
-	var seg_bytes := fh.get_buffer(seg_tex_w * seg_tex_h * 4 * 4)
-	var seg_img := Image.create_from_data(seg_tex_w, seg_tex_h, false, Image.FORMAT_RGBAF, seg_bytes)
-	path_segs_texture = ImageTexture.create_from_image(seg_img)
-
-	# Grid texture (RG32F)
-	var grid_bytes := fh.get_buffer(grid_w * grid_h * 2 * 4)
-	var grid_img := Image.create_from_data(grid_w, grid_h, false, Image.FORMAT_RGF, grid_bytes)
-	path_grid_texture = ImageTexture.create_from_image(grid_img)
-
-	# List texture (R32F)
-	var list_bytes := fh.get_buffer(list_tex_w * list_tex_h * 1 * 4)
-	var list_img := Image.create_from_data(list_tex_w, list_tex_h, false, Image.FORMAT_RF, list_bytes)
-	path_list_texture = ImageTexture.create_from_image(list_img)
-
-	fh.close()
-	print("ParkLoader: GPU path textures loaded from path_gpu.bin — segs %d×%d, grid %d×%d, list %d×%d (%d entries)" % [
-		seg_tex_w, seg_tex_h, grid_w, grid_h, list_tex_w, list_tex_h, list_count])
-	return true
-
 
 # ---------------------------------------------------------------------------
-# Analytical GPU path textures — sharp edges at any zoom level
+# Bridge / tunnel labels only — geometry now baked into 8K LiDAR terrain mesh
 # ---------------------------------------------------------------------------
-func _build_path_gpu_textures(paths: Array, bridge_centroids: Array) -> void:
-	## Build 3 GPU textures encoding open polyline path segments for per-fragment
-	## analytical distance computation. Closed polygons are handled by the raster.
-	var CELL := gpu_path_grid_cell
-	var GRID_W := gpu_path_grid_w
-	var HALF_WS := _hm_world_size * 0.5
-	var FEATHER := PATH_FEATHER
-
-	# --- Step 1: Collect open polyline segments ---
-	# segments[i] = [x0, z0, x1, z1, half_width, mat_idx]
-	var segments: Array = []
+func _build_bridge_tunnel_labels(paths: Array) -> void:
+	# Collect named bridges from path data
+	var labelled: Dictionary = {}
 	for path in paths:
-		var hw: String = str(path.get("highway", "path"))
-		var surf: String = str(path.get("surface", ""))
-		var layer_val: int = int(path.get("layer", 0))
-		var is_bridge: bool = path.get("bridge", false) or layer_val >= 1
-		var is_tunnel: bool = path.get("tunnel", false) or layer_val <= -1
+		var is_bridge: bool = path.get("bridge", false) or int(path.get("layer", 0)) >= 1
 		if is_bridge:
-			continue
-		if hw == "steps":
-			continue
-		if is_tunnel:
-			var tpts: Array = path["points"]
-			var tcx := 0.0; var tcz := 0.0
-			for pt in tpts:
-				tcx += float(pt[0]); tcz += float(pt[2])
-			tcx /= tpts.size(); tcz /= tpts.size()
-			var near_bridge := false
-			for bc in bridge_centroids:
-				if Vector2(tcx, tcz).distance_to(bc) < 60.0:
-					near_bridge = true
-					break
-			if not near_bridge:
-				continue
-		var raw: Array = path["points"]
-		# Skip closed polygons — handled by raster
-		if _is_closed_polygon(raw):
-			continue
-		var hw2 := _path_width(path) * 0.5
-		var mat_idx := _splat_mat_idx(hw, surf)
-		var smoothed: Array = _smooth_path_catmull_rom(raw) if raw.size() >= 3 else raw
-		for si in range(smoothed.size() - 1):
-			var sx0 := float(smoothed[si][0])
-			var sz0 := float(smoothed[si][2])
-			var sx1 := float(smoothed[si + 1][0])
-			var sz1 := float(smoothed[si + 1][2])
-			# Skip segments fully outside park bbox
-			if sx0 < -HALF_WS and sx1 < -HALF_WS:
-				continue
-			if sx0 > HALF_WS and sx1 > HALF_WS:
-				continue
-			if sz0 < -HALF_WS and sz1 < -HALF_WS:
-				continue
-			if sz0 > HALF_WS and sz1 > HALF_WS:
-				continue
-			segments.append([sx0, sz0, sx1, sz1, hw2, mat_idx])
+			var bn: String = str(path.get("bridge_name", ""))
+			if not bn.is_empty():
+				labelled[bn] = true
 
-	var seg_count := segments.size()
-	print("ParkLoader: GPU path segments = %d" % seg_count)
-
-	# --- Step 2: Build segment texture (RGBA32F, each segment = 2 rows) ---
-	var SEG_TEX_W := gpu_path_seg_tex_w
-	var seg_rows := (seg_count + SEG_TEX_W - 1) / SEG_TEX_W  # segments per row
-	var seg_tex_h := seg_rows * 2  # 2 rows per segment
-	if seg_tex_h < 1:
-		seg_tex_h = 2
-	var seg_data := PackedFloat32Array()
-	seg_data.resize(SEG_TEX_W * seg_tex_h * 4)
-	seg_data.fill(0.0)
-	for si in seg_count:
-		var seg: Array = segments[si]
-		var col := si % SEG_TEX_W
-		var row_base := (si / SEG_TEX_W) * 2
-		# Row 0: endpoints (x0, z0, x1, z1)
-		var idx0 := (row_base * SEG_TEX_W + col) * 4
-		seg_data[idx0]     = seg[0]
-		seg_data[idx0 + 1] = seg[1]
-		seg_data[idx0 + 2] = seg[2]
-		seg_data[idx0 + 3] = seg[3]
-		# Row 1: properties (half_width, mat_idx, 0, 0)
-		var idx1 := ((row_base + 1) * SEG_TEX_W + col) * 4
-		seg_data[idx1]     = seg[4]
-		seg_data[idx1 + 1] = float(seg[5])
-
-	var seg_img := Image.create_from_data(SEG_TEX_W, seg_tex_h, false, Image.FORMAT_RGBAF, seg_data.to_byte_array())
-	path_segs_texture = ImageTexture.create_from_image(seg_img)
-
-	# --- Step 3: Build spatial grid ---
-	# grid_lists[cell_key] = [seg_idx, seg_idx, ...]
-	var grid_lists: Dictionary = {}
-	for si in seg_count:
-		var seg: Array = segments[si]
-		var sx0: float = seg[0]; var sz0: float = seg[1]
-		var sx1: float = seg[2]; var sz1: float = seg[3]
-		var shw: float = seg[4]
-		var expand := shw + FEATHER
-		var min_x := minf(sx0, sx1) - expand
-		var max_x := maxf(sx0, sx1) + expand
-		var min_z := minf(sz0, sz1) - expand
-		var max_z := maxf(sz0, sz1) + expand
-		var c0x := clampi(int(floor((min_x + HALF_WS) / CELL)), 0, GRID_W - 1)
-		var c1x := clampi(int(floor((max_x + HALF_WS) / CELL)), 0, GRID_W - 1)
-		var c0z := clampi(int(floor((min_z + HALF_WS) / CELL)), 0, GRID_W - 1)
-		var c1z := clampi(int(floor((max_z + HALF_WS) / CELL)), 0, GRID_W - 1)
-		for cz in range(c0z, c1z + 1):
-			for cx in range(c0x, c1x + 1):
-				var key := cz * GRID_W + cx
-				if not grid_lists.has(key):
-					grid_lists[key] = []
-				grid_lists[key].append(si)
-
-	# Sort each cell's list by half_width descending (wider paths first)
-	for key in grid_lists:
-		var cell_segs: Array = grid_lists[key]
-		cell_segs.sort_custom(func(a, b): return segments[a][4] > segments[b][4])
-
-	# --- Step 4: Flatten into list texture and grid texture ---
-	var flat_list: PackedInt32Array = PackedInt32Array()
-	var grid_data := PackedFloat32Array()
-	grid_data.resize(GRID_W * GRID_W * 2)
-	grid_data.fill(0.0)
-
-	for cz in GRID_W:
-		for cx in GRID_W:
-			var key := cz * GRID_W + cx
-			var gidx := (cz * GRID_W + cx) * 2
-			if grid_lists.has(key):
-				var cell_list: Array = grid_lists[key]
-				grid_data[gidx]     = float(flat_list.size())  # start
-				grid_data[gidx + 1] = float(cell_list.size())  # count
-				for entry in cell_list:
-					flat_list.append(entry)
-			# else: stays 0, 0
-
-	var LIST_TEX_W := gpu_path_list_tex_w
-	var list_count := flat_list.size()
-	var list_tex_h := maxf(1, ceil(float(list_count) / float(LIST_TEX_W)))
-	var list_data := PackedFloat32Array()
-	list_data.resize(LIST_TEX_W * int(list_tex_h))
-	list_data.fill(0.0)
-	for li in list_count:
-		list_data[li] = float(flat_list[li])
-
-	var grid_img := Image.create_from_data(GRID_W, GRID_W, false, Image.FORMAT_RGF, grid_data.to_byte_array())
-	path_grid_texture = ImageTexture.create_from_image(grid_img)
-
-	var list_img := Image.create_from_data(LIST_TEX_W, int(list_tex_h), false, Image.FORMAT_RF, list_data.to_byte_array())
-	path_list_texture = ImageTexture.create_from_image(list_img)
-
-	print("ParkLoader: GPU path textures built — segs %d×%d, grid %d×%d, list %d×%d (%d entries)" % [
-		SEG_TEX_W, seg_tex_h, GRID_W, GRID_W, LIST_TEX_W, int(list_tex_h), list_count])
-
-
-# ---------------------------------------------------------------------------
-# Path meshes – one MeshInstance3D per highway type
-# ---------------------------------------------------------------------------
-func _build_paths(paths: Array) -> void:
-	var _pt := Time.get_ticks_msec()
-	var bridge_paths:  Array = []
-	var tunnel_paths:  Array = []
-
-	for path in paths:
-		var layer: int    = int(path.get("layer",   0))
-		var is_bridge: bool = path.get("bridge", false) or layer >= 1
-		var is_tunnel: bool = path.get("tunnel", false) or layer <= -1
-
-		if is_bridge:
-			bridge_paths.append(path)
-		elif is_tunnel:
-			tunnel_paths.append(path)
-
-	# Collect bridge centroids so tunnels can detect if they're an underpass
-	var bridge_centroids: Array = []
-	for bp in bridge_paths:
-		var bpts: Array = bp["points"]
-		var cx := 0.0; var cz := 0.0
-		for pt in bpts:
-			cx += float(pt[0]); cz += float(pt[2])
-		cx /= bpts.size(); cz /= bpts.size()
-		bridge_centroids.append(Vector2(cx, cz))
-
-	# Load pre-baked GPU path textures or build at runtime
-	if _load_prebaked_gpu_textures():
-		print("    GPU textures (prebaked): %d ms" % (Time.get_ticks_msec() - _pt)); _pt = Time.get_ticks_msec()
-	else:
-		_build_path_gpu_textures(paths, bridge_centroids)
-		print("    GPU textures (runtime): %d ms" % (Time.get_ticks_msec() - _pt)); _pt = Time.get_ticks_msec()
-
-	for bp in bridge_paths:
-		var _bpts: Array = bp["points"]
-		if _bpts.size() >= 2:
-			var _bcx := (float(_bpts[0][0]) + float(_bpts[_bpts.size()-1][0])) * 0.5
-			var _bcz := (float(_bpts[0][2]) + float(_bpts[_bpts.size()-1][2])) * 0.5
-			if _in_boundary(_bcx, _bcz):
-				_bridge_builder._build_bridge(bp)
-	print("    bridges: %d ms" % (Time.get_ticks_msec() - _pt)); _pt = Time.get_ticks_msec()
-
-	for tp in tunnel_paths:
-		# Check if this tunnel is near a bridge (= underpass, not a rock tunnel)
-		var tpts: Array = tp["points"]
-		var tcx := 0.0; var tcz := 0.0
-		for pt in tpts:
-			tcx += float(pt[0]); tcz += float(pt[2])
-		tcx /= tpts.size(); tcz /= tpts.size()
-		if not _in_boundary(tcx, tcz):
-			continue
-		var near_bridge := false
-		for bc in bridge_centroids:
-			if Vector2(tcx, tcz).distance_to(bc) < 60.0:
-				near_bridge = true
-				break
-		if not near_bridge:
-			_tunnel_builder._build_tunnel(tp)
-
-	# Add labels for named bridge/tunnel outlines not already labelled by bridge paths
-	var _labelled_names: Dictionary = {}
-	for bp in bridge_paths:
-		var bn: String = str(bp.get("bridge_name", ""))
-		if not bn.is_empty():
-			_labelled_names[bn] = true
+	# Label named bridge/tunnel outlines
 	for outlines in [_bridge_outlines, _tunnel_outlines]:
 		for bo in outlines:
 			var bname: String = bo.get("name", "")
-			if bname.is_empty() or _labelled_names.has(bname):
+			if bname.is_empty() or labelled.has(bname):
 				continue
 			var bpts: Array = bo.get("points", [])
 			if bpts.size() < 3:
@@ -1327,90 +1064,20 @@ func _build_paths(paths: Array) -> void:
 			lbl.font_size = 48
 			lbl.pixel_size = 0.01
 			lbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-
 			lbl.modulate = Color(0.75, 0.72, 0.68, 0.60)
 			lbl.outline_modulate = Color(0.1, 0.1, 0.1, 0.50)
 			lbl.outline_size = 8
 			lbl.position = Vector3(lx, ly, lz)
 			lbl.name = "Arch_Label"
 			add_child(lbl)
-			_labelled_names[bname] = true
+			labelled[bname] = true
 
 
 
 
 # ---------------------------------------------------------------------------
-# Bridge geometry
-# A bridge path is lifted to a fixed clearance above the lowest terrain point
-# in its span, then gets:
-#   • a textured deck ribbon (same width as the path)
-#   • thin parapet boxes along each side (0.15 m thick, 0.9 m tall)
-#   • vertical abutment quads at each end connecting deck to terrain
+# Geometry helpers
 # ---------------------------------------------------------------------------
-const BRIDGE_CLEARANCE := 3.5   # metres above lowest span terrain (room to walk under)
-const BRIDGE_DECK_T    := 0.4   # deck thickness (visible from below)
-const PARAPET_H        := 0.9   # parapet wall height above deck
-const PARAPET_T        := 0.15  # parapet thickness
-const BRIDGE_RAMP_FRAC := 0.35  # fraction of bridge path used as ramp at each end
-const TUNNEL_H         := 3.4   # clear height inside tunnel (metres above path)
-
-# ---------------------------------------------------------------------------
-# Bridge style classification
-# ---------------------------------------------------------------------------
-enum BridgeStyle { STONE, CAST_IRON, RUSTIC_WOOD, BRICK, DRIVE }
-
-const BRIDGE_NAME_STYLE := {
-	# Cast iron (~5)
-	"Bow Bridge": BridgeStyle.CAST_IRON,
-	"Bridge No. 24": BridgeStyle.CAST_IRON,
-	"Bridge No. 27": BridgeStyle.CAST_IRON,
-	"Bridge No. 28": BridgeStyle.CAST_IRON,
-	"Pinebank Arch": BridgeStyle.CAST_IRON,
-	# Stone (~12)
-	"Gapstow Bridge": BridgeStyle.STONE,
-	"Glade Arch": BridgeStyle.STONE,
-	"Ramble Stone Arch": BridgeStyle.STONE,
-	"Glen Span Arch": BridgeStyle.STONE,
-	"Springbanks Arch": BridgeStyle.STONE,
-	"Huddlestone Arch": BridgeStyle.STONE,
-	"Trefoil Arch": BridgeStyle.STONE,
-	"Dalehead Arch": BridgeStyle.STONE,
-	"Greyshot Arch": BridgeStyle.STONE,
-	"Denesmouth Arch": BridgeStyle.STONE,
-	"Eaglevale Bridge": BridgeStyle.STONE,
-	"Balcony Bridge": BridgeStyle.STONE,
-	# Rustic wood (~3)
-	"Oak Bridge": BridgeStyle.RUSTIC_WOOD,
-	"Ravine Rustic Bridge": BridgeStyle.RUSTIC_WOOD,
-	"Ramble Rustic Bridge": BridgeStyle.RUSTIC_WOOD,
-	# Brick (~4)
-	"Playmates Arch": BridgeStyle.BRICK,
-	"Willowdell Arch": BridgeStyle.BRICK,
-	"Winterdale Arch": BridgeStyle.BRICK,
-	"Green Gap Arch": BridgeStyle.BRICK,
-}
-
-func _bridge_style(bname: String, surface: String = "", length: float = 0.0) -> int:
-	# Named bridge — exact or partial match
-	if not bname.is_empty():
-		if BRIDGE_NAME_STYLE.has(bname):
-			return BRIDGE_NAME_STYLE[bname]
-		if bname.to_lower().contains("drive"):
-			return BridgeStyle.DRIVE
-		return BridgeStyle.STONE
-	# Unnamed bridge — classify by surface and length
-	if surface == "wood":
-		return BridgeStyle.RUSTIC_WOOD
-	if surface == "unhewn_cobblestone":
-		return BridgeStyle.BRICK
-	if surface == "metal":
-		return BridgeStyle.CAST_IRON
-	if length >= 20.0:
-		return BridgeStyle.CAST_IRON
-	if length < 8.0:
-		return BridgeStyle.RUSTIC_WOOD
-	return BridgeStyle.STONE
-
 func _subdivide_pts(pts: Array, max_seg: float) -> Array:
 	## Ensure no segment exceeds max_seg metres by inserting linearly interpolated points.
 	var out: Array = [pts[0]]
@@ -1461,32 +1128,6 @@ func _smooth_path_catmull_rom(pts: Array, subdiv: int = 4) -> Array:
 			out.append([vx, vy, vz])
 	out.append(pts[-1])
 	return out
-
-
-func _find_bridge_outline(cx: float, cz: float, bridge_name: String) -> Array:
-	## Find a matching bridge outline polygon by name or proximity.
-	## Returns the outline points array (3D: [x, y, z]) or empty array.
-	# First try name match
-	if not bridge_name.is_empty():
-		for bo in _bridge_outlines:
-			if bo.get("name", "") == bridge_name:
-				return bo.get("points", [])
-	# Fall back to proximity match (within 15m)
-	var best_dist := 15.0
-	var best_pts: Array = []
-	for bo in _bridge_outlines:
-		var pts: Array = bo.get("points", [])
-		if pts.size() < 4:
-			continue
-		var ox := 0.0; var oz := 0.0
-		for pt in pts:
-			ox += float(pt[0]); oz += float(pt[2])
-		ox /= pts.size(); oz /= pts.size()
-		var d := sqrt((cx - ox) * (cx - ox) + (cz - oz) * (cz - oz))
-		if d < best_dist:
-			best_dist = d
-			best_pts = pts
-	return best_pts
 
 
 func _triangulate_polygon_2d(poly: PackedVector2Array) -> PackedInt32Array:

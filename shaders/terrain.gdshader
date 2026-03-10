@@ -37,21 +37,13 @@ uniform sampler2D tile_noise : filter_linear_mipmap, repeat_enable;
 // Heightmap for per-pixel terrain normals (eliminates mesh topology artifacts)
 uniform sampler2D heightmap_tex : filter_linear, repeat_disable;
 
-// Path texture arrays (used by GPU analytical path rendering)
+uniform float world_size = 5000.0;
+
+// Structure material texture arrays (stone, concrete, asphalt, etc.)
 uniform sampler2DArray path_alb_arr : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2DArray path_nrm_arr : hint_normal, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2DArray path_rgh_arr : hint_default_white, filter_linear_mipmap_anisotropic, repeat_enable;
-uniform float world_size = 5000.0;
 uniform float path_tile_m = 2.5;
-
-// Analytical GPU path textures
-uniform sampler2D path_segs : filter_nearest, repeat_disable;
-uniform sampler2D path_grid : filter_nearest, repeat_disable;
-uniform sampler2D path_list : filter_nearest, repeat_disable;
-uniform float grid_cell_size = 16.0;
-uniform int grid_w = 313;
-uniform int seg_tex_w = 256;
-uniform int list_tex_w = 512;
 
 // Park boundary mask: white = inside park, black = outside
 uniform sampler2D park_mask : filter_linear, repeat_disable;
@@ -123,46 +115,6 @@ float textureNoTile_r(sampler2D tex, vec2 uv) {
 	return mix(ra, rb, smoothstep(0.15, 0.85, f));
 }
 
-float point_segment_dist(vec2 p, vec2 a, vec2 b) {
-	vec2 ab = b - a;
-	float t = clamp(dot(p - a, ab) / max(dot(ab, ab), 0.0001), 0.0, 1.0);
-	return length(p - (a + t * ab));
-}
-
-// Returns vec4(tex_set_index, tint_r, tint_g, tint_b) for material indices 1-30
-vec4 mat_lookup(int idx) {
-	// tex_set: 0=Asphalt, 1=Concrete, 2=PavingStones, 3=Gravel, 4=Wood
-	if (idx == 1)  return vec4(0.0, 0.48, 0.46, 0.42);   // asphalt (aged, lighter)
-	if (idx == 2)  return vec4(1.0, 0.72, 0.70, 0.64);   // concrete
-	if (idx == 3)  return vec4(1.0, 0.65, 0.64, 0.60);   // concrete:plates
-	if (idx == 4)  return vec4(2.0, 0.85, 0.80, 0.70);   // paving_stones
-	if (idx == 5)  return vec4(2.0, 0.65, 0.62, 0.56);   // sett
-	if (idx == 6)  return vec4(2.0, 0.62, 0.60, 0.54);   // unhewn_cobblestone
-	if (idx == 7)  return vec4(3.0, 0.70, 0.66, 0.58);   // pebblestone
-	if (idx == 8)  return vec4(2.0, 0.70, 0.68, 0.62);   // stone
-	if (idx == 9)  return vec4(2.0, 0.65, 0.62, 0.56);   // rock
-	if (idx == 10) return vec4(2.0, 0.72, 0.45, 0.32);   // brick
-	if (idx == 11) return vec4(1.0, 0.70, 0.70, 0.72);   // metal
-	if (idx == 12) return vec4(4.0, 0.58, 0.42, 0.22);   // wood
-	if (idx == 13) return vec4(1.0, 0.72, 0.68, 0.60);   // paved
-	if (idx == 14) return vec4(3.0, 0.62, 0.52, 0.36);   // compacted
-	if (idx == 15) return vec4(3.0, 0.72, 0.65, 0.52);   // fine_gravel
-	if (idx == 16) return vec4(3.0, 0.68, 0.62, 0.48);   // gravel
-	if (idx == 17) return vec4(3.0, 0.62, 0.52, 0.36);   // unpaved
-	if (idx == 18) return vec4(3.0, 0.58, 0.46, 0.30);   // dirt
-	if (idx == 19) return vec4(3.0, 0.55, 0.46, 0.34);   // ground
-	if (idx == 20) return vec4(3.0, 0.35, 0.58, 0.24);   // grass
-	if (idx == 21) return vec4(3.0, 0.54, 0.40, 0.22);   // woodchips
-	if (idx == 22) return vec4(3.0, 0.48, 0.36, 0.20);   // mulch
-	if (idx == 23) return vec4(3.0, 0.82, 0.76, 0.58);   // sand
-	if (idx == 24) return vec4(3.0, 0.64, 0.38, 0.28);   // tartan — reddish-brown cinder track
-	if (idx == 25) return vec4(0.0, 0.42, 0.42, 0.44);   // hw:cycleway
-	if (idx == 26) return vec4(0.0, 0.50, 0.48, 0.44);   // hw:pedestrian → asphalt plaza
-	if (idx == 27) return vec4(3.0, 0.62, 0.52, 0.38);   // hw:path
-	if (idx == 28) return vec4(1.0, 0.82, 0.78, 0.68);   // hw:steps
-	if (idx == 29) return vec4(3.0, 0.56, 0.48, 0.34);   // hw:track
-	return vec4(3.0, 0.72, 0.66, 0.54);                   // catchall (30)
-}
 
 void vertex() {
 	world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
@@ -189,59 +141,8 @@ void fragment() {
 	vec3 terr_T = normalize(vec3(2.0 * cell_m, tR - tL, 0.0));
 	vec3 terr_B = normalize(cross(terr_T, terrain_n));
 
-	// --- Analytical GPU path distance + raster fallback ---
+	// Atlas UV for landuse, boundary, shore distance lookups
 	vec2 splat_uv = (world_pos.xz + world_size * 0.5) / world_size;
-	float feather = 1.2;  // matches SPLAT_FEATHER
-
-	// Analytical distance-to-segment for open polyline paths
-	float half_ws = world_size * 0.5;
-	ivec2 cell = ivec2((world_pos.xz + half_ws) / grid_cell_size);
-	cell = clamp(cell, ivec2(0), ivec2(grid_w - 1));
-
-	vec2 gd = texelFetch(path_grid, cell, 0).rg;
-	int gstart = int(gd.r);
-	int gcount = min(int(gd.g), 48);
-
-	// Simple priority: wider path wins completely. No blending.
-	float best_cov = 0.0;
-	float best_hw  = 0.0;
-	int   best_mat = 0;
-	float nearest_path_dist = 999.0;  // distance to closest path edge
-
-	for (int gi = 0; gi < gcount; gi++) {
-		int li = gstart + gi;
-		float si = texelFetch(path_list, ivec2(li % list_tex_w, li / list_tex_w), 0).r;
-		int seg = int(si);
-
-		int seg_col = seg % seg_tex_w;
-		int seg_row = (seg / seg_tex_w) * 2;
-		vec4 ep = texelFetch(path_segs, ivec2(seg_col, seg_row), 0);
-		vec4 pr = texelFetch(path_segs, ivec2(seg_col, seg_row + 1), 0);
-
-		float d = point_segment_dist(world_pos.xz, ep.xy, ep.zw);
-		float hw = pr.x;
-		float cov = d < hw ? 1.0 : 0.0;
-
-		// Track distance to nearest path edge (for erosion/wear effects)
-		float edge_dist = d - hw;
-		if (edge_dist < nearest_path_dist) {
-			nearest_path_dist = edge_dist;
-		}
-
-		// Priority: wider path wins at intersections.
-		if (cov > 0.5 && hw > best_hw) {
-			best_cov = cov;
-			best_hw  = hw;
-			best_mat = int(pr.y);
-		} else if (cov > best_cov) {
-			best_cov = cov;
-			best_hw  = hw;
-			best_mat = int(pr.y);
-		}
-	}
-
-	float path_weight = best_cov;
-	int mat_idx = best_mat;
 
 	// --- Grass shading (textureNoTile — Inigo Quilez anti-tiling) ---
 	vec2 uv  = world_pos.xz / tile_m;
@@ -556,7 +457,7 @@ void fragment() {
 	float mall_x = world_pos.x;
 	float mall_z = world_pos.z;
 	bool in_mall_corridor = (mall_x > -680.0 && mall_x < -430.0 && mall_z > 1200.0 && mall_z < 1520.0);
-	if (in_mall_corridor && mat_idx == 0 && slope < 0.08) {
+	if (in_mall_corridor && slope < 0.08) {
 		// Exceptionally well-maintained formal lawn flanking the promenade
 		float mall_blend = 0.35;
 		// Formal grass: uniform, rich green, tightly mowed
@@ -569,7 +470,7 @@ void fragment() {
 
 	// Great Lawn: Kentucky bluegrass — rich maintained green
 	float d_gl = length(world_pos.xz - vec2(0.0, 100.0));
-	if (d_gl < 200.0 && slope < 0.08 && mat_idx == 0) {
+	if (d_gl < 200.0 && slope < 0.08) {
 		float gl_blend = smoothstep(200.0, 150.0, d_gl);
 		// Kentucky bluegrass: rich green, well-maintained
 		vec3 bluegrass = vec3(0.23, 0.49, 0.23);
@@ -578,14 +479,14 @@ void fragment() {
 
 	// Harlem Meer shoreline: naturalistic, darker water-influenced ground
 	float d_hm = length(world_pos.xz - vec2(350.0, -1750.0));
-	if (d_hm < 80.0 && mat_idx == 0) {
+	if (d_hm < 80.0) {
 		float hm_blend = smoothstep(80.0, 40.0, d_hm);
 		grass_alb = mix(grass_alb, grass_alb * vec3(0.92, 1.06, 0.90), hm_blend);
 	}
 
 	// Conservatory Water: formal paving surround (flagstone/concrete)
 	float d_cw = length(world_pos.xz - vec2(-152.0, 958.0));
-	if (d_cw < 45.0 && d_cw > 20.0 && slope < 0.10 && mat_idx == 0) {
+	if (d_cw < 45.0 && d_cw > 20.0 && slope < 0.10) {
 		float cw_blend = smoothstep(45.0, 35.0, d_cw) * smoothstep(20.0, 28.0, d_cw);
 		vec3 flagstone = vec3(0.55, 0.53, 0.50);  // light gray flagstone paving
 		grass_alb = mix(grass_alb, flagstone, cw_blend * 0.6);
@@ -594,14 +495,14 @@ void fragment() {
 
 	// Sheep Meadow: well-maintained turf, slightly warmer green
 	float d_sm = length(world_pos.xz - vec2(-750.0, 1800.0));
-	if (d_sm < 200.0 && slope < 0.06 && mat_idx == 0) {
+	if (d_sm < 200.0 && slope < 0.06) {
 		float sm_blend = smoothstep(200.0, 120.0, d_sm);
 		grass_alb = mix(grass_alb, grass_alb * vec3(1.04, 1.02, 0.92), sm_blend);
 	}
 
 	// Strawberry Fields: formal, somber, exceptionally maintained memorial garden
 	float d_sf = length(world_pos.xz - vec2(-790.0, 820.0));
-	if (d_sf < 60.0 && slope < 0.10 && mat_idx == 0) {
+	if (d_sf < 60.0 && slope < 0.10) {
 		float sf_blend = smoothstep(60.0, 30.0, d_sf);
 		// Formal, deep green, slightly desaturated (memorial dignity)
 		float sf_lum = dot(grass_alb, vec3(0.299, 0.587, 0.114));
@@ -618,61 +519,20 @@ void fragment() {
 		1.0
 	);
 	woodland_prox = max(woodland_prox, smoothstep(300.0, 100.0, d_nwoods));
-	if (woodland_prox > 0.01 && mat_idx == 0) {
+	if (woodland_prox > 0.01) {
 		// Deeper, cooler woodland floor per Olmsted "Picturesque" design
 		grass_alb = mix(grass_alb, grass_alb * vec3(0.90, 0.98, 0.95), woodland_prox * 0.5);
 		grass_alb *= mix(1.0, 0.88, woodland_prox);  // darker in deep woods
 	}
 
-	if (mat_idx > 0 && path_weight > 0.5) {
-		// --- Path shading — soft edges blend into surrounding ground ---
-		vec4 ml = mat_lookup(mat_idx);
-		vec2 path_uv = world_pos.xz / path_tile_m;
-		vec3 p_alb = texture(path_alb_arr, vec3(path_uv, ml.x)).rgb * ml.yzw;
-		vec3 p_nrm = texture(path_nrm_arr, vec3(path_uv, ml.x)).rgb;
-		float p_rgh = clamp(texture(path_rgh_arr, vec3(path_uv, ml.x)).r + 0.10, 0.0, 1.0);
-
-		// Soft edge: full path at 0.15m inside, fading to grass at edge
-		// nearest_path_dist is negative when inside path (distance past edge)
-		float soft_weight = smoothstep(0.0, -0.15, nearest_path_dist);
-
-		ALBEDO          = mix(grass_alb, p_alb, soft_weight);
-		vec3 _cn = mix(grass_nrm, p_nrm, soft_weight) * 2.0 - 1.0;
-		_cn.xy *= mix(0.8, 0.3, soft_weight);
-		vec3 _cfn = normalize(terr_T * _cn.x + terr_B * _cn.y + terrain_n * _cn.z);
-		NORMAL = normalize((VIEW_MATRIX * vec4(_cfn, 0.0)).xyz);
-		ROUGHNESS       = mix(grass_rgh, p_rgh, soft_weight);
-		// Material-specific specular: stone/brick slightly reflective, gravel/dirt matte
-		float p_spec = 0.0;
-		if (ml.x < 0.5)      p_spec = 0.05;   // asphalt: matte
-		else if (ml.x < 1.5) p_spec = 0.08;   // concrete: modest
-		else if (ml.x < 2.5) p_spec = 0.10;   // paving stones/brick: slight sheen
-		else if (ml.x < 3.5) p_spec = 0.02;   // gravel/dirt: very matte
-		else                  p_spec = 0.06;   // wood: natural
-		SPECULAR        = mix(0.15, p_spec, soft_weight);
-		METALLIC        = 0.0;
-	} else {
-		ALBEDO          = grass_alb;
-		vec3 _gn = grass_nrm * 2.0 - 1.0;
-		_gn.xy *= 0.8;
-		vec3 _gfn = normalize(terr_T * _gn.x + terr_B * _gn.y + terrain_n * _gn.z);
-		NORMAL = normalize((VIEW_MATRIX * vec4(_gfn, 0.0)).xyz);
-		ROUGHNESS       = grass_rgh;
-		// Rock surfaces get mica sparkle (higher specular), grass stays subtle
-		SPECULAR        = max(0.15, rock_specular);
-		METALLIC        = 0.0;
-	}
-
-	// --- Path edge wear: muddy/worn margins near paths ---
-	// NOTE: This runs after ALBEDO is set, so modify ALBEDO/ROUGHNESS directly
-	if (nearest_path_dist > 0.0 && nearest_path_dist < 1.8 && mat_idx == 0) {
-		float wear_noise = fbm(world_pos.xz * 0.4, 2) * 0.5;
-		float wear = smoothstep(1.8, 0.2, nearest_path_dist + wear_noise);
-		float wear_strength = is_woodland ? 0.5 : 0.25;
-		vec3 worn_earth = vec3(0.32, 0.26, 0.18);
-		ALBEDO = mix(ALBEDO, worn_earth, wear * wear_strength);
-		ROUGHNESS = mix(ROUGHNESS, 0.85, wear * wear_strength * 0.8);
-	}
+	ALBEDO          = grass_alb;
+	vec3 _gn = grass_nrm * 2.0 - 1.0;
+	_gn.xy *= 0.8;
+	vec3 _gfn = normalize(terr_T * _gn.x + terr_B * _gn.y + terrain_n * _gn.z);
+	NORMAL = normalize((VIEW_MATRIX * vec4(_gfn, 0.0)).xyz);
+	ROUGHNESS       = grass_rgh;
+	SPECULAR        = max(0.15, rock_specular);
+	METALLIC        = 0.0;
 
 	// --- Rain wetness: darken surfaces, lower roughness, increase specular ---
 	if (rain_wetness > 0.01) {
@@ -717,19 +577,15 @@ void fragment() {
 	// Wind biases leaf positions — leaves drift downwind over time
 	{
 		float leaf_autumn = smoothstep(2.0, 2.6, season_t) * (1.0 - smoothstep(3.3, 3.8, season_t));
-		if (leaf_autumn > 0.01 && mat_idx == 0 && slope < 0.25) {
+		if (leaf_autumn > 0.01 && slope < 0.25) {
 			// Wind drift: offset noise coordinates so leaves appear to blow downwind
 			float wind_str = length(wind_vec);
 			vec2 leaf_drift = wind_vec * TIME * 0.015;  // slow drift
 			// Multi-scale leaf noise: large clumps + individual leaf scatter
 			float leaf_clump = vnoise(world_pos.xz * 0.08 - leaf_drift * 0.3);
 			float leaf_detail = vnoise(world_pos.xz * 0.6 - leaf_drift);
-			// Leaves accumulate more in woodland and along path edges
+			// Leaves accumulate more in woodland
 			float gather = is_woodland ? 0.5 : 0.15;
-			// Path edge accumulation: wind blows leaves to path margins
-			if (nearest_path_dist > 0.0 && nearest_path_dist < 3.0) {
-				gather += smoothstep(3.0, 0.5, nearest_path_dist) * 0.3;
-			}
 			// Leaves also gather in concave areas (low noise = low ground)
 			float topo_low = 1.0 - smoothstep(0.3, 0.6, fbm(world_pos.xz * 0.02, 2));
 			gather += topo_low * 0.15;
@@ -755,7 +611,7 @@ void fragment() {
 	// Dew appears when rain is recent (wetness > 0) on grass in spring/summer
 	{
 		float dew_season = smoothstep(0.0, 1.0, season_t) * (1.0 - smoothstep(2.5, 3.5, season_t));
-		if (dew_season > 0.01 && rain_wetness > 0.05 && rain_wetness < 0.5 && mat_idx == 0) {
+		if (dew_season > 0.01 && rain_wetness > 0.05 && rain_wetness < 0.5) {
 			// After rain stops, residual wetness creates dew-like droplets
 			float dew_noise = hash2(floor(world_pos.xz * 12.0));
 			float dew = step(0.6, dew_noise) * dew_season * rain_wetness * 2.0;
@@ -770,7 +626,7 @@ void fragment() {
 	// Visible in late autumn and winter mornings — white rime on grass tips
 	{
 		float frost_season = smoothstep(2.8, 3.5, season_t);
-		if (frost_season > 0.01 && mat_idx == 0 && snow_cover < 0.3) {
+		if (frost_season > 0.01 && snow_cover < 0.3) {
 			float frost_noise = hash2(floor(world_pos.xz * 8.0));
 			float frost_mask = step(0.4, frost_noise) * frost_season;
 			// Frost prefers flat, exposed grass (not under canopy)
