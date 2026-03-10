@@ -238,7 +238,9 @@ void fragment() {
 	NORMAL    = normalize((VIEW_MATRIX * vec4(wave_nrm, 0.0)).xyz);
 
 	// Fresnel — glancing angles reflect sky (color tracks time of day)
-	float fresnel = pow(1.0 - max(dot(NORMAL, VIEW), 0.0), 4.0);
+	// Power 3.0 (not 4.0) for gentler ramp — water has visible reflection even at moderate angles
+	// Minimum floor 0.04: real water reflects ~2-4% at normal incidence (Schlick)
+	float fresnel = max(pow(1.0 - max(dot(NORMAL, VIEW), 0.0), 3.0), 0.04);
 	vec3 sky_col = sky_reflect_color;
 
 	// Night city reflection: when sky is very dark, water reflects city light pollution
@@ -287,7 +289,7 @@ void fragment() {
 
 	ALBEDO    = col;
 	ROUGHNESS = mix(0.12, 0.02, fresnel);
-	METALLIC  = 0.05;
+	METALLIC  = 0.15;   // enough for SSR to pick up building/tree reflections
 	SPECULAR  = 0.5 + night_boost * 0.2;
 
 	// Winter ice — shallow edges freeze first, center stays open longer
