@@ -1035,32 +1035,32 @@ func _build_keyframes() -> void:
 		"ambient_energy": 0.65,
 		"exposure":       0.72,
 		"white":          5.5,
-		"glow_intensity": 0.45,   # soft morning bloom
-		"glow_bloom":     0.05,
-		"glow_strength":  0.5,
-		"glow_threshold": 0.70,
+		"glow_intensity": 0.2,    # restrained morning bloom — warmth is directional, not global
+		"glow_bloom":     0.03,
+		"glow_strength":  0.4,
+		"glow_threshold": 0.85,
 		"glow_cap":       6.0,
 		"ssao_radius":    1.5,
 		"ssao_intensity": 2.5,
 		"ssao_power":     1.8,
 		"ssil_intensity": 0.7,
-		"saturation":     1.12,
+		"saturation":     1.05,
 		"contrast":       1.08,
 		"brightness":     0.92,
-		"fog_color":      Color(0.58, 0.44, 0.34),
-		"fog_energy":     0.50,
-		"fog_scatter":    0.20,
+		"fog_color":      Color(0.50, 0.42, 0.34),   # subtle warm haze, not amber wash
+		"fog_energy":     0.45,
+		"fog_scatter":    0.18,
 		"fog_density":    0.0003,
 		"fog_aerial":     0.12,
 		"fog_sky_affect": 0.25,
 		"sun_energy":     0.90,
-		"sun_color":      Color(1.0, 0.70, 0.35),
+		"sun_color":      Color(1.0, 0.75, 0.50),    # warm but not deep amber
 		"sun_pitch":      -12.0,
 		"sun_yaw":        -95.0,
 		"shadow_dist":    250.0,
 		"lamp_emission":  0.0,
-		"vol_fog_density":    0.0005,  # moderate for sunrise god rays
-		"vol_fog_anisotropy": 0.92,   # strong forward scatter → god rays at dawn
+		"vol_fog_density":    0.0003,  # subtle sunrise haze
+		"vol_fog_anisotropy": 0.80,    # moderate forward scatter
 		"cloud_coverage":     0.50,
 		"cloud_density":      0.55,
 		"cloud_color_top":    Color(0.95, 0.85, 0.72),   # gold-lit cloud tops
@@ -1121,36 +1121,36 @@ func _build_keyframes() -> void:
 		"sky_horizon":    Color(0.82, 0.50, 0.28),    # richer orange at horizon
 		"gnd_bottom":     Color(0.10, 0.07, 0.04),
 		"gnd_horizon":    Color(0.48, 0.35, 0.20),    # warm ground reflection
-		"ambient_color":  Color(0.52, 0.40, 0.26),    # warmer ambient fill
-		"ambient_energy": 0.85,
+		"ambient_color":  Color(0.48, 0.42, 0.32),    # warm ambient but not saturated amber
+		"ambient_energy": 0.80,
 		"exposure":       0.72,
 		"white":          5.5,
-		"glow_intensity": 0.5,   # warm atmospheric bloom — golden hour glow
-		"glow_bloom":     0.06,
-		"glow_strength":  0.6,
-		"glow_threshold": 0.65,
+		"glow_intensity": 0.15,  # minimal bloom — golden hour warmth is directional, not global
+		"glow_bloom":     0.03,
+		"glow_strength":  0.4,
+		"glow_threshold": 0.90,  # only sun-facing surfaces bloom
 		"glow_cap":       6.0,
 		"ssao_radius":    2.0,
 		"ssao_intensity": 1.8,
 		"ssao_power":     1.9,
 		"ssil_intensity": 0.8,
-		"saturation":     1.15,   # more vivid colors in golden light
-		"contrast":       1.10,   # richer contrast with long shadows
+		"saturation":     1.05,   # natural — saturation boost makes everything amber
+		"contrast":       1.08,   # long shadows
 		"brightness":     0.93,
-		"fog_color":      Color(0.72, 0.52, 0.35),    # warmer haze
-		"fog_energy":     0.55,
-		"fog_scatter":    0.22,
+		"fog_color":      Color(0.55, 0.45, 0.35),    # neutral warm haze, not amber blanket
+		"fog_energy":     0.45,
+		"fog_scatter":    0.18,
 		"fog_density":    0.0003,
-		"fog_aerial":     0.14,
-		"fog_sky_affect": 0.30,
-		"sun_energy":     1.0,     # stronger low sun for dramatic golden light
-		"sun_color":      Color(1.0, 0.65, 0.30),     # deeper amber
+		"fog_aerial":     0.12,
+		"fog_sky_affect": 0.25,
+		"sun_energy":     0.95,    # strong low sun but not overblown
+		"sun_color":      Color(1.0, 0.72, 0.45),     # warm golden, not deep amber
 		"sun_pitch":      -12.0,   # lower sun angle for longer shadows
 		"sun_yaw":        95.0,
 		"shadow_dist":    250.0,
 		"lamp_emission":  0.0,  # lamps off until after sunset (ramp 19h→21h)
-		"vol_fog_density":    0.0006,  # moderate for sunset god rays
-		"vol_fog_anisotropy": 0.94,   # very strong forward scatter — dramatic light shafts
+		"vol_fog_density":    0.0003,  # subtle haze — clarity over drama
+		"vol_fog_anisotropy": 0.80,    # moderate forward scatter
 		"cloud_coverage":     0.60,
 		"cloud_density":      0.55,
 		"cloud_color_top":    Color(0.85, 0.55, 0.38),  # golden-lit cloud tops

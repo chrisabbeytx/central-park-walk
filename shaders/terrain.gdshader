@@ -154,45 +154,45 @@ void fragment() {
 	// Summer lawn: strong green — terrain IS the grass carpet, 3D blades add depth.
 	// The Great Lawn looks correct; push all grass surfaces to match.
 	float grass_lum = dot(grass_alb, vec3(0.299, 0.587, 0.114));
-	grass_alb = mix(vec3(grass_lum), grass_alb, 0.90);  // slight desaturation — real grass isn't neon
-	grass_alb.g *= 1.08;  // moderate green push — bluegrass, not AstroTurf
-	grass_alb.r *= 0.90;  // reduce red warmth but keep some natural tan
-	grass_alb.b *= 0.88;  // reduce blue for earthy green, not teal
+	grass_alb = mix(vec3(grass_lum), grass_alb, 0.75);  // 25% desaturation — grass isn't neon in linear PBR
+	grass_alb *= 0.82;  // real grass albedo is quite dark in linear space (~0.04-0.10 green channel)
+	grass_alb.r *= 0.94;  // reduce red for cooler green, not warm yellow-green
+	grass_alb.b *= 0.85;  // reduce blue for earthy green, not teal
 
 	// Multi-scale grass color variation — real lawns are never uniform.
 	// Aerial imagery of Central Park shows a patchwork of greens, olives, browns.
 
 	// Define grass color targets (linear space values — these blend with PBR texture)
-	vec3 lush_green  = vec3(0.06, 0.12, 0.03);  // deep rich green — recently watered
-	vec3 olive_green  = vec3(0.10, 0.10, 0.04);  // olive — normal healthy grass
-	vec3 yellow_stress = vec3(0.14, 0.12, 0.04); // yellow-green — drought stress
-	vec3 brown_dirt   = vec3(0.12, 0.08, 0.04);  // exposed soil/thatch
+	vec3 lush_green    = vec3(0.05, 0.10, 0.03);  // deep rich green — recently watered
+	vec3 olive_green   = vec3(0.08, 0.08, 0.03);  // olive — normal healthy grass
+	vec3 yellow_stress = vec3(0.14, 0.12, 0.04);  // yellow-green — drought stress
+	vec3 brown_dirt    = vec3(0.10, 0.07, 0.04);  // exposed soil/thatch
 
-	// Scale 1: very large (100-200m) — whole-field condition
+	// Scale 1: very large (100-200m) — whole-field condition (visible from aerial)
 	float field_cond = vnoise(world_pos.xz * 0.003 + vec2(50.0, 23.0));
-	// Mix between lush and olive at field scale
+	// Mix between lush and olive at field scale — strong enough to show from 100m
 	vec3 field_tone = mix(lush_green, olive_green, field_cond);
-	grass_alb = mix(grass_alb, field_tone, 0.25);
+	grass_alb = mix(grass_alb, field_tone, 0.40);
 
 	// Scale 2: large patches (25-40m) — drainage, irrigation, sun/shade
 	float lawn_large = fbm(world_pos.xz * 0.006, 3);
-	grass_alb *= 0.80 + lawn_large * 0.40;  // strong brightness range
+	grass_alb *= 0.75 + lawn_large * 0.50;  // wider brightness range for aerial visibility
 
 	// Scale 3: medium patches (8-15m) — mowing age, species dominance
 	float lawn_med = fbm(world_pos.xz * 0.025 + 37.0, 2);
 	// Yellow stress patches where grass is thin
 	float stress_mask = smoothstep(0.55, 0.80, lawn_med);
-	grass_alb = mix(grass_alb, yellow_stress, stress_mask * 0.20);
-	grass_alb *= 0.90 + lawn_med * 0.20;
+	grass_alb = mix(grass_alb, yellow_stress, stress_mask * 0.25);
+	grass_alb *= 0.88 + lawn_med * 0.24;
 
 	// Scale 4: warm/cool hue patches — Kentucky bluegrass vs perennial ryegrass
 	float temp_shift = fbm(world_pos.xz * 0.01 + 91.0, 2) - 0.5;
-	grass_alb *= vec3(1.0 + temp_shift * 0.22, 1.0, 1.0 - temp_shift * 0.18);
+	grass_alb *= vec3(1.0 + temp_shift * 0.28, 1.0, 1.0 - temp_shift * 0.22);
 
 	// Scale 5: small-scale thinning (2-4m) — bare spots, compaction, foot traffic
 	float thin_noise = vnoise(world_pos.xz * 0.15);
 	float thin_patch = smoothstep(0.50, 0.70, thin_noise);
-	grass_alb = mix(grass_alb, brown_dirt, thin_patch * 0.25);
+	grass_alb = mix(grass_alb, brown_dirt, thin_patch * 0.30);
 
 	// --- Seasonal grass color modulation ---
 	// Spring (0-1): fresh bright green, Summer (1-2): rich green (baseline),
@@ -681,9 +681,9 @@ void fragment() {
 	float d_gl = length(world_pos.xz - vec2(0.0, 100.0));
 	if (d_gl < 200.0 && slope < 0.08) {
 		float gl_blend = smoothstep(200.0, 150.0, d_gl);
-		// Kentucky bluegrass: rich green, well-maintained
-		vec3 bluegrass = vec3(0.23, 0.49, 0.23);
-		grass_alb = mix(grass_alb, bluegrass, gl_blend * 0.4);
+		// Kentucky bluegrass: deep green, well-maintained (linear PBR values)
+		vec3 bluegrass = vec3(0.04, 0.10, 0.03);
+		grass_alb = mix(grass_alb, bluegrass, gl_blend * 0.3);
 	}
 
 	// Harlem Meer shoreline: naturalistic, darker water-influenced ground
