@@ -70,6 +70,7 @@ python3 convert_to_godot.py
 ```bash
 -- --tour              # Automated screenshot tour (340 shots → /tmp/tour/)
 -- --tour-showcase     # Curated showcase (22 shots — ground + aerial views)
+-- --readme-shots      # Regenerate the 4 README screenshots → screenshots/
 -- --pos "x,z,yaw"    # Spawn at specific coordinates
 -- --time noon         # Set time (dawn/morning/noon/golden_hour/dusk/night)
 -- --weather rain      # Set weather (clear/rain/snow/fog)

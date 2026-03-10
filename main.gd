@@ -216,7 +216,7 @@ func _ready() -> void:
 			_tour_timer = 0.0
 			_tour_idx = 0
 			_player.tour_freeze = true  # keep physics synced but freeze movement/look
-			DirAccess.make_dir_recursive_absolute("/tmp/tour")
+			DirAccess.make_dir_recursive_absolute(_tour_save_dir)
 			print("Tour mode: %d shots queued" % _tour_shots.size())
 			break
 var _screenshot_timer := 0.0
@@ -234,6 +234,7 @@ var _tour_state := 0  # 0=WAIT_LOAD, 1=SETTLE, 2=CAPTURE, 3=DONE
 var _tour_timer := 0.0
 var _tour_idx := 0  # index into _tour_shots array
 var _tour_shots: Array = []  # populated in _build_tour_shots()
+var _tour_save_dir := "/tmp/tour"  # overridden by --readme-shots
 
 const TOUR_VIEWPOINTS: Array = [
 	{"name": "bethesda_fountain", "x": -480.0, "z": 1020.0, "yaw": 180.0},
@@ -267,6 +268,10 @@ const TOUR_TIMES: Array = [7.0, 12.0, 17.0, 22.0]
 
 func _build_tour_shots() -> void:
 	_tour_shots.clear()
+	for arg in OS.get_cmdline_user_args():
+		if arg == "--readme-shots":
+			_build_readme_shots()
+			return
 	# Check for --tour-showcase: focused set with weather/season variety
 	for arg in OS.get_cmdline_user_args():
 		if arg == "--tour-showcase":
@@ -341,6 +346,26 @@ const SHOWCASE_SHOTS: Array = [
 
 func _build_showcase_shots() -> void:
 	for shot in SHOWCASE_SHOTS:
+		_tour_shots.append(shot.duplicate())
+		_tour_shots.back()["filename"] = shot["name"]
+
+
+# README shots — exactly the 4 images referenced in README.md
+# Saves to screenshots/ (not /tmp/tour/) so they land in the repo directly.
+const README_SHOTS: Array = [
+	# Autumn dusk on Literary Walk looking west toward CPW skyline
+	{"name": "cpw_skyline_autumn_dusk", "x": -600.0, "z": 1420.0, "yaw": 90.0, "pitch": 0.0, "hour": 19.0, "season": 2.5, "weather": "clear"},
+	# Summer golden hour on Literary Walk
+	{"name": "literary_walk_summer_golden", "x": -600.0, "z": 1420.0, "yaw": 30.0, "pitch": 0.0, "hour": 17.5, "season": 1.5, "weather": "clear"},
+	# Winter snow at Sheep Meadow
+	{"name": "sheep_meadow_winter_noon", "x": -700.0, "z": 1600.0, "yaw": 270.0, "pitch": 0.0, "hour": 12.0, "season": 3.5, "weather": "snow"},
+	# Rustic wood bridge in the North Woods
+	{"name": "north_woods_bridge", "x": 525.0, "z": -1360.0, "yaw": 240.0, "pitch": -5.0, "hour": 14.0, "season": 2.0, "weather": "clear"},
+]
+
+func _build_readme_shots() -> void:
+	_tour_save_dir = "screenshots"
+	for shot in README_SHOTS:
 		_tour_shots.append(shot.duplicate())
 		_tour_shots.back()["filename"] = shot["name"]
 
@@ -449,14 +474,14 @@ func _process(delta: float) -> void:
 				var img := get_viewport().get_texture().get_image()
 				if img:
 					var shot: Dictionary = _tour_shots[_tour_idx]
-					var path := "/tmp/tour/%s.png" % shot["filename"]
+					var path := "%s/%s.png" % [_tour_save_dir, shot["filename"]]
 					img.save_png(path)
 					print("Tour [%d/%d]: %s" % [_tour_idx + 1, _tour_shots.size(), shot["filename"]])
 				_tour_idx += 1
 				if _tour_idx >= _tour_shots.size():
 					_tour_write_manifest()
 					_tour_state = 3
-					print("Tour complete: %d shots saved to /tmp/tour/" % _tour_shots.size())
+					print("Tour complete: %d shots saved to %s/" % [_tour_shots.size(), _tour_save_dir])
 					get_tree().quit()
 				else:
 					_tour_state = 1
@@ -652,7 +677,7 @@ func _tour_write_manifest() -> void:
 	var manifest: Dictionary = {"shots": [], "viewpoints": TOUR_VIEWPOINTS.size(), "angles": TOUR_ANGLES.size(), "times": TOUR_TIMES.size()}
 	for shot in _tour_shots:
 		manifest["shots"].append({"filename": shot["filename"] + ".png", "name": shot["name"], "hour": shot["hour"], "x": shot["x"], "z": shot["z"]})
-	var fa := FileAccess.open("/tmp/tour/manifest.json", FileAccess.WRITE)
+	var fa := FileAccess.open("%s/manifest.json" % _tour_save_dir, FileAccess.WRITE)
 	fa.store_string(JSON.stringify(manifest, "\t"))
 	fa.close()
 	print("Tour: manifest.json written")
