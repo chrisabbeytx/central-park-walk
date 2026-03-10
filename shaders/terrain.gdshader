@@ -259,8 +259,8 @@ void fragment() {
 		vec3 p_alb = texture(path_alb_arr, vec3(puv, 0.0)).rgb;  // layer 0 = Asphalt
 		vec3 p_nrm = texture(path_nrm_arr, vec3(puv, 0.0)).rgb;
 		float p_rgh = clamp(texture(path_rgh_arr, vec3(puv, 0.0)).r + 0.05, 0.0, 1.0);
-		// NYC Parks asphalt: medium gray, worn smooth by foot traffic
-		p_alb *= vec3(0.52, 0.50, 0.48);
+		// NYC Parks asphalt: worn medium gray, lighter than fresh asphalt
+		p_alb *= vec3(0.62, 0.60, 0.57);
 		// Subtle patchy wear — lighter in high-traffic center
 		float wear = fbm(world_pos.xz * 0.05, 2);
 		p_alb *= (0.92 + wear * 0.16);
@@ -287,8 +287,8 @@ void fragment() {
 		vec3 p_alb = texture(path_alb_arr, vec3(puv, 3.0)).rgb;  // layer 3 = Gravel
 		vec3 p_nrm = texture(path_nrm_arr, vec3(puv, 3.0)).rgb;
 		float p_rgh = clamp(texture(path_rgh_arr, vec3(puv, 3.0)).r + 0.08, 0.0, 1.0);
-		// Compacted earth tone: warm brown-gray
-		p_alb *= vec3(0.55, 0.48, 0.40);
+		// Compacted earth tone: warm tan-gray (packed gravel/decomposed granite)
+		p_alb *= vec3(0.62, 0.55, 0.46);
 		// Foot traffic variation
 		float wear = fbm(world_pos.xz * 0.04, 2);
 		p_alb *= (0.90 + wear * 0.20);
