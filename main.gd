@@ -192,6 +192,8 @@ func _ready() -> void:
 		print("main: landuse map: %d ms" % (Time.get_ticks_msec() - _mt)); _mt = Time.get_ticks_msec()
 		_apply_structure_mask()
 		print("main: structure mask: %d ms" % (Time.get_ticks_msec() - _mt)); _mt = Time.get_ticks_msec()
+		_apply_surface_atlas()
+		print("main: surface atlas: %d ms" % (Time.get_ticks_msec() - _mt)); _mt = Time.get_ticks_msec()
 	_player = _setup_player()
 	if _park_loader and _park_loader.boundary_polygon.size() > 2:
 		_player.boundary_polygon = _park_loader.boundary_polygon
@@ -1829,6 +1831,33 @@ func _apply_structure_mask() -> void:
 	var tex := ImageTexture.create_from_image(img)
 	_terrain_mat.set_shader_parameter("structure_mask", tex)
 	print("Terrain: structure mask applied (%dx%d)" % [img.get_width(), img.get_height()])
+
+
+func _apply_surface_atlas() -> void:
+	## Extract the R channel (surface type) from world_atlas.bin and pass it to the
+	## terrain shader as an 8K texture. This lets the shader distinguish paths (2,3),
+	## water (4), buildings (5), bridges (6), and rock (7) from grass (1).
+	if not _park_loader or _park_loader._atlas_data.is_empty():
+		return
+	var res: int = _park_loader._atlas_res
+	var atlas: PackedByteArray = _park_loader._atlas_data
+	# Extract R channel only (every other byte in RG8 data)
+	var r_data := PackedByteArray()
+	r_data.resize(res * res)
+	for i in range(res * res):
+		r_data[i] = atlas[i * 2]
+	var img := Image.create_from_data(res, res, false, Image.FORMAT_R8, r_data)
+	var atlas_tex := ImageTexture.create_from_image(img)
+	_terrain_mat.set_shader_parameter("surface_atlas", atlas_tex)
+	# Count path pixels for diagnostics
+	var paved := 0
+	var unpaved := 0
+	for i in range(res * res):
+		if r_data[i] == 2:
+			paved += 1
+		elif r_data[i] == 3:
+			unpaved += 1
+	print("Terrain: surface atlas %dx%d — %d paved, %d unpaved path cells" % [res, res, paved, unpaved])
 
 
 # ---------------------------------------------------------------------------

@@ -67,6 +67,10 @@ uniform sampler2D shore_distance : filter_linear, repeat_disable;
 // Structure mask from LiDAR (HH - BE difference): 0=ground, 1-254=height in half-feet
 uniform sampler2D structure_mask : filter_linear, repeat_disable;
 
+// World atlas surface type (R channel from world_atlas.bin, 8K):
+// 0=outside, 1=grass, 2=paved_path, 3=unpaved_path, 4=water, 5=building, 6=bridge, 7=rock
+uniform sampler2D surface_atlas : filter_nearest, repeat_disable;
+
 varying vec3 world_pos;
 
 #include "res://shaders/include/hash_noise.gdshaderinc"
@@ -242,6 +246,67 @@ void fragment() {
 		grass_rgh = mix(grass_rgh, d_rgh, dirt_blend);
 	}
 
+	// --- Paths from world atlas: paved (2) and unpaved (3) surfaces ---
+	// This makes paths visually distinct from grass — the biggest single visual improvement.
+	float atlas_val = texture(surface_atlas, splat_uv).r * 255.0;
+	int surface_type = int(atlas_val + 0.5);
+	bool is_paved = (surface_type == 2 || surface_type == 6);   // paved path or bridge deck
+	bool is_unpaved = (surface_type == 3);
+	if (is_paved && slope < 0.20) {
+		// Asphalt paving — dark gray, slightly rough
+		vec2 puv = world_pos.xz / path_tile_m;
+		vec3 p_alb = texture(path_alb_arr, vec3(puv, 0.0)).rgb;  // layer 0 = Asphalt
+		vec3 p_nrm = texture(path_nrm_arr, vec3(puv, 0.0)).rgb;
+		float p_rgh = clamp(texture(path_rgh_arr, vec3(puv, 0.0)).r + 0.05, 0.0, 1.0);
+		// NYC Parks asphalt: medium gray, worn smooth by foot traffic
+		p_alb *= vec3(0.52, 0.50, 0.48);
+		// Subtle patchy wear — lighter in high-traffic center
+		float wear = fbm(world_pos.xz * 0.05, 2);
+		p_alb *= (0.92 + wear * 0.16);
+		// Edge softening: blend with surrounding grass at path borders
+		// Sample atlas neighbors to detect path-grass boundary
+		float edge_n = texture(surface_atlas, splat_uv + vec2(0.0, -htexel * 2.0)).r * 255.0;
+		float edge_s = texture(surface_atlas, splat_uv + vec2(0.0,  htexel * 2.0)).r * 255.0;
+		float edge_e = texture(surface_atlas, splat_uv + vec2( htexel * 2.0, 0.0)).r * 255.0;
+		float edge_w = texture(surface_atlas, splat_uv + vec2(-htexel * 2.0, 0.0)).r * 255.0;
+		float neighbors_path = 0.0;
+		if (int(edge_n + 0.5) == 2 || int(edge_n + 0.5) == 6) neighbors_path += 1.0;
+		if (int(edge_s + 0.5) == 2 || int(edge_s + 0.5) == 6) neighbors_path += 1.0;
+		if (int(edge_e + 0.5) == 2 || int(edge_e + 0.5) == 6) neighbors_path += 1.0;
+		if (int(edge_w + 0.5) == 2 || int(edge_w + 0.5) == 6) neighbors_path += 1.0;
+		// Full blend at path center (4 neighbors also path), softer at edges
+		float path_blend = clamp(neighbors_path * 0.25 + 0.15 + edge_noise * 0.1, 0.0, 1.0);
+		grass_alb = mix(grass_alb, p_alb, path_blend);
+		grass_nrm = mix(grass_nrm, p_nrm, path_blend);
+		grass_rgh = mix(grass_rgh, p_rgh, path_blend);
+	}
+	if (is_unpaved && slope < 0.20) {
+		// Unpaved trail: compacted gravel/dirt — brown-gray
+		vec2 puv = world_pos.xz / path_tile_m;
+		vec3 p_alb = texture(path_alb_arr, vec3(puv, 3.0)).rgb;  // layer 3 = Gravel
+		vec3 p_nrm = texture(path_nrm_arr, vec3(puv, 3.0)).rgb;
+		float p_rgh = clamp(texture(path_rgh_arr, vec3(puv, 3.0)).r + 0.08, 0.0, 1.0);
+		// Compacted earth tone: warm brown-gray
+		p_alb *= vec3(0.55, 0.48, 0.40);
+		// Foot traffic variation
+		float wear = fbm(world_pos.xz * 0.04, 2);
+		p_alb *= (0.90 + wear * 0.20);
+		// Edge softening (same neighbor sampling)
+		float edge_n = texture(surface_atlas, splat_uv + vec2(0.0, -htexel * 2.0)).r * 255.0;
+		float edge_s = texture(surface_atlas, splat_uv + vec2(0.0,  htexel * 2.0)).r * 255.0;
+		float edge_e = texture(surface_atlas, splat_uv + vec2( htexel * 2.0, 0.0)).r * 255.0;
+		float edge_w = texture(surface_atlas, splat_uv + vec2(-htexel * 2.0, 0.0)).r * 255.0;
+		float neighbors_path = 0.0;
+		if (int(edge_n + 0.5) == 3) neighbors_path += 1.0;
+		if (int(edge_s + 0.5) == 3) neighbors_path += 1.0;
+		if (int(edge_e + 0.5) == 3) neighbors_path += 1.0;
+		if (int(edge_w + 0.5) == 3) neighbors_path += 1.0;
+		float path_blend = clamp(neighbors_path * 0.25 + 0.15 + edge_noise * 0.1, 0.0, 1.0);
+		grass_alb = mix(grass_alb, p_alb, path_blend);
+		grass_nrm = mix(grass_nrm, p_nrm, path_blend);
+		grass_rgh = mix(grass_rgh, p_rgh, path_blend);
+	}
+
 	// Running track zones(9): distinctive reddish-brown cinder surface
 	// The Reservoir track is NYC's most iconic running loop
 	if (zone_id == 9) {
@@ -281,12 +346,16 @@ void fragment() {
 		grass_rgh = 0.95;
 	}
 
-	// Rock on steep slopes — Manhattan schist outcrops
+	// Rock on steep slopes + atlas rock (type 7) — Manhattan schist outcrops
 	// Schist: gray base + mica sparkle (slight specular) + rusty weathering patches
 	// LiDAR at 2.4m/cell smooths real slopes significantly, so use low thresholds.
 	float slope = 1.0 - terrain_n.y;  // 0=flat, 1=vertical
 	float rock_noise = fbm(world_pos.xz * 0.05, 2) * 0.06;
 	float rock_blend = smoothstep(0.10, 0.25, slope + rock_noise);
+	// Atlas surface type 7 = rock: boost rock blend for flat exposed bedrock
+	if (surface_type == 7) {
+		rock_blend = max(rock_blend, 0.85);
+	}
 	float rock_specular = 0.0;
 	if (rock_blend > 0.01) {
 		vec2 ruv = world_pos.xz / rock_tile_m;
