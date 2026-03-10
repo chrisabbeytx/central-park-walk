@@ -933,16 +933,16 @@ func _setup_environment() -> void:
 
 	# Volumetric fog — light shafts (god rays at sunrise/sunset via high anisotropy)
 	_env.volumetric_fog_enabled = true
-	_env.volumetric_fog_density = 0.0003
+	_env.volumetric_fog_density = 0.0001
 	_env.volumetric_fog_albedo = Color(1.0, 1.0, 1.0)
 	_env.volumetric_fog_emission = Color(0.8, 0.85, 0.9)
-	_env.volumetric_fog_emission_energy = 0.12
+	_env.volumetric_fog_emission_energy = 0.08
 	_env.volumetric_fog_anisotropy = 0.3
-	_env.volumetric_fog_length = 80.0
+	_env.volumetric_fog_length = 100.0
 	_env.volumetric_fog_detail_spread = 2.0
-	_env.volumetric_fog_ambient_inject = 0.25
-	_env.volumetric_fog_gi_inject = 0.3
-	_env.volumetric_fog_sky_affect = 0.30
+	_env.volumetric_fog_ambient_inject = 0.15
+	_env.volumetric_fog_gi_inject = 0.2
+	_env.volumetric_fog_sky_affect = 0.20
 	_env.volumetric_fog_temporal_reprojection_enabled = true
 
 	# SDFGI — global illumination (green bounce under canopies, warm path reflections)
@@ -1048,18 +1048,18 @@ func _build_keyframes() -> void:
 		"contrast":       1.08,
 		"brightness":     0.92,
 		"fog_color":      Color(0.58, 0.44, 0.34),
-		"fog_energy":     0.65,
-		"fog_scatter":    0.25,
-		"fog_density":    0.0004,
-		"fog_aerial":     0.18,
-		"fog_sky_affect": 0.3,
+		"fog_energy":     0.50,
+		"fog_scatter":    0.20,
+		"fog_density":    0.0003,
+		"fog_aerial":     0.12,
+		"fog_sky_affect": 0.25,
 		"sun_energy":     0.90,
 		"sun_color":      Color(1.0, 0.70, 0.35),
 		"sun_pitch":      -12.0,
 		"sun_yaw":        -95.0,
 		"shadow_dist":    250.0,
 		"lamp_emission":  0.0,
-		"vol_fog_density":    0.0008,  # denser for sunrise light shafts through trees
+		"vol_fog_density":    0.0005,  # moderate for sunrise god rays
 		"vol_fog_anisotropy": 0.92,   # strong forward scatter → god rays at dawn
 		"cloud_coverage":     0.50,
 		"cloud_density":      0.55,
@@ -1092,19 +1092,19 @@ func _build_keyframes() -> void:
 		"contrast":       1.06,
 		"brightness":     0.90,
 		"fog_color":      Color(0.62, 0.60, 0.56),  # warmer haze — NYC summer atmosphere
-		"fog_energy":     0.7,
-		"fog_scatter":    0.08,
-		"fog_density":    0.0006,   # NYC always has atmospheric haze — distant buildings fade
-		"fog_aerial":     0.15,
-		"fog_sky_affect": 0.40,    # fog blends toward sky color at distance
-		"sun_energy":     0.90,
+		"fog_energy":     0.5,
+		"fog_scatter":    0.06,
+		"fog_density":    0.0002,   # NYC has haze but keep it subtle — clarity first
+		"fog_aerial":     0.08,
+		"fog_sky_affect": 0.25,
+		"sun_energy":     0.95,
 		"sun_color":      Color(0.95, 0.92, 0.85),
 		"sun_pitch":      -55.0,
 		"sun_yaw":        -20.0,
 		"shadow_dist":    300.0,
 		"lamp_emission":  0.0,
-		"vol_fog_density":    0.0004,  # volumetric depth — subtle haze scattering
-		"vol_fog_anisotropy": 0.55,
+		"vol_fog_density":    0.0001,  # very subtle volumetric — just enough for depth
+		"vol_fog_anisotropy": 0.45,
 		"cloud_coverage":     0.60,
 		"cloud_density":      0.55,
 		"cloud_color_top":    Color(0.95, 0.95, 0.93),
@@ -1138,18 +1138,18 @@ func _build_keyframes() -> void:
 		"contrast":       1.10,   # richer contrast with long shadows
 		"brightness":     0.93,
 		"fog_color":      Color(0.72, 0.52, 0.35),    # warmer haze
-		"fog_energy":     0.7,
-		"fog_scatter":    0.30,    # more atmospheric scatter
-		"fog_density":    0.0005,
-		"fog_aerial":     0.22,    # stronger aerial perspective
-		"fog_sky_affect": 0.35,
-		"sun_energy":     0.95,    # stronger low sun
+		"fog_energy":     0.55,
+		"fog_scatter":    0.22,
+		"fog_density":    0.0003,
+		"fog_aerial":     0.14,
+		"fog_sky_affect": 0.30,
+		"sun_energy":     1.0,     # stronger low sun for dramatic golden light
 		"sun_color":      Color(1.0, 0.65, 0.30),     # deeper amber
 		"sun_pitch":      -12.0,   # lower sun angle for longer shadows
 		"sun_yaw":        95.0,
 		"shadow_dist":    250.0,
 		"lamp_emission":  0.0,  # lamps off until after sunset (ramp 19h→21h)
-		"vol_fog_density":    0.0010,  # denser for sunset god rays through tree canopy
+		"vol_fog_density":    0.0006,  # moderate for sunset god rays
 		"vol_fog_anisotropy": 0.94,   # very strong forward scatter — dramatic light shafts
 		"cloud_coverage":     0.60,
 		"cloud_density":      0.55,
