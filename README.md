@@ -6,8 +6,8 @@ Central Park Walk is a real-time 3D walking simulation of all 843 acres of New Y
 
 Every tree has a real measured height. Every path follows its real-world geometry. Every building has its actual footprint and construction year. The terrain is accurate to one foot. The data has gaps, and we leave them visible — gaps tell us what humans haven't yet measured or mapped.
 
-![Autumn Dusk — Central Park West Skyline](screenshots/cpw_skyline_autumn_dusk.png)
-*Autumn dusk. Per-species fall colors driven by phenology data. 6,557 buildings from NYC Building Footprints.*
+![Summer Golden Hour — Literary Walk](screenshots/literary_walk_summer_golden.png)
+*Golden hour on the Literary Walk. Per-species leaf colors driven by phenology data. 6,557 buildings from NYC Building Footprints.*
 
 ![Rain — Conservatory Water](screenshots/conservatory_rain_afternoon.png)
 *Rain on the Conservatory Water. Real-time weather with surface ripples, fog, and city silhouette.*
@@ -94,6 +94,10 @@ python3 convert_to_godot.py
 | Weather | 5 modes | Rain, thunderstorm, snow, fog, clear — with surface response |
 | Day/night | Full cycle | 48-lamp pool (45m range, 110 energy), lit windows, NYC warm ambient light pollution, moon, atmospheric haze, aerial perspective (distance desaturation + blue shift) |
 | Color grading | Cinematic | Split-tone (teal shadows/amber highlights), film grain, vignette, seasonal + TOD color shifts, S-curve contrast, distance-based grass darkening |
+
+## Performance
+
+First launch builds mesh caches (~44s). Subsequent launches load cached geometry for buildings (6,557 extruded footprints), tree models (15 GLBs), and furniture models — reducing load time significantly. Caches auto-invalidate when source GLB files or building data change. Delete `cache/` to force a full rebuild.
 
 ## Data Sources
 
