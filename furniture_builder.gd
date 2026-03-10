@@ -123,10 +123,18 @@ func _build_trash_cans(trash_data: Array, paths: Array) -> void:
 	var cp_tc_path := ProjectSettings.globalize_path("res://models/furniture/cp_trash_can.glb")
 	var cp_tc_meshes: Dictionary = _loader._load_glb_meshes(cp_tc_path)
 	var mesh: Mesh
-	var mat: Material = null  # null → use embedded Aluminum material from GLB
+	var mat: Material = null
 	if cp_tc_meshes.has("CP_TrashCan"):
 		mesh = cp_tc_meshes["CP_TrashCan"] as Mesh
-		print("TrashCan: loaded CP trash can model (aluminum)")
+		# Aluminum powder coat via cast iron shader (weather-responsive)
+		var al_shader: Shader = _loader._get_shader("cast_iron", "res://shaders/cast_iron.gdshader")
+		var al_mat := ShaderMaterial.new()
+		al_mat.shader = al_shader
+		al_mat.set_shader_parameter("iron_color", Vector3(0.18, 0.19, 0.17))  # dark charcoal powder coat
+		al_mat.set_shader_parameter("base_roughness", 0.55)
+		al_mat.set_shader_parameter("base_metallic", 0.40)
+		mat = al_mat
+		print("TrashCan: loaded CP trash can model (aluminum, weather-responsive)")
 	elif _loader._furn_glb_meshes.has("ParkFurn_TrashCan_A"):
 		mesh = _loader._furn_glb_meshes["ParkFurn_TrashCan_A"]
 		var iron_shader: Shader = _loader._get_shader("cast_iron", "res://shaders/cast_iron.gdshader")
