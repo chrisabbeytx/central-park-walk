@@ -154,10 +154,10 @@ void fragment() {
 	// Summer lawn: strong green — terrain IS the grass carpet, 3D blades add depth.
 	// The Great Lawn looks correct; push all grass surfaces to match.
 	float grass_lum = dot(grass_alb, vec3(0.299, 0.587, 0.114));
-	grass_alb = mix(vec3(grass_lum), grass_alb, 0.95);  // minimal desaturation
-	grass_alb.g *= 1.18;  // strong green push — Kentucky bluegrass in summer
-	grass_alb.r *= 0.85;  // cut red/golden warmth
-	grass_alb.b *= 0.92;  // slight blue reduction for natural green
+	grass_alb = mix(vec3(grass_lum), grass_alb, 0.90);  // slight desaturation — real grass isn't neon
+	grass_alb.g *= 1.08;  // moderate green push — bluegrass, not AstroTurf
+	grass_alb.r *= 0.90;  // reduce red warmth but keep some natural tan
+	grass_alb.b *= 0.88;  // reduce blue for earthy green, not teal
 
 	// Multi-scale grass color variation — real lawns are never uniform
 	// Scale 1: large patches (30-50m) — irrigation, drainage, soil differences

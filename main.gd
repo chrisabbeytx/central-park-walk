@@ -1091,20 +1091,20 @@ func _build_keyframes() -> void:
 		"saturation":     1.05,
 		"contrast":       1.06,
 		"brightness":     0.90,
-		"fog_color":      Color(0.55, 0.52, 0.48),
-		"fog_energy":     0.6,
-		"fog_scatter":    0.05,
-		"fog_density":    0.0002,
-		"fog_aerial":     0.10,
-		"fog_sky_affect": 0.30,
+		"fog_color":      Color(0.62, 0.60, 0.56),  # warmer haze — NYC summer atmosphere
+		"fog_energy":     0.7,
+		"fog_scatter":    0.08,
+		"fog_density":    0.0006,   # NYC always has atmospheric haze — distant buildings fade
+		"fog_aerial":     0.15,
+		"fog_sky_affect": 0.40,    # fog blends toward sky color at distance
 		"sun_energy":     0.90,
 		"sun_color":      Color(0.95, 0.92, 0.85),
 		"sun_pitch":      -55.0,
 		"sun_yaw":        -20.0,
 		"shadow_dist":    300.0,
 		"lamp_emission":  0.0,
-		"vol_fog_density":    0.0002,
-		"vol_fog_anisotropy": 0.50,
+		"vol_fog_density":    0.0004,  # volumetric depth — subtle haze scattering
+		"vol_fog_anisotropy": 0.55,
 		"cloud_coverage":     0.60,
 		"cloud_density":      0.55,
 		"cloud_color_top":    Color(0.95, 0.95, 0.93),
