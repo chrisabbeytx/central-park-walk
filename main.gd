@@ -1168,7 +1168,7 @@ func _build_keyframes() -> void:
 		"gnd_bottom":     Color(0.02, 0.015, 0.01),
 		"gnd_horizon":    Color(0.08, 0.06, 0.04),  # warm ground glow from city
 		"ambient_color":  Color(0.85, 0.65, 0.40),  # warm amber city glow — NYC sodium vapor spill
-		"ambient_energy": 0.15,   # NYC ambient — shapes visible but dark
+		"ambient_energy": 0.10,   # darker ambient — lets lamppost pools stand out more
 		"exposure":       0.92,   # darker overall — night IS dark even in NYC
 		"white":          6.0,
 		"glow_intensity": 0.45,   # restrained — only lampposts and windows bloom
@@ -1942,7 +1942,7 @@ func _setup_lamp_lights() -> void:
 		var light := SpotLight3D.new()
 		light.light_color = Color(1.0, 0.62, 0.22)  # warm sodium vapor — Kent Bloomer luminaire
 		light.light_energy = 0.0  # off until positioned
-		light.spot_range = 35.0   # wider pool — CP lampposts illuminate ~10m radius on ground
+		light.spot_range = 45.0   # wide pool — CP lampposts illuminate ~12m radius from 3.5m height
 		light.spot_angle = 75.0   # ~150° cone — directed downward from shade
 		light.spot_attenuation = 0.65  # soft quadratic-ish falloff for warm pool edges
 		light.shadow_enabled = false  # too expensive for 24 lights
@@ -1975,7 +1975,7 @@ func _update_lamp_lights() -> void:
 		if li < dists.size() and night_energy > 0.1:
 			var idx: int = dists[li][1]
 			_lamp_lights[li].global_position = _lamp_positions[idx]
-			_lamp_lights[li].light_energy = night_energy * 12.0
+			_lamp_lights[li].light_energy = night_energy * 22.0
 		else:
 			_lamp_lights[li].light_energy = 0.0
 
