@@ -167,7 +167,7 @@ func _build_water(water: Array) -> void:
 
 	var verts   := PackedVector3Array()
 	var normals := PackedVector3Array()
-	const WATER_CELL := 2.0  # grid cell size in metres — 2m for smooth shore edges (was 4m)
+	const WATER_CELL := 1.22  # grid cell size in metres — matches atlas grid (1.22m/cell)
 
 	for body in water:
 		var pts: Array = body["points"]

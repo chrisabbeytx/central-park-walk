@@ -105,14 +105,14 @@ func _build_furniture(bench_data: Array, lamppost_data: Array, paths: Array) -> 
 
 func _build_trash_cans(trash_data: Array, paths: Array) -> void:
 	## Trash receptacles from OSM data.
-	# Load CP-specific trash can (green wire basket)
+	# Landor/Landscape Forms aluminum recycling receptacle (2013)
 	var cp_tc_path := ProjectSettings.globalize_path("res://models/furniture/cp_trash_can.glb")
 	var cp_tc_meshes: Dictionary = _loader._load_glb_meshes(cp_tc_path)
 	var mesh: Mesh
-	var mat: Material = null
+	var mat: Material = null  # null → use embedded Aluminum material from GLB
 	if cp_tc_meshes.has("CP_TrashCan"):
 		mesh = cp_tc_meshes["CP_TrashCan"] as Mesh
-		print("TrashCan: loaded CP trash can model (green wire)")
+		print("TrashCan: loaded CP trash can model (aluminum)")
 	elif _loader._furn_glb_meshes.has("ParkFurn_TrashCan_A"):
 		mesh = _loader._furn_glb_meshes["ParkFurn_TrashCan_A"]
 		var iron_shader: Shader = _loader._get_shader("cast_iron", "res://shaders/cast_iron.gdshader")

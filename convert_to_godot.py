@@ -975,6 +975,32 @@ def main() -> None:
                 wb["water_type"] = wtype
             water_out.append(wb)
 
+    # Filter water bodies to park boundary (Overpass bbox catches rivers extending
+    # far outside — e.g. Harlem River at Z=-10471, West Channel at Z=+4029)
+    if boundary_pts:
+        bx_w = [float(p[0]) for p in boundary_pts]
+        bz_w = [float(p[1]) for p in boundary_pts]
+        bnd_w = len(boundary_pts)
+
+        def _centroid_in_boundary(pts_2d):
+            cx = sum(p[0] for p in pts_2d) / len(pts_2d)
+            cz = sum(p[1] for p in pts_2d) / len(pts_2d)
+            inside = False
+            j = bnd_w - 1
+            for i in range(bnd_w):
+                zi, zj = bz_w[i], bz_w[j]
+                if (zi > cz) != (zj > cz):
+                    if cx < bx_w[i] + (cz - zi) / (zj - zi) * (bx_w[j] - bx_w[i]):
+                        inside = not inside
+                j = i
+            return inside
+
+        before = len(water_out)
+        water_out = [w for w in water_out if _centroid_in_boundary(w["points"])]
+        removed = before - len(water_out)
+        if removed:
+            print(f"  Water: removed {removed} bodies outside park boundary")
+
     # --- Streams (linear waterways) ---
     streams_out = []
     for wid, tags in ways_tags.items():
