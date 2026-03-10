@@ -308,12 +308,13 @@ void fragment() {
 		vec3 p_alb = texture(path_alb_arr, vec3(puv, 0.0)).rgb;  // layer 0 = Asphalt
 		vec3 p_nrm = texture(path_nrm_arr, vec3(puv, 0.0)).rgb;
 		float p_rgh = clamp(texture(path_rgh_arr, vec3(puv, 0.0)).r + 0.05, 0.0, 1.0);
-		// NYC Parks asphalt: heavily worn, sun-bleached medium gray
-		// Base PBR texture is very dark in linear space — boost to match real worn paths
-		p_alb *= vec3(1.35, 1.30, 1.22);
-		// Subtle patchy wear — lighter in high-traffic center
+		// NYC Parks asphalt: heavily worn, sun-bleached warm medium gray
+		// PBR asphalt textures are ~0.08-0.12 in linear space; real sun-worn
+		// Central Park paths read ~0.25-0.35 — decades of UV bleaching + pedestrian polish
+		p_alb *= vec3(2.8, 2.6, 2.3);
+		// Subtle patchy wear — lighter in high-traffic center, darker at edges
 		float wear = fbm(world_pos.xz * 0.05, 2);
-		p_alb *= (0.92 + wear * 0.16);
+		p_alb *= (0.90 + wear * 0.20);
 		// Edge softening: blend with surrounding grass at path borders
 		// Sample atlas neighbors to detect path-grass boundary
 		float edge_n = texture(surface_atlas, splat_uv + vec2(0.0, -htexel * 2.0)).r * 255.0;
@@ -338,11 +339,12 @@ void fragment() {
 		vec3 p_nrm = texture(path_nrm_arr, vec3(puv, 3.0)).rgb;
 		float p_rgh = clamp(texture(path_rgh_arr, vec3(puv, 3.0)).r + 0.08, 0.0, 1.0);
 		// Compacted earth tone: warm tan-gray (packed gravel/decomposed granite)
-		// Boost from dark PBR base to match real sun-worn park gravel
-		p_alb *= vec3(1.25, 1.10, 0.92);
-		// Foot traffic variation
+		// PBR gravel textures are too dark — Central Park bridle paths and
+		// unpaved trails are light tan-gray decomposed granite
+		p_alb *= vec3(2.2, 1.9, 1.6);
+		// Foot traffic variation — center lighter from compaction
 		float wear = fbm(world_pos.xz * 0.04, 2);
-		p_alb *= (0.90 + wear * 0.20);
+		p_alb *= (0.88 + wear * 0.24);
 		// Edge softening (same neighbor sampling)
 		float edge_n = texture(surface_atlas, splat_uv + vec2(0.0, -htexel * 2.0)).r * 255.0;
 		float edge_s = texture(surface_atlas, splat_uv + vec2(0.0,  htexel * 2.0)).r * 255.0;
