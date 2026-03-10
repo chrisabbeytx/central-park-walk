@@ -29,11 +29,25 @@ void fragment() {
 	// Per-object variation: slight tint shift from repaint cycles
 	float obj_hash = hash2(floor(world_pos.xz * 0.03));
 	col *= (0.92 + obj_hash * 0.16);
+	// Some objects have green-black paint (traditional CP), others refreshed darker
+	float paint_age = fract(obj_hash * 7.3);
+	if (paint_age > 0.6) {
+		// Older paint: slightly green-tinged (oxidized dark green park paint)
+		col += vec3(-0.005, 0.008, -0.002);
+	}
 
-	// Micro-texture: brushed/cast surface imperfections
+	// Micro-texture: cast iron has a pebbly sand-cast surface
 	float surface = vnoise(world_pos.xz * 15.0 + world_pos.yy * 8.0);
-	col *= (0.95 + surface * 0.10);
-	rough += surface * 0.05;
+	float fine_cast = vnoise(world_pos.xz * 40.0 + world_pos.yy * 25.0);
+	col *= (0.95 + surface * 0.10 + fine_cast * 0.03);
+	rough += surface * 0.05 + fine_cast * 0.02;
+
+	// Casting seam lines: vertical ridges from mold halves
+	float seam_angle = obj_hash * 6.28;
+	float seam_u = world_pos.x * cos(seam_angle) + world_pos.z * sin(seam_angle);
+	float seam = smoothstep(0.015, 0.0, abs(fract(seam_u * 0.3) - 0.5));
+	col += vec3(0.02) * seam;
+	rough -= seam * 0.05;
 
 	// Paint chips and rust patina — accumulates at joints and bottom edges
 	float rust_seed = hash2(floor(world_pos.xz * 2.5 + world_pos.yy * 1.5));
@@ -48,8 +62,18 @@ void fragment() {
 		metal = mix(metal, 0.20, rust_mask * 0.2);
 	}
 
+	// Paint crazing: network of fine cracks in aged paint layer
+	float craze_noise = vnoise(world_pos.xz * 25.0 + world_pos.yy * 15.0);
+	float craze = smoothstep(0.6, 0.75, craze_noise) * paint_age * 0.08;
+	col *= (1.0 - craze);
+	// Under paint: bare gray iron shows through at worst paint damage
+	if (craze > 0.03) {
+		col = mix(col, vec3(0.20, 0.18, 0.16), (craze - 0.03) * 3.0);
+		metal = mix(metal, 0.55, (craze - 0.03) * 2.0);
+	}
+
 	ALBEDO = col;
-	ROUGHNESS = rough;
+	ROUGHNESS = clamp(rough, 0.0, 1.0);
 	METALLIC = metal;
 	SPECULAR = spec;
 
