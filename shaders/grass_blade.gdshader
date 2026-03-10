@@ -145,15 +145,18 @@ void fragment() {
 	col *= mix(1.0, 1.12, smoothstep(0.5, 1.0, blade_t));
 
 	// --- Seasonal colour modulation ---
+	// Seasonal ramps MUST match terrain.gdshader exactly to prevent grass tile grid
+	// being visible from seasonal color mismatch between blades and terrain
 	float spring_t = 1.0 - smoothstep(0.0, 1.0, season_t);
-	float autumn_t = smoothstep(2.0, 2.8, season_t) * (1.0 - smoothstep(3.2, 4.0, season_t));
-	float winter_t = smoothstep(3.0, 3.5, season_t);
+	float autumn_t = smoothstep(2.0, 2.6, season_t) * (1.0 - smoothstep(2.8, 3.5, season_t));
+	float winter_t = smoothstep(2.7, 3.1, season_t);  // match terrain's dormancy start
 
-	col = mix(col, col * vec3(1.15, 1.20, 0.70), spring_t * 0.5);   // spring: bright yellow-green
-	col = mix(col, col * vec3(1.30, 0.85, 0.45), autumn_t * 0.6);   // autumn: golden-brown
+	col = mix(col, col * vec3(1.1, 1.15, 0.75), spring_t * 0.6);    // spring: match terrain
+	col = mix(col, col * vec3(1.3, 0.85, 0.45), autumn_t * 0.7);    // autumn: match terrain's 0.7
+	// Winter dormancy: match terrain's flat dormant brown color
 	float lum = dot(col, vec3(0.299, 0.587, 0.114));
-	vec3 wint_col = mix(vec3(lum), col, 0.30) * vec3(0.85, 0.78, 0.55);
-	col = mix(col, wint_col, winter_t * 0.75);                       // winter: dormant brown
+	vec3 dormant_brown = vec3(0.12, 0.10, 0.06);  // match terrain shader's winter_grass target
+	col = mix(col, dormant_brown, winter_t);                          // winter: dormant brown
 
 	// --- Multi-scale colour variation (visible from aerial views) ---
 	// Real park grass has visible patches from soil, drainage, shade, species mix

@@ -1050,9 +1050,9 @@ func _build_keyframes() -> void:
 		"fog_color":      Color(0.50, 0.42, 0.34),   # subtle warm haze, not amber wash
 		"fog_energy":     0.45,
 		"fog_scatter":    0.18,
-		"fog_density":    0.0003,
-		"fog_aerial":     0.12,
-		"fog_sky_affect": 0.25,
+		"fog_density":    0.0005,   # golden hour haze — buildings fade into warm atmosphere
+		"fog_aerial":     0.22,     # atmospheric depth
+		"fog_sky_affect": 0.30,
 		"sun_energy":     0.90,
 		"sun_color":      Color(1.0, 0.75, 0.50),    # warm but not deep amber
 		"sun_pitch":      -12.0,
@@ -1094,9 +1094,9 @@ func _build_keyframes() -> void:
 		"fog_color":      Color(0.62, 0.60, 0.56),  # warmer haze — NYC summer atmosphere
 		"fog_energy":     0.5,
 		"fog_scatter":    0.06,
-		"fog_density":    0.0002,   # NYC has haze but keep it subtle — clarity first
-		"fog_aerial":     0.08,
-		"fog_sky_affect": 0.25,
+		"fog_density":    0.0004,   # NYC has noticeable daytime haze — buildings fade at distance
+		"fog_aerial":     0.25,     # atmospheric scattering: blue haze on distant objects
+		"fog_sky_affect": 0.30,
 		"sun_energy":     0.95,
 		"sun_color":      Color(0.95, 0.92, 0.85),
 		"sun_pitch":      -55.0,
@@ -1140,9 +1140,9 @@ func _build_keyframes() -> void:
 		"fog_color":      Color(0.55, 0.45, 0.35),    # neutral warm haze, not amber blanket
 		"fog_energy":     0.45,
 		"fog_scatter":    0.18,
-		"fog_density":    0.0003,
-		"fog_aerial":     0.12,
-		"fog_sky_affect": 0.25,
+		"fog_density":    0.0005,   # golden hour atmospheric haze
+		"fog_aerial":     0.22,     # atmospheric depth
+		"fog_sky_affect": 0.30,
 		"sun_energy":     0.95,    # strong low sun but not overblown
 		"sun_color":      Color(1.0, 0.72, 0.45),     # warm golden, not deep amber
 		"sun_pitch":      -12.0,   # lower sun angle for longer shadows
