@@ -1,25 +1,28 @@
-"""Build grass patch models for Central Park Walk.
+"""Build grass tile models for Central Park Walk — 10 area-specific types.
 
-Data-driven grass based on real Central Park vegetation zones:
-  1. Maintained lawn (Kentucky bluegrass) — Sheep Meadow, Great Lawn, etc.
-     Short (6-10cm), dense, bright green. Largest footprint (~0.85m radius)
-     so patches overlap at 1.83m spacing to carpet the ground.
-  2. Woodland floor — North Woods, Ramble, Hallett understory.
-     Sparse, shade-adapted, darker green. Smaller footprint (~0.45m radius).
-  3. Wild meadow — Nature reserve edges, unmowed areas.
-     Tall (20-35cm), flowing, varied green with golden tips.
+Each tile is a circular area (~0.5-0.9m radius) densely packed with 3D
+grass blades distributed throughout. When tiled at stride 2-3, adjacent
+tiles overlap to carpet the ground. NOT clumps — blades grow across the
+entire tile area like real turf.
 
-Colors from PIL analysis of Wikimedia Commons Central Park reference photos:
-  - Sheep Meadow: bright green Kentucky bluegrass
-  - North Woods/Ramble: darker shade-adapted understory
-  - Grass texture close-up: blade color gradients
+Types based on real Central Park vegetation data + Wikimedia reference photos:
 
-Each blade is a wide curved mesh strip radiating outward from clump center.
-Vertex colors provide albedo (no texture needed — shader uses COLOR.rgb).
+  0. sheep_meadow    — Bright Kentucky bluegrass, 5-10cm, very dense
+  1. great_lawn      — Rich green turf, 6-11cm, dense
+  2. north_meadow    — Open meadow, 8-14cm, moderate wild character
+  3. formal_garden   — Manicured lawn, 4-8cm, very uniform
+  4. sports_turf     — Short dense field grass, 3-6cm
+  5. north_woods     — Sparse shade understory, 3-8cm, very dark
+  6. ramble          — Moderate woodland floor, 4-10cm, dark green
+  7. waterside       — Near water, taller/darker, 8-16cm
+  8. wild_meadow     — Unmowed nature reserve, 18-35cm, golden tips
+  9. open_lawn       — Default maintained grass, 6-12cm, moderate green
 
-Exports to models/vegetation/Grass_Patch_Lawn.glb
-                              Grass_Patch_Woodland.glb
-                              Grass_Patch_Meadow.glb
+Blade design: 2-segment curved strips (6 verts per blade) distributed
+randomly across the tile radius. Each blade has its own random rotation
+and slight arch. Vertex colors provide albedo (no texture).
+
+Exports to models/vegetation/Grass_Tile_*.glb
 """
 
 import bpy
@@ -29,19 +32,7 @@ import random
 import os
 
 # ---------------------------------------------------------------------------
-# Clear scene
-# ---------------------------------------------------------------------------
-bpy.ops.object.select_all(action='SELECT')
-bpy.ops.object.delete(use_global=False)
-for block in bpy.data.meshes:
-    if block.users == 0:
-        bpy.data.meshes.remove(block)
-for block in bpy.data.materials:
-    if block.users == 0:
-        bpy.data.materials.remove(block)
-
-# ---------------------------------------------------------------------------
-# Output directory
+# Setup
 # ---------------------------------------------------------------------------
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(SCRIPT_DIR)
@@ -50,328 +41,303 @@ os.makedirs(OUT_DIR, exist_ok=True)
 
 
 # ---------------------------------------------------------------------------
-# Grass blade builder — wide arching blade
+# Grass blade — self-contained at a position with random direction
 # ---------------------------------------------------------------------------
 def make_blade(bm, color_layer, uv_layer,
-               bx, bz, height, width, rot, arch_strength,
+               bx, bz, height, width, rot, arch,
                segments, base_rgb, tip_rgb):
-    """Create one wide arching grass blade as a curved mesh strip.
+    """Create one grass blade as a curved strip at position (bx, bz).
 
-    Blades arch outward from center — arch_strength controls horizontal reach.
-    Height follows parabolic arc: rises then droops toward tip.
+    Unlike the old clump approach, blades don't radiate from center.
+    Each blade has its own position and random direction.
     """
-    out_dx = math.cos(rot)
-    out_dz = math.sin(rot)
-    perp_dx = -math.sin(rot)
-    perp_dz = math.cos(rot)
+    dx = math.cos(rot)
+    dz = math.sin(rot)
+    px = -math.sin(rot)
+    pz = math.cos(rot)
 
     vert_pairs = []
     for si in range(segments + 1):
         t = si / segments
-        # Parabolic arc: rises then curves over
-        seg_h = height * (t - 0.3 * t * t)
-        # Horizontal extension: blade arches outward
-        extend = arch_strength * t * t
-        # Width tapers from base to tip
-        seg_w = width * (1.0 - t * 0.7)
+        seg_h = height * (t - 0.25 * t * t)
+        extend = arch * t * t
+        seg_w = width * (1.0 - t * 0.65)
         hw = seg_w * 0.5
 
-        cx = bx + out_dx * extend
-        cz = bz + out_dz * extend
-
-        lx = cx + perp_dx * hw
-        lz = cz + perp_dz * hw
-        rx = cx - perp_dx * hw
-        rz = cz - perp_dz * hw
+        cx = bx + dx * extend
+        cz = bz + dz * extend
 
         r = base_rgb[0] + (tip_rgb[0] - base_rgb[0]) * t
         g = base_rgb[1] + (tip_rgb[1] - base_rgb[1]) * t
         b = base_rgb[2] + (tip_rgb[2] - base_rgb[2]) * t
 
-        vl = bm.verts.new((lx, seg_h, lz))
-        vr = bm.verts.new((rx, seg_h, rz))
+        vl = bm.verts.new((cx + px * hw, seg_h, cz + pz * hw))
+        vr = bm.verts.new((cx - px * hw, seg_h, cz - pz * hw))
         vert_pairs.append((vl, vr, (r, g, b, 1.0), t))
 
     for si in range(segments):
-        vl0, vr0, col0, t0 = vert_pairs[si]
-        vl1, vr1, col1, t1 = vert_pairs[si + 1]
-
+        vl0, vr0, c0, t0 = vert_pairs[si]
+        vl1, vr1, c1, t1 = vert_pairs[si + 1]
         try:
             face = bm.faces.new([vl0, vr0, vr1, vl1])
         except ValueError:
             continue
-
         for loop in face.loops:
             if loop.vert == vl0:
-                loop[color_layer] = col0
+                loop[color_layer] = c0
                 loop[uv_layer].uv = (0.0, t0)
             elif loop.vert == vr0:
-                loop[color_layer] = col0
+                loop[color_layer] = c0
                 loop[uv_layer].uv = (1.0, t0)
             elif loop.vert == vr1:
-                loop[color_layer] = col1
+                loop[color_layer] = c1
                 loop[uv_layer].uv = (1.0, t1)
             elif loop.vert == vl1:
-                loop[color_layer] = col1
+                loop[color_layer] = c1
                 loop[uv_layer].uv = (0.0, t1)
 
 
 # ---------------------------------------------------------------------------
-# Lawn patch — Kentucky bluegrass (Sheep Meadow, Great Lawn, etc.)
+# Distributed grass tile builder
 # ---------------------------------------------------------------------------
-def build_lawn_patch(seed=42):
-    """Maintained lawn — Kentucky bluegrass, mowed 5-10cm.
+def build_grass_tile(cfg, seed):
+    """Build a circular grass tile with blades distributed throughout.
 
-    Large footprint (~0.85m radius) so patches overlap at 1.83m spacing.
-    Two rings of blades:
-      Inner ring (12 blades): moderate arch, taller
-      Outer ring (22 blades): strong arch, ground-hugging, fills carpet
-    Total: 34 blades.
-
-    Colors from Sheep Meadow reference photos:
-      Base: dark rich green (0.12, 0.28, 0.04)
-      Tips: bright yellow-green (0.38, 0.55, 0.22)
+    Blades are randomly placed within the tile radius, each with its
+    own random rotation and arch direction. This creates uniform ground
+    cover, not a single clump.
     """
     rng = random.Random(seed)
     bm = bmesh.new()
     color_layer = bm.loops.layers.color.new("Color")
     uv_layer = bm.loops.layers.uv.new("UV")
 
-    # --- Inner ring: 12 taller blades near center ---
-    INNER_COUNT = 12
-    for i in range(INNER_COUNT):
-        base_angle = (i / INNER_COUNT) * 2 * math.pi
-        rot = base_angle + rng.uniform(-0.35, 0.35)
+    radius = cfg["radius"]
+    blade_count = cfg["blade_count"]
+    h_lo, h_hi = cfg["height_range"]
+    w_lo, w_hi = cfg["width_range"]
+    a_lo, a_hi = cfg["arch_range"]
+    segments = cfg.get("segments", 2)
+    base_rgb = cfg["base_rgb"]
+    tip_rgb = cfg["tip_rgb"]
+    color_var = cfg.get("color_var", 0.04)
 
-        offset_r = rng.uniform(0.0, 0.10)
-        bx = math.cos(rot) * offset_r
-        bz = math.sin(rot) * offset_r
+    for _ in range(blade_count):
+        # Random position within tile radius (uniform disk sampling)
+        r = radius * math.sqrt(rng.random())
+        theta = rng.random() * 2 * math.pi
+        bx = r * math.cos(theta)
+        bz = r * math.sin(theta)
 
-        h = rng.uniform(0.07, 0.12)       # 7-12cm
-        w = rng.uniform(0.025, 0.040)     # 2.5-4cm wide
-        arch = rng.uniform(0.20, 0.38)    # moderate outward reach
+        # Random blade direction (NOT radiating from center)
+        rot = rng.random() * 2 * math.pi
 
-        cv = rng.uniform(-0.03, 0.03)
-        base_rgb = (
-            max(0.06, 0.12 + cv),
-            max(0.15, 0.28 + cv * 0.7),
-            max(0.02, 0.04 + cv * 0.4),
+        h = rng.uniform(h_lo, h_hi)
+        w = rng.uniform(w_lo, w_hi)
+        arch = rng.uniform(a_lo, a_hi)
+
+        # Color variation per blade
+        cv = rng.uniform(-color_var, color_var)
+        b_rgb = (
+            max(0.01, base_rgb[0] + cv * 0.8),
+            max(0.01, base_rgb[1] + cv * 0.6),
+            max(0.01, base_rgb[2] + cv * 0.4),
         )
-        tip_rgb = (
-            min(0.55, 0.38 + cv),
-            min(0.70, 0.55 + cv * 0.6),
-            min(0.35, 0.22 + cv * 0.3),
-        )
-
-        make_blade(bm, color_layer, uv_layer,
-                   bx, bz, h, w, rot, arch,
-                   segments=3, base_rgb=base_rgb, tip_rgb=tip_rgb)
-
-    # --- Outer ring: 22 ground-hugging blades for carpet coverage ---
-    OUTER_COUNT = 22
-    for i in range(OUTER_COUNT):
-        base_angle = (i / OUTER_COUNT) * 2 * math.pi
-        rot = base_angle + rng.uniform(-0.25, 0.25)
-
-        offset_r = rng.uniform(0.15, 0.35)
-        bx = math.cos(rot) * offset_r
-        bz = math.sin(rot) * offset_r
-
-        h = rng.uniform(0.05, 0.09)       # shorter, ground-hugging
-        w = rng.uniform(0.030, 0.050)     # wider blades for coverage
-        arch = rng.uniform(0.30, 0.55)    # strong outward arch → tips at 0.65-0.90m
-
-        cv = rng.uniform(-0.04, 0.04)
-        base_rgb = (
-            max(0.06, 0.14 + cv),
-            max(0.15, 0.30 + cv * 0.7),
-            max(0.02, 0.05 + cv * 0.4),
-        )
-        tip_rgb = (
-            min(0.60, 0.42 + cv),
-            min(0.72, 0.58 + cv * 0.6),
-            min(0.38, 0.25 + cv * 0.3),
+        t_rgb = (
+            min(0.95, tip_rgb[0] + cv * 0.6),
+            min(0.95, tip_rgb[1] + cv * 0.5),
+            min(0.95, tip_rgb[2] + cv * 0.3),
         )
 
         make_blade(bm, color_layer, uv_layer,
                    bx, bz, h, w, rot, arch,
-                   segments=3, base_rgb=base_rgb, tip_rgb=tip_rgb)
+                   segments, b_rgb, t_rgb)
 
     return bm
 
 
 # ---------------------------------------------------------------------------
-# Woodland floor patch — shade-adapted understory
+# 10 grass types — colors from Wikimedia CP reference photos
 # ---------------------------------------------------------------------------
-def build_woodland_patch(seed=137):
-    """Woodland understory — North Woods, Ramble, Hallett.
+# Color references:
+#   Sheep Meadow: bright bluegrass (PIL analysis: avg 0.42,0.46,0.30)
+#   North Woods: dark canopy floor
+#   Grass texture close-up: blade gradients (dark base → bright tip)
+#   Grass + clover: varied lawn (avg 0.46,0.60,0.28)
+#   Great Lawn: maintained rich turf
+#   Water edges: deeper green, moisture influence
 
-    Sparse, shade-adapted, darker green. Smaller footprint (~0.45m radius).
-    Under heavy canopy (density_mult 1.0-1.4), grass is thin and patchy.
-    12 blades total — sparse is correct for woodland floor.
-
-    Colors darker than lawn — reduced light under canopy:
-      Base: very dark green (0.06, 0.18, 0.02)
-      Tips: muted green (0.20, 0.35, 0.12)
-    """
-    rng = random.Random(seed)
-    bm = bmesh.new()
-    color_layer = bm.loops.layers.color.new("Color")
-    uv_layer = bm.loops.layers.uv.new("UV")
-
-    BLADE_COUNT = 12
-
-    for i in range(BLADE_COUNT):
-        base_angle = (i / BLADE_COUNT) * 2 * math.pi
-        rot = base_angle + rng.uniform(-0.5, 0.5)
-
-        offset_r = rng.uniform(0.0, 0.12)
-        bx = math.cos(rot) * offset_r
-        bz = math.sin(rot) * offset_r
-
-        h = rng.uniform(0.04, 0.10)       # 4-10cm
-        w = rng.uniform(0.020, 0.035)     # 2-3.5cm wide
-        arch = rng.uniform(0.12, 0.30)    # moderate reach
-
-        cv = rng.uniform(-0.04, 0.04)
-        # Darker colors — reduced light under canopy
-        base_rgb = (
-            max(0.03, 0.06 + cv),
-            max(0.10, 0.18 + cv * 0.6),
-            max(0.01, 0.02 + cv * 0.3),
-        )
-        tip_rgb = (
-            min(0.35, 0.20 + cv),
-            min(0.48, 0.35 + cv * 0.5),
-            min(0.22, 0.12 + cv * 0.3),
-        )
-
-        make_blade(bm, color_layer, uv_layer,
-                   bx, bz, h, w, rot, arch,
-                   segments=3, base_rgb=base_rgb, tip_rgb=tip_rgb)
-
-    return bm
+GRASS_TYPES = [
+    # 0: Sheep Meadow — iconic bright Kentucky bluegrass
+    {
+        "name": "Grass_Tile_SheepMeadow",
+        "blade_count": 150,
+        "radius": 0.85,
+        "height_range": (0.05, 0.10),
+        "width_range": (0.018, 0.035),
+        "arch_range": (0.03, 0.08),
+        "segments": 2,
+        "base_rgb": (0.10, 0.28, 0.03),
+        "tip_rgb": (0.38, 0.58, 0.22),
+        "color_var": 0.04,
+        "seed": 42,
+    },
+    # 1: Great Lawn — rich green maintained turf
+    {
+        "name": "Grass_Tile_GreatLawn",
+        "blade_count": 140,
+        "radius": 0.85,
+        "height_range": (0.06, 0.11),
+        "width_range": (0.018, 0.032),
+        "arch_range": (0.03, 0.09),
+        "segments": 2,
+        "base_rgb": (0.08, 0.25, 0.03),
+        "tip_rgb": (0.32, 0.52, 0.18),
+        "color_var": 0.05,
+        "seed": 73,
+    },
+    # 2: North Meadow — open meadow, slightly wilder
+    {
+        "name": "Grass_Tile_NorthMeadow",
+        "blade_count": 120,
+        "radius": 0.80,
+        "height_range": (0.08, 0.14),
+        "width_range": (0.020, 0.036),
+        "arch_range": (0.04, 0.12),
+        "segments": 2,
+        "base_rgb": (0.09, 0.24, 0.03),
+        "tip_rgb": (0.36, 0.50, 0.20),
+        "color_var": 0.06,
+        "seed": 109,
+    },
+    # 3: Formal garden — Conservatory Garden, Shakespeare Garden
+    {
+        "name": "Grass_Tile_FormalGarden",
+        "blade_count": 130,
+        "radius": 0.80,
+        "height_range": (0.04, 0.08),
+        "width_range": (0.016, 0.028),
+        "arch_range": (0.02, 0.05),
+        "segments": 2,
+        "base_rgb": (0.10, 0.26, 0.04),
+        "tip_rgb": (0.30, 0.48, 0.18),
+        "color_var": 0.03,
+        "seed": 151,
+    },
+    # 4: Sports field — tennis, basketball, baseball turf
+    {
+        "name": "Grass_Tile_SportsTurf",
+        "blade_count": 160,
+        "radius": 0.85,
+        "height_range": (0.03, 0.06),
+        "width_range": (0.015, 0.025),
+        "arch_range": (0.01, 0.04),
+        "segments": 2,
+        "base_rgb": (0.12, 0.30, 0.04),
+        "tip_rgb": (0.35, 0.55, 0.20),
+        "color_var": 0.02,
+        "seed": 197,
+    },
+    # 5: North Woods understory — very sparse, dark shade
+    {
+        "name": "Grass_Tile_NorthWoods",
+        "blade_count": 30,
+        "radius": 0.45,
+        "height_range": (0.03, 0.08),
+        "width_range": (0.015, 0.030),
+        "arch_range": (0.02, 0.06),
+        "segments": 2,
+        "base_rgb": (0.04, 0.14, 0.02),
+        "tip_rgb": (0.15, 0.30, 0.08),
+        "color_var": 0.05,
+        "seed": 233,
+    },
+    # 6: Ramble / Dene — moderate woodland floor
+    {
+        "name": "Grass_Tile_Ramble",
+        "blade_count": 50,
+        "radius": 0.50,
+        "height_range": (0.04, 0.10),
+        "width_range": (0.016, 0.032),
+        "arch_range": (0.02, 0.07),
+        "segments": 2,
+        "base_rgb": (0.05, 0.16, 0.02),
+        "tip_rgb": (0.20, 0.36, 0.12),
+        "color_var": 0.05,
+        "seed": 277,
+    },
+    # 7: Waterside — near lakes/ponds, taller moisture-loving
+    {
+        "name": "Grass_Tile_Waterside",
+        "blade_count": 80,
+        "radius": 0.70,
+        "height_range": (0.08, 0.16),
+        "width_range": (0.020, 0.038),
+        "arch_range": (0.04, 0.12),
+        "segments": 2,
+        "base_rgb": (0.06, 0.20, 0.03),
+        "tip_rgb": (0.25, 0.45, 0.15),
+        "color_var": 0.05,
+        "seed": 313,
+    },
+    # 8: Wild meadow — nature reserve, tall unmowed
+    {
+        "name": "Grass_Tile_WildMeadow",
+        "blade_count": 60,
+        "radius": 0.70,
+        "height_range": (0.18, 0.35),
+        "width_range": (0.018, 0.032),
+        "arch_range": (0.06, 0.18),
+        "segments": 3,
+        "base_rgb": (0.06, 0.20, 0.02),
+        "tip_rgb": (0.40, 0.42, 0.14),
+        "color_var": 0.06,
+        "seed": 359,
+    },
+    # 9: Open lawn — default maintained grass for unzoned areas
+    {
+        "name": "Grass_Tile_OpenLawn",
+        "blade_count": 130,
+        "radius": 0.80,
+        "height_range": (0.06, 0.12),
+        "width_range": (0.018, 0.034),
+        "arch_range": (0.03, 0.09),
+        "segments": 2,
+        "base_rgb": (0.09, 0.26, 0.03),
+        "tip_rgb": (0.34, 0.54, 0.20),
+        "color_var": 0.05,
+        "seed": 401,
+    },
+]
 
 
 # ---------------------------------------------------------------------------
-# Wild meadow patch — nature reserve / unmowed areas
-# ---------------------------------------------------------------------------
-def build_meadow_patch(seed=271):
-    """Wild meadow — nature reserves, unmowed edges.
-
-    Tall flowing grass (20-35cm), dramatic arch, darker green with golden tips.
-    Two rings for coverage (~0.7m radius).
-
-    Colors from North Meadow / grass texture reference photos:
-      Base: deep green (0.08, 0.22, 0.02)
-      Tips: golden-green (0.40, 0.45, 0.15) — seed heads
-    """
-    rng = random.Random(seed)
-    bm = bmesh.new()
-    color_layer = bm.loops.layers.color.new("Color")
-    uv_layer = bm.loops.layers.uv.new("UV")
-
-    # Inner ring: 10 tall blades
-    INNER_COUNT = 10
-    for i in range(INNER_COUNT):
-        base_angle = (i / INNER_COUNT) * 2 * math.pi
-        rot = base_angle + rng.uniform(-0.40, 0.40)
-
-        offset_r = rng.uniform(0.0, 0.08)
-        bx = math.cos(rot) * offset_r
-        bz = math.sin(rot) * offset_r
-
-        h = rng.uniform(0.22, 0.38)       # tall
-        w = rng.uniform(0.022, 0.035)     # moderate width
-        arch = rng.uniform(0.20, 0.40)    # strong arch
-
-        cv = rng.uniform(-0.05, 0.05)
-        base_rgb = (
-            max(0.04, 0.08 + cv),
-            max(0.12, 0.22 + cv * 0.6),
-            max(0.01, 0.02 + cv * 0.3),
-        )
-        # Golden-green tips (seed heads)
-        tip_rgb = (
-            min(0.55, 0.40 + cv),
-            min(0.58, 0.45 + cv * 0.5),
-            min(0.25, 0.15 + cv * 0.3),
-        )
-
-        make_blade(bm, color_layer, uv_layer,
-                   bx, bz, h, w, rot, arch,
-                   segments=4, base_rgb=base_rgb, tip_rgb=tip_rgb)
-
-    # Outer ring: 14 medium blades
-    OUTER_COUNT = 14
-    for i in range(OUTER_COUNT):
-        base_angle = (i / OUTER_COUNT) * 2 * math.pi
-        rot = base_angle + rng.uniform(-0.30, 0.30)
-
-        offset_r = rng.uniform(0.10, 0.25)
-        bx = math.cos(rot) * offset_r
-        bz = math.sin(rot) * offset_r
-
-        h = rng.uniform(0.15, 0.30)
-        w = rng.uniform(0.025, 0.042)     # wider for coverage
-        arch = rng.uniform(0.25, 0.50)
-
-        cv = rng.uniform(-0.05, 0.05)
-        base_rgb = (
-            max(0.04, 0.10 + cv),
-            max(0.12, 0.24 + cv * 0.6),
-            max(0.01, 0.03 + cv * 0.3),
-        )
-        tip_rgb = (
-            min(0.55, 0.38 + cv),
-            min(0.58, 0.42 + cv * 0.5),
-            min(0.25, 0.14 + cv * 0.3),
-        )
-
-        make_blade(bm, color_layer, uv_layer,
-                   bx, bz, h, w, rot, arch,
-                   segments=4, base_rgb=base_rgb, tip_rgb=tip_rgb)
-
-    return bm
-
-
-# ---------------------------------------------------------------------------
-# Material (vertex-color based for GLTF export)
+# Material & export
 # ---------------------------------------------------------------------------
 def make_grass_material(name):
     mat = bpy.data.materials.new(name=name)
     mat.use_nodes = True
     mat.use_backface_culling = False
-
     tree = mat.node_tree
     nodes = tree.nodes
     links = tree.links
-
     for n in nodes:
         nodes.remove(n)
-
     out = nodes.new('ShaderNodeOutputMaterial')
     out.location = (400, 0)
-
     bsdf = nodes.new('ShaderNodeBsdfPrincipled')
     bsdf.location = (100, 0)
     bsdf.inputs['Roughness'].default_value = 0.85
     bsdf.inputs['Specular'].default_value = 0.06
-    bsdf.inputs['Metallic'].default_value = 0.0
     links.new(bsdf.outputs['BSDF'], out.inputs['Surface'])
-
     vcol = nodes.new('ShaderNodeVertexColor')
     vcol.location = (-200, 0)
     vcol.layer_name = "Color"
     links.new(vcol.outputs['Color'], bsdf.inputs['Base Color'])
-
     return mat
 
 
-# ---------------------------------------------------------------------------
-# Export
-# ---------------------------------------------------------------------------
-def export_patch(bm, name, material):
+def export_tile(bm, name, material):
     mesh = bpy.data.meshes.new(name)
     bm.to_mesh(mesh)
     bm.free()
@@ -396,30 +362,32 @@ def export_patch(bm, name, material):
 
     vc = len(mesh.vertices)
     fc = len(mesh.polygons)
-    print(f"  Exported {name}: {vc} verts, {fc} faces -> {filepath}")
-
+    print(f"  {name}: {vc} verts, {fc} faces")
     bpy.ops.object.delete(use_global=False)
 
 
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+bpy.ops.object.select_all(action='SELECT')
+bpy.ops.object.delete(use_global=False)
+for block in bpy.data.meshes:
+    if block.users == 0:
+        bpy.data.meshes.remove(block)
+
 print("=" * 60)
-print("Building data-driven grass patch models")
+print("Building 10 grass tile models (area-specific, distributed)")
 print("=" * 60)
 
 mat = make_grass_material("GrassBlade")
 
-print("\n[1/3] Maintained lawn (34 blades, 5-12cm, ~0.85m radius)...")
-bm_lawn = build_lawn_patch(seed=42)
-export_patch(bm_lawn, "Grass_Patch_Lawn", mat)
+for i, cfg in enumerate(GRASS_TYPES):
+    name = cfg["name"]
+    seed = cfg["seed"]
+    blades = cfg["blade_count"]
+    print(f"\n[{i+1}/{len(GRASS_TYPES)}] {name} ({blades} blades, r={cfg['radius']}m)...")
 
-print("\n[2/3] Woodland floor (12 blades, 4-10cm, ~0.45m radius)...")
-bm_woodland = build_woodland_patch(seed=137)
-export_patch(bm_woodland, "Grass_Patch_Woodland", mat)
+    bm = build_grass_tile(cfg, seed)
+    export_tile(bm, name, mat)
 
-print("\n[3/3] Wild meadow (24 blades, 15-38cm, ~0.7m radius)...")
-bm_meadow = build_meadow_patch(seed=271)
-export_patch(bm_meadow, "Grass_Patch_Meadow", mat)
-
-print("\nDone.")
+print(f"\nDone. {len(GRASS_TYPES)} grass tile models exported.")

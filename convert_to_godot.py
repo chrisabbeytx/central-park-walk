@@ -2890,31 +2890,56 @@ def prebake_grass_instances(landuse_zones):
     cell_m = WORLD_SIZE / RES
 
     # Zone → grass type and stride
-    # Skip zones: playground(4), dog_park(6), pool(8), track(9), water(12), shore(13)
-    SKIP_ZONES = {4, 6, 8, 9, 12, 13}
+    # 10 grass tile types matching Blender models (Grass_Tile_*.glb):
+    #   0: SheepMeadow   — bright Kentucky bluegrass, 150 blades
+    #   1: GreatLawn     — rich green turf, 140 blades
+    #   2: NorthMeadow   — open meadow, slightly wilder, 120 blades
+    #   3: FormalGarden   — manicured, 130 blades
+    #   4: SportsTurf    — short dense field grass, 160 blades
+    #   5: NorthWoods    — sparse shade understory, 30 blades
+    #   6: Ramble        — moderate woodland floor, 50 blades
+    #   7: Waterside     — near water, taller, 80 blades
+    #   8: WildMeadow    — unmowed nature reserve, 60 blades
+    #   9: OpenLawn      — default maintained grass, 130 blades
+
+    SKIP_ZONES = {4, 6, 8, 9, 12}  # playground, dog_park, pool, track, water
+
+    # Zone → (default grass_type, stride)
     ZONE_CONFIG = {
-        # zone_id: (grass_type, stride)
-        0:  (0, 3),   # unzoned → lawn, moderate density
-        1:  (0, 3),   # garden → lawn
-        2:  (0, 3),   # grass → lawn (Sheep Meadow, Great Lawn, etc.)
-        3:  (0, 3),   # pitch → lawn (sports turf)
-        5:  (2, 4),   # nature_reserve → wild meadow
-        7:  (0, 3),   # sports → lawn
-        10: (1, 6),   # wood → woodland floor, sparse
-        11: (1, 6),   # forest → woodland floor, sparse
+        0:  (9, 3),   # unzoned → open_lawn (refined by Z-range below)
+        1:  (3, 3),   # garden → formal_garden
+        2:  (0, 2),   # grass → sheep_meadow default (refined by Z-range)
+        3:  (4, 2),   # pitch → sports_turf
+        5:  (8, 4),   # nature_reserve → wild_meadow
+        7:  (4, 2),   # sports → sports_turf
+        10: (5, 6),   # wood → north_woods
+        11: (5, 6),   # forest → north_woods
+        13: (7, 3),   # shore → waterside
     }
 
-    # Woodland detection for unzoned (zone 0) cells.
-    # OSM natural=wood polygons aren't in the landuse map, so use foliage
-    # zone Z-ranges from Conservancy data to classify woodland understory.
-    # These match the 12 ecological zones in _foliage_zones.
-    # Dense canopy zones (density_mult >= 1.0) → woodland floor (sparse grass).
-    WOODLAND_Z_RANGES = [
-        (-1800, -1125),  # North Woods (density 1.3)
-        (-1650, -1350),  # Ravine/The Loch (density 1.1)
-        (-750, -375),    # The Ramble (density 1.0)
-        (-375, -150),    # The Dene (density 0.9 — borderline, include)
-        (75, 375),       # Hallett Nature Sanctuary (density 1.4)
+    # Location-specific type overrides for zone 0 (unzoned) cells.
+    # First entries have HIGHEST priority (applied last in reversed loop).
+    # Based on Conservancy foliage zone data + real park geography.
+    #
+    # Note: Great Lawn, North Meadow etc. are zone 0 in OSM, not zone 2.
+    # Zone 2 (grass) in OSM mainly covers Sheep Meadow area + north lawns.
+    ZONE0_Z_OVERRIDES = [
+        # --- Named open lawns (higher priority than woodland) ---
+        # Great Lawn: large open turf, 80th-85th Streets
+        ((-975, -750), 1, 2),     # great_lawn, stride 2
+        # North Meadow: open meadow, 97th-102nd Streets
+        ((-1200, -975), 2, 3),    # north_meadow, stride 3
+        # --- Woodland zones (lower priority) ---
+        # North Woods: dense successional canopy → very sparse floor
+        ((-1800, -1125), 5, 7),   # north_woods, stride 7
+        # Ravine / The Loch: wet understory
+        ((-1650, -1350), 5, 7),   # north_woods variant
+        # Reservoir woodland strips
+        ((-1125, -750), 6, 5),    # ramble, stride 5
+        # The Ramble + The Dene: managed woodland
+        ((-750, -150), 6, 5),     # ramble, stride 5
+        # Hallett Nature Sanctuary: densest canopy
+        ((75, 375), 5, 8),        # north_woods, stride 8 (very sparse)
     ]
 
     print("Pre-baking grass instances (zone-aware density)...")
@@ -2938,60 +2963,79 @@ def prebake_grass_instances(landuse_zones):
     landuse_img = Image.open(landuse_path).convert('L')
     landuse_arr = np.array(landuse_img, dtype=np.uint8)
 
+    # Vectorized prebake: compute type+stride grid, then sample per stride.
+    # This avoids the BASE_STRIDE sub-sampling bug where stride-3 zones
+    # scanned at stride-2 base effectively become stride-6.
+
+    # Step 1: Build per-cell type and stride grids
+    type_grid = np.full((RES, RES), 255, dtype=np.uint8)  # 255 = skip
+    stride_grid = np.zeros((RES, RES), dtype=np.uint8)
+    grass_mask = (surface == 1) & ((occupancy & 0x1F) == 0)
+
+    # Apply base zone config
+    for zone_id, (gtype, stride) in ZONE_CONFIG.items():
+        zmask = grass_mask & (landuse_arr == zone_id)
+        type_grid[zmask] = gtype
+        stride_grid[zmask] = stride
+
+    # Skip zones
+    for zone_id in SKIP_ZONES:
+        zmask = landuse_arr == zone_id
+        type_grid[zmask] = 255
+
+    # Step 2: Apply Z-range overrides (later overrides have lower priority)
+    gz_world = np.arange(RES, dtype=np.float32) * cell_m - HALF
+
+    # Zone 0 overrides (apply in reverse so earlier ones take precedence)
+    zone0_base = (landuse_arr == 0) & grass_mask
+    for (z_lo, z_hi), gtype, stride in reversed(ZONE0_Z_OVERRIDES):
+        row_mask = (gz_world >= z_lo) & (gz_world <= z_hi)
+        z_mask = zone0_base & row_mask[:, None]
+        type_grid[z_mask] = gtype
+        stride_grid[z_mask] = stride
+
+    # Zone 2 stays as sheep_meadow (type 0, stride 2) everywhere — it's
+    # mainly Sheep Meadow area + north lawns in the actual OSM data.
+
+    # Step 3: For each stride value, sample grid and collect instances
     xs = []
     zs = []
     types = []
     rng = np.random.RandomState(73856093)
 
-    # Multi-pass: scan at each stride level to handle different zone densities
-    # Use stride=1 scan with per-cell stride check (simple, correct)
-    # But that's slow for 67M cells. Instead, scan at finest stride (3) and
-    # sub-sample coarser zones with modular arithmetic.
-    BASE_STRIDE = 3
+    all_strides = sorted(set(stride_grid[type_grid < 255]))
+    for stride_val in all_strides:
+        if stride_val == 0:
+            continue
+        gz_idx = np.arange(0, RES, stride_val)
+        gx_idx = np.arange(0, RES, stride_val)
+        gz_g, gx_g = np.meshgrid(gz_idx, gx_idx, indexing='ij')
 
-    for gz in range(0, RES, BASE_STRIDE):
-        for gx in range(0, RES, BASE_STRIDE):
-            if surface[gz, gx] != 1:  # not grass surface
-                continue
-            if occupancy[gz, gx] & 0x1F != 0:  # occupied by tree/bench/etc
-                continue
+        valid = (stride_grid[gz_g, gx_g] == stride_val) & (type_grid[gz_g, gx_g] < 255)
+        gz_sel = gz_g[valid].astype(np.float32)
+        gx_sel = gx_g[valid].astype(np.float32)
+        types_sel = type_grid[gz_g[valid], gx_g[valid]]
 
-            zone = int(landuse_arr[gz, gx])
-            if zone in SKIP_ZONES:
-                continue
+        if len(gz_sel) == 0:
+            continue
 
-            config = ZONE_CONFIG.get(zone)
-            if config is None:
-                continue
+        # Deterministic jitter per cell
+        seeds = (gx_sel.astype(np.int64) * 73856093 + gz_sel.astype(np.int64) * 19349663) & 0x7FFFFFFF
+        jx = np.zeros(len(gz_sel), dtype=np.float32)
+        jz = np.zeros(len(gz_sel), dtype=np.float32)
+        for j in range(len(gz_sel)):
+            rng.seed(int(seeds[j]))
+            jx[j] = rng.uniform(-0.3, 0.3) * cell_m
+            jz[j] = rng.uniform(-0.3, 0.3) * cell_m
 
-            grass_type, zone_stride = config
+        wx = gx_sel * cell_m - HALF + jx
+        wz = gz_sel * cell_m - HALF + jz
 
-            # For unzoned cells, check if in a woodland foliage zone
-            if zone == 0:
-                wz_check = float(gz) * cell_m - HALF
-                for z_lo, z_hi in WOODLAND_Z_RANGES:
-                    if z_lo <= wz_check <= z_hi:
-                        grass_type = 1   # woodland floor
-                        zone_stride = 6  # sparse under canopy
-                        break
+        xs.extend(wx.tolist())
+        zs.extend(wz.tolist())
+        types.extend(types_sel.tolist())
 
-            # Sub-sample: skip cells that don't align with this zone's stride
-            if zone_stride > BASE_STRIDE:
-                if (gx % zone_stride) != 0 or (gz % zone_stride) != 0:
-                    continue
-
-            # Deterministic jitter
-            seed_val = gx * 73856093 + gz * 19349663
-            rng.seed(seed_val & 0x7FFFFFFF)
-            jx = rng.uniform(-0.3, 0.3) * cell_m
-            jz = rng.uniform(-0.3, 0.3) * cell_m
-
-            wx = float(gx) * cell_m - HALF + jx
-            wz = float(gz) * cell_m - HALF + jz
-
-            xs.append(wx)
-            zs.append(wz)
-            types.append(grass_type)
+        print(f"    stride {stride_val}: {len(gz_sel)} instances")
 
     count = len(xs)
     x_arr = np.array(xs, dtype=np.float32)

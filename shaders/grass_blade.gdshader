@@ -22,15 +22,21 @@ void vertex() {
 	float sway = max(VERTEX.y, 0.0);
 	float wind_str = length(wind_vec);
 
-	// Wind response varies by type:
-	// Lawn (0): moderate sway — short mowed grass
-	// Woodland (1): minimal sway — sheltered under canopy
-	// Meadow (2): strong sway — tall flowing grass
-	float flex = 0.7;
-	if (v_grass_type > 1.5) {
-		flex = 2.5;  // meadow: dramatic flow
-	} else if (v_grass_type > 0.5) {
-		flex = 0.4;  // woodland: sheltered
+	// Wind response varies by type (0-9):
+	// 0-4: lawn types — moderate sway
+	// 5-6: woodland — minimal sway (sheltered under canopy)
+	// 7: waterside — moderate
+	// 8: wild meadow — strong dramatic flow
+	// 9: open lawn — moderate
+	float flex = 0.7;  // default
+	if (v_grass_type > 7.5) {
+		flex = 2.5;  // wild meadow: dramatic flow
+	} else if (v_grass_type > 6.5) {
+		flex = 0.8;  // waterside: moderate
+	} else if (v_grass_type > 4.5) {
+		flex = 0.35; // woodland: sheltered under canopy
+	} else if (v_grass_type > 3.5) {
+		flex = 0.5;  // sports turf: short, less sway
 	}
 	float rustle = (0.2 + wind_str * 0.8) * flex;
 
@@ -57,9 +63,9 @@ void vertex() {
 	flutter += sin(TIME * 8.0 + VERTEX.z * 18.0) * 0.008 * gust_str;
 	VERTEX.y += flutter * sway;
 
-	// Winter: lawn goes dormant (shorter). Woodland already sparse. Meadow browns.
+	// Winter: lawn types go dormant (shorter). Woodland already sparse.
 	float winter_t = smoothstep(3.0, 3.5, season_t);
-	if (winter_t > 0.0 && v_grass_type < 0.5) {
+	if (winter_t > 0.0 && (v_grass_type < 4.5 || v_grass_type > 8.5)) {
 		VERTEX.y *= mix(1.0, 0.3, winter_t);
 	}
 }
