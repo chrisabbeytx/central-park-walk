@@ -59,7 +59,7 @@ var _lightning_timer: float = 0.0
 var _lightning_flash: float = 0.0     # 0-1 current flash intensity (decays rapidly)
 var _lightning_next: float = 5.0      # seconds until next flash
 const LAMP_LIGHT_COUNT := 48
-const LAMP_LIGHT_RANGE := 18.0
+const LAMP_LIGHT_RANGE := 22.0
 const LAMP_LIGHT_UPDATE_INTERVAL := 0.5  # seconds between position updates
 
 
@@ -1012,7 +1012,7 @@ func _build_keyframes() -> void:
 		"sun_pitch":      -10.0,
 		"sun_yaw":        -100.0,
 		"shadow_dist":    180.0,
-		"lamp_emission":  3.5,
+		"lamp_emission":  5.0,  # pre-dawn: lamps still at full brightness
 		"vol_fog_density":    0.0004,
 		"vol_fog_anisotropy": 0.45,
 		"cloud_coverage":     0.50,
@@ -1164,11 +1164,11 @@ func _build_keyframes() -> void:
 	_keyframes.append({
 		"hour": 21.0,
 		"sky_top":        Color(0.04, 0.05, 0.14),
-		"sky_horizon":    Color(0.14, 0.11, 0.18),  # stronger light pollution horizon
+		"sky_horizon":    Color(0.18, 0.13, 0.10),  # warm orange light pollution horizon
 		"gnd_bottom":     Color(0.025, 0.025, 0.04),
 		"gnd_horizon":    Color(0.08, 0.06, 0.10),
-		"ambient_color":  Color(0.18, 0.15, 0.24),  # blue-shifted city glow, stronger
-		"ambient_energy": 0.55,   # NYC ambient — city light bathes the park
+		"ambient_color":  Color(0.85, 0.65, 0.40),  # warm amber city glow — NYC sodium vapor spill
+		"ambient_energy": 0.35,   # NYC ambient — 6,557 lit buildings bathe the park
 		"exposure":       0.95,
 		"white":          6.0,
 		"glow_intensity": 0.7,
@@ -1183,19 +1183,19 @@ func _build_keyframes() -> void:
 		"saturation":     0.70,
 		"contrast":       1.02,   # less crush — preserves shadow detail in dark areas
 		"brightness":     1.0,    # full brightness — NYC is never pitch black
-		"fog_color":      Color(0.08, 0.07, 0.11),
-		"fog_energy":     0.20,
-		"fog_scatter":    0.05,
+		"fog_color":      Color(0.12, 0.09, 0.07),  # warm amber night haze — city light scatter
+		"fog_energy":     0.25,
+		"fog_scatter":    0.08,
 		"fog_density":    0.0005,
 		"fog_aerial":     0.20,
-		"fog_sky_affect": 0.6,
+		"fog_sky_affect": 0.5,
 		"sun_energy":     0.05,
 		"sun_color":      Color(0.70, 0.78, 1.00),
 		"sun_pitch":      -65.0,
 		"sun_yaw":        40.0,
 		"shadow_dist":    200.0,
-		"lamp_emission":  3.5,
-		"vol_fog_density":    0.0004,
+		"lamp_emission":  5.0,  # stronger glow — Kent Bloomer luminaires are quite bright
+		"vol_fog_density":    0.0005,  # slight night haze catches lamplight scatter
 		"vol_fog_anisotropy": 0.35,
 		"cloud_coverage":     0.45,
 		"cloud_density":      0.55,
@@ -1940,11 +1940,11 @@ func _setup_lamp_lights() -> void:
 	# Create light pool — SpotLight3D pointing downward (lamppost shade)
 	for i in LAMP_LIGHT_COUNT:
 		var light := SpotLight3D.new()
-		light.light_color = Color(1.0, 0.55, 0.18)  # warm sodium vapor, softened
+		light.light_color = Color(1.0, 0.62, 0.22)  # warm sodium vapor — Kent Bloomer luminaire
 		light.light_energy = 0.0  # off until positioned
-		light.spot_range = 28.0
-		light.spot_angle = 80.0  # ~160° cone — wide soft pool below
-		light.spot_attenuation = 1.0  # softer falloff
+		light.spot_range = 35.0   # wider pool — CP lampposts illuminate ~10m radius on ground
+		light.spot_angle = 75.0   # ~150° cone — directed downward from shade
+		light.spot_attenuation = 0.65  # soft quadratic-ish falloff for warm pool edges
 		light.shadow_enabled = false  # too expensive for 24 lights
 		light.light_bake_mode = Light3D.BAKE_DISABLED
 		light.rotation_degrees = Vector3(-90, 0, 0)  # point straight down
@@ -1975,7 +1975,7 @@ func _update_lamp_lights() -> void:
 		if li < dists.size() and night_energy > 0.1:
 			var idx: int = dists[li][1]
 			_lamp_lights[li].global_position = _lamp_positions[idx]
-			_lamp_lights[li].light_energy = night_energy * 7.5
+			_lamp_lights[li].light_energy = night_energy * 12.0
 		else:
 			_lamp_lights[li].light_energy = 0.0
 
