@@ -207,9 +207,9 @@ func _ready() -> void:
 	print("main: total _ready: %d ms" % (Time.get_ticks_msec() - _mt + (Time.get_ticks_msec() - _mt)))
 	_apply_time_of_day()
 	_setup_weather()
-	# Check for --tour CLI arg
+	# Check for --tour / --tour-showcase / --readme-shots CLI arg
 	for arg in OS.get_cmdline_user_args():
-		if arg == "--tour":
+		if arg in ["--tour", "--tour-showcase", "--readme-shots"]:
 			_tour_mode = true
 			_build_tour_shots()
 			_tour_state = 0  # WAIT_LOAD
@@ -217,7 +217,7 @@ func _ready() -> void:
 			_tour_idx = 0
 			_player.tour_freeze = true  # keep physics synced but freeze movement/look
 			DirAccess.make_dir_recursive_absolute(_tour_save_dir)
-			print("Tour mode: %d shots queued" % _tour_shots.size())
+			print("Tour mode: %d shots queued → %s/" % [_tour_shots.size(), _tour_save_dir])
 			break
 var _screenshot_timer := 0.0
 var _screenshot_done  := false
