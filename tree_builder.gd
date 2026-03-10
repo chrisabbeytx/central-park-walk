@@ -131,8 +131,6 @@ func _build_trees(trees: Array) -> void:
 	var leaf_shader: Shader = _loader._get_shader("tree_leaf_glb", _tree_glb_leaf_shader_code())
 	var bark_shader: Shader = _loader._get_shader("tree_bark", "res://shaders/tree_bark.gdshader")
 
-	var _cache_dir := "res://cache/trees"
-	var _cache_dir_abs := ProjectSettings.globalize_path(_cache_dir)
 	for model_name in ["maple", "birch", "deciduous", "pine", "elm", "oak", "cherry", "ginkgo", "honeylocust", "linden", "london_plane", "callery_pear", "dead", "willow", "magnolia"]:
 		# Try .res cache first (skips GLTF parsing — much faster on subsequent loads)
 		var cached := _try_load_cached_tree(model_name)
@@ -144,45 +142,6 @@ func _build_trees(trees: Array) -> void:
 		var abs_path := ProjectSettings.globalize_path("res://models/trees/%s.glb" % model_name)
 		if not FileAccess.file_exists(abs_path):
 			print("WARNING: tree model not found: %s" % abs_path)
-			continue
-
-		# --- Try loading from .res cache (much faster than GLTFDocument) ---
-		var cache_meta := "%s/%s.txt" % [_cache_dir, model_name]
-		var cached_ok := false
-		if FileAccess.file_exists(cache_meta):
-			var glb_mod := FileAccess.get_modified_time(abs_path)
-			var cache_mod := FileAccess.get_modified_time(ProjectSettings.globalize_path(cache_meta))
-			if cache_mod >= glb_mod:
-				var mfa := FileAccess.open(cache_meta, FileAccess.READ)
-				var parts := mfa.get_line().split(" ")
-				mfa.close()
-				if parts.size() >= 2:
-					var count := int(parts[0])
-					var max_h := float(parts[1])
-					var meshes: Array = []
-					for vi in count:
-						var mpath := "%s/%s_%d.res" % [_cache_dir, model_name, vi]
-						if not ResourceLoader.exists(mpath):
-							break
-						meshes.append(ResourceLoader.load(mpath))
-					if meshes.size() == count:
-						var ltexs: Array = []
-						for m: Mesh in meshes:
-							var tex: Texture2D = null
-							for si in m.get_surface_count():
-								var smat: Material = m.surface_get_material(si)
-								if smat is StandardMaterial3D:
-									var sm: StandardMaterial3D = smat as StandardMaterial3D
-									if sm.transparency != BaseMaterial3D.TRANSPARENCY_DISABLED:
-										if sm.albedo_texture:
-											tex = sm.albedo_texture
-							ltexs.append(tex)
-						base_meshes[model_name] = meshes
-						base_heights[model_name] = max_h
-						base_leaf_textures[model_name] = ltexs
-						cached_ok = true
-						print("Trees: cached %s — %d variants, h=%.4f" % [model_name, count, max_h])
-		if cached_ok:
 			continue
 
 		# --- GLB loading (slow path — first run only) ---
@@ -241,15 +200,6 @@ func _build_trees(trees: Array) -> void:
 		base_leaf_textures[model_name] = ltexs
 		_save_tree_cache(model_name, meshes, max_h)
 		print("Trees: loaded %s — %d variants, raw=%.4f actual=%.1fm (cached)" % [model_name, meshes.size(), max_h, max_h * node_scale])
-
-		# --- Save to .res cache for next run ---
-		DirAccess.make_dir_recursive_absolute(_cache_dir_abs)
-		var mfa := FileAccess.open(cache_meta, FileAccess.WRITE)
-		mfa.store_line("%d %f" % [meshes.size(), max_h])
-		mfa.close()
-		for vi in meshes.size():
-			ResourceSaver.save(meshes[vi], "%s/%s_%d.res" % [_cache_dir, model_name, vi])
-		print("Trees: saved %s cache (%d variants)" % [model_name, meshes.size()])
 
 	# Step 2: Create per-archetype mesh copies with distinct leaf/bark colors
 	for archetype in ARCHETYPE_MODEL:
