@@ -7,16 +7,16 @@ Central Park Walk is a real-time 3D walking simulation of all 843 acres of New Y
 Every tree has a real measured height. Every path follows its real-world geometry. Every building has its actual footprint and construction year. The terrain is accurate to one foot. The data has gaps, and we leave them visible — gaps tell us what humans haven't yet measured or mapped.
 
 ![Autumn Dusk — Central Park West Skyline](screenshots/cpw_skyline_autumn_dusk.png)
-*Autumn dusk on the Literary Walk. Per-species fall colors driven by phenology data. 6,557 buildings from NYC Building Footprints.*
+*Autumn dusk. Per-species fall colors driven by phenology data. 6,557 buildings from NYC Building Footprints.*
 
-![Summer Golden Hour — Literary Walk](screenshots/literary_walk_summer_golden.png)
-*The Literary Walk at golden hour. Every tree placed from NYC Tree Census data, every path from OpenStreetMap.*
+![Rain — Conservatory Water](screenshots/conservatory_rain_afternoon.png)
+*Rain on the Conservatory Water. Real-time weather with surface ripples, fog, and city silhouette.*
 
 ![Winter Snow — Sheep Meadow](screenshots/sheep_meadow_winter_noon.png)
-*Sheep Meadow under snow. Rain, snow, fog, puddles, frost, and a full day/night cycle with seasonal atmosphere.*
+*Sheep Meadow under snow. Full day/night cycle with seasonal atmosphere, frost, and puddles.*
 
-![North Woods Rustic Bridge](screenshots/north_woods_bridge.png)
-*A rustic wood bridge in the North Woods — one of 55 bridges rendered in 5 architectural styles.*
+![Winter Morning — North Woods](screenshots/north_woods_snow_morning.png)
+*The North Woods in snow. 8K LiDAR terrain at 0.61m resolution with ~9,300 trees from census + woodland scatter.*
 
 ## Quick Start
 
