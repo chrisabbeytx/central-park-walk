@@ -10,6 +10,7 @@ const PHENOLOGY_INDEX := {
 	"honeylocust": 6, "callery_pear": 7, "ginkgo": 8, "london_plane": 9,
 	"linden": 10, "cherry": 11, "zelkova": 2,  # zelkova shares elm phenology
 	"dead": 4,  # dead trees use deciduous phenology (no leaves rendered anyway)
+	"willow": 3,  # willow shares birch phenology (early fall yellow, early spring)
 }
 # Maps archetype → base GLB model name
 const ARCHETYPE_MODEL := {
@@ -17,7 +18,7 @@ const ARCHETYPE_MODEL := {
 	"deciduous": "deciduous", "conifer": "pine",
 	"honeylocust": "honeylocust", "callery_pear": "callery_pear", "ginkgo": "ginkgo",
 	"london_plane": "london_plane", "linden": "linden", "cherry": "cherry",
-	"zelkova": "elm", "dead": "dead",
+	"zelkova": "elm", "dead": "dead", "willow": "willow",
 }
 
 func _init(loader) -> void:
@@ -50,6 +51,7 @@ func _build_trees(trees: Array) -> void:
 		"cherry":        Vector3(0.30, 0.50, 0.20),   # fresh green, small ornamental
 		"zelkova":       Vector3(0.22, 0.40, 0.14),   # dark warm green (elm family)
 		"dead":          Vector3(0.42, 0.38, 0.34),   # gray weathered (no leaves)
+		"willow":        Vector3(0.30, 0.50, 0.15),   # yellow-green, narrow leaves
 	}
 	var bark_colors := {
 		"oak":           Color(0.40, 0.32, 0.24),     # dark brown, deeply furrowed
@@ -66,6 +68,7 @@ func _build_trees(trees: Array) -> void:
 		"cherry":        Color(0.52, 0.32, 0.22),     # reddish-brown, glossy
 		"zelkova":       Color(0.38, 0.30, 0.22),     # gray, exfoliating
 		"dead":          Color(0.42, 0.38, 0.34),     # weathered gray dead wood
+		"willow":        Color(0.40, 0.35, 0.28),     # gray-brown, deeply furrowed
 	}
 	# --- Load 5 base GLB models, then create per-archetype colored copies ---
 	var species_meshes: Dictionary = {}  # archetype_name -> Array[Mesh]
@@ -79,7 +82,7 @@ func _build_trees(trees: Array) -> void:
 	var leaf_shader: Shader = _loader._get_shader("tree_leaf_glb", _tree_glb_leaf_shader_code())
 	var bark_shader: Shader = _loader._get_shader("tree_bark", "res://shaders/tree_bark.gdshader")
 
-	for model_name in ["maple", "birch", "deciduous", "pine", "elm", "oak", "cherry", "ginkgo", "honeylocust", "linden", "london_plane", "callery_pear", "dead"]:
+	for model_name in ["maple", "birch", "deciduous", "pine", "elm", "oak", "cherry", "ginkgo", "honeylocust", "linden", "london_plane", "callery_pear", "dead", "willow"]:
 		var abs_path := ProjectSettings.globalize_path("res://models/trees/%s.glb" % model_name)
 		if not FileAccess.file_exists(abs_path):
 			print("WARNING: tree model not found: %s" % abs_path)
@@ -208,6 +211,7 @@ func _build_trees(trees: Array) -> void:
 		"cherry":        [6.0, 12.0],    # small ornamental
 		"zelkova":       [12.0, 22.0],   # upright vase shape
 		"dead":          [8.0, 16.0],    # shorter (broken top)
+		"willow":        [10.0, 18.0],   # weeping willow — wide, medium height
 	}
 
 	# Foliage zone data for deciduous sub-species assignment

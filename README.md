@@ -82,7 +82,7 @@ python3 convert_to_godot.py
 | Feature | Count | Source |
 |---------|-------|--------|
 | Terrain | 8192×8192 mesh (14M verts) | NYC LiDAR 2017 (1ft resolution, 0.61m cells) |
-| Trees | ~9,300 | NYC Tree Census + OSM + woodland scatter in 12 ecological zones. 15 custom Blender models: 13 species (oak, elm, maple, birch, cherry, ginkgo, honeylocust, linden, london plane, callery pear, pine) + generic deciduous + generic conifer. Cherry blossom + callery pear spring bloom rendering. Frost sparkle, morning dew |
+| Trees | ~9,300 | NYC Tree Census + OSM + woodland scatter in 12 ecological zones. 16 custom Blender models: 14 species (oak, elm, maple, birch, cherry, ginkgo, honeylocust, linden, london plane, callery pear, pine, willow) + generic deciduous + standing dead snag. Cherry blossom + callery pear spring bloom rendering. Frost sparkle, morning dew |
 | Water | 23 bodies + 10 streams | OpenStreetMap polygons |
 | Buildings | 6,557 | NYC Building Footprints + LiDAR heights |
 | Furniture | 1,022+ | Lampposts (201), benches (610), trash cans (166), fountains (19), flagpoles (18), water towers (45), iron fences (207 segments) |
@@ -104,7 +104,7 @@ All data is freely available. No paid APIs. No API keys.
 | [OpenStreetMap](https://www.openstreetmap.org/) | Paths, water, buildings, bridges, furniture | ODbL |
 | [NYC Tree Census](https://data.cityofnewyork.us/) | Species, diameter for park trees | Public Domain |
 | [Sketchfab](https://sketchfab.com/) | Photogrammetry scans (3 statues + Bethesda Fountain) | CC-BY |
-| Custom Blender scripts | All 15 tree models, furniture, Cleopatra's Needle | Original (MIT) |
+| Custom Blender scripts | All 16 tree models, furniture, Cleopatra's Needle | Original (MIT) |
 | [ambientCG](https://ambientcg.com/) / [Polyhaven](https://polyhaven.com/) | PBR textures, HDRI sky | CC0 |
 
 ## How to Contribute
@@ -113,7 +113,7 @@ This project grows with human attention.
 
 **No coding required**: Map furniture in OSM (only ~10% of real lampposts/benches are mapped). Take photogrammetry scans of statues (4 of 106 scanned). Record field audio. Photograph landmarks and materials. Map rock outcrops (~170 named, 1 in OSM).
 
-**Technical**: 15 custom Blender tree models (all species-specific). Interior spaces. Performance profiling. Cross-platform support.
+**Technical**: 16 custom Blender tree models (all species-specific). Interior spaces. Performance profiling. Cross-platform support.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines.
 

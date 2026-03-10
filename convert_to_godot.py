@@ -1273,7 +1273,7 @@ def main() -> None:
         "magnolia":    "deciduous",     # magnolia
         "cercis":      "cherry",        # redbud — small ornamental
         "malus":       "cherry",        # crabapple — small ornamental, spring blooms
-        "salix":       "deciduous",     # willow
+        "salix":       "willow",        # weeping willow — cascading branches
         "fagus":       "deciduous",     # beech
         "carpinus":    "deciduous",     # hornbeam
         "sophora":     "deciduous",     # Japanese pagoda tree (old genus name)
@@ -1460,6 +1460,7 @@ def main() -> None:
         "horsechestnut": "deciduous", "beech": "deciduous",
         "hackberry": "elm",  # Celtis — vase-shaped, similar habit to elm
         "birch": "birch",
+        "weeping willow": "willow", "willow": "willow",
     }
 
     # --- Ecological zone model ---
@@ -1504,11 +1505,12 @@ def main() -> None:
             "type": "successional",
             "density_mult": 1.1,
             "species": [
-                ("tupelo", 0.20), ("red maple", 0.18),
-                ("sweetgum", 0.15), ("bald cypress", 0.08),
-                ("hickory", 0.10), ("black cherry", 0.08),
-                ("flowering dogwood", 0.08), ("american elm", 0.05),
+                ("tupelo", 0.18), ("red maple", 0.16),
+                ("sweetgum", 0.14), ("bald cypress", 0.08),
+                ("hickory", 0.09), ("black cherry", 0.08),
+                ("flowering dogwood", 0.07), ("american elm", 0.05),
                 ("sassafras", 0.05), ("star magnolia", 0.03),
+                ("willow", 0.07),  # weeping willows along The Loch
             ],
             "dbh_range": [5, 35],
             "dbh_shape": 2.0,

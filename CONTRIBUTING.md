@@ -111,7 +111,7 @@ cd central-park-walk
 
 ### Priority Areas
 
-1. **Additional tree species models**: We now have 15 custom Blender tree models (oak, elm, maple, birch, cherry, ginkgo, honeylocust, linden, london plane, callery pear, pine, + generic deciduous/conifer). More species detail welcome — subspecies variants, size classes, seasonal accuracy. Blender scripts follow the `scripts/make_*.py` pattern.
+1. **Additional tree species models**: We now have 16 custom Blender tree models (oak, elm, maple, birch, cherry, ginkgo, honeylocust, linden, london plane, callery pear, pine, willow, + generic deciduous + standing dead snag). More species detail welcome — subspecies variants, size classes, seasonal accuracy. Blender scripts follow the `scripts/make_*.py` pattern.
 2. **Interior spaces**: Bethesda Arcade (Minton tile ceiling), bridge underpasses, tunnel interiors. The LiDAR terrain creates terrain caves where architectural spaces should be.
 3. **Ground detail**: Terrain tile models for wildflowers, grass, undergrowth, ferns.
 4. **Cross-platform**: Currently Linux-only with Forward+ renderer. Testing and fixes for Windows/macOS welcome.
