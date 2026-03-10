@@ -376,12 +376,45 @@ void fragment() {
 			r_alb *= (1.0 - groove * striation);
 			r_rgh += groove * striation * 0.5;
 		}
+		// --- Lichen colonies on Manhattan schist ---
+		// Three dominant types in Central Park: green foliose (shield lichen),
+		// orange crustose (Xanthoria), gray-white crustose (Lecanora).
+		// Lichen prefers north-facing + shaded aspects and sheltered crevices.
+		float lichen_aspect = smoothstep(-0.2, 0.3, -terrain_n.z);  // north-facing bias
+		float lichen_shelter = smoothstep(0.15, 0.40, slope);  // more on vertical faces
+		float lichen_base = lichen_aspect * 0.5 + lichen_shelter * 0.5;
+		// Large patchy distribution — colonies are irregular, 0.5-3m patches
+		float lic_n1 = fbm(world_pos.xz * 0.7, 2);
+		float lic_n2 = vnoise(world_pos.xz * 1.8);
+		// Green foliose lichen — largest colonies, mid-tone green on shaded rock
+		float green_lic = smoothstep(0.45, 0.65, lic_n1) * lichen_base;
+		green_lic *= smoothstep(0.3, 0.6, vnoise(world_pos.xz * 3.2));  // sub-patch breakup
+		vec3 green_lichen_col = mix(vec3(0.22, 0.28, 0.12), vec3(0.30, 0.38, 0.15), lic_n2);
+		r_alb = mix(r_alb, green_lichen_col, green_lic * 0.65);
+		r_rgh = mix(r_rgh, 0.88, green_lic * 0.5);  // lichen is matte
+		// Orange Xanthoria — small bright patches, scattered, sun-tolerant
+		float orange_lic = smoothstep(0.60, 0.78, lic_n2 * 0.7 + vnoise(world_pos.xz * 5.0) * 0.3);
+		orange_lic *= (1.0 - lichen_aspect * 0.4);  // slightly less north-bias than green
+		orange_lic *= smoothstep(0.02, 0.12, slope);  // needs some slope
+		vec3 orange_lichen_col = vec3(0.72, 0.45, 0.08);
+		r_alb = mix(r_alb, orange_lichen_col, orange_lic * 0.35);
+		r_rgh = mix(r_rgh, 0.92, orange_lic * 0.3);
+		// Gray-white Lecanora — tiny pale discs, crustose, on exposed flat tops
+		float gray_lic = smoothstep(0.55, 0.72, vnoise(world_pos.xz * 4.5 + 17.3));
+		gray_lic *= smoothstep(0.75, 0.90, terrain_n.y);  // prefers flat exposed surfaces
+		vec3 gray_lichen_col = vec3(0.68, 0.67, 0.62);
+		r_alb = mix(r_alb, gray_lichen_col, gray_lic * 0.30);
+		r_rgh = mix(r_rgh, 0.85, gray_lic * 0.2);
+		// Darken lichen when wet (rain absorbs into thallus)
+		float lichen_total = min(green_lic + orange_lic * 0.5 + gray_lic * 0.3, 1.0);
+		r_alb *= mix(1.0, 0.70, lichen_total * rain_wetness);
+
 		grass_alb = mix(grass_alb, r_alb, rock_blend);
 		grass_nrm = mix(grass_nrm, r_nrm, rock_blend);
 		grass_rgh = mix(grass_rgh, r_rgh, rock_blend);
-		// Mica sparkle: slight specular on rock surfaces
+		// Mica sparkle: slight specular on rock surfaces (reduced where lichen covers)
 		float mica = hash2(floor(world_pos.xz * 20.0));
-		rock_specular = rock_blend * mix(0.25, 0.55, step(0.92, mica));
+		rock_specular = rock_blend * mix(0.25, 0.55, step(0.92, mica)) * (1.0 - lichen_total * 0.7);
 	}
 
 	// --- Structure mask: LiDAR-detected built features get stone/concrete texture ---
