@@ -322,8 +322,8 @@ const SHOWCASE_SHOTS: Array = [
 	{"name": "cpw_skyline_autumn_dusk", "x": -600.0, "z": 1420.0, "yaw": 90.0, "pitch": 0.0, "hour": 19.0, "season": 2.5, "weather": "clear"},
 	# Summer dawn at Reservoir
 	{"name": "reservoir_summer_dawn", "x": -200.0, "z": -300.0, "yaw": 0.0, "pitch": -5.0, "hour": 5.5, "season": 1.5, "weather": "clear"},
-	# Winter afternoon at Sheep Meadow
-	{"name": "sheep_meadow_winter_noon", "x": -700.0, "z": 1600.0, "yaw": 270.0, "pitch": 0.0, "hour": 12.0, "season": 3.5, "weather": "snow"},
+	# Summer golden hour at Sheep Meadow — mowing stripes visible on green grass
+	{"name": "sheep_meadow_summer_golden", "x": -700.0, "z": 1600.0, "yaw": 270.0, "pitch": -3.0, "hour": 18.0, "season": 1.5, "weather": "clear"},
 	# Autumn at the Lake
 	{"name": "the_lake_autumn_afternoon", "x": -560.0, "z": 780.0, "yaw": 60.0, "pitch": 0.0, "hour": 15.0, "season": 2.7, "weather": "clear"},
 	# Spring morning at soccer fields
