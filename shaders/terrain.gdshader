@@ -771,11 +771,11 @@ void fragment() {
 		float any_bloom = max(spring_bloom, max(summer_bloom, late_summer));
 		if (any_bloom > 0.01 && slope < 0.15 && !is_paved && !is_unpaved && !is_dirt) {
 			// Wildflowers prefer meadows, woodland edges, and unmowed areas
-			float flower_zone = is_woodland ? 0.25 : (meadow_blend > 0.3 ? 0.5 : 0.08);
+			float flower_zone = is_woodland ? 0.30 : (meadow_blend > 0.3 ? 0.60 : 0.15);
 			// Noise determines where flowers appear (patchy, natural distribution)
 			float f_noise = vnoise(world_pos.xz * 0.25 + vec2(55.0, 88.0));
 			float f_detail = hash2(floor(world_pos.xz * 3.0));
-			float f_mask = smoothstep(0.4, 0.7, f_noise) * step(0.75, f_detail) * flower_zone;
+			float f_mask = smoothstep(0.35, 0.65, f_noise) * step(0.60, f_detail) * flower_zone;
 			if (f_mask > 0.01) {
 				// Species selection: deterministic per-patch
 				float sp_hash = hash2(floor(world_pos.xz * 0.5 + vec2(33.0)));
@@ -804,8 +804,10 @@ void fragment() {
 					f_mask = 0.0;
 					flower_col = vec3(0.0);
 				}
-				// Subtle blend — wildflowers are small, they tint more than replace
-				ALBEDO = mix(ALBEDO, flower_col, f_mask * 0.25);
+				// Wildflower patches: visible clusters of color in grass
+				ALBEDO = mix(ALBEDO, flower_col, f_mask * 0.50);
+				// Flower petals are smoother than grass blades
+				ROUGHNESS = mix(ROUGHNESS, ROUGHNESS * 0.75, f_mask * 0.35);
 			}
 		}
 	}
