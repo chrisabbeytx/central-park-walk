@@ -67,12 +67,24 @@ func _build_paths(paths: Array) -> void:
 			continue
 
 		var mat: Material = _loader._make_path_material(hw, surface)
+		var amesh: ArrayMesh = _build_array_mesh(result.verts, result.normals, result.uvs, result.indices)
 		var mi := MeshInstance3D.new()
-		mi.mesh = _build_array_mesh(result.verts, result.normals, result.uvs, result.indices)
+		mi.mesh = amesh
 		mi.material_override = mat
 		mi.name = "Paths_%s_%s" % [hw, surface if not surface.is_empty() else "default"]
 		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		_loader.add_child(mi)
+
+		# Add walkable collision from path mesh
+		if result.verts.size() > 0:
+			var col_body := StaticBody3D.new()
+			col_body.name = "PathCol_%s_%s" % [hw, surface if not surface.is_empty() else "default"]
+			var col_shape := ConcavePolygonShape3D.new()
+			col_shape.set_faces(amesh.get_faces())
+			var col_node := CollisionShape3D.new()
+			col_node.shape = col_shape
+			col_body.add_child(col_node)
+			_loader.add_child(col_body)
 
 		total_paths += group_paths.size()
 		total_verts += result.verts.size()
@@ -90,12 +102,24 @@ func _build_paths(paths: Array) -> void:
 			continue
 
 		var mat: Material = _loader._make_bridge_deck_material(hw, surface)
+		var b_amesh: ArrayMesh = _build_array_mesh(result.verts, result.normals, result.uvs, result.indices)
 		var mi := MeshInstance3D.new()
-		mi.mesh = _build_array_mesh(result.verts, result.normals, result.uvs, result.indices)
+		mi.mesh = b_amesh
 		mi.material_override = mat
 		mi.name = "BridgePaths_%s_%s" % [hw, surface if not surface.is_empty() else "default"]
 		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		_loader.add_child(mi)
+
+		# Add walkable collision for bridge deck paths
+		if result.verts.size() > 0:
+			var col_body := StaticBody3D.new()
+			col_body.name = "BridgePathCol_%s_%s" % [hw, surface if not surface.is_empty() else "default"]
+			var col_shape := ConcavePolygonShape3D.new()
+			col_shape.set_faces(b_amesh.get_faces())
+			var col_node := CollisionShape3D.new()
+			col_node.shape = col_shape
+			col_body.add_child(col_node)
+			_loader.add_child(col_body)
 
 		total_paths += group_paths.size()
 		total_verts += result.verts.size()
