@@ -117,9 +117,9 @@ All data is freely available. No paid APIs. No API keys.
 | Feature | Count | Detail |
 |---------|-------|--------|
 | Terrain | 4096×4096 | LiDAR-accurate, per-pixel normals, structure mask, 4096×4096 landuse zones (14 types + shore), clipped to park boundary, 2048-res collision |
-| Trees | ~9,500 placed (20K census + woodland scatter) | 12 species archetypes, LiDAR heights, seasonal phenology, foliage zone biasing, wind gusts, subsurface scattering, bark weather response |
+| Trees | ~9,500 placed (20K census + woodland scatter) | 12 species archetypes, LiDAR heights, seasonal phenology, 12 ecological zones with weighted species dominance (Conservancy data), zone-specific density + inverse-J DBH distribution, wind gusts, subsurface scattering, bark weather response |
 | Paths | 2,624 | Analytical GPU rendering, 58K segments, width-correct, seasonal leaf litter + salt stains, rain puddles with sky reflection, snow sparkle, bridge deck weather, Reservoir cinder track |
-| Water | 23 bodies + 10 streams | Per-body color, seasonal tint, smooth shore distance field, depth tinting, night city reflections, wind waves, winter ice formation, 1.22m mesh grid, stream directional flow with slope turbulence + edge foam |
+| Water | 23 bodies + 10 streams | Per-body color, seasonal tint, smooth shore alpha fade (depth-based), depth tinting, night city reflections, wind waves, winter ice formation, 1.22m mesh grid, stream directional flow with slope turbulence + edge foam |
 | Buildings | 6,557 | NYC Building Footprints + LiDAR heights, 5 facade styles, night window variety (incandescent/LED/TV blue), age patina, rooftop water towers, seasonal haze, rain streaks, weather-responsive roofs, collision |
 | Bridges | 55 | 5 styles, miter joints, arched soffits, Bow Bridge railings, parapet collision |
 | Tunnels | 15 | Barrel vault interiors, portal lighting |
