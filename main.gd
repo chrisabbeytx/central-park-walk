@@ -937,7 +937,7 @@ func _setup_environment() -> void:
 	_env.ambient_light_sky_contribution = 0.3
 	# ===== POST-FX BASELINE TEST — all post-processing OFF =====
 	# Re-enable one at a time to find the artifact source.
-	_env.tonemap_mode          = Environment.TONE_MAPPER_LINEAR  # was FILMIC
+	_env.tonemap_mode          = Environment.TONE_MAPPER_FILMIC  # TEST 1: filmic tonemap
 	_env.tonemap_white         = 6.0
 	_env.glow_enabled          = false   # OFF
 	_env.ssao_enabled          = false   # OFF
