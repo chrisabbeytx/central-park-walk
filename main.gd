@@ -944,7 +944,7 @@ func _setup_environment() -> void:
 	_env.ssil_enabled          = false   # OFF
 	_env.ssr_enabled           = false   # OFF
 	_env.adjustment_enabled    = false   # OFF
-	_env.fog_enabled           = false   # OFF
+	_env.fog_enabled           = true    # TEST 2: fog
 	_env.volumetric_fog_enabled = false  # OFF
 	_env.sdfgi_enabled         = false   # OFF
 	# ===== END POST-FX BASELINE TEST =====
@@ -1284,12 +1284,12 @@ func _apply_time_of_day() -> void:
 	# _env.adjustment_brightness = _lerp_kf("brightness", a, b, t) * _user_gamma
 	# if _lightning_flash > 0.01:
 	# 	_env.adjustment_brightness *= (1.0 + _lightning_flash * 3.0)
-	# _env.fog_light_color       = _lerp_kf("fog_color", a, b, t)
-	# _env.fog_light_energy      = _lerp_kf("fog_energy", a, b, t)
-	# _env.fog_sun_scatter       = _lerp_kf("fog_scatter", a, b, t)
-	# _env.fog_density           = _lerp_kf("fog_density", a, b, t)
-	# _env.fog_aerial_perspective = _lerp_kf("fog_aerial", a, b, t)
-	# _env.fog_sky_affect        = _lerp_kf("fog_sky_affect", a, b, t)
+	_env.fog_light_color       = _lerp_kf("fog_color", a, b, t)       # TEST 2
+	_env.fog_light_energy      = _lerp_kf("fog_energy", a, b, t)
+	_env.fog_sun_scatter       = _lerp_kf("fog_scatter", a, b, t)
+	_env.fog_density           = _lerp_kf("fog_density", a, b, t)
+	_env.fog_aerial_perspective = _lerp_kf("fog_aerial", a, b, t)
+	_env.fog_sky_affect        = _lerp_kf("fog_sky_affect", a, b, t)
 	# _env.volumetric_fog_density    = _lerp_kf("vol_fog_density", a, b, t)
 	# _env.volumetric_fog_anisotropy = _lerp_kf("vol_fog_anisotropy", a, b, t)
 	# ===== END POST-FX BASELINE TEST =====
