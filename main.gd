@@ -940,7 +940,7 @@ func _setup_environment() -> void:
 	_env.tonemap_mode          = Environment.TONE_MAPPER_FILMIC  # TEST 1: filmic tonemap
 	_env.tonemap_white         = 6.0
 	_env.glow_enabled          = false   # OFF
-	_env.ssao_enabled          = false   # OFF
+	_env.ssao_enabled          = true    # TEST 3: SSAO
 	_env.ssil_enabled          = false   # OFF
 	_env.ssr_enabled           = false   # OFF
 	_env.adjustment_enabled    = false   # OFF
@@ -1275,9 +1275,9 @@ func _apply_time_of_day() -> void:
 	# _env.glow_strength          = _lerp_kf("glow_strength", a, b, t)
 	# _env.glow_hdr_threshold     = _lerp_kf("glow_threshold", a, b, t)
 	# _env.glow_hdr_luminance_cap = _lerp_kf("glow_cap", a, b, t)
-	# _env.ssao_radius    = _lerp_kf("ssao_radius", a, b, t)
-	# _env.ssao_intensity = _lerp_kf("ssao_intensity", a, b, t)
-	# _env.ssao_power     = _lerp_kf("ssao_power", a, b, t)
+	_env.ssao_radius    = _lerp_kf("ssao_radius", a, b, t)             # TEST 3
+	_env.ssao_intensity = _lerp_kf("ssao_intensity", a, b, t)
+	_env.ssao_power     = _lerp_kf("ssao_power", a, b, t)
 	# _env.ssil_intensity = _lerp_kf("ssil_intensity", a, b, t)
 	# _env.adjustment_saturation = _lerp_kf("saturation", a, b, t)
 	# _env.adjustment_contrast   = _lerp_kf("contrast", a, b, t)
