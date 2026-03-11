@@ -924,32 +924,48 @@ func _setup_environment() -> void:
 	_env.ambient_light_sky_contribution = 0.3
 	_env.tonemap_mode          = Environment.TONE_MAPPER_FILMIC
 	_env.tonemap_white         = 6.0
-	_env.glow_enabled          = true
+	# Glow disabled — diagnostic test. Sub-pixel aliased geometry from aerial
+	# view (trees with alpha_to_coverage, building facades, terrain details)
+	# creates flickering bright pixels that glow blooms into visible circles.
+	# Never over water because water has no EMISSION and is geometrically flat.
+	_env.glow_enabled          = false
 	_env.glow_blend_mode       = Environment.GLOW_BLEND_MODE_ADDITIVE
 	_env.ssao_enabled          = true
 	_env.ssao_detail           = 0.5
-	# SSIL + SSR + SDFGI disabled — all three produce temporal multi-colored
-	# blob artifacts, especially from aerial view. SSR/SSIL sample screen pixels
-	# that don't correspond to correct geometry at extreme angles; SDFGI probes
-	# reconverge over multiple frames producing colored light leaks that glow-
-	# bloom amplifies into visible circles. SDFGI artifacts also propagate into
-	# volumetric fog via gi_inject. Ambient lighting + SSAO + direct lights are
-	# sufficient for the scene.
+	# SSR disabled — screen-space reflections on water produce multi-colored
+	# temporal artifacts from aerial view (confirmed fixed).
+	# SSIL disabled — similar screen-space temporal artifacts.
 	_env.ssil_enabled          = false
 	_env.ssr_enabled           = false
 	_env.adjustment_enabled    = true
 	_env.adjustment_brightness = 1.02
 	_env.fog_enabled           = true
 
-	# Volumetric fog disabled for diagnostic — testing if temporal reprojection
-	# causes the circular blob artifacts visible from aerial view.
-	_env.volumetric_fog_enabled = false
+	# Volumetric fog — light shafts (god rays at sunrise/sunset via high anisotropy)
+	_env.volumetric_fog_enabled = true
+	_env.volumetric_fog_density = 0.0001
+	_env.volumetric_fog_albedo = Color(1.0, 1.0, 1.0)
+	_env.volumetric_fog_emission = Color(0.8, 0.85, 0.9)
+	_env.volumetric_fog_emission_energy = 0.08
+	_env.volumetric_fog_anisotropy = 0.3
+	_env.volumetric_fog_length = 100.0
+	_env.volumetric_fog_detail_spread = 2.0
+	_env.volumetric_fog_ambient_inject = 0.15
+	_env.volumetric_fog_gi_inject = 0.2
+	_env.volumetric_fog_sky_affect = 0.20
+	_env.volumetric_fog_temporal_reprojection_enabled = true
 
-	# SDFGI disabled — probe reconvergence produces temporal colored light leaks
-	# from aerial view, amplified by glow bloom into multi-colored blob artifacts.
-	# Also propagated via volumetric_fog_gi_inject. Ambient + SSAO + direct lights
-	# provide sufficient illumination.
-	_env.sdfgi_enabled = false
+	# SDFGI — global illumination (green bounce under canopies, warm path reflections)
+	_env.sdfgi_enabled = true
+	_env.sdfgi_use_occlusion = true
+	_env.sdfgi_read_sky_light = true
+	_env.sdfgi_bounce_feedback = 0.5
+	_env.sdfgi_cascades = 4
+	_env.sdfgi_min_cell_size = 0.4
+	_env.sdfgi_y_scale = Environment.SDFGI_Y_SCALE_75_PERCENT
+	_env.sdfgi_energy = 0.8
+	_env.sdfgi_normal_bias = 1.1
+	_env.sdfgi_probe_bias = 1.1
 
 	var world_env := WorldEnvironment.new()
 	world_env.environment = _env
@@ -1281,7 +1297,8 @@ func _apply_time_of_day() -> void:
 	_env.ssao_intensity = _lerp_kf("ssao_intensity", a, b, t)
 	_env.ssao_power     = _lerp_kf("ssao_power", a, b, t)
 
-	# SSIL disabled (screen-space temporal artifacts from aerial view)
+	# SSIL
+	_env.ssil_intensity = _lerp_kf("ssil_intensity", a, b, t)
 
 	# Colour grading
 	_env.adjustment_saturation = _lerp_kf("saturation", a, b, t)
