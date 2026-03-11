@@ -945,7 +945,7 @@ func _setup_environment() -> void:
 	_env.ssr_enabled           = false   # OFF
 	_env.adjustment_enabled    = true    # TEST 5: adjustment
 	_env.fog_enabled           = true    # TEST 2: fog
-	_env.volumetric_fog_enabled = false  # OFF
+	_env.volumetric_fog_enabled = true   # TEST 6: volumetric fog
 	_env.sdfgi_enabled         = false   # OFF
 	# ===== END POST-FX BASELINE TEST =====
 
@@ -1290,8 +1290,8 @@ func _apply_time_of_day() -> void:
 	_env.fog_density           = _lerp_kf("fog_density", a, b, t)
 	_env.fog_aerial_perspective = _lerp_kf("fog_aerial", a, b, t)
 	_env.fog_sky_affect        = _lerp_kf("fog_sky_affect", a, b, t)
-	# _env.volumetric_fog_density    = _lerp_kf("vol_fog_density", a, b, t)
-	# _env.volumetric_fog_anisotropy = _lerp_kf("vol_fog_anisotropy", a, b, t)
+	_env.volumetric_fog_density    = _lerp_kf("vol_fog_density", a, b, t)  # TEST 6
+	_env.volumetric_fog_anisotropy = _lerp_kf("vol_fog_anisotropy", a, b, t)
 	# ===== END POST-FX BASELINE TEST =====
 
 	# Weather overrides — use absolute values for fog/clouds so the effect
