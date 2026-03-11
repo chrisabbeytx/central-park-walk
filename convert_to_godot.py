@@ -2772,7 +2772,19 @@ def prebake_grass_instances(landuse_zones):
     # Step 1: Build per-cell type and stride grids
     type_grid = np.full((RES, RES), 255, dtype=np.uint8)  # 255 = skip
     stride_grid = np.zeros((RES, RES), dtype=np.uint8)
-    grass_mask = (surface == 1) & ((occupancy & 0x1F) == 0)
+    grass_raw = (surface == 1) & ((occupancy & 0x1F) == 0)
+    # Erode grass mask by 2 cells (~1.2m) — prevents grass tile visual bleed
+    # onto adjacent paved/rock/water surfaces. Grass tiles have ~1m radius,
+    # so a 1.2m buffer ensures no overlap.
+    grass_mask = grass_raw.copy()
+    for dr, dc in [(-2,0),(2,0),(0,-2),(0,2),(-1,-1),(-1,1),(1,-1),(1,1)]:
+        shifted = np.zeros_like(grass_raw)
+        sr = max(0, dr); er = RES + min(0, dr)
+        sc = max(0, dc); ec = RES + min(0, dc)
+        shifted[sr:er, sc:ec] = grass_raw[sr-dr:er-dr, sc-dc:ec-dc]
+        grass_mask &= shifted
+    eroded = int(np.sum(grass_raw)) - int(np.sum(grass_mask))
+    print(f"  Grass mask: {int(np.sum(grass_raw))} raw → {int(np.sum(grass_mask))} after 2-cell erosion ({eroded} edge cells removed)")
 
     # Apply base zone config
     for zone_id, (gtype, stride) in ZONE_CONFIG.items():
