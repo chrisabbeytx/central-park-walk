@@ -2844,18 +2844,106 @@ def prebake_grass_instances(landuse_zones):
     z_arr = np.array(zs, dtype=np.float32)
     type_arr = np.array(types, dtype=np.uint8)
 
+    print(f"  Grass: {count} raw instances before filtering")
+
+    # --- Pre-filter water-adjacent instances (vectorized) ---
+    # Convert world positions to atlas grid indices
+    ix = np.clip(((x_arr + HALF) / WORLD_SIZE * RES).astype(np.int32), 0, RES - 1)
+    iz = np.clip(((z_arr + HALF) / WORLD_SIZE * RES).astype(np.int32), 0, RES - 1)
+
+    # Check if instance is on water (surface == 4)
+    on_water = surface[iz, ix] == 4
+
+    # Check 8 neighbors at ±1, ±2 cells (~0.6m, ~1.2m) for water proximity
+    near_water = np.zeros(count, dtype=bool)
+    for dx, dz in [(1,0),(-1,0),(0,1),(0,-1),(2,0),(-2,0),(0,2),(0,-2)]:
+        nix = np.clip(ix + dx, 0, RES - 1)
+        niz = np.clip(iz + dz, 0, RES - 1)
+        near_water |= (surface[niz, nix] == 4)
+
+    water_mask = on_water | near_water
+    keep = ~water_mask
+    n_water_filtered = int(np.sum(water_mask))
+    print(f"    Filtered {n_water_filtered} water-adjacent instances")
+
+    x_arr = x_arr[keep]
+    z_arr = z_arr[keep]
+    type_arr = type_arr[keep]
+    ix = ix[keep]
+    iz = iz[keep]
+    count = len(x_arr)
+
+    # --- Pre-compute path proximity (vectorized) ---
+    # Surface types 2 (paved_path) and 3 (unpaved_path)
+    s0 = surface[iz, ix]
+    path_prox = np.zeros(count, dtype=np.float32)
+    # Instances on path get full proximity
+    path_prox[np.isin(s0, [2, 3])] = 1.0
+    # Check 4 neighbors at ±1 cell (~0.6m)
+    for dx, dz in [(1,0),(-1,0),(0,1),(0,-1)]:
+        nix = np.clip(ix + dx, 0, RES - 1)
+        niz = np.clip(iz + dz, 0, RES - 1)
+        ns = surface[niz, nix]
+        near_path = np.isin(ns, [2, 3])
+        path_prox = np.maximum(path_prox, np.where(near_path, 0.8, 0.0))
+    # Check 4 neighbors at ±2 cells (~1.2m)
+    for dx, dz in [(2,0),(-2,0),(0,2),(0,-2)]:
+        nix = np.clip(ix + dx, 0, RES - 1)
+        niz = np.clip(iz + dz, 0, RES - 1)
+        ns = surface[niz, nix]
+        near_path = np.isin(ns, [2, 3])
+        path_prox = np.maximum(path_prox, np.where(near_path, 0.4, 0.0))
+    path_prox_u8 = np.clip((path_prox * 255.0).astype(np.uint8), 0, 255)
+    n_near_path = int(np.sum(path_prox > 0.05))
+    print(f"    {n_near_path} instances near paths (with proximity)")
+
+    # --- Pre-compute terrain Y (vectorized) ---
+    # Load heightmap.bin (written earlier in pipeline)
+    hm_path = "heightmap.bin"
+    if os.path.exists(hm_path):
+        with open(hm_path, 'rb') as hf:
+            hm_w, hm_h = struct.unpack('<II', hf.read(8))
+            hm_world_size = struct.unpack('<f', hf.read(4))[0]
+            hm_origin_y = struct.unpack('<f', hf.read(4))[0]
+            hm_data = np.frombuffer(hf.read(), dtype=np.float32).reshape(hm_h, hm_w)
+
+        # Bilinear sample heightmap at instance positions
+        u = (x_arr + hm_world_size * 0.5) / hm_world_size
+        v = (z_arr + hm_world_size * 0.5) / hm_world_size
+        xi_f = u * (hm_w - 1)
+        zi_f = v * (hm_h - 1)
+        xi0 = np.clip(xi_f.astype(np.int32), 0, hm_w - 2)
+        zi0 = np.clip(zi_f.astype(np.int32), 0, hm_h - 2)
+        fx = xi_f - xi0
+        fz = zi_f - zi0
+        h00 = hm_data[zi0, xi0]
+        h10 = hm_data[zi0, xi0 + 1]
+        h01 = hm_data[zi0 + 1, xi0]
+        h11 = hm_data[zi0 + 1, xi0 + 1]
+        y_arr = (h00 * (1 - fx) * (1 - fz) + h10 * fx * (1 - fz) +
+                 h01 * (1 - fx) * fz + h11 * fx * fz + 0.002).astype(np.float32)
+        print(f"    Pre-computed Y from heightmap ({hm_w}×{hm_h})")
+    else:
+        print("    WARNING: heightmap.bin not found — Y values will be 0")
+        y_arr = np.full(count, 0.002, dtype=np.float32)
+
+    # --- Write enhanced format (v2) ---
+    # Magic "GRS2" + count + x + y + z + type + path_prox
     out_path = "grass_instances.bin"
     with open(out_path, 'wb') as f:
+        f.write(struct.pack('<I', 0x47525332))  # magic "GRS2"
         f.write(struct.pack('<I', count))
         f.write(x_arr.tobytes())
+        f.write(y_arr.tobytes())
         f.write(z_arr.tobytes())
         f.write(type_arr.tobytes())
+        f.write(path_prox_u8.tobytes())
 
     size_mb = os.path.getsize(out_path) / (1024 * 1024)
     names = ["SheepMeadow","GreatLawn","NorthMeadow","FormalGarden","SportsTurf",
              "NorthWoods","Ramble","Waterside","WildMeadow","OpenLawn"]
     breakdown = ", ".join(f"{names[i]}={int(np.sum(type_arr==i))}" for i in range(10) if np.sum(type_arr==i) > 0)
-    print(f"  Grass: {count} instances → {size_mb:.1f} MB")
+    print(f"  Grass: {count} instances (v2 format) → {size_mb:.1f} MB")
     print(f"    {breakdown}")
 
 

@@ -89,6 +89,14 @@ func _build_grass() -> void:
 	var type_arr: PackedByteArray = instances[2]
 	var count: int = x_arr.size()
 
+	# v2 format has pre-baked Y + path proximity (no atlas lookups needed)
+	var has_v2 := instances.size() >= 5
+	var y_arr: PackedFloat32Array
+	var prox_arr: PackedByteArray
+	if has_v2:
+		y_arr = instances[3]
+		prox_arr = instances[4]
+
 	# Build transforms and group by type + spatial chunk
 	var chunks: Dictionary = {}
 	var total := 0
@@ -110,52 +118,49 @@ func _build_grass() -> void:
 				continue
 
 		rng.seed = int(wx * 73856.0 + wz * 19349.0) & 0x7FFFFFFF
-		# Jitter position to break up grid regularity — offset within ±0.9m
-		# (stride is ~1.83m at 8K, so ±0.9m gives nearly full-stride randomization)
-		var jx: float = wx + rng.randf_range(-0.9, 0.9)
-		var jz: float = wz + rng.randf_range(-0.9, 0.9)
-		var wy: float = _loader._terrain_y(jx, jz) + 0.002
 
-		# Skip grass near water — prevents checkerboard at water body edges
-		var _s0: int = _loader._atlas_surface(jx, jz)
-		if _s0 == 4:  # on water cell
-			continue
-		# Check if any neighbor is water — skip grass within 2m of water
-		var near_water := false
-		for _woff in [Vector2(1,0), Vector2(-1,0), Vector2(0,1), Vector2(0,-1),
-					   Vector2(1.5,0), Vector2(-1.5,0), Vector2(0,1.5), Vector2(0,-1.5)]:
-			if _loader._atlas_surface(jx + _woff.x, jz + _woff.y) == 4:
-				near_water = true
-				break
-		if near_water:
-			continue
-
-		# Path proximity: check nearby cells for paved/unpaved (types 2,3)
-		# Encodes 0.0 (far from path) to 1.0 (right at path edge)
-		# Check 8 directions at 1m and 2m (fast — only 9 lookups per instance)
-		var path_prox := 0.0
-		if _s0 == 2 or _s0 == 3:
-			path_prox = 1.0
+		var wy: float
+		var path_prox: float
+		if has_v2:
+			# v2: Y and path_prox pre-baked in Python, water already filtered
+			wy = y_arr[i]
+			path_prox = float(prox_arr[i]) / 255.0
 		else:
-			for _off in [Vector2(1,0), Vector2(-1,0), Vector2(0,1), Vector2(0,-1)]:
-				var s1: int = _loader._atlas_surface(jx + _off.x, jz + _off.y)
-				if s1 == 2 or s1 == 3:
-					path_prox = maxf(path_prox, 0.8)
-				else:
-					var s2: int = _loader._atlas_surface(jx + _off.x * 2.0, jz + _off.y * 2.0)
-					if s2 == 2 or s2 == 3:
-						path_prox = maxf(path_prox, 0.4)
+			# v1 fallback: runtime lookups (slow — re-bake to get v2)
+			var jx: float = wx + rng.randf_range(-0.9, 0.9)
+			var jz: float = wz + rng.randf_range(-0.9, 0.9)
+			wy = _loader._terrain_y(jx, jz) + 0.002
+			var _s0: int = _loader._atlas_surface(jx, jz)
+			if _s0 == 4:
+				continue
+			var near_water := false
+			for _woff in [Vector2(1,0), Vector2(-1,0), Vector2(0,1), Vector2(0,-1),
+						   Vector2(1.5,0), Vector2(-1.5,0), Vector2(0,1.5), Vector2(0,-1.5)]:
+				if _loader._atlas_surface(jx + _woff.x, jz + _woff.y) == 4:
+					near_water = true
+					break
+			if near_water:
+				continue
+			path_prox = 0.0
+			if _s0 == 2 or _s0 == 3:
+				path_prox = 1.0
+			else:
+				for _off in [Vector2(1,0), Vector2(-1,0), Vector2(0,1), Vector2(0,-1)]:
+					var s1: int = _loader._atlas_surface(jx + _off.x, jz + _off.y)
+					if s1 == 2 or s1 == 3:
+						path_prox = maxf(path_prox, 0.8)
+					else:
+						var s2: int = _loader._atlas_surface(jx + _off.x * 2.0, jz + _off.y * 2.0)
+						if s2 == 2 or s2 == 3:
+							path_prox = maxf(path_prox, 0.4)
 
 		var y_rot := rng.randf() * TAU
-		# Decouple XZ scale (coverage) from Y scale (height) — wide XZ ensures
-		# overlap between neighboring tiles, hiding the grid pattern.
-		var s_xz := rng.randf_range(1.0, 1.45)  # always >= tile radius, up to 45% larger
-		var s_y := rng.randf_range(0.85, 1.15)   # subtle height variation only
-		# Path-edge grass is shorter: scale down height near paths
+		var s_xz := rng.randf_range(1.0, 1.45)
+		var s_y := rng.randf_range(0.85, 1.15)
 		if path_prox > 0.1:
-			s_y *= lerpf(1.0, 0.55, path_prox)  # up to 45% shorter at edge
+			s_y *= lerpf(1.0, 0.55, path_prox)
 		var basis := Basis(Vector3.UP, y_rot).scaled(Vector3(s_xz, s_y, s_xz))
-		var tf := Transform3D(basis, Vector3(jx, wy, jz))
+		var tf := Transform3D(basis, Vector3(wx, wy, wz))
 
 		var cx := int(floorf(wx / CHUNK))
 		var cz := int(floorf(wz / CHUNK))
@@ -163,7 +168,6 @@ func _build_grass() -> void:
 		if not chunks.has(ck):
 			chunks[ck] = {"type": gtype, "xf": [], "cd": []}
 		chunks[ck]["xf"].append(tf)
-		# B channel = path proximity (0-1) for shader wear tinting
 		chunks[ck]["cd"].append(Color(float(gtype), rng.randf(), path_prox, 0.0))
 		total += 1
 		type_counts[gtype] += 1
@@ -245,27 +249,46 @@ func _load_instances() -> Array:
 			print("WARNING: grass_instances.bin not found")
 			return []
 
-		var cnt: int = f.get_32()
-		if cnt == 0:
-			return []
+		var magic: int = f.get_32()
+		if magic == 0x47525332:  # "GRS2" — v2 format with pre-baked Y + path proximity
+			var cnt: int = f.get_32()
+			if cnt == 0:
+				return []
+			var x_bytes := f.get_buffer(cnt * 4)
+			var y_bytes := f.get_buffer(cnt * 4)
+			var z_bytes := f.get_buffer(cnt * 4)
+			var t_bytes := f.get_buffer(cnt)
+			var pp_bytes := f.get_buffer(cnt)
 
-		var x_arr := PackedFloat32Array()
-		x_arr.resize(cnt)
-		var z_arr := PackedFloat32Array()
-		z_arr.resize(cnt)
-		var type_arr := PackedByteArray()
-		type_arr.resize(cnt)
-
-		var x_bytes := f.get_buffer(cnt * 4)
-		var z_bytes := f.get_buffer(cnt * 4)
-		var t_bytes := f.get_buffer(cnt)
-
-		for j in cnt:
-			x_arr[j] = x_bytes.decode_float(j * 4)
-			z_arr[j] = z_bytes.decode_float(j * 4)
-			type_arr[j] = t_bytes[j]
-
-		print("Grass: loaded %d prebaked instances" % cnt)
-		return [x_arr, z_arr, type_arr]
+			var x_arr := PackedFloat32Array(); x_arr.resize(cnt)
+			var y_arr := PackedFloat32Array(); y_arr.resize(cnt)
+			var z_arr := PackedFloat32Array(); z_arr.resize(cnt)
+			var type_arr := PackedByteArray(); type_arr.resize(cnt)
+			var prox_arr := PackedByteArray(); prox_arr.resize(cnt)
+			for j in cnt:
+				x_arr[j] = x_bytes.decode_float(j * 4)
+				y_arr[j] = y_bytes.decode_float(j * 4)
+				z_arr[j] = z_bytes.decode_float(j * 4)
+				type_arr[j] = t_bytes[j]
+				prox_arr[j] = pp_bytes[j]
+			print("Grass: loaded %d prebaked instances (v2 — Y + path_prox pre-baked)" % cnt)
+			return [x_arr, z_arr, type_arr, y_arr, prox_arr]
+		else:
+			# v1 format — magic was actually the count
+			var cnt: int = magic
+			if cnt == 0:
+				return []
+			var x_arr := PackedFloat32Array(); x_arr.resize(cnt)
+			var z_arr := PackedFloat32Array(); z_arr.resize(cnt)
+			var type_arr := PackedByteArray(); type_arr.resize(cnt)
+			var x_bytes := f.get_buffer(cnt * 4)
+			var z_bytes := f.get_buffer(cnt * 4)
+			var t_bytes := f.get_buffer(cnt)
+			for j in cnt:
+				x_arr[j] = x_bytes.decode_float(j * 4)
+				z_arr[j] = z_bytes.decode_float(j * 4)
+				type_arr[j] = t_bytes[j]
+			print("Grass: loaded %d prebaked instances (v1 — needs re-bake)" % cnt)
+			return [x_arr, z_arr, type_arr]
 
 	return []
