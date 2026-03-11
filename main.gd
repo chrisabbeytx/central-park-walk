@@ -924,11 +924,7 @@ func _setup_environment() -> void:
 	_env.ambient_light_sky_contribution = 0.3
 	_env.tonemap_mode          = Environment.TONE_MAPPER_FILMIC
 	_env.tonemap_white         = 6.0
-	# Glow disabled — diagnostic test. Sub-pixel aliased geometry from aerial
-	# view (trees with alpha_to_coverage, building facades, terrain details)
-	# creates flickering bright pixels that glow blooms into visible circles.
-	# Never over water because water has no EMISSION and is geometrically flat.
-	_env.glow_enabled          = false
+	_env.glow_enabled          = true
 	_env.glow_blend_mode       = Environment.GLOW_BLEND_MODE_ADDITIVE
 	_env.ssao_enabled          = true
 	_env.ssao_detail           = 0.5
@@ -1285,10 +1281,19 @@ func _apply_time_of_day() -> void:
 	_env.tonemap_exposure = _lerp_kf("exposure", a, b, t)
 	_env.tonemap_white    = _lerp_kf("white", a, b, t)
 
-	# Glow
-	_env.glow_intensity         = _lerp_kf("glow_intensity", a, b, t)
-	_env.glow_bloom             = _lerp_kf("glow_bloom", a, b, t)
-	_env.glow_strength          = _lerp_kf("glow_strength", a, b, t)
+	# Glow — attenuated by camera height to prevent sub-pixel aliased geometry
+	# (tree leaves, facades, terrain) from blooming into circular artifacts
+	# when viewed from aerial distances. Full bloom at ground level, zero above 80m.
+	var glow_base_intensity := _lerp_kf("glow_intensity", a, b, t)
+	var glow_base_bloom     := _lerp_kf("glow_bloom", a, b, t)
+	var glow_base_strength  := _lerp_kf("glow_strength", a, b, t)
+	var cam_y := _player.global_position.y if _player else 0.0
+	var terrain_y := _terrain_height(_player.global_position.x, _player.global_position.z) if _player else 0.0
+	var height_above_ground := maxf(cam_y - terrain_y, 0.0)
+	var glow_fade := 1.0 - clampf((height_above_ground - 20.0) / 60.0, 0.0, 1.0)  # full at <20m, zero at >80m
+	_env.glow_intensity         = glow_base_intensity * glow_fade
+	_env.glow_bloom             = glow_base_bloom * glow_fade
+	_env.glow_strength          = glow_base_strength * glow_fade
 	_env.glow_hdr_threshold     = _lerp_kf("glow_threshold", a, b, t)
 	_env.glow_hdr_luminance_cap = _lerp_kf("glow_cap", a, b, t)
 
