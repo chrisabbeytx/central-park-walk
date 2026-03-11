@@ -941,18 +941,17 @@ func _setup_environment() -> void:
 	_env.glow_blend_mode       = Environment.GLOW_BLEND_MODE_ADDITIVE
 	_env.ssao_enabled          = true
 	_env.ssao_detail           = 0.5
-	# SSR disabled — screen-space reflections on water produce multi-colored
-	# temporal artifacts from aerial view (confirmed fixed).
-	# SSIL disabled — similar screen-space temporal artifacts.
-	_env.ssil_enabled          = false
+	_env.ssil_enabled          = true
+	_env.ssil_radius           = 5.0
+	_env.ssil_sharpness        = 0.98
+	# SSR disabled — screen-space reflections produce multi-colored temporal
+	# artifacts on water surfaces from aerial view (confirmed).
 	_env.ssr_enabled           = false
 	_env.adjustment_enabled    = true
 	_env.adjustment_brightness = 1.02
 	_env.fog_enabled           = true
 
 	# Volumetric fog — light shafts (god rays at sunrise/sunset via high anisotropy)
-	# Temporal reprojection disabled — produces temporal noise that glow blooms
-	# into visible circular artifacts at any camera height.
 	_env.volumetric_fog_enabled = true
 	_env.volumetric_fog_density = 0.0001
 	_env.volumetric_fog_albedo = Color(1.0, 1.0, 1.0)
@@ -962,14 +961,21 @@ func _setup_environment() -> void:
 	_env.volumetric_fog_length = 100.0
 	_env.volumetric_fog_detail_spread = 2.0
 	_env.volumetric_fog_ambient_inject = 0.15
-	_env.volumetric_fog_gi_inject = 0.0
+	_env.volumetric_fog_gi_inject = 0.2
 	_env.volumetric_fog_sky_affect = 0.20
-	_env.volumetric_fog_temporal_reprojection_enabled = false
+	_env.volumetric_fog_temporal_reprojection_enabled = true
 
-	# SDFGI disabled — probe reconvergence produces temporal bright pixels that
-	# glow blooms into multi-colored circular artifacts at all camera heights.
-	# Ambient lighting + SSAO + direct lights provide sufficient illumination.
-	_env.sdfgi_enabled = false
+	# SDFGI — global illumination (green bounce under canopies, warm path reflections)
+	_env.sdfgi_enabled = true
+	_env.sdfgi_use_occlusion = true
+	_env.sdfgi_read_sky_light = true
+	_env.sdfgi_bounce_feedback = 0.5
+	_env.sdfgi_cascades = 4
+	_env.sdfgi_min_cell_size = 0.4
+	_env.sdfgi_y_scale = Environment.SDFGI_Y_SCALE_75_PERCENT
+	_env.sdfgi_energy = 0.8
+	_env.sdfgi_normal_bias = 1.1
+	_env.sdfgi_probe_bias = 1.1
 
 	var world_env := WorldEnvironment.new()
 	world_env.environment = _env
@@ -1006,7 +1012,7 @@ func _build_keyframes() -> void:
 		"glow_intensity": 0.6,
 		"glow_bloom":     0.08,
 		"glow_strength":  0.7,
-		"glow_threshold": 0.55,
+		"glow_threshold": 1.0,   # high enough to skip wind-flickering SSS on tree leaves
 		"glow_cap":       5.0,
 		"ssao_radius":    2.0,
 		"ssao_intensity": 2.2,
@@ -1188,7 +1194,7 @@ func _build_keyframes() -> void:
 		"glow_intensity": 0.45,
 		"glow_bloom":     0.06,
 		"glow_strength":  0.6,
-		"glow_threshold": 0.65,
+		"glow_threshold": 1.0,   # high enough to skip wind-flickering SSS on tree leaves
 		"glow_cap":       5.0,
 		"ssao_radius":    2.0,
 		"ssao_intensity": 2.2,
@@ -1301,7 +1307,8 @@ func _apply_time_of_day() -> void:
 	_env.ssao_intensity = _lerp_kf("ssao_intensity", a, b, t)
 	_env.ssao_power     = _lerp_kf("ssao_power", a, b, t)
 
-	# SSIL disabled (temporal screen-space artifacts)
+	# SSIL
+	_env.ssil_intensity = _lerp_kf("ssil_intensity", a, b, t)
 
 	# Colour grading
 	_env.adjustment_saturation = _lerp_kf("saturation", a, b, t)
