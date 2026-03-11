@@ -257,9 +257,7 @@ func _build_water(water: Array) -> void:
 			_build_fountain(body)
 			continue
 
-		# Conservatory Water: add Atlantic Blue granite curb ring
-		if bname.to_lower().contains("conservatory"):
-			_build_water_curb(pts, Color(0.36, 0.42, 0.48))  # Atlantic Blue granite
+		# Conservatory Water curb ring — needs Blender model
 
 		# Water level = minimum terrain height along the shore + small offset.
 		var wy := INF

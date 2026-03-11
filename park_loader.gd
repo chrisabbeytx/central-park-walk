@@ -962,56 +962,57 @@ func _ready() -> void:
 
 	var _t0 := Time.get_ticks_msec()
 	var _tp := _t0
-	_building_builder._build_buildings(buildings)
-	print("  buildings: %d ms" % (Time.get_ticks_msec() - _tp)); _tp = Time.get_ticks_msec()
+
+	# --- Labels (informational text only) ---
 	_boundary_builder._label_boundary_buildings(buildings)
 	_build_bridge_tunnel_labels(paths)
-	_build_bridge_models()
-	print("  labels+bridges: %d ms" % (Time.get_ticks_msec() - _tp)); _tp = Time.get_ticks_msec()
-	_water_builder._build_water(water)
-	_water_builder._build_streams(streams)
-	print("  water: %d ms" % (Time.get_ticks_msec() - _tp)); _tp = Time.get_ticks_msec()
 	_infrastructure_builder._build_labels(water)
+	_infrastructure_builder._build_facilities(facilities)
+	_infrastructure_builder._build_viewpoints(viewpoints)
+	_infrastructure_builder._build_attractions(attractions)
+	_infrastructure_builder._build_gardens()  # labels only (hedge geometry removed)
+	_infrastructure_builder._build_meadow_labels()
+	_infrastructure_builder._build_special_zone_labels()
+	_gap_builder._build_gap_markers()
+	print("  labels: %d ms" % (Time.get_ticks_msec() - _tp)); _tp = Time.get_ticks_msec()
+
+	# --- Blender GLB models (data-positioned) ---
+	_build_bridge_models()
+	print("  bridge models: %d ms" % (Time.get_ticks_msec() - _tp)); _tp = Time.get_ticks_msec()
 	_tree_builder._build_trees(trees)
 	print("  trees: %d ms" % (Time.get_ticks_msec() - _tp)); _tp = Time.get_ticks_msec()
 	_grass_builder._build_grass()
 	print("  grass: %d ms" % (Time.get_ticks_msec() - _tp)); _tp = Time.get_ticks_msec()
-	_path_builder._build_paths(paths)
-	print("  paths: %d ms" % (Time.get_ticks_msec() - _tp)); _tp = Time.get_ticks_msec()
 	_furniture_builder._build_furniture(benches, lampposts, paths)
 	_furniture_builder._build_trash_cans(trash_cans, paths)
 	_furniture_builder._build_flagpoles(flagpoles)
-
 	print("  furniture: %d ms" % (Time.get_ticks_msec() - _tp)); _tp = Time.get_ticks_msec()
-	_infrastructure_builder._build_barriers(barriers)
-	print("    barriers: %d ms" % (Time.get_ticks_msec() - _tp)); _tp = Time.get_ticks_msec()
-	_infrastructure_builder._build_staircases(paths)
-	print("    staircases: %d ms" % (Time.get_ticks_msec() - _tp)); _tp = Time.get_ticks_msec()
 	_infrastructure_builder._build_statues(statues)
-	print("    statues: %d ms" % (Time.get_ticks_msec() - _tp)); _tp = Time.get_ticks_msec()
-	_infrastructure_builder._build_amenities(amenities)
-	_infrastructure_builder._build_fountains(amenities)
-	print("    amenities+fountains: %d ms" % (Time.get_ticks_msec() - _tp)); _tp = Time.get_ticks_msec()
-	_infrastructure_builder._build_playgrounds(playgrounds)
-	print("    playgrounds: %d ms" % (Time.get_ticks_msec() - _tp)); _tp = Time.get_ticks_msec()
-	_infrastructure_builder._build_facilities(facilities)
-	_infrastructure_builder._build_viewpoints(viewpoints)
-	_infrastructure_builder._build_attractions(attractions)
-	print("    facilities+views+attractions: %d ms" % (Time.get_ticks_msec() - _tp)); _tp = Time.get_ticks_msec()
+	_infrastructure_builder._build_amenities(amenities)  # GLB drinking fountains + labels
+	print("  statues+amenities: %d ms" % (Time.get_ticks_msec() - _tp)); _tp = Time.get_ticks_msec()
+
+	# --- Water surfaces (dynamic shader effect positioned by data) ---
+	_water_builder._build_water(water)
+	_water_builder._build_streams(streams)
+	print("  water: %d ms" % (Time.get_ticks_msec() - _tp)); _tp = Time.get_ticks_msec()
+
+	# --- Boundary collision (invisible walls, functional only) ---
 	_boundary_builder._build_boundary(boundary)
-	print("  boundary: %d ms" % (Time.get_ticks_msec() - _tp)); _tp = Time.get_ticks_msec()
-	_infrastructure_builder._build_field_markings()
-	print("    field_markings: %d ms" % (Time.get_ticks_msec() - _tp)); _tp = Time.get_ticks_msec()
-	_infrastructure_builder._build_gardens()
-	_infrastructure_builder._build_dog_parks()
-	_infrastructure_builder._build_pools()
-	_infrastructure_builder._build_bandstands()
-	_infrastructure_builder._build_meadow_labels()
-	_infrastructure_builder._build_shrubbery(shrubbery)
-	_infrastructure_builder._build_special_zone_labels()
-	print("  fields+gardens: %d ms" % (Time.get_ticks_msec() - _tp)); _tp = Time.get_ticks_msec()
-	_gap_builder._build_gap_markers()
-	print("  gap markers: %d ms" % (Time.get_ticks_msec() - _tp))
+	print("  boundary collision: %d ms" % (Time.get_ticks_msec() - _tp)); _tp = Time.get_ticks_msec()
+
+	# --- REMOVED: procedural stable geometry (needs Blender models) ---
+	# _building_builder._build_buildings(buildings)  — walls, roofs, setbacks, cornices
+	# _path_builder._build_paths(paths)              — ribbon mesh + curbs
+	# _infrastructure_builder._build_barriers(barriers)  — walls, fences, hedges
+	# _infrastructure_builder._build_staircases(paths)   — stair treads + railings
+	# _infrastructure_builder._build_fountains(amenities) — stone basins
+	# _infrastructure_builder._build_playgrounds(playgrounds) — ground polygons
+	# _infrastructure_builder._build_field_markings()    — court surfaces + lines
+	# _infrastructure_builder._build_dog_parks()         — fences + ground
+	# _infrastructure_builder._build_pools()             — pool rims + water
+	# _infrastructure_builder._build_bandstands()        — raised platforms
+	# _infrastructure_builder._build_shrubbery(shrubbery) — hedge volumes
+
 	print("ParkLoader: done in %d ms total" % (Time.get_ticks_msec() - _t0))
 
 
