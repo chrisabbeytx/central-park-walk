@@ -201,7 +201,7 @@ func _ready() -> void:
 	if _park_loader and _park_loader.boundary_polygon.size() > 2:
 		_player.boundary_polygon = _park_loader.boundary_polygon
 	_setup_hud()
-	_setup_color_grade()  # TEST 8: color grade shader
+	#_setup_color_grade()  # causes orbs on water (amplifies spotlight specular)
 	_setup_letterbox()
 	if not _terrain_only:
 		_setup_lamp_lights()
