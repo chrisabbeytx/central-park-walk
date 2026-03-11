@@ -618,18 +618,17 @@ func _process(delta: float) -> void:
 	if absf(_time_of_day - _last_applied_tod) > 0.01 or _last_applied_tod < 0.0:
 		_apply_time_of_day()
 
-	# ===== POST-FX BASELINE TEST — glow height fade disabled =====
-	# if _env and _player:
-	# 	var cam_y: float = _player.global_position.y
-	# 	var terr_y: float = _terrain_height(_player.global_position.x, _player.global_position.z)
-	# 	var hag: float = maxf(cam_y - terr_y, 0.0)
-	# 	var gfade: float = 1.0 - clampf((hag - 20.0) / 60.0, 0.0, 1.0)
-	# 	_env.glow_enabled = gfade > 0.01
-	# 	if _env.glow_enabled:
-	# 		_env.glow_intensity *= gfade
-	# 		_env.glow_bloom    *= gfade
-	# 		_env.glow_strength *= gfade
-	# ===== END POST-FX BASELINE TEST =====
+	# Glow height fade — runs every frame (camera-dependent, not time-dependent).
+	if _env and _player:
+		var cam_y: float = _player.global_position.y
+		var terr_y: float = _terrain_height(_player.global_position.x, _player.global_position.z)
+		var hag: float = maxf(cam_y - terr_y, 0.0)
+		var gfade: float = 1.0 - clampf((hag - 20.0) / 60.0, 0.0, 1.0)
+		_env.glow_enabled = gfade > 0.01
+		if _env.glow_enabled:
+			_env.glow_intensity *= gfade
+			_env.glow_bloom    *= gfade
+			_env.glow_strength *= gfade
 
 	# Letterbox bar sizing (adapts to viewport resize)
 	if _letterbox_on and _letterbox_top:
@@ -939,7 +938,7 @@ func _setup_environment() -> void:
 	# Re-enable one at a time to find the artifact source.
 	_env.tonemap_mode          = Environment.TONE_MAPPER_FILMIC  # TEST 1: filmic tonemap
 	_env.tonemap_white         = 6.0
-	_env.glow_enabled          = false   # OFF
+	_env.glow_enabled          = true    # TEST 7: glow
 	_env.ssao_enabled          = true    # TEST 3: SSAO
 	_env.ssil_enabled          = false   # CONFIRMED: causes blip artifacts
 	_env.ssr_enabled           = false   # OFF
@@ -1270,11 +1269,11 @@ func _apply_time_of_day() -> void:
 	# ===== POST-FX BASELINE TEST — skip all post-processing updates =====
 	# Glow, SSAO, SSIL, adjustment, fog, volumetric fog all disabled.
 	# Only ambient + tonemapping exposure still update (needed for basic lighting).
-	# _env.glow_intensity         = _lerp_kf("glow_intensity", a, b, t)
-	# _env.glow_bloom             = _lerp_kf("glow_bloom", a, b, t)
-	# _env.glow_strength          = _lerp_kf("glow_strength", a, b, t)
-	# _env.glow_hdr_threshold     = _lerp_kf("glow_threshold", a, b, t)
-	# _env.glow_hdr_luminance_cap = _lerp_kf("glow_cap", a, b, t)
+	_env.glow_intensity         = _lerp_kf("glow_intensity", a, b, t)  # TEST 7
+	_env.glow_bloom             = _lerp_kf("glow_bloom", a, b, t)
+	_env.glow_strength          = _lerp_kf("glow_strength", a, b, t)
+	_env.glow_hdr_threshold     = _lerp_kf("glow_threshold", a, b, t)
+	_env.glow_hdr_luminance_cap = _lerp_kf("glow_cap", a, b, t)
 	_env.ssao_radius    = _lerp_kf("ssao_radius", a, b, t)             # TEST 3
 	_env.ssao_intensity = _lerp_kf("ssao_intensity", a, b, t)
 	_env.ssao_power     = _lerp_kf("ssao_power", a, b, t)
