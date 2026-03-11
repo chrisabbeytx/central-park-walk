@@ -941,19 +941,9 @@ func _setup_environment() -> void:
 	_env.adjustment_brightness = 1.02
 	_env.fog_enabled           = true
 
-	# Volumetric fog — light shafts (god rays at sunrise/sunset via high anisotropy)
-	_env.volumetric_fog_enabled = true
-	_env.volumetric_fog_density = 0.0001
-	_env.volumetric_fog_albedo = Color(1.0, 1.0, 1.0)
-	_env.volumetric_fog_emission = Color(0.8, 0.85, 0.9)
-	_env.volumetric_fog_emission_energy = 0.08
-	_env.volumetric_fog_anisotropy = 0.3
-	_env.volumetric_fog_length = 100.0
-	_env.volumetric_fog_detail_spread = 2.0
-	_env.volumetric_fog_ambient_inject = 0.15
-	_env.volumetric_fog_gi_inject = 0.0  # no GI to inject (SDFGI disabled)
-	_env.volumetric_fog_sky_affect = 0.20
-	_env.volumetric_fog_temporal_reprojection_enabled = true
+	# Volumetric fog disabled for diagnostic — testing if temporal reprojection
+	# causes the circular blob artifacts visible from aerial view.
+	_env.volumetric_fog_enabled = false
 
 	# SDFGI disabled — probe reconvergence produces temporal colored light leaks
 	# from aerial view, amplified by glow bloom into multi-colored blob artifacts.
