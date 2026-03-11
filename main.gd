@@ -941,9 +941,9 @@ func _setup_environment() -> void:
 	_env.tonemap_white         = 6.0
 	_env.glow_enabled          = false   # OFF
 	_env.ssao_enabled          = true    # TEST 3: SSAO
-	_env.ssil_enabled          = true    # TEST 4: SSIL
+	_env.ssil_enabled          = false   # CONFIRMED: causes blip artifacts
 	_env.ssr_enabled           = false   # OFF
-	_env.adjustment_enabled    = false   # OFF
+	_env.adjustment_enabled    = true    # TEST 5: adjustment
 	_env.fog_enabled           = true    # TEST 2: fog
 	_env.volumetric_fog_enabled = false  # OFF
 	_env.sdfgi_enabled         = false   # OFF
@@ -1278,12 +1278,12 @@ func _apply_time_of_day() -> void:
 	_env.ssao_radius    = _lerp_kf("ssao_radius", a, b, t)             # TEST 3
 	_env.ssao_intensity = _lerp_kf("ssao_intensity", a, b, t)
 	_env.ssao_power     = _lerp_kf("ssao_power", a, b, t)
-	_env.ssil_intensity = _lerp_kf("ssil_intensity", a, b, t)          # TEST 4
-	# _env.adjustment_saturation = _lerp_kf("saturation", a, b, t)
-	# _env.adjustment_contrast   = _lerp_kf("contrast", a, b, t)
-	# _env.adjustment_brightness = _lerp_kf("brightness", a, b, t) * _user_gamma
-	# if _lightning_flash > 0.01:
-	# 	_env.adjustment_brightness *= (1.0 + _lightning_flash * 3.0)
+	# _env.ssil_intensity = _lerp_kf("ssil_intensity", a, b, t)  # SSIL disabled
+	_env.adjustment_saturation = _lerp_kf("saturation", a, b, t)       # TEST 5
+	_env.adjustment_contrast   = _lerp_kf("contrast", a, b, t)
+	_env.adjustment_brightness = _lerp_kf("brightness", a, b, t) * _user_gamma
+	if _lightning_flash > 0.01:
+		_env.adjustment_brightness *= (1.0 + _lightning_flash * 3.0)
 	_env.fog_light_color       = _lerp_kf("fog_color", a, b, t)       # TEST 2
 	_env.fog_light_energy      = _lerp_kf("fog_energy", a, b, t)
 	_env.fog_sun_scatter       = _lerp_kf("fog_scatter", a, b, t)
