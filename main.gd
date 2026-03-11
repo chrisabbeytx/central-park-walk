@@ -57,7 +57,6 @@ var _lamp_light_timer: float = 0.0
 var _lightning_timer: float = 0.0
 var _lightning_flash: float = 0.0     # 0-1 current flash intensity (decays rapidly)
 var _lightning_next: float = 5.0      # seconds until next flash
-var _scene_age: float = 0.0           # seconds since scene load — suppress glow during convergence
 const LAMP_LIGHT_COUNT := 48
 const LAMP_LIGHT_RANGE := 22.0
 const LAMP_LIGHT_UPDATE_INTERVAL := 0.5  # seconds between position updates
@@ -619,24 +618,6 @@ func _process(delta: float) -> void:
 	if absf(_time_of_day - _last_applied_tod) > 0.01 or _last_applied_tod < 0.0:
 		_apply_time_of_day()
 
-	# Glow: convergence suppression + altitude threshold boost — runs every frame.
-	_scene_age += delta
-	if _env and _player:
-		# Suppress glow for first 3s while temporal buffers converge
-		var age_fade: float = clampf((_scene_age - 2.0) / 1.0, 0.0, 1.0)
-		_env.glow_enabled = age_fade > 0.01
-		if _env.glow_enabled and age_fade < 1.0:
-			_env.glow_intensity *= age_fade
-			_env.glow_bloom    *= age_fade
-			_env.glow_strength *= age_fade
-		# Raise glow threshold with altitude — sub-pixel geometry flicker at distance
-		# Ground: use keyframe threshold (1.8). Aerial (80m+): push to 5.0+
-		var cam_y: float = _player.global_position.y
-		var terr_y: float = _terrain_height(_player.global_position.x, _player.global_position.z)
-		var hag: float = maxf(cam_y - terr_y, 0.0)
-		var alt_boost: float = clampf((hag - 20.0) / 60.0, 0.0, 1.0) * 3.5
-		_env.glow_hdr_threshold += alt_boost
-
 	# Letterbox bar sizing (adapts to viewport resize)
 	if _letterbox_on and _letterbox_top:
 		var vp := get_viewport().get_visible_rect().size
@@ -943,8 +924,7 @@ func _setup_environment() -> void:
 	_env.ambient_light_sky_contribution = 0.3
 	_env.tonemap_mode          = Environment.TONE_MAPPER_FILMIC
 	_env.tonemap_white         = 6.0
-	_env.glow_enabled          = true
-	_env.glow_blend_mode       = Environment.GLOW_BLEND_MODE_ADDITIVE
+	_env.glow_enabled          = false   # glow causes temporal blip artifacts with dense geometry
 	_env.ssao_enabled          = true
 	_env.ssao_detail           = 0.5
 	_env.ssil_enabled          = false   # causes yellow shield artifacts (temporal accumulation)

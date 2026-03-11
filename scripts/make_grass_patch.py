@@ -359,14 +359,14 @@ GRASS_TYPES = [
         "clover_pct": 0.02,
         "seed": 277,
     },
-    # 7: Waterside — C Lawn, taller moisture-loving, curved blades
+    # 7: Waterside — C Lawn, moisture-loving, gently curved blades
     {
         "name": "Grass_Tile_Waterside",
         "blade_count": 600,
         "radius": 0.90,
-        "height_range": (0.05, 0.10),
-        "width_range": (0.012, 0.020),
-        "arch_range": (0.020, 0.060),
+        "height_range": (0.05, 0.08),
+        "width_range": (0.010, 0.018),
+        "arch_range": (0.015, 0.040),
         "segments": 2,
         "base_rgb": (0.14, 0.34, 0.06),
         "tip_rgb": (0.35, 0.55, 0.20),
@@ -375,18 +375,18 @@ GRASS_TYPES = [
         "clover_pct": 0.02,
         "seed": 313,
     },
-    # 8: Wild meadow — unmowed nature reserve, BotW-style flowing grass
-    #    3-segment dramatic arch, golden tips, abundant wildflowers
+    # 8: Wild meadow — nature reserve, slightly unkempt but still managed parkland
+    #    2-segment gentle curve, wildflowers present but grass height modest
     {
         "name": "Grass_Tile_WildMeadow",
         "blade_count": 500,
         "radius": 0.95,
-        "height_range": (0.12, 0.25),
-        "width_range": (0.012, 0.020),
-        "arch_range": (0.040, 0.100),
-        "segments": 3,
+        "height_range": (0.06, 0.10),
+        "width_range": (0.010, 0.018),
+        "arch_range": (0.015, 0.045),
+        "segments": 2,
         "base_rgb": (0.14, 0.32, 0.05),
-        "tip_rgb": (0.45, 0.48, 0.20),
+        "tip_rgb": (0.40, 0.45, 0.18),
         "color_var": 0.06,
         "flower_pct": 0.10,
         "clover_pct": 0.03,

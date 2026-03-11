@@ -1,0 +1,35 @@
+{
+	"angles": 5,
+	"shots": [
+		{
+			"filename": "cpw_skyline_autumn_dusk.png",
+			"hour": 19.0,
+			"name": "cpw_skyline_autumn_dusk",
+			"x": -600.0,
+			"z": 1420.0
+		},
+		{
+			"filename": "conservatory_rain_afternoon.png",
+			"hour": 15.0,
+			"name": "conservatory_rain_afternoon",
+			"x": -152.0,
+			"z": 958.0
+		},
+		{
+			"filename": "sheep_meadow_winter_noon.png",
+			"hour": 12.0,
+			"name": "sheep_meadow_winter_noon",
+			"x": -700.0,
+			"z": 1600.0
+		},
+		{
+			"filename": "north_woods_snow_morning.png",
+			"hour": 9.0,
+			"name": "north_woods_snow_morning",
+			"x": 600.0,
+			"z": -1315.0
+		}
+	],
+	"times": 4,
+	"viewpoints": 17
+}
