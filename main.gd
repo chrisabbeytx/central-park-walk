@@ -1284,13 +1284,13 @@ func _apply_time_of_day() -> void:
 	# Glow — attenuated by camera height to prevent sub-pixel aliased geometry
 	# (tree leaves, facades, terrain) from blooming into circular artifacts
 	# when viewed from aerial distances. Full bloom at ground level, zero above 80m.
-	var glow_base_intensity := _lerp_kf("glow_intensity", a, b, t)
-	var glow_base_bloom     := _lerp_kf("glow_bloom", a, b, t)
-	var glow_base_strength  := _lerp_kf("glow_strength", a, b, t)
-	var cam_y := _player.global_position.y if _player else 0.0
-	var terrain_y := _terrain_height(_player.global_position.x, _player.global_position.z) if _player else 0.0
-	var height_above_ground := maxf(cam_y - terrain_y, 0.0)
-	var glow_fade := 1.0 - clampf((height_above_ground - 20.0) / 60.0, 0.0, 1.0)  # full at <20m, zero at >80m
+	var glow_base_intensity: float = _lerp_kf("glow_intensity", a, b, t)
+	var glow_base_bloom: float     = _lerp_kf("glow_bloom", a, b, t)
+	var glow_base_strength: float  = _lerp_kf("glow_strength", a, b, t)
+	var cam_y: float = _player.global_position.y if _player else 0.0
+	var terrain_y: float = _terrain_height(_player.global_position.x, _player.global_position.z) if _player else 0.0
+	var height_above_ground: float = maxf(cam_y - terrain_y, 0.0)
+	var glow_fade: float = 1.0 - clampf((height_above_ground - 20.0) / 60.0, 0.0, 1.0)  # full at <20m, zero at >80m
 	_env.glow_intensity         = glow_base_intensity * glow_fade
 	_env.glow_bloom             = glow_base_bloom * glow_fade
 	_env.glow_strength          = glow_base_strength * glow_fade
