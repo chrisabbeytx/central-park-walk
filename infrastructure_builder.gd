@@ -619,8 +619,8 @@ func _build_statues(statues: Array) -> void:
 		if not FileAccess.file_exists(abs_path):
 			continue
 		# Try cached PackedScene first (much faster than GLTFDocument parsing)
-		var cache_path := cache_dir + def["file"].replace(".glb", ".scn")
-		var abs_cache := ProjectSettings.globalize_path(cache_path)
+		var cache_path: String = cache_dir + str(def["file"]).replace(".glb", ".scn")
+		var abs_cache: String = ProjectSettings.globalize_path(cache_path)
 		if FileAccess.file_exists(abs_cache):
 			var packed = ResourceLoader.load(cache_path)
 			if packed and packed is PackedScene:
