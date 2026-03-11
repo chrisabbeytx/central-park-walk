@@ -1000,8 +1000,11 @@ func _ready() -> void:
 	_boundary_builder._build_boundary(boundary)
 	print("  boundary collision: %d ms" % (Time.get_ticks_msec() - _tp)); _tp = Time.get_ticks_msec()
 
-	# --- REMOVED: procedural stable geometry (needs Blender models) ---
-	# _building_builder._build_buildings(buildings)  — walls, roofs, setbacks, cornices
+	# --- Buildings (procedural — restored for visual context) ---
+	_building_builder._build_buildings(buildings)
+	print("  buildings: %d ms" % (Time.get_ticks_msec() - _tp)); _tp = Time.get_ticks_msec()
+
+	# --- REMOVED: other procedural stable geometry (needs Blender models) ---
 	# _path_builder._build_paths(paths)              — ribbon mesh + curbs
 	# _infrastructure_builder._build_barriers(barriers)  — walls, fences, hedges
 	# _infrastructure_builder._build_staircases(paths)   — stair treads + railings
