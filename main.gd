@@ -619,7 +619,7 @@ func _process(delta: float) -> void:
 	if absf(_time_of_day - _last_applied_tod) > 0.01 or _last_applied_tod < 0.0:
 		_apply_time_of_day()
 
-	# Glow convergence suppression — runs every frame.
+	# Glow: convergence suppression + altitude threshold boost — runs every frame.
 	_scene_age += delta
 	if _env and _player:
 		# Suppress glow for first 3s while temporal buffers converge
@@ -629,6 +629,13 @@ func _process(delta: float) -> void:
 			_env.glow_intensity *= age_fade
 			_env.glow_bloom    *= age_fade
 			_env.glow_strength *= age_fade
+		# Raise glow threshold with altitude — sub-pixel geometry flicker at distance
+		# Ground: use keyframe threshold (1.8). Aerial (80m+): push to 5.0+
+		var cam_y: float = _player.global_position.y
+		var terr_y: float = _terrain_height(_player.global_position.x, _player.global_position.z)
+		var hag: float = maxf(cam_y - terr_y, 0.0)
+		var alt_boost: float = clampf((hag - 20.0) / 60.0, 0.0, 1.0) * 3.5
+		_env.glow_hdr_threshold += alt_boost
 
 	# Letterbox bar sizing (adapts to viewport resize)
 	if _letterbox_on and _letterbox_top:
