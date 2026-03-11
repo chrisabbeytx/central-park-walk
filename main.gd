@@ -954,17 +954,11 @@ func _setup_environment() -> void:
 	_env.volumetric_fog_sky_affect = 0.20
 	_env.volumetric_fog_temporal_reprojection_enabled = true
 
-	# SDFGI — global illumination (green bounce under canopies, warm path reflections)
-	_env.sdfgi_enabled = true
-	_env.sdfgi_use_occlusion = true
-	_env.sdfgi_read_sky_light = true
-	_env.sdfgi_bounce_feedback = 0.5
-	_env.sdfgi_cascades = 4
-	_env.sdfgi_min_cell_size = 0.4
-	_env.sdfgi_y_scale = Environment.SDFGI_Y_SCALE_75_PERCENT
-	_env.sdfgi_energy = 0.8
-	_env.sdfgi_normal_bias = 1.1
-	_env.sdfgi_probe_bias = 1.1
+	# SDFGI disabled — probe reconvergence with animated surfaces (grass wind,
+	# water waves) produces colored light artifacts that bloom into visible
+	# circles from aerial view at night. SSAO + SSIL + shader EMISSION provide
+	# sufficient ambient fill without the temporal instability.
+	_env.sdfgi_enabled = false
 
 	var world_env := WorldEnvironment.new()
 	world_env.environment = _env
@@ -2131,7 +2125,7 @@ func _setup_rain() -> void:
 	mat.no_depth_test = true
 	mat.emission_enabled = true
 	mat.emission = Color(0.4, 0.45, 0.55)
-	mat.emission_energy_multiplier = 0.04  # low: prevents bloom stacking
+	mat.emission_energy_multiplier = 0.2
 	_rain_particles.material_override = mat
 
 	add_child(_rain_particles)
@@ -2167,7 +2161,7 @@ func _setup_thunderstorm() -> void:
 	mat.no_depth_test = true
 	mat.emission_enabled = true
 	mat.emission = Color(0.35, 0.40, 0.50)
-	mat.emission_energy_multiplier = 0.05  # low: prevents bloom stacking
+	mat.emission_energy_multiplier = 0.25
 	_rain_particles.material_override = mat
 
 	add_child(_rain_particles)
@@ -2320,7 +2314,7 @@ func _setup_blossom_particles() -> void:
 	# Slight emission for that ethereal glow of sunlit petals
 	mat.emission_enabled = true
 	mat.emission = Color(0.95, 0.80, 0.82)
-	mat.emission_energy_multiplier = 0.03  # low: prevents bloom stacking from aerial view
+	mat.emission_energy_multiplier = 0.15
 	_blossom_particles.material_override = mat
 
 	add_child(_blossom_particles)

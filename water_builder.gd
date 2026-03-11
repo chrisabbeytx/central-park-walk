@@ -135,7 +135,7 @@ func _add_fountain_spray(x: float, y: float, z: float,
 	mat.shading_mode = BaseMaterial3D.SHADING_MODE_PER_PIXEL
 	mat.emission_enabled = true
 	mat.emission = Color(0.5, 0.55, 0.65)
-	mat.emission_energy_multiplier = 0.02  # low: prevents bloom stacking from aerial view
+	mat.emission_energy_multiplier = 0.15
 	particles.material_override = mat
 
 	particles.position = Vector3(x, y + 0.1, z)
