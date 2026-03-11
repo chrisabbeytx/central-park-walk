@@ -965,17 +965,10 @@ func _setup_environment() -> void:
 	_env.volumetric_fog_sky_affect = 0.20
 	_env.volumetric_fog_temporal_reprojection_enabled = true
 
-	# SDFGI — global illumination (green bounce under canopies, warm path reflections)
-	_env.sdfgi_enabled = true
-	_env.sdfgi_use_occlusion = true
-	_env.sdfgi_read_sky_light = true
-	_env.sdfgi_bounce_feedback = 0.5
-	_env.sdfgi_cascades = 4
-	_env.sdfgi_min_cell_size = 0.4
-	_env.sdfgi_y_scale = Environment.SDFGI_Y_SCALE_75_PERCENT
-	_env.sdfgi_energy = 0.8
-	_env.sdfgi_normal_bias = 1.1
-	_env.sdfgi_probe_bias = 1.1
+	# SDFGI disabled — probe temporal instability causes diamond-shaped artifacts
+	# that glow bloom amplifies into visible blips. SSIL provides indirect lighting
+	# without probe-based temporal artifacts.
+	_env.sdfgi_enabled = false
 
 	var world_env := WorldEnvironment.new()
 	world_env.environment = _env
