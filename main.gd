@@ -966,7 +966,7 @@ func _setup_environment() -> void:
 	_env.volumetric_fog_ambient_inject = 0.15
 	_env.volumetric_fog_gi_inject = 0.2
 	_env.volumetric_fog_sky_affect = 0.20
-	_env.volumetric_fog_temporal_reprojection_enabled = true
+	_env.volumetric_fog_temporal_reprojection_enabled = false
 
 	var world_env := WorldEnvironment.new()
 	world_env.environment = _env
