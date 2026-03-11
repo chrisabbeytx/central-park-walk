@@ -928,14 +928,14 @@ func _setup_environment() -> void:
 	_env.glow_blend_mode       = Environment.GLOW_BLEND_MODE_ADDITIVE
 	_env.ssao_enabled          = true
 	_env.ssao_detail           = 0.5
-	_env.ssil_enabled          = true
-	_env.ssil_radius           = 5.0
-	_env.ssil_sharpness        = 0.98
-	_env.ssr_enabled           = true
-	_env.ssr_max_steps         = 64
-	_env.ssr_fade_in           = 0.15
-	_env.ssr_fade_out          = 2.0
-	_env.ssr_depth_tolerance   = 0.2
+	# SSIL + SSR disabled — both are screen-space temporal effects that produce
+	# bright multi-colored blobs from aerial view. They sample screen pixels
+	# that don't correspond to correct geometry at extreme angles, generating
+	# garbage bright pixels (facade emission colors) that glow-bloom amplifies
+	# into visible circular artifacts. Disappear in rain/fog because atmospheric
+	# effects dominate the screen buffer. SDFGI provides better GI than SSIL.
+	_env.ssil_enabled          = false
+	_env.ssr_enabled           = false
 	_env.adjustment_enabled    = true
 	_env.adjustment_brightness = 1.02
 	_env.fog_enabled           = true
@@ -998,10 +998,10 @@ func _build_keyframes() -> void:
 		"ambient_energy": 0.40,   # NYC ambient from light pollution
 		"exposure":       0.85,
 		"white":          6.0,
-		"glow_intensity": 0.25,
-		"glow_bloom":     0.02,
-		"glow_strength":  0.5,
-		"glow_threshold": 1.2,   # high: only direct SpotLight3D bloom, not window emission (~0.77)
+		"glow_intensity": 0.6,
+		"glow_bloom":     0.08,
+		"glow_strength":  0.7,
+		"glow_threshold": 0.55,
 		"glow_cap":       5.0,
 		"ssao_radius":    2.0,
 		"ssao_intensity": 2.2,
@@ -1180,10 +1180,10 @@ func _build_keyframes() -> void:
 		"ambient_energy": 0.10,   # darker ambient — lets lamppost pools stand out more
 		"exposure":       0.92,   # darker overall — night IS dark even in NYC
 		"white":          6.0,
-		"glow_intensity": 0.20,
-		"glow_bloom":     0.02,
-		"glow_strength":  0.5,
-		"glow_threshold": 1.2,   # high: only direct SpotLight3D bloom, not window emission (~0.77)
+		"glow_intensity": 0.45,
+		"glow_bloom":     0.06,
+		"glow_strength":  0.6,
+		"glow_threshold": 0.65,
 		"glow_cap":       5.0,
 		"ssao_radius":    2.0,
 		"ssao_intensity": 2.2,
@@ -1296,8 +1296,7 @@ func _apply_time_of_day() -> void:
 	_env.ssao_intensity = _lerp_kf("ssao_intensity", a, b, t)
 	_env.ssao_power     = _lerp_kf("ssao_power", a, b, t)
 
-	# SSIL
-	_env.ssil_intensity = _lerp_kf("ssil_intensity", a, b, t)
+	# SSIL disabled (screen-space temporal artifacts from aerial view)
 
 	# Colour grading
 	_env.adjustment_saturation = _lerp_kf("saturation", a, b, t)
