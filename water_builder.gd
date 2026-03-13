@@ -218,7 +218,8 @@ func _imagine_mosaic_shader() -> String:
 	return "res://shaders/imagine_mosaic.gdshader"
 
 # ---------------------------------------------------------------------------
-# Water bodies – filled polygons triangulated with Geometry2D
+# Water bodies – prebaked grids from convert_to_godot.py (fast path)
+# Falls back to runtime Geometry2D if water_grids.bin not found
 # ---------------------------------------------------------------------------
 func _build_water(water: Array) -> void:
 	if water.is_empty():
@@ -226,21 +227,120 @@ func _build_water(water: Array) -> void:
 
 	var verts   := PackedVector3Array()
 	var normals := PackedVector3Array()
-	const WATER_CELL := 1.22  # grid cell size in metres — matches atlas grid (1.22m/cell)
+	var WATER_CELL: float = _loader._hm_world_size / 8192.0  # match atlas resolution
 
+	# --- Try prebaked water grids (eliminates ~244M point-in-polygon tests) ---
+	var grids := _load_water_grids()
+	if not grids.is_empty():
+		_build_water_from_grids(grids, verts, normals, WATER_CELL)
+	else:
+		push_warning("water_grids.bin not found — falling back to runtime polygon tests (slow)")
+		_build_water_runtime(water, verts, normals, WATER_CELL)
+
+	# --- Fountains still use runtime logic (small, fast) ---
+	for body in water:
+		var bname: String = str(body.get("name", ""))
+		if bname.to_lower().contains("fountain"):
+			_build_fountain(body)
+
+	_build_water_mesh(verts, normals, water)
+
+
+func _load_water_grids() -> Array:
+	## Load prebaked water_grids.bin → Array of {bb_min_x, bb_min_z, water_y, nx, nz, poly, inside}
+	var fh := FileAccess.open("res://water_grids.bin", FileAccess.READ)
+	if not fh:
+		return []
+	var magic := fh.get_buffer(4)
+	if magic.get_string_from_utf8() != "WGRD":
+		push_warning("water_grids.bin: bad magic")
+		return []
+	var count := fh.get_32()
+	var bodies: Array = []
+	for _i in count:
+		var name_len := fh.get_16()
+		var bname := fh.get_buffer(name_len).get_string_from_utf8()
+		var bb_min_x := fh.get_float()
+		var bb_min_z := fh.get_float()
+		var water_y := fh.get_float()
+		var nx := fh.get_32()
+		var nz := fh.get_32()
+		var poly_count := fh.get_32()
+		var poly := PackedVector2Array()
+		for _j in poly_count:
+			poly.append(Vector2(fh.get_float(), fh.get_float()))
+		var grid_size := (nx + 1) * (nz + 1)
+		var inside := fh.get_buffer(grid_size)
+		bodies.append({
+			"name": bname,
+			"bb_min_x": bb_min_x,
+			"bb_min_z": bb_min_z,
+			"water_y": water_y,
+			"nx": nx,
+			"nz": nz,
+			"poly": poly,
+			"inside": inside,
+		})
+	print("  Water grids: loaded %d bodies from water_grids.bin" % count)
+	return bodies
+
+
+func _build_water_from_grids(grids: Array, verts: PackedVector3Array,
+		normals: PackedVector3Array, cell: float) -> void:
+	## Build water mesh from prebaked inside/outside grids. No polygon tests needed.
+	for grid in grids:
+		var bb_x: float = grid["bb_min_x"]
+		var bb_z: float = grid["bb_min_z"]
+		var wy: float = grid["water_y"]
+		var nx: int = grid["nx"]
+		var nz: int = grid["nz"]
+		var inside: PackedByteArray = grid["inside"]
+		var poly: PackedVector2Array = grid["poly"]
+
+		# Store polygon for water proximity baking (used by grass/tree builders)
+		var exp_polygon := PackedVector2Array()
+		for pt in poly:
+			exp_polygon.append(pt)
+		var expanded := Geometry2D.offset_polygon(exp_polygon, 3.0)
+		if not expanded.is_empty():
+			_loader._water_polygons.append(expanded[0])
+		else:
+			_loader._water_polygons.append(exp_polygon)
+
+		# Emit triangles from prebaked grid
+		var stride := nx + 1
+		for zi in range(nz):
+			for xi in range(nx):
+				var i00 := zi * stride + xi
+				var i10 := i00 + 1
+				var i01 := (zi + 1) * stride + xi
+				var i11 := i01 + 1
+				if not (inside[i00] or inside[i10] or inside[i01] or inside[i11]):
+					continue
+				var x0 := bb_x + xi * cell
+				var x1 := x0 + cell
+				var z0 := bb_z + zi * cell
+				var z1 := z0 + cell
+				for tri_pt in [Vector2(x0,z0), Vector2(x1,z0), Vector2(x1,z1),
+							   Vector2(x0,z0), Vector2(x1,z1), Vector2(x0,z1)]:
+					var ty: float = _loader._terrain_y(tri_pt.x, tri_pt.y) + _loader.WATER_Y
+					verts.append(Vector3(tri_pt.x, maxf(wy, ty), tri_pt.y))
+					normals.append(Vector3.UP)
+
+
+func _build_water_runtime(water: Array, verts: PackedVector3Array,
+		normals: PackedVector3Array, cell: float) -> void:
+	## Fallback: runtime polygon tests (slow, ~5s). Used only if water_grids.bin missing.
 	for body in water:
 		var pts: Array = body["points"]
 		if pts.size() < 3:
 			continue
-		# Skip water bodies whose centroid is outside the park
 		var _wcx := 0.0; var _wcz := 0.0
 		for _wpt in pts:
 			_wcx += float(_wpt[0]); _wcz += float(_wpt[1])
 		_wcx /= float(pts.size()); _wcz /= float(pts.size())
 		if not _loader._in_boundary(_wcx, _wcz):
 			continue
-
-		# Skip oversized water bodies (rivers, ocean) — max valid is Reservoir ~800m
 		var _bmin_x := INF; var _bmax_x := -INF
 		var _bmin_z := INF; var _bmax_z := -INF
 		for _wpt in pts:
@@ -250,60 +350,34 @@ func _build_water(water: Array) -> void:
 			_bmax_z = maxf(_bmax_z, float(_wpt[1]))
 		if (_bmax_x - _bmin_x) > 1000.0 or (_bmax_z - _bmin_z) > 1000.0:
 			continue
-
-		# Check if this water body is a fountain — build 3D structure instead
 		var bname: String = str(body.get("name", ""))
 		if bname.to_lower().contains("fountain"):
-			_build_fountain(body)
 			continue
-
-		# Conservatory Water curb ring — needs Blender model
-
-		# Water level = minimum terrain height along the shore + small offset.
 		var wy := INF
 		for pt in pts:
-			var hh: float = _loader._terrain_y(float(pt[0]), float(pt[1]))
-			wy = minf(wy, hh)
+			wy = minf(wy, _loader._terrain_y(float(pt[0]), float(pt[1])))
 		wy += _loader.WATER_Y
-
 		var polygon := PackedVector2Array()
 		for pt in pts:
 			polygon.append(Vector2(float(pt[0]), float(pt[1])))
-
-		# Expand polygon slightly (3m) so water fills under bridge crossings
 		var expanded := Geometry2D.offset_polygon(polygon, 3.0)
 		if not expanded.is_empty():
 			polygon = expanded[0]
-
-		# Store polygon edges for water proximity baking
 		_loader._water_polygons.append(polygon)
-
-		# Grid-based mesh: dense interior vertices so terrain clamping works
-		# Without this, large triangles span the lake and terrain pokes through.
 		var bb_min_x := INF; var bb_max_x := -INF
 		var bb_min_z := INF; var bb_max_z := -INF
 		for pt2 in polygon:
 			bb_min_x = minf(bb_min_x, pt2.x); bb_max_x = maxf(bb_max_x, pt2.x)
 			bb_min_z = minf(bb_min_z, pt2.y); bb_max_z = maxf(bb_max_z, pt2.y)
-
-		var nx := int(ceil((bb_max_x - bb_min_x) / WATER_CELL)) + 1
-		var nz := int(ceil((bb_max_z - bb_min_z) / WATER_CELL)) + 1
-
-		# Build grid of inside flags
+		var nx := int(ceil((bb_max_x - bb_min_x) / cell)) + 1
+		var nz := int(ceil((bb_max_z - bb_min_z) / cell)) + 1
 		var inside: Array = []
 		inside.resize((nx + 1) * (nz + 1))
 		for zi in range(nz + 1):
 			for xi in range(nx + 1):
-				var gx := bb_min_x + xi * WATER_CELL
-				var gz := bb_min_z + zi * WATER_CELL
-				var idx := zi * (nx + 1) + xi
-				inside[idx] = Geometry2D.is_point_in_polygon(Vector2(gx, gz), polygon)
-
-		# Emit two triangles per grid cell where ANY corner is inside.
-		# Boundary cells (partially inside) extend the water mesh to the true
-		# polygon edge. The water shader fades alpha near shore via terrain
-		# height comparison, so partial cells blend smoothly instead of
-		# creating a staircase edge.
+				var gx := bb_min_x + xi * cell
+				var gz := bb_min_z + zi * cell
+				inside[zi * (nx + 1) + xi] = Geometry2D.is_point_in_polygon(Vector2(gx, gz), polygon)
 		for zi in range(nz):
 			for xi in range(nx):
 				var i00 := zi * (nx + 1) + xi
@@ -312,16 +386,18 @@ func _build_water(water: Array) -> void:
 				var i11 := i01 + 1
 				if not (inside[i00] or inside[i10] or inside[i01] or inside[i11]):
 					continue
-				var x0 := bb_min_x + xi * WATER_CELL
-				var x1 := x0 + WATER_CELL
-				var z0 := bb_min_z + zi * WATER_CELL
-				var z1 := z0 + WATER_CELL
+				var x0 := bb_min_x + xi * cell
+				var x1 := x0 + cell
+				var z0 := bb_min_z + zi * cell
+				var z1 := z0 + cell
 				for tri_pt in [Vector2(x0,z0), Vector2(x1,z0), Vector2(x1,z1),
 							   Vector2(x0,z0), Vector2(x1,z1), Vector2(x0,z1)]:
 					var ty: float = _loader._terrain_y(tri_pt.x, tri_pt.y) + _loader.WATER_Y
 					verts.append(Vector3(tri_pt.x, maxf(wy, ty), tri_pt.y))
 					normals.append(Vector3.UP)
 
+
+func _build_water_mesh(verts: PackedVector3Array, normals: PackedVector3Array, water: Array) -> void:
 	if verts.is_empty():
 		return
 

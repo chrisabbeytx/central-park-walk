@@ -7,9 +7,6 @@ const DATA_PATH := "res://park_data.json"
 const BIN_PATH  := "res://park_data.bin"
 const PATH_Y    := 0.06   # metres above ground plane
 const WATER_Y   := 0.03   # water sits above ground, below path ribbons
-const STEP_RISE  := 0.17  # staircase step height (used by tunnel_builder too)
-const STEP_DEPTH := 0.30  # staircase step depth (used by tunnel_builder too)
-
 var _tex_cache:    Dictionary = {}   # path → ImageTexture (null if missing)
 var _shader_cache: Dictionary = {}   # key  → compiled Shader (reused across materials)
 
@@ -32,12 +29,10 @@ const BENCH_MAX_SLOPE := 0.27  # tan(~15°) — skip benches on steeper terrain
 # Exposed for day/night cycle (main.gd writes emission at runtime)
 var facade_materials: Array = []  # ShaderMaterial list for night window emission
 
-# World atlas: unified 4096×4096 RG8 texture (R=surface type, G=occupancy bitmask)
+# World atlas: unified 8192×8192 RG8 texture (R=surface type, G=occupancy bitmask)
 # Replaces: splat_map, boundary bitmap, 5 dictionary grids
 var _atlas_data: PackedByteArray   # raw RG8 bytes
 var _atlas_res: int = 0            # atlas width/height (square)
-
-# Path feather width for GPU analytical rendering
 
 var boundary_polygon: PackedVector2Array  # XZ boundary for player clamping
 var landuse_zones: Array = []             # from park_data.json: type, name, points
@@ -1004,63 +999,7 @@ func _ready() -> void:
 	_building_builder._build_buildings(buildings)
 	print("  buildings: %d ms" % (Time.get_ticks_msec() - _tp)); _tp = Time.get_ticks_msec()
 
-	# --- REMOVED: other procedural stable geometry (needs Blender models) ---
-	# _path_builder._build_paths(paths)              — ribbon mesh + curbs
-	# _infrastructure_builder._build_barriers(barriers)  — walls, fences, hedges
-	# _infrastructure_builder._build_staircases(paths)   — stair treads + railings
-	# _infrastructure_builder._build_fountains(amenities) — stone basins
-	# _infrastructure_builder._build_playgrounds(playgrounds) — ground polygons
-	# _infrastructure_builder._build_field_markings()    — court surfaces + lines
-	# _infrastructure_builder._build_dog_parks()         — fences + ground
-	# _infrastructure_builder._build_pools()             — pool rims + water
-	# _infrastructure_builder._build_bandstands()        — raised platforms
-	# _infrastructure_builder._build_shrubbery(shrubbery) — hedge volumes
-
 	print("ParkLoader: done in %d ms total" % (Time.get_ticks_msec() - _t0))
-
-
-
-# ---------------------------------------------------------------------------
-# Path material lookup — retained for future use
-# ---------------------------------------------------------------------------
-func _splat_mat_idx(hw: String, surface: String) -> int:
-	## Maps (highway, surface) to material index 1-30 (0 = grass).
-	match surface:
-		"asphalt":            return 1
-		"concrete":           return 2
-		"concrete:plates":    return 3
-		"paving_stones":      return 4
-		"sett":               return 5
-		"unhewn_cobblestone": return 6
-		"pebblestone":        return 7
-		"stone":              return 8
-		"rock":               return 9
-		"brick":              return 10
-		"metal":              return 11
-		"wood":               return 12
-		"paved":              return 13
-		"compacted":          return 14
-		"fine_gravel":        return 15
-		"gravel":             return 16
-		"unpaved":            return 17
-		"dirt":               return 18
-		"ground":             return 19
-		"grass":              return 20
-		"woodchips":          return 21
-		"mulch":              return 22
-		"sand":               return 23
-		"tartan":             return 24
-	match hw:
-		"footway":    return 4   # paving_stones (most CP footways are paved stone)
-		"cycleway":   return 1   # asphalt
-		"pedestrian": return 1   # asphalt (Mall promenade)
-		"path":       return 16  # gravel (Ramble trails, natural paths)
-		"steps":      return 28
-		"track":      return 29
-		"bridleway":  return 14  # compacted (bridle paths are packed earth)
-		"service":    return 1   # asphalt (park drives)
-		"secondary":  return 1   # asphalt (city streets)
-		_:            return 16  # gravel
 
 
 
@@ -1256,16 +1195,6 @@ func _subdivide_pts(pts: Array, max_seg: float) -> Array:
 	return out
 
 
-func _is_closed_polygon(pts: Array) -> bool:
-	## Check if path forms a closed polygon (first ~= last point).
-	if pts.size() < 4:
-		return false
-	var dx := float(pts[0][0]) - float(pts[-1][0])
-	var dz := float(pts[0][2]) - float(pts[-1][2])
-	return (dx * dx + dz * dz) < 4.0  # within 2m
-
-
-
 func _smooth_path_catmull_rom(pts: Array, subdiv: int = 4) -> Array:
 	## Catmull-Rom spline through original nodes for smooth curves.
 	## 'subdiv' interpolated segments between each pair of original points.
@@ -1375,9 +1304,6 @@ func _project_onto_polyline(px: float, pz: float, pts: Array,
 			best_t = cum_len[i] + t * (cum_len[i + 1] - cum_len[i])
 	return best_t
 
-
-
-# Tunnel functions extracted to tunnel_builder.gd
 
 
 # Shared helper: PBR stone/concrete material — uses world-space UV so no

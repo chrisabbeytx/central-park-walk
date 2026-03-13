@@ -47,12 +47,7 @@ var _location_label: Label
 var _lamp_lights: Array = []  # Array of SpotLight3D
 var _lamp_positions: PackedVector3Array = PackedVector3Array()
 
-# Cinematic letterbox overlay
-var _letterbox_canvas: CanvasLayer
 var _hud_canvas: CanvasLayer
-var _letterbox_top: ColorRect
-var _letterbox_bot: ColorRect
-var _letterbox_on: bool = false
 var _lamp_light_timer: float = 0.0
 var _lightning_timer: float = 0.0
 var _lightning_flash: float = 0.0     # 0-1 current flash intensity (decays rapidly)
@@ -67,7 +62,6 @@ var _rain_particles: GPUParticles3D
 var _snow_particles: GPUParticles3D
 var _leaf_particles: GPUParticles3D  # autumn falling leaves
 var _blossom_particles: GPUParticles3D  # spring cherry blossom petals
-var _lens_canvas: CanvasLayer   # barrel distortion overlay
 
 # 5 keyframes defining the full day/night cycle
 # Night (21→5) wraps seamlessly; 8 hours of steady darkness.
@@ -76,7 +70,7 @@ const _KF_HOURS: Array = [5.0, 6.5, 12.0, 19.0, 21.0]
 
 
 var _terrain_only := false
-var _weather_mode := "clear"  # clear, rain, snow, fog, lens
+var _weather_mode := "clear"  # clear, rain, thunderstorm, snow, fog
 
 # Wind system — layered crossing breezes
 var _wind_vec := Vector2.ZERO   # current wind XZ direction+strength
@@ -193,19 +187,14 @@ func _ready() -> void:
 		print("main: landuse map: %d ms" % (Time.get_ticks_msec() - _mt)); _mt = Time.get_ticks_msec()
 		_apply_structure_mask()
 		print("main: structure mask: %d ms" % (Time.get_ticks_msec() - _mt)); _mt = Time.get_ticks_msec()
-		# Surface atlas GPU texture no longer needed — vertex colors in terrain mesh
-		# provide smooth surface blending. CPU-side atlas still used by builders.
-		# _apply_surface_atlas()
-		print("main: vertex colors replace surface atlas GPU texture")
 	_player = _setup_player()
 	if _park_loader and _park_loader.boundary_polygon.size() > 2:
 		_player.boundary_polygon = _park_loader.boundary_polygon
 	_setup_hud()
-	_setup_color_grade()  # safe now — lamp energy reduced from 110 to 5
-	_setup_letterbox()
+	_setup_color_grade()
 	if not _terrain_only:
 		_setup_lamp_lights()
-	print("main: total _ready: %d ms" % (Time.get_ticks_msec() - _mt + (Time.get_ticks_msec() - _mt)))
+	print("main: total _ready: %d ms" % (Time.get_ticks_msec() - _mt))
 	_apply_time_of_day()
 	_setup_weather()
 	# Check for --tour / --tour-showcase / --readme-shots CLI arg
@@ -618,13 +607,6 @@ func _process(delta: float) -> void:
 	if absf(_time_of_day - _last_applied_tod) > 0.01 or _last_applied_tod < 0.0:
 		_apply_time_of_day()
 
-	# Letterbox bar sizing (adapts to viewport resize)
-	if _letterbox_on and _letterbox_top:
-		var vp := get_viewport().get_visible_rect().size
-		var bar_h := maxf((vp.y - vp.x / 2.35) * 0.5, 0.0)
-		_letterbox_top.offset_bottom = bar_h
-		_letterbox_bot.offset_top = -bar_h
-
 	_update_hud()
 
 
@@ -823,10 +805,6 @@ func _unhandled_input(event: InputEvent) -> void:
 		_time_of_day = fmod(_time_of_day + 1.0, 24.0)
 		_apply_time_of_day()
 		print("Time: %.1f h" % _time_of_day)
-	elif event.keycode == KEY_L:
-		_letterbox_on = not _letterbox_on
-		_letterbox_canvas.visible = _letterbox_on
-		print("Letterbox: ", "ON" if _letterbox_on else "OFF")
 	elif event.keycode == KEY_P:
 		_cycle_weather()
 	elif event.keycode == KEY_G:
@@ -980,15 +958,9 @@ func _build_keyframes() -> void:
 		"ambient_energy": 0.40,   # NYC ambient from light pollution
 		"exposure":       0.85,
 		"white":          6.0,
-		"glow_intensity": 0.0,
-		"glow_bloom":     0.0,
-		"glow_strength":  0.0,
-		"glow_threshold": 2.0,
-		"glow_cap":       5.0,
 		"ssao_radius":    2.0,
 		"ssao_intensity": 2.2,
 		"ssao_power":     1.8,
-		"ssil_intensity": 0.5,
 		"saturation":     0.75,
 		"contrast":       1.06,
 		"brightness":     0.88,
@@ -1026,15 +998,9 @@ func _build_keyframes() -> void:
 		"ambient_energy": 0.65,
 		"exposure":       0.72,
 		"white":          5.5,
-		"glow_intensity": 0.2,    # restrained morning bloom — warmth is directional, not global
-		"glow_bloom":     0.03,
-		"glow_strength":  0.4,
-		"glow_threshold": 0.85,
-		"glow_cap":       6.0,
 		"ssao_radius":    1.5,
 		"ssao_intensity": 2.5,
 		"ssao_power":     1.8,
-		"ssil_intensity": 0.7,
 		"saturation":     1.05,
 		"contrast":       1.08,
 		"brightness":     0.92,
@@ -1070,15 +1036,9 @@ func _build_keyframes() -> void:
 		"ambient_energy": 0.85,
 		"exposure":       0.68,
 		"white":          6.0,
-		"glow_intensity": 0.0,
-		"glow_bloom":     0.0,
-		"glow_strength":  0.0,
-		"glow_threshold": 2.0,
-		"glow_cap":       12.0,
 		"ssao_radius":    2.0,
 		"ssao_intensity": 2.0,
 		"ssao_power":     1.6,
-		"ssil_intensity": 1.0,
 		"saturation":     1.05,
 		"contrast":       1.06,
 		"brightness":     0.90,
@@ -1116,15 +1076,9 @@ func _build_keyframes() -> void:
 		"ambient_energy": 0.80,
 		"exposure":       0.72,
 		"white":          5.5,
-		"glow_intensity": 0.15,  # minimal bloom — golden hour warmth is directional, not global
-		"glow_bloom":     0.03,
-		"glow_strength":  0.4,
-		"glow_threshold": 0.90,  # only sun-facing surfaces bloom
-		"glow_cap":       6.0,
 		"ssao_radius":    2.0,
 		"ssao_intensity": 1.8,
 		"ssao_power":     1.9,
-		"ssil_intensity": 0.8,
 		"saturation":     1.05,   # natural — saturation boost makes everything amber
 		"contrast":       1.08,   # long shadows
 		"brightness":     0.93,
@@ -1162,15 +1116,9 @@ func _build_keyframes() -> void:
 		"ambient_energy": 0.10,   # darker ambient — lets lamppost pools stand out more
 		"exposure":       0.92,   # darker overall — night IS dark even in NYC
 		"white":          6.0,
-		"glow_intensity": 0.0,
-		"glow_bloom":     0.0,
-		"glow_strength":  0.0,
-		"glow_threshold": 2.0,
-		"glow_cap":       5.0,
 		"ssao_radius":    2.0,
 		"ssao_intensity": 2.2,
 		"ssao_power":     1.8,
-		"ssil_intensity": 0.6,
 		"saturation":     0.50,   # colors are very muted at night — olive/brown, not green
 		"contrast":       1.04,
 		"brightness":     1.0,
@@ -1266,19 +1214,10 @@ func _apply_time_of_day() -> void:
 	_env.tonemap_exposure = _lerp_kf("exposure", a, b, t)
 	_env.tonemap_white    = _lerp_kf("white", a, b, t)
 
-	# Glow
-	_env.glow_intensity         = _lerp_kf("glow_intensity", a, b, t)
-	_env.glow_bloom             = _lerp_kf("glow_bloom", a, b, t)
-	_env.glow_strength          = _lerp_kf("glow_strength", a, b, t)
-	_env.glow_hdr_threshold     = _lerp_kf("glow_threshold", a, b, t)
-	_env.glow_hdr_luminance_cap = _lerp_kf("glow_cap", a, b, t)
-
 	# SSAO
 	_env.ssao_radius    = _lerp_kf("ssao_radius", a, b, t)
 	_env.ssao_intensity = _lerp_kf("ssao_intensity", a, b, t)
 	_env.ssao_power     = _lerp_kf("ssao_power", a, b, t)
-
-	# SSIL disabled — temporal accumulation causes yellow shield artifacts
 
 	# Colour grading
 	_env.adjustment_saturation = _lerp_kf("saturation", a, b, t)
@@ -1339,11 +1278,6 @@ func _apply_time_of_day() -> void:
 	var wind_str: float = _wind_vec.length()
 	if wind_str > 0.1 and _env.fog_density > 0.001:
 		_env.fog_density *= lerpf(1.0, 0.82, clampf(wind_str * 0.3, 0.0, 1.0))
-
-	# Thunderstorm glow boost — lightning briefly illuminates clouds/scene
-	if _lightning_flash > 0.01:
-		_env.glow_bloom = maxf(_env.glow_bloom, _lightning_flash * 0.25)
-		_env.glow_intensity *= (1.0 + _lightning_flash * 0.8)
 
 	# Sky reflection color for water surfaces — tracks time-of-day sky tone
 	var sky_r: Color = _lerp_kf("fog_color", a, b, t)
@@ -1623,7 +1557,7 @@ func _setup_ground() -> void:
 # ---------------------------------------------------------------------------
 # Central Park geometry (paths + boundary walls from park_data.json)
 # ---------------------------------------------------------------------------
-var _park_loader = null  # reference for splat map data
+var _park_loader = null
 
 func _setup_park() -> void:
 	var loader = load("res://park_loader.gd").new()
@@ -1869,22 +1803,6 @@ func _apply_structure_mask() -> void:
 	print("Terrain: structure mask applied (%dx%d)" % [img.get_width(), img.get_height()])
 
 
-func _apply_surface_atlas() -> void:
-	## Upload world_atlas.bin as an RG8 GPU texture for the terrain shader.
-	## R channel = surface type (0=outside, 1=grass, 2=paved, 3=unpaved, 4=water,
-	## 5=building, 6=bridge, 7=rock). Shader samples .r to render distinct path surfaces.
-	if not _park_loader or _park_loader._atlas_data.is_empty():
-		return
-	var res: int = _park_loader._atlas_res
-	# Upload full RG8 data directly — no per-pixel extraction loop needed.
-	# Shader reads .r for surface type (ignoring .g occupancy channel).
-	var img := Image.create_from_data(res, res, false, Image.FORMAT_RG8, _park_loader._atlas_data)
-	var atlas_tex := ImageTexture.create_from_image(img)
-	_terrain_mat.set_shader_parameter("surface_atlas", atlas_tex)
-	print("Terrain: surface atlas %dx%d uploaded (RG8, %d KB)" % [
-		res, res, _park_loader._atlas_data.size() / 1024])
-
-
 # ---------------------------------------------------------------------------
 # Player
 # ---------------------------------------------------------------------------
@@ -2079,8 +1997,6 @@ func _setup_weather() -> void:
 		_setup_snow()
 	elif _weather_mode == "fog":
 		_setup_fog_weather()
-	elif _weather_mode == "lens":
-		_setup_lens_distortion()
 
 
 func _setup_rain() -> void:
@@ -2311,49 +2227,6 @@ func _setup_blossom_particles() -> void:
 func _setup_fog_weather() -> void:
 	# Fog multipliers are applied per-frame in the day/night cycle update
 	print("Fog: heavy atmospheric fog")
-
-
-func _setup_lens_distortion() -> void:
-	# Barrel distortion + chromatic aberration
-	_lens_canvas = CanvasLayer.new()
-	_lens_canvas.layer = 98  # below color grade
-	var lens_rect := ColorRect.new()
-	lens_rect.set_anchors_preset(Control.PRESET_FULL_RECT)
-	lens_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	var lens_shader: Shader = load("res://shaders/lens_distortion.gdshader")
-	var lens_mat := ShaderMaterial.new()
-	lens_mat.shader = lens_shader
-	lens_rect.material = lens_mat
-	_lens_canvas.add_child(lens_rect)
-	add_child(_lens_canvas)
-	print("Lens: barrel distortion + chromatic aberration")
-
-
-func _setup_letterbox() -> void:
-	# Cinematic 2.35:1 letterbox — black bars top and bottom, toggled with L key.
-	# Bar height = (viewport_h - viewport_w / 2.35) / 2
-	_letterbox_canvas = CanvasLayer.new()
-	_letterbox_canvas.name = "Letterbox"
-	_letterbox_canvas.layer = 101  # above color grade
-	_letterbox_canvas.visible = false
-
-	_letterbox_top = ColorRect.new()
-	_letterbox_top.color = Color.BLACK
-	_letterbox_top.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_letterbox_top.set_anchors_preset(Control.PRESET_TOP_WIDE)
-	_letterbox_top.anchor_bottom = 0.0
-	_letterbox_top.offset_bottom = 1.0  # will be resized in _process
-	_letterbox_canvas.add_child(_letterbox_top)
-
-	_letterbox_bot = ColorRect.new()
-	_letterbox_bot.color = Color.BLACK
-	_letterbox_bot.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_letterbox_bot.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
-	_letterbox_bot.anchor_top = 1.0
-	_letterbox_bot.offset_top = -1.0  # will be resized in _process
-	_letterbox_canvas.add_child(_letterbox_bot)
-
-	add_child(_letterbox_canvas)
 
 
 func _setup_hud() -> void:

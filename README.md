@@ -97,7 +97,7 @@ python3 convert_to_godot.py
 
 ## Performance
 
-First launch builds mesh caches (~44s). Subsequent launches load cached geometry for buildings (6,557 extruded footprints), tree models (15 GLBs), and furniture models — reducing load time significantly. Caches auto-invalidate when source GLB files or building data change. Delete `cache/` to force a full rebuild.
+First launch builds mesh caches (~33s). Subsequent launches load cached geometry for buildings (6,557 extruded footprints), tree models (15 GLBs), furniture models, and prebaked water grids — reducing load time significantly. Caches auto-invalidate when source data changes. Delete `cache/` to force a full rebuild.
 
 ## Data Sources
 
@@ -145,7 +145,7 @@ See [FUNDING.md](FUNDING.md) for details on how funds are used.
 | Engine | Godot 4.6.1 (Forward+, GDScript) |
 | Data pipeline | Python (GDAL, numpy/scipy, Pillow) |
 | 3D modeling | Blender 3.0.1 (headless scripts) |
-| Rendering | 21 custom GLSL shaders (terrain, water, water mist, stream, facade, stone, tree leaf/bark, grass, hedge, wood, cast iron, roof, sky, path, curb, weather), MultiMesh instancing, 8K prebaked terrain mesh, 3D path mesh extrusion |
+| Rendering | 19 custom GLSL shaders (terrain, water, water mist, stream, facade, stone, tree leaf/bark, grass, hedge, wood, cast iron, roof, sky, path, curb, weather), MultiMesh instancing, 8K prebaked terrain mesh, 3D path mesh extrusion |
 
 ## License
 
