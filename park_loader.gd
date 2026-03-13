@@ -991,9 +991,10 @@ func _ready() -> void:
 	_water_builder._build_streams(streams)
 	print("  water: %d ms" % (Time.get_ticks_msec() - _tp)); _tp = Time.get_ticks_msec()
 
-	# --- Boundary collision (invisible walls, functional only) ---
+	# --- Boundary collision + perimeter wall ---
 	_boundary_builder._build_boundary(boundary)
-	print("  boundary collision: %d ms" % (Time.get_ticks_msec() - _tp)); _tp = Time.get_ticks_msec()
+	_boundary_builder._build_perimeter_wall(boundary, paths)
+	print("  boundary+wall: %d ms" % (Time.get_ticks_msec() - _tp)); _tp = Time.get_ticks_msec()
 
 	# --- Buildings (procedural — restored for visual context) ---
 	_building_builder._build_buildings(buildings)
