@@ -62,6 +62,7 @@ var _rain_particles: GPUParticles3D
 var _snow_particles: GPUParticles3D
 var _leaf_particles: GPUParticles3D  # autumn falling leaves
 var _blossom_particles: GPUParticles3D  # spring cherry blossom petals
+var _audio_manager = null  # ambient sound (wind, city, water, footsteps)
 
 # 5 keyframes defining the full day/night cycle
 # Night (21→5) wraps seamlessly; 8 hours of steady darkness.
@@ -197,6 +198,11 @@ func _ready() -> void:
 	print("main: total _ready: %d ms" % (Time.get_ticks_msec() - _mt))
 	_apply_time_of_day()
 	_setup_weather()
+	# Ambient audio
+	if not _terrain_only and _park_loader and _player:
+		_audio_manager = preload("res://audio_manager.gd").new(_park_loader)
+		_audio_manager.setup(_player, _park_loader.water_bodies, _park_loader.boundary_polygon)
+		print("main: audio: ready")
 	# Check for --tour / --tour-showcase / --readme-shots CLI arg
 	for arg in OS.get_cmdline_user_args():
 		if arg in ["--tour", "--tour-showcase", "--readme-shots"]:
@@ -515,6 +521,11 @@ func _process(delta: float) -> void:
 
 	# Wind
 	_update_wind(delta)
+
+	# Ambient audio
+	if _audio_manager:
+		_audio_manager.update(delta, _wind_vec.length(), _weather_mode,
+			_rain_wetness, _time_of_day)
 
 	# Snow accumulation — ramps up during snow, melts otherwise
 	var prev_snow := _snow_cover
