@@ -33,7 +33,7 @@ func _ready() -> void:
 	# Head node – only rotates on X (pitch)
 	head = Node3D.new()
 	head.name     = "Head"
-	head.position = Vector3(0.0, 1.24, 0.0)
+	head.position = Vector3(0.0, 1.58, 0.0)
 	add_child(head)
 
 	# Camera attached to head
@@ -161,21 +161,3 @@ func _handle_movement(delta: float) -> void:
 		if position.y < floor_y + 0.1:
 			position.y = floor_y + 0.1
 			velocity.y = maxf(velocity.y, 0.0)
-
-
-func _point_in_polygon(px: float, pz: float) -> bool:
-	## Ray-casting algorithm on the OSM park boundary polygon.
-	var inside := false
-	var n := boundary_polygon.size()
-	var j := n - 1
-	for i in range(n):
-		var zi := boundary_polygon[i].y
-		var zj := boundary_polygon[j].y
-		if (zi > pz) != (zj > pz):
-			var xi := boundary_polygon[i].x
-			var xj := boundary_polygon[j].x
-			var x_cross := xi + (pz - zi) / (zj - zi) * (xj - xi)
-			if px < x_cross:
-				inside = not inside
-		j = i
-	return inside

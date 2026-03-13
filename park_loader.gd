@@ -1329,47 +1329,6 @@ func _stone_shader_code() -> String:
 	return "res://shaders/stone.gdshader"
 
 
-# Water functions extracted to water_builder.gd
-
-
-# Building functions extracted to building_builder.gd
-# _build_buildings body removed (now in building_builder.gd)
-
-func _add_batch_mesh(verts: PackedVector3Array, normals: PackedVector3Array,
-					 color: Color, roughness: float, node_name: String,
-					 no_shadow: bool = false) -> void:
-	if verts.is_empty():
-		return
-	var mesh := _make_mesh(verts, normals)
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = color
-	mat.roughness    = roughness
-	mat.cull_mode    = BaseMaterial3D.CULL_DISABLED
-	mesh.surface_set_material(0, mat)
-	var mi := MeshInstance3D.new()
-	mi.mesh = mesh
-	mi.name = node_name
-	if no_shadow:
-		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	add_child(mi)
-
-
-func _add_iron_mesh(verts: PackedVector3Array, normals: PackedVector3Array,
-					color: Color, node_name: String) -> void:
-	## Build a mesh using the cast iron shader (weather-responsive iron material).
-	if verts.is_empty():
-		return
-	var mesh := _make_mesh(verts, normals)
-	var iron_sh: Shader = _get_shader("cast_iron", "res://shaders/cast_iron.gdshader")
-	var mat := ShaderMaterial.new()
-	mat.shader = iron_sh
-	mat.set_shader_parameter("iron_color", Vector3(color.r, color.g, color.b))
-	mesh.surface_set_material(0, mat)
-	var mi := MeshInstance3D.new()
-	mi.mesh = mesh
-	mi.name = node_name
-	add_child(mi)
-
 
 
 # ---------------------------------------------------------------------------
@@ -1476,18 +1435,6 @@ func _spawn_multimesh(mesh: Mesh, mat: Material,
 	return mmi
 
 
-func _add_stone_mesh(v: PackedVector3Array, n: PackedVector3Array,
-		alb: ImageTexture, nrm: ImageTexture, rgh: ImageTexture,
-		tint: Color, node_name: String) -> void:
-	if v.is_empty():
-		return
-	var mesh := _make_mesh(v, n)
-	mesh.surface_set_material(0, _make_stone_material(alb, nrm, rgh, tint))
-	var mi := MeshInstance3D.new()
-	mi.mesh = mesh
-	mi.name = node_name
-	add_child(mi)
-
 
 func _make_cylinder(radius: float, height: float, segments: int) -> ArrayMesh:
 	var verts := PackedVector3Array()
@@ -1518,43 +1465,4 @@ func _make_cylinder(radius: float, height: float, segments: int) -> ArrayMesh:
 
 
 
-# ---------------------------------------------------------------------------
-# Lampposts & Benches – mesh generation helpers
-# ---------------------------------------------------------------------------
-func _add_cylinder_verts(v: PackedVector3Array, n: PackedVector3Array, idx: PackedInt32Array,
-		cx: float, cy: float, cz: float, r: float, h: float, segs: int,
-		r_top: float = -1.0) -> void:
-	## Append a vertical cylinder (or cone if r_top >= 0) to existing arrays.
-	if r_top < 0.0:
-		r_top = r
-	for i in segs:
-		var a0 := TAU * float(i) / float(segs)
-		var a1 := TAU * float(i + 1) / float(segs)
-		var c0 := cos(a0); var s0 := sin(a0)
-		var c1 := cos(a1); var s1 := sin(a1)
-		var base := v.size()
-		v.append(Vector3(cx + c0 * r, cy, cz + s0 * r))
-		v.append(Vector3(cx + c1 * r, cy, cz + s1 * r))
-		v.append(Vector3(cx + c1 * r_top, cy + h, cz + s1 * r_top))
-		v.append(Vector3(cx + c0 * r_top, cy + h, cz + s0 * r_top))
-		var n0 := Vector3(c0, 0.0, s0); var n1 := Vector3(c1, 0.0, s1)
-		n.append(n0); n.append(n1); n.append(n1); n.append(n0)
-		idx.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
-
-func _add_box_verts(v: PackedVector3Array, n: PackedVector3Array, idx: PackedInt32Array,
-		cx: float, cy: float, cz: float, hx: float, hy: float, hz: float) -> void:
-	## Append a 6-face box to existing arrays.
-	var faces := [
-		[Vector3(cx-hx,cy-hy,cz+hz), Vector3(cx+hx,cy-hy,cz+hz), Vector3(cx+hx,cy+hy,cz+hz), Vector3(cx-hx,cy+hy,cz+hz), Vector3(0,0,1)],
-		[Vector3(cx+hx,cy-hy,cz-hz), Vector3(cx-hx,cy-hy,cz-hz), Vector3(cx-hx,cy+hy,cz-hz), Vector3(cx+hx,cy+hy,cz-hz), Vector3(0,0,-1)],
-		[Vector3(cx+hx,cy-hy,cz+hz), Vector3(cx+hx,cy-hy,cz-hz), Vector3(cx+hx,cy+hy,cz-hz), Vector3(cx+hx,cy+hy,cz+hz), Vector3(1,0,0)],
-		[Vector3(cx-hx,cy-hy,cz-hz), Vector3(cx-hx,cy-hy,cz+hz), Vector3(cx-hx,cy+hy,cz+hz), Vector3(cx-hx,cy+hy,cz-hz), Vector3(-1,0,0)],
-		[Vector3(cx-hx,cy+hy,cz+hz), Vector3(cx+hx,cy+hy,cz+hz), Vector3(cx+hx,cy+hy,cz-hz), Vector3(cx-hx,cy+hy,cz-hz), Vector3(0,1,0)],
-		[Vector3(cx-hx,cy-hy,cz-hz), Vector3(cx+hx,cy-hy,cz-hz), Vector3(cx+hx,cy-hy,cz+hz), Vector3(cx-hx,cy-hy,cz+hz), Vector3(0,-1,0)],
-	]
-	for face in faces:
-		var base := v.size()
-		v.append(face[0]); v.append(face[1]); v.append(face[2]); v.append(face[3])
-		for _j in 4: n.append(face[4])
-		idx.append_array(PackedInt32Array([base, base+1, base+2, base, base+2, base+3]))
 
