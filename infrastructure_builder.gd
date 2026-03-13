@@ -1,4 +1,4 @@
-## Infrastructure builder — labels, statues, amenities, facilities, viewpoints, attractions, gardens, meadow labels, special zones.
+## Infrastructure builder — barriers, labels, statues, amenities, facilities, viewpoints, attractions, gardens, meadow labels, special zones.
 
 var _loader
 
@@ -8,6 +8,179 @@ func _init(loader) -> void:
 	_loader = loader
 
 
+
+
+# ---------------------------------------------------------------------------
+# Barriers — stone walls, iron fences, hedges (364 features from OSM)
+# ---------------------------------------------------------------------------
+func _build_barriers(barriers: Array) -> void:
+	if barriers.is_empty():
+		return
+
+	var rw_alb: ImageTexture = _loader._load_tex("res://textures/rock_wall_diff.jpg")
+	var rw_nrm: ImageTexture = _loader._load_tex("res://textures/rock_wall_nrm.jpg")
+	var rw_rgh: ImageTexture = _loader._load_tex("res://textures/rock_wall_rgh.jpg")
+
+	# Load GLB fence panel for iron fences
+	var fence_panel_mesh: Mesh = null
+	var fence_glb := ProjectSettings.globalize_path("res://models/furniture/fence_panel.glb")
+	var fence_meshes: Dictionary = _loader._load_glb_meshes(fence_glb)
+	if fence_meshes.has("FencePanel"):
+		fence_panel_mesh = fence_meshes["FencePanel"] as Mesh
+
+	var wall_verts   := PackedVector3Array()
+	var wall_normals := PackedVector3Array()
+	var hedge_verts  := PackedVector3Array()
+	var hedge_normals := PackedVector3Array()
+	var fence_xforms: Array = []
+	var col_verts    := PackedVector3Array()
+
+	for barrier in barriers:
+		var btype: String = str(barrier.get("type", "wall"))
+		var height: float = float(barrier.get("height", 1.2))
+		var raw_pts: Array = barrier.get("points", [])
+		if raw_pts.size() < 2:
+			continue
+		var bmx := (float(raw_pts[0][0]) + float(raw_pts[raw_pts.size()-1][0])) * 0.5
+		var bmz := (float(raw_pts[0][1]) + float(raw_pts[raw_pts.size()-1][1])) * 0.5
+		if not _loader._in_boundary(bmx, bmz):
+			continue
+		var pts: Array = _loader._subdivide_pts(raw_pts, 3.0)
+
+		match btype:
+			"fence", "guard_rail":
+				if fence_panel_mesh:
+					_place_fence_panels(pts, height, fence_xforms, col_verts)
+				else:
+					_build_wall_segments(pts, height, wall_verts, wall_normals, col_verts)
+			"hedge":
+				_build_wall_segments(pts, maxf(height, 0.8), hedge_verts, hedge_normals, col_verts)
+			_:
+				_build_wall_segments(pts, height, wall_verts, wall_normals, col_verts)
+
+	# Stone wall mesh
+	if not wall_verts.is_empty():
+		var wall_mat: Material = _loader._make_stone_material(rw_alb, rw_nrm, rw_rgh,
+			Color(0.50, 0.48, 0.44))
+		var mesh: ArrayMesh = _loader._make_mesh(wall_verts, wall_normals)
+		mesh.surface_set_material(0, wall_mat)
+		var mi := MeshInstance3D.new()
+		mi.mesh = mesh
+		mi.name = "StoneWalls"
+		_loader.add_child(mi)
+
+	# Iron fence panels via MultiMesh
+	if fence_panel_mesh and not fence_xforms.is_empty():
+		var iron_sh: Shader = _loader._get_shader("cast_iron", "res://shaders/cast_iron.gdshader")
+		var iron_mat := ShaderMaterial.new()
+		iron_mat.shader = iron_sh
+		iron_mat.set_shader_parameter("iron_color", Vector3(0.05, 0.05, 0.06))
+		iron_mat.set_shader_parameter("base_roughness", 0.65)
+		iron_mat.set_shader_parameter("base_metallic", 0.85)
+		_loader._spawn_multimesh(fence_panel_mesh, iron_mat, fence_xforms, "IronFences_Barriers")
+		print("ParkLoader: barrier iron fences = %d panels" % fence_xforms.size())
+
+	# Hedge mesh — seasonal foliage shader
+	if not hedge_verts.is_empty():
+		var hedge_sh: Shader = _loader._get_shader("hedge", "res://shaders/hedge.gdshader")
+		var hedge_mat := ShaderMaterial.new()
+		hedge_mat.shader = hedge_sh
+		var hm: ArrayMesh = _loader._make_mesh(hedge_verts, hedge_normals)
+		hm.surface_set_material(0, hedge_mat)
+		var hmi := MeshInstance3D.new()
+		hmi.mesh = hm
+		hmi.name = "HedgeBarriers"
+		_loader.add_child(hmi)
+
+	# Combined barrier collision
+	if not col_verts.is_empty():
+		var body := StaticBody3D.new()
+		body.name = "Barrier_Collision"
+		var shape := ConcavePolygonShape3D.new()
+		shape.set_faces(col_verts)
+		var col := CollisionShape3D.new()
+		col.shape = shape
+		body.add_child(col)
+		_loader.add_child(body)
+
+	print("ParkLoader: barriers = %d walls, %d hedges, %d fence panels" % [
+		wall_verts.size() / 18, hedge_verts.size() / 18, fence_xforms.size()])
+
+
+func _build_wall_segments(pts: Array, height: float,
+		verts: PackedVector3Array, normals: PackedVector3Array,
+		col_verts: PackedVector3Array) -> void:
+	var ht := 0.2  # half-thickness
+	for i in range(pts.size() - 1):
+		var p1x := float(pts[i][0]);   var p1z := float(pts[i][2])
+		var p2x := float(pts[i+1][0]); var p2z := float(pts[i+1][2])
+		var p1y: float = _loader._terrain_y(p1x, p1z) - 0.02
+		var p2y: float = _loader._terrain_y(p2x, p2z) - 0.02
+		var seg2 := Vector2(p2x - p1x, p2z - p1z)
+		if seg2.length_squared() < 0.01:
+			continue
+		var d := seg2.normalized()
+		var n := Vector2(-d.y, d.x)
+		# Front and back faces
+		for side in [-1.0, 1.0]:
+			var sf: float = side
+			var ox: float = n.x * ht * sf
+			var oz: float = n.y * ht * sf
+			var a := Vector3(p1x + ox, p1y, p1z + oz)
+			var b := Vector3(p2x + ox, p2y, p2z + oz)
+			var c := Vector3(p2x + ox, p2y + height, p2z + oz)
+			var dd := Vector3(p1x + ox, p1y + height, p1z + oz)
+			var wall_n := Vector3(n.x * sf, 0.0, n.y * sf)
+			var tri := PackedVector3Array([a, b, c, a, c, dd])
+			verts.append_array(tri)
+			col_verts.append_array(tri)
+			for _j in 6: normals.append(wall_n)
+		# Top cap
+		var tl1 := Vector3(p1x + n.x * ht, p1y + height, p1z + n.y * ht)
+		var tr1 := Vector3(p1x - n.x * ht, p1y + height, p1z - n.y * ht)
+		var tl2 := Vector3(p2x + n.x * ht, p2y + height, p2z + n.y * ht)
+		var tr2 := Vector3(p2x - n.x * ht, p2y + height, p2z - n.y * ht)
+		var cap := PackedVector3Array([tl1, tl2, tr1, tr1, tl2, tr2])
+		verts.append_array(cap)
+		col_verts.append_array(cap)
+		for _j in 6: normals.append(Vector3.UP)
+
+
+func _place_fence_panels(pts: Array, height: float,
+		fence_xforms: Array, col_verts: PackedVector3Array) -> void:
+	## Place fence panel GLB instances along a polyline.
+	## Panel model: 2.0m wide × 1.0m tall, centered at origin, extending along X.
+	var panel_w := 2.0
+	for i in range(pts.size() - 1):
+		var p1x := float(pts[i][0]);   var p1z := float(pts[i][2])
+		var p2x := float(pts[i+1][0]); var p2z := float(pts[i+1][2])
+		var p1y: float = _loader._terrain_y(p1x, p1z)
+		var p2y: float = _loader._terrain_y(p2x, p2z)
+		var seg := Vector2(p2x - p1x, p2z - p1z)
+		var seg_len := seg.length()
+		if seg_len < 0.1:
+			continue
+		var d := seg / seg_len
+		var n := Vector2(-d.y, d.x)
+		var n_panels := max(1, int(round(seg_len / panel_w)))
+		var x_scale: float = (seg_len / float(n_panels)) / panel_w
+		var rot_angle := atan2(-d.y, d.x)
+		for pi in n_panels:
+			var t: float = (float(pi) + 0.5) / float(n_panels)
+			var px: float = lerpf(p1x, p2x, t)
+			var pz: float = lerpf(p1z, p2z, t)
+			var py: float = lerpf(p1y, p2y, t)
+			var basis := Basis(Vector3.UP, rot_angle).scaled(Vector3(x_scale, height, 1.0))
+			fence_xforms.append(Transform3D(basis, Vector3(px, py, pz)))
+		# Collision: thin wall for full segment
+		for side in [-1.0, 1.0]:
+			var ox: float = n.x * 0.02 * side
+			var oz: float = n.y * 0.02 * side
+			var a := Vector3(p1x + ox, p1y, p1z + oz)
+			var b := Vector3(p2x + ox, p2y, p2z + oz)
+			var c := Vector3(p2x + ox, p2y + height, p2z + oz)
+			var dd := Vector3(p1x + ox, p1y + height, p1z + oz)
+			col_verts.append_array(PackedVector3Array([a, b, c, a, c, dd]))
 
 
 # ---------------------------------------------------------------------------

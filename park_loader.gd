@@ -985,6 +985,8 @@ func _ready() -> void:
 	_infrastructure_builder._build_statues(statues)
 	_infrastructure_builder._build_amenities(amenities)  # GLB drinking fountains + labels
 	print("  statues+amenities: %d ms" % (Time.get_ticks_msec() - _tp)); _tp = Time.get_ticks_msec()
+	_infrastructure_builder._build_barriers(barriers)
+	print("  barriers: %d ms" % (Time.get_ticks_msec() - _tp)); _tp = Time.get_ticks_msec()
 
 	# --- Water surfaces (dynamic shader effect positioned by data) ---
 	_water_builder._build_water(water)
