@@ -7,6 +7,12 @@ global uniform vec2 wind_vec;
 global uniform float season_t;
 global uniform float snow_cover;
 global uniform float rain_wetness;
+global uniform float dew_amount;
+global uniform vec3 sky_reflect_color;
+
+// Canopy coverage map: grayscale, 2K resolution. Bright = under tree canopy.
+uniform sampler2D canopy_map : filter_linear, repeat_disable;
+uniform float hm_world_size = 5000.0;
 
 varying float v_grass_type;
 varying vec3 v_world_pos;
@@ -257,6 +263,30 @@ void fragment() {
 		}
 	}
 
+	// --- Dappled canopy shade — grass under trees receives filtered light ---
+	// Matches terrain.gdshader and path.gdshader canopy shade algorithm exactly.
+	{
+		vec2 canopy_uv = (v_world_pos.xz + hm_world_size * 0.5) / hm_world_size;
+		float canopy = texture(canopy_map, canopy_uv).r;
+		if (canopy > 0.01) {
+			float deciduous_loss = smoothstep(2.5, 3.2, season_t);
+			float winter_bare = smoothstep(3.0, 3.5, season_t);
+			float spring_fill = smoothstep(0.0, 0.4, season_t);
+			float sc = canopy * mix(1.0, 0.3, deciduous_loss) * mix(1.0, 0.15, winter_bare) * mix(0.5, 1.0, spring_fill);
+			vec2 dapple_uv = v_world_pos.xz * 0.35 + wind_vec * TIME * 0.08;
+			float dapple = vnoise(dapple_uv);
+			float dapple_fine = vnoise(v_world_pos.xz * 1.2 + wind_vec * TIME * 0.15);
+			float light_gap = smoothstep(0.35, 0.65, dapple) * 0.6 + smoothstep(0.55, 0.75, dapple_fine) * 0.4;
+			float sky_lum = dot(sky_reflect_color, vec3(0.2126, 0.7152, 0.0722));
+			float sun_factor = smoothstep(0.02, 0.20, sky_lum);
+			float shade = sc * sun_factor;
+			col *= (1.0 - shade * (1.0 - light_gap) * 0.35);
+			// Warm sun spots through canopy gaps
+			float warm_spots = light_gap * shade * 0.08;
+			col *= vec3(1.0 + warm_spots, 1.0 + warm_spots * 0.5, 1.0 - warm_spots * 0.3);
+		}
+	}
+
 	// Distance-based darkening (match terrain shader: blade highlights average out at distance)
 	float blade_dist = length(v_world_pos - INV_VIEW_MATRIX[3].xyz);
 	float dist_darken = smoothstep(30.0, 150.0, blade_dist) * 0.25;
@@ -308,10 +338,15 @@ void fragment() {
 		ROUGHNESS = mix(ROUGHNESS, 0.40, frost_mask * 0.3);
 	}
 
-	// Dew drops removed — the specular highlights (ROUGHNESS=0.05, SPECULAR=0.50
-	// on 12% of blade tips) created visible bright circular blips from any angle.
-	// Real dew isn't visible at this rendering scale. Could revisit with a
-	// time_of_day uniform to limit to dawn/morning only.
+	// Morning dew — time-limited to dawn/morning via dew_amount global uniform.
+	// Broad surface moisture + discrete droplet sparkle on blade tips.
+	if (dew_amount > 0.01 && blade_t > 0.5) {
+		float dew = dew_amount * smoothstep(0.5, 0.85, blade_t);
+		ROUGHNESS = mix(ROUGHNESS, 0.20, dew * 0.4);
+		SPECULAR  = mix(SPECULAR,  0.30, dew * 0.3);
+		// Vividity boost — wet grass catches more light, looks greener
+		ALBEDO *= mix(1.0, 1.06, dew * 0.3);
+	}
 
 	// Backlight / subsurface scattering — subtle, only at blade tips.
 	// Reduced to prevent grass tiles appearing brighter than terrain underneath.

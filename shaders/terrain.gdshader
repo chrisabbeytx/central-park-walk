@@ -71,8 +71,8 @@ uniform sampler2D structure_mask : filter_linear, repeat_disable;
 // Used for dappled sunlight through tree canopy — Central Park's signature light.
 uniform sampler2D canopy_map : filter_linear, repeat_disable;
 
-// Morning dew: set by main.gd based on time of day (dawn→mid-morning)
-uniform float dew_amount = 0.0;
+// Morning dew: global uniform set by main.gd based on time of day (dawn→mid-morning)
+global uniform float dew_amount;
 
 varying vec3 world_pos;
 

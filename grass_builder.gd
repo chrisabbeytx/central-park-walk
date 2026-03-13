@@ -236,6 +236,10 @@ func _load_tile_model(mname: String, shader: Shader) -> Mesh:
 	for si in mesh.get_surface_count():
 		var new_mat := ShaderMaterial.new()
 		new_mat.shader = shader
+		# Per-material uniforms: canopy map + world size for dappled shade
+		if _loader._canopy_texture:
+			new_mat.set_shader_parameter("canopy_map", _loader._canopy_texture)
+		new_mat.set_shader_parameter("hm_world_size", _loader._hm_world_size)
 		mesh.surface_set_material(si, new_mat)
 	return mesh
 

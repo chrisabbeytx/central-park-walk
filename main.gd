@@ -172,6 +172,7 @@ func _ready() -> void:
 	RenderingServer.global_shader_parameter_add("sky_reflect_color", RenderingServer.GLOBAL_VAR_TYPE_VEC3, Vector3(0.32, 0.38, 0.45))
 	RenderingServer.global_shader_parameter_add("season_t", RenderingServer.GLOBAL_VAR_TYPE_FLOAT, _season_t)
 	RenderingServer.global_shader_parameter_add("lightning_flash", RenderingServer.GLOBAL_VAR_TYPE_FLOAT, 0.0)
+	RenderingServer.global_shader_parameter_add("dew_amount", RenderingServer.GLOBAL_VAR_TYPE_FLOAT, 0.0)
 	print("main: environment: %d ms" % (Time.get_ticks_msec() - _mt)); _mt = Time.get_ticks_msec()
 	if not _terrain_only:
 		_setup_park()
@@ -1316,8 +1317,7 @@ func _apply_time_of_day() -> void:
 			dew = 1.0 - smoothstep(6.0, 8.5, _time_of_day)
 	if _weather_mode != "clear":
 		dew = 0.0  # no visible dew in rain/snow
-	if _terrain_mat:
-		_terrain_mat.set_shader_parameter("dew_amount", dew)
+	RenderingServer.global_shader_parameter_set("dew_amount", dew)
 
 	# Dawn mist — natural morning fog that lifts with sunrise (5-7:30 AM)
 	# Common phenomenon in Central Park near water bodies and in wooded areas
