@@ -1805,6 +1805,102 @@ func _build_stone_weirs() -> void:
 
 
 # ---------------------------------------------------------------------------
+# Rustic bridges — log bridges at woodland stream crossings
+# ---------------------------------------------------------------------------
+func _build_rustic_bridges() -> void:
+	var glb_path := ProjectSettings.globalize_path("res://models/furniture/cp_rustic_bridge.glb")
+	if not FileAccess.file_exists(glb_path):
+		return
+	var bridge_meshes: Dictionary = _loader._load_glb_meshes(glb_path)
+	var bridge_mesh: Mesh = null
+	for mname in bridge_meshes:
+		bridge_mesh = bridge_meshes[mname] as Mesh
+		break
+	if bridge_mesh == null:
+		return
+	# Known rustic bridge locations at stream crossings in woodland areas
+	# The Loch (North Woods) — multiple crossings along its 71-point course
+	# The Gill (Ramble area) — crossings along cascading streams
+	var bridge_positions: Array = [
+		[560.0, -1180.0, PI * 0.4],    # The Loch — upper crossing near North Woods
+		[650.0, -1300.0, PI * 0.6],    # The Loch — middle crossing
+		[750.0, -1420.0, PI * 0.3],    # The Loch — lower crossing near Pool
+		[-380.0, 500.0, PI * 0.8],     # The Gill — upper Ramble crossing
+		[-420.0, 600.0, PI * 0.5],     # The Gill — lower cascade crossing
+		[-500.0, 350.0, PI * 0.6],     # Ramble stream crossing near Azalea Pond
+	]
+	var xforms: Array = []
+	for b in bridge_positions:
+		var bx: float = b[0]
+		var bz: float = b[1]
+		var br: float = b[2]
+		var by: float = _loader._terrain_y(bx, bz)
+		var basis := Basis(Vector3.UP, br)
+		xforms.append(Transform3D(basis, Vector3(bx, by, bz)))
+	if not xforms.is_empty():
+		_loader._spawn_multimesh(bridge_mesh, null, xforms, "RusticBridges")
+	print("  Rustic bridges: %d placed" % xforms.size())
+
+
+# ---------------------------------------------------------------------------
+# Dog run fencing — chain-link fence around 3 off-leash dog areas
+# ---------------------------------------------------------------------------
+func _build_dog_run_fences(landuse: Array) -> void:
+	var glb_path := ProjectSettings.globalize_path("res://models/furniture/cp_dog_run_fence.glb")
+	if not FileAccess.file_exists(glb_path):
+		return
+	var fence_meshes: Dictionary = _loader._load_glb_meshes(glb_path)
+	var fence_mesh: Mesh = null
+	for mname in fence_meshes:
+		fence_mesh = fence_meshes[mname] as Mesh
+		break
+	if fence_mesh == null:
+		return
+
+	# Fence section is 3m wide — instance along polygon perimeters
+	const SECTION_W := 3.0
+	var xforms: Array = []
+	var run_count := 0
+
+	for zone in landuse:
+		if str(zone.get("type", "")) != "dog_park":
+			continue
+		var pts: Array = zone.get("points", [])
+		if pts.size() < 3:
+			continue
+		run_count += 1
+
+		# Walk polygon perimeter, placing fence sections every SECTION_W metres
+		for pi in pts.size():
+			var p0x: float = float(pts[pi][0])
+			var p0z: float = float(pts[pi][1])
+			var ni: int = (pi + 1) % pts.size()
+			var p1x: float = float(pts[ni][0])
+			var p1z: float = float(pts[ni][1])
+
+			var dx: float = p1x - p0x
+			var dz: float = p1z - p0z
+			var seg_len: float = sqrt(dx * dx + dz * dz)
+			if seg_len < 0.5:
+				continue
+
+			var n_sections: int = maxi(1, int(round(seg_len / SECTION_W)))
+			var yaw: float = atan2(dx, dz)
+
+			for si in n_sections:
+				var t: float = (float(si) + 0.5) / float(n_sections)
+				var fx: float = p0x + dx * t
+				var fz: float = p0z + dz * t
+				var fy: float = _loader._terrain_y(fx, fz)
+				var basis := Basis(Vector3.UP, yaw)
+				xforms.append(Transform3D(basis, Vector3(fx, fy, fz)))
+
+	if not xforms.is_empty():
+		_loader._spawn_multimesh(fence_mesh, null, xforms, "DogRunFences")
+	print("  Dog run fences: %d sections around %d runs" % [xforms.size(), run_count])
+
+
+# ---------------------------------------------------------------------------
 # Stone staircases — 250 OSM highway=steps paths built as stepped geometry
 # ---------------------------------------------------------------------------
 func _build_staircases(paths: Array) -> void:
