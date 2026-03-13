@@ -265,11 +265,11 @@ func _build_sport_markings(landuse: Array) -> void:
 
 	if not line_verts.is_empty():
 		var mat := StandardMaterial3D.new()
-		mat.albedo_color = Color.WHITE
-		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-		mat.no_depth_test = false
+		mat.albedo_color = Color(0.95, 0.95, 0.92)  # slightly off-white (painted lines weather)
+		mat.shading_mode = BaseMaterial3D.SHADING_MODE_PER_PIXEL
 		mat.cull_mode = BaseMaterial3D.CULL_DISABLED
 		mat.vertex_color_use_as_albedo = true
+		mat.roughness = 0.75  # painted surface, not glossy
 		var arr := []
 		arr.resize(Mesh.ARRAY_MAX)
 		arr[Mesh.ARRAY_VERTEX] = line_verts
