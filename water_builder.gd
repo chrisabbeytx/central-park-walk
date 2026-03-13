@@ -243,6 +243,18 @@ func _build_water(water: Array) -> void:
 		if bname.to_lower().contains("fountain"):
 			_build_fountain(body)
 
+	# --- Stone coping around formal water bodies ---
+	# Central Park's model-boat pond, meer, and turtle pond have dressed stone edges
+	var FORMAL_WATER := ["conservatory", "harlem meer", "turtle pond"]
+	for body in water:
+		var bname: String = str(body.get("name", "")).to_lower()
+		if bname.contains("fountain"):
+			continue
+		for keyword in FORMAL_WATER:
+			if bname.contains(keyword):
+				_build_water_curb(body["points"], Color(0.55, 0.53, 0.50))
+				break
+
 	_build_water_mesh(verts, normals, water)
 
 

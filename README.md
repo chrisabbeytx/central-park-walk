@@ -83,9 +83,9 @@ python3 convert_to_godot.py
 
 | Feature | Count | Source |
 |---------|-------|--------|
-| Terrain | 8192×8192 mesh (14M verts) | NYC LiDAR 2017 bare earth DEM (1ft resolution, 0.61m cells). 3D path mesh strips from OSM polylines (2,624 paths). Granite curb faces along 2,173 paved path edges (316K verts) — height from LiDAR grade change |
+| Terrain | 8192×8192 mesh (14M verts) | NYC LiDAR 2017 bare earth DEM (1ft resolution, 0.61m cells). 3D path mesh strips from OSM polylines (2,624 paths). Granite curb faces along 2,173 paved path edges (316K verts) — height from LiDAR grade change. 250 stone staircases from OSM steps data with individual treads and risers |
 | Trees | ~9,300 | NYC Tree Census + OSM + woodland scatter in 12 ecological zones. 17 custom Blender models: 15 species (oak, elm, maple, birch, cherry, ginkgo, honeylocust, linden, london plane, callery pear, pine, willow, magnolia) + generic deciduous + standing dead snag. Per-species summer leaf colors + fall colors + phenology. Cherry blossom + callery pear + magnolia spring bloom. 5 species-specific bark textures (birch lenticels, london plane mottled exfoliation, pine scaled plates). Frost sparkle, morning dew |
-| Water | 23 bodies + 10 streams | OpenStreetMap polygons. Dawn/dusk mist (8 localized fog volumes) |
+| Water | 23 bodies + 10 streams | OpenStreetMap polygons. Stone coping on formal water bodies (Conservatory Water, Harlem Meer, Turtle Pond). Dawn/dusk mist (8 localized fog volumes) |
 | Buildings | 6,557 | NYC Building Footprints + LiDAR heights. 5 facade material types (limestone, brick, concrete, glass/granite, cream) with per-building hash variation, floor-height-accurate windows, cornice bands, awnings, grime weathering |
 | Bridges & Arches | 17 models | Custom Blender models for all named structures: Bow Bridge (cast iron), Gapstow (schist), Huddlestone (cyclopean boulders), Glen Span (tall gneiss), Trefoil (dual Gothic/round profile), Oak Bridge (steel+oak), Eaglevale (double arch), Winterdale (largest stone span), plus 9 more. Each modeled from documented dimensions and materials |
 | Perimeter | 4.8 km wall + gates | Manhattan schist wall (1.17m×0.45m, batted cap) from boundary polygon. Gate openings where paths cross boundary. Paired dressed granite pillars (2.4m, capstone) at each gate |

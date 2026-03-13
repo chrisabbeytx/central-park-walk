@@ -1060,6 +1060,152 @@ func _build_meadow_labels() -> void:
 		print("  Meadow labels: %d named grass zones" % count)
 
 
+# ---------------------------------------------------------------------------
+# Stone staircases — 250 OSM highway=steps paths built as stepped geometry
+# ---------------------------------------------------------------------------
+func _build_staircases(paths: Array) -> void:
+	var rw_alb: ImageTexture = _loader._load_tex("res://textures/rock_wall_diff.jpg")
+	var rw_nrm: ImageTexture = _loader._load_tex("res://textures/rock_wall_nrm.jpg")
+	var rw_rgh: ImageTexture = _loader._load_tex("res://textures/rock_wall_rgh.jpg")
+	var mat: Material = _loader._make_stone_material(rw_alb, rw_nrm, rw_rgh,
+		Color(0.52, 0.50, 0.46))
+
+	var verts := PackedVector3Array()
+	var normals := PackedVector3Array()
+	var col_verts := PackedVector3Array()
+	var stair_count := 0
+
+	for path in paths:
+		if str(path.get("highway", "")) != "steps":
+			continue
+		var pts: Array = path.get("points", [])
+		if pts.size() < 2:
+			continue
+		var mx := (float(pts[0][0]) + float(pts[pts.size()-1][0])) * 0.5
+		var mz := (float(pts[0][2]) + float(pts[pts.size()-1][2])) * 0.5
+		if not _loader._in_boundary(mx, mz):
+			continue
+		_build_single_staircase(pts, path, verts, normals, col_verts)
+		stair_count += 1
+
+	if verts.is_empty():
+		return
+
+	var mesh: ArrayMesh = _loader._make_mesh(verts, normals)
+	mesh.surface_set_material(0, mat)
+	var mi := MeshInstance3D.new()
+	mi.mesh = mesh
+	mi.name = "Staircases"
+	_loader.add_child(mi)
+
+	# Collision for staircases
+	if not col_verts.is_empty():
+		var body := StaticBody3D.new()
+		body.name = "Staircase_Collision"
+		var shape := ConcavePolygonShape3D.new()
+		shape.set_faces(col_verts)
+		var col := CollisionShape3D.new()
+		col.shape = shape
+		body.add_child(col)
+		_loader.add_child(body)
+
+	print("ParkLoader: staircases = %d (%d verts)" % [stair_count, verts.size()])
+
+
+func _build_single_staircase(pts: Array, path: Dictionary,
+		verts: PackedVector3Array, normals: PackedVector3Array,
+		col_verts: PackedVector3Array) -> void:
+	## Build stepped geometry for a single staircase path.
+	## Standard Central Park granite steps: 15cm riser, 30cm tread.
+	const RISER_H := 0.15  # metres
+	const TREAD_D := 0.30  # metres (horizontal depth of each step)
+	const HALF_THICK := 0.05  # half-thickness of tread slab
+
+	# Get path width (steps usually 2-4m wide)
+	var half_w: float = _loader._path_width(path) * 0.5
+	half_w = clampf(half_w, 0.75, 5.0)
+
+	# Compute total horizontal run and elevation change along the path
+	var start_x := float(pts[0][0]); var start_z := float(pts[0][2])
+	var end_x := float(pts[pts.size()-1][0]); var end_z := float(pts[pts.size()-1][2])
+	var start_y: float = _loader._terrain_y(start_x, start_z)
+	var end_y: float = _loader._terrain_y(end_x, end_z)
+
+	var dy := end_y - start_y
+	if absf(dy) < 0.1:
+		return  # flat — no steps needed
+
+	# Number of steps from elevation change
+	var n_steps := maxi(1, int(round(absf(dy) / RISER_H)))
+	# Clamp to reasonable range
+	n_steps = mini(n_steps, 200)
+
+	# Direction along the staircase (XZ plane)
+	var dx := end_x - start_x
+	var dz := end_z - start_z
+	var run := sqrt(dx * dx + dz * dz)
+	if run < 0.3:
+		return
+
+	var dir_x := dx / run
+	var dir_z := dz / run
+	# Perpendicular for width
+	var perp_x := -dir_z
+	var perp_z := dir_x
+
+	# Step heights: go uphill or downhill
+	var going_up := dy > 0.0
+	var base_y := minf(start_y, end_y)
+	# If going down, reverse iteration direction
+	var step_dir := 1.0 if going_up else -1.0
+	var origin_x := start_x if going_up else end_x
+	var origin_z := start_z if going_up else end_z
+
+	# Horizontal step spacing
+	var step_run := run / float(n_steps)
+	var step_rise := absf(dy) / float(n_steps)
+
+	for si in n_steps:
+		var t := float(si) / float(n_steps)
+		# Step position along the run
+		var cx := origin_x + dir_x * step_dir * step_run * (float(si) + 0.5)
+		var cz := origin_z + dir_z * step_dir * step_run * (float(si) + 0.5)
+		var step_top_y := base_y + step_rise * float(si + 1)
+
+		# Four corners of the tread (top surface)
+		var td := TREAD_D * 0.5  # half tread depth along run direction
+		var fl_x := cx - dir_x * td + perp_x * half_w
+		var fl_z := cz - dir_z * td + perp_z * half_w
+		var fr_x := cx - dir_x * td - perp_x * half_w
+		var fr_z := cz - dir_z * td - perp_z * half_w
+		var bl_x := cx + dir_x * td + perp_x * half_w
+		var bl_z := cz + dir_z * td + perp_z * half_w
+		var br_x := cx + dir_x * td - perp_x * half_w
+		var br_z := cz + dir_z * td - perp_z * half_w
+
+		# Tread top face (horizontal)
+		var tfl := Vector3(fl_x, step_top_y, fl_z)
+		var tfr := Vector3(fr_x, step_top_y, fr_z)
+		var tbl := Vector3(bl_x, step_top_y, bl_z)
+		var tbr := Vector3(br_x, step_top_y, br_z)
+
+		var tread := PackedVector3Array([tfl, tbl, tfr, tfr, tbl, tbr])
+		verts.append_array(tread)
+		col_verts.append_array(tread)
+		for _j in 6: normals.append(Vector3.UP)
+
+		# Riser face (vertical front of step)
+		var riser_bot_y := step_top_y - step_rise
+		var rfl := Vector3(fl_x, riser_bot_y, fl_z)
+		var rfr := Vector3(fr_x, riser_bot_y, fr_z)
+		var riser_n := Vector3(-dir_x, 0.0, -dir_z)
+
+		var riser := PackedVector3Array([rfl, tfl, rfr, rfr, tfl, tfr])
+		verts.append_array(riser)
+		col_verts.append_array(riser)
+		for _j in 6: normals.append(riser_n)
+
+
 func _build_special_zone_labels() -> void:
 	## Labels for notable special landuse zones — nature reserves, sports centres, etc.
 	var label_types := ["nature_reserve", "sports_centre", "industrial"]
