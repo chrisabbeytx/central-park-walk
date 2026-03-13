@@ -1046,14 +1046,27 @@ func _build_viewpoints(viewpoints: Array) -> void:
 func _build_attractions(attractions: Array) -> void:
 	if attractions.is_empty():
 		return
+
+	# Named attraction GLB models
+	var attraction_glbs: Dictionary = {
+		"carousel": { "file": "cp_carousel.glb", "rot": 0.0 },
+		"blockhouse": { "file": "cp_blockhouse.glb", "rot": PI * 0.25 },
+	}
+
+	# Load stone material for attraction models
+	var rw_alb: ImageTexture = _loader._load_tex("res://textures/rock_wall_diff.jpg")
+	var rw_nrm: ImageTexture = _loader._load_tex("res://textures/rock_wall_nrm.jpg")
+	var rw_rgh: ImageTexture = _loader._load_tex("res://textures/rock_wall_rgh.jpg")
+
 	var subtype_colors: Dictionary = {
-		"museum":  Color(0.60, 0.45, 0.30, 0.70),  # warm museum brown
-		"fort":    Color(0.50, 0.50, 0.50, 0.70),  # gray fortification
+		"museum":  Color(0.60, 0.45, 0.30, 0.70),
+		"fort":    Color(0.50, 0.50, 0.50, 0.70),
 		"cannon":  Color(0.50, 0.50, 0.50, 0.70),
 		"castle":  Color(0.55, 0.48, 0.40, 0.70),
 	}
-	var default_col := Color(0.50, 0.60, 0.70, 0.65)  # blue-ish attraction
+	var default_col := Color(0.50, 0.60, 0.70, 0.65)
 	var count := 0
+	var model_count := 0
 	for att in attractions:
 		var pos: Array = att.get("position", [])
 		if pos.size() < 3:
@@ -1064,15 +1077,53 @@ func _build_attractions(attractions: Array) -> void:
 			continue
 		var name_: String = att.get("name", "")
 		if name_.is_empty():
-			continue  # skip unnamed attractions (zoo cages without labels, etc.)
+			continue
 		var subtype: String = att.get("subtype", "")
 		var ty: float = _loader._terrain_y(x, z)
 		var col: Color = subtype_colors.get(subtype, default_col)
 
+		# Check for named GLB model
+		var name_lower := name_.to_lower()
+		var placed_model := false
+		for key in attraction_glbs:
+			if name_lower.contains(key):
+				var def_: Dictionary = attraction_glbs[key]
+				var abs_path := ProjectSettings.globalize_path("res://models/furniture/" + def_["file"])
+				if not FileAccess.file_exists(abs_path):
+					break
+				var gltf_doc := GLTFDocument.new()
+				var gltf_state := GLTFState.new()
+				if gltf_doc.append_from_file(abs_path, gltf_state) != OK:
+					break
+				var root: Node3D = gltf_doc.generate_scene(gltf_state)
+				if root == null:
+					break
+				root.position = Vector3(x, ty, z)
+				root.rotation.y = float(def_.get("rot", 0.0))
+				root.name = name_.replace(" ", "_")
+				var default_mat: Material = _loader._make_stone_material(
+					rw_alb, rw_nrm, rw_rgh, Color(0.50, 0.48, 0.44))
+				var stack: Array = [root]
+				while not stack.is_empty():
+					var n: Node = stack.pop_back()
+					if n is MeshInstance3D:
+						var mi := n as MeshInstance3D
+						if mi.mesh:
+							for si in range(mi.mesh.get_surface_count()):
+								mi.mesh.surface_set_material(si, default_mat)
+					for c in n.get_children():
+						stack.append(c)
+				_loader.add_child(root)
+				placed_model = true
+				model_count += 1
+				print("  Attraction model '%s' placed at (%.0f, %.1f, %.0f)" % [name_, x, ty, z])
+				break
+
+		var label_h := 3.5 if not placed_model else 12.0
 		var label := Label3D.new()
 		label.text = name_
 		label.font_size = 26
-		label.position = Vector3(x, ty + 3.5, z)
+		label.position = Vector3(x, ty + label_h, z)
 		label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 		label.modulate = col
 		label.outline_modulate = Color(0.05, 0.05, 0.05, 0.45)
@@ -1081,7 +1132,7 @@ func _build_attractions(attractions: Array) -> void:
 		label.pixel_size = 0.012
 		_loader.add_child(label)
 		count += 1
-	print("  Attractions: %d placed" % count)
+	print("  Attractions: %d placed (%d with 3D models)" % [count, model_count])
 
 
 func _build_meadow_labels() -> void:
