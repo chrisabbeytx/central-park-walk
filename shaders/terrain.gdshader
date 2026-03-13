@@ -729,6 +729,26 @@ void fragment() {
 		}
 	}
 
+	// --- Outside park boundary: NYC sidewalk/street surface ---
+	// Manhattan's streets and sidewalks surrounding Central Park
+	if (park_inside < 0.95) {
+		vec2 city_uv = world_pos.xz / path_tile_m;
+		// Concrete sidewalk (layer 1) as base, asphalt (layer 0) for streets
+		// Use slope to distinguish: flat = sidewalk, really flat wide areas = street
+		float is_street = smoothstep(0.02, 0.005, slope);  // very flat = street
+		float city_layer = mix(1.0, 0.0, is_street);
+		vec3 city_alb = texture(path_alb_arr, vec3(city_uv, city_layer)).rgb;
+		vec3 city_nrm = texture(path_nrm_arr, vec3(city_uv, city_layer)).rgb;
+		float city_rgh = texture(path_rgh_arr, vec3(city_uv, city_layer)).r;
+		// NYC concrete is slightly warm gray with grime
+		city_alb *= mix(vec3(0.72, 0.70, 0.66), vec3(0.42, 0.40, 0.38), is_street);
+		city_rgh = mix(0.78, 0.68, is_street);
+		float city_blend = 1.0 - smoothstep(0.3, 0.95, park_inside);
+		grass_alb = mix(grass_alb, city_alb, city_blend);
+		grass_nrm = mix(grass_nrm, city_nrm, city_blend);
+		grass_rgh = mix(grass_rgh, city_rgh, city_blend);
+	}
+
 	ALBEDO          = grass_alb;
 	vec3 _gn = grass_nrm * 2.0 - 1.0;
 	_gn.xy *= 0.8;
