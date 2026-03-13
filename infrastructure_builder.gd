@@ -1547,6 +1547,87 @@ func _build_cherry_hill_fountain() -> void:
 
 
 # ---------------------------------------------------------------------------
+# Summerhouse at the Dene — small rustic stone shelter
+# ---------------------------------------------------------------------------
+func _build_summerhouse() -> void:
+	var glb_path := ProjectSettings.globalize_path("res://models/furniture/cp_summerhouse.glb")
+	if not FileAccess.file_exists(glb_path):
+		return
+	var gltf_doc := GLTFDocument.new()
+	var gltf_state := GLTFState.new()
+	if gltf_doc.append_from_file(glb_path, gltf_state) != OK:
+		return
+	var root: Node3D = gltf_doc.generate_scene(gltf_state)
+	if root == null:
+		return
+	var sx := -372.0
+	var sz := 1433.0
+	var sy: float = _loader._terrain_y(sx, sz)
+	root.position = Vector3(sx, sy, sz)
+	root.rotation.y = PI
+	root.name = "SummerhouseDene"
+	_loader.add_child(root)
+	print("  Summerhouse placed at (%.0f, %.1f, %.0f)" % [sx, sy, sz])
+
+
+# ---------------------------------------------------------------------------
+# Kerbs Model Boathouse — small pavilion at Conservatory Water
+# ---------------------------------------------------------------------------
+func _build_model_boathouse() -> void:
+	var glb_path := ProjectSettings.globalize_path("res://models/furniture/cp_model_boathouse.glb")
+	if not FileAccess.file_exists(glb_path):
+		return
+	var gltf_doc := GLTFDocument.new()
+	var gltf_state := GLTFState.new()
+	if gltf_doc.append_from_file(glb_path, gltf_state) != OK:
+		return
+	var root: Node3D = gltf_doc.generate_scene(gltf_state)
+	if root == null:
+		return
+	# West shore of Conservatory Water
+	var mx := -190.0
+	var mz := 960.0
+	var my: float = _loader._terrain_y(mx, mz)
+	root.position = Vector3(mx, my, mz)
+	root.rotation.y = PI * 0.5  # Faces east toward water
+	root.name = "KerbsModelBoathouse"
+	_loader.add_child(root)
+	print("  Model Boathouse placed at (%.0f, %.1f, %.0f)" % [mx, my, mz])
+
+
+# ---------------------------------------------------------------------------
+# Boat landings — wooden docks on the Lake shore
+# ---------------------------------------------------------------------------
+func _build_boat_landings() -> void:
+	var glb_path := ProjectSettings.globalize_path("res://models/furniture/cp_boat_landing.glb")
+	if not FileAccess.file_exists(glb_path):
+		return
+	var dock_positions: Array = [
+		[-688.0, 593.0, PI * 0.7],   # Hernshead
+		[-692.0, 770.0, PI * 0.5],   # Western Shore
+		[-669.0, 895.0, PI * 0.4],   # Wagner Cove
+	]
+	var dock_meshes: Dictionary = _loader._load_glb_meshes(glb_path)
+	var dock_mesh: Mesh = null
+	for mname in dock_meshes:
+		dock_mesh = dock_meshes[mname] as Mesh
+		break
+	if dock_mesh == null:
+		return
+	var xforms: Array = []
+	for dock in dock_positions:
+		var dx: float = dock[0]
+		var dz: float = dock[1]
+		var dr: float = dock[2]
+		var dy: float = _loader._terrain_y(dx, dz)
+		var basis := Basis(Vector3.UP, dr)
+		xforms.append(Transform3D(basis, Vector3(dx, dy, dz)))
+	if not xforms.is_empty():
+		_loader._spawn_multimesh(dock_mesh, null, xforms, "BoatLandings")
+	print("  Boat landings: %d placed" % xforms.size())
+
+
+# ---------------------------------------------------------------------------
 # Stone staircases — 250 OSM highway=steps paths built as stepped geometry
 # ---------------------------------------------------------------------------
 func _build_staircases(paths: Array) -> void:
