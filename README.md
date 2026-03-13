@@ -90,7 +90,7 @@ python3 convert_to_godot.py
 | Bridges & Arches | 17 models | Custom Blender models for all named structures: Bow Bridge (cast iron), Gapstow (schist), Huddlestone (cyclopean boulders), Glen Span (tall gneiss), Trefoil (dual Gothic/round profile), Oak Bridge (steel+oak), Eaglevale (double arch), Winterdale (largest stone span), plus 9 more. Each modeled from documented dimensions and materials |
 | Perimeter | 4.8 km wall + gates | Manhattan schist wall (1.17m×0.45m, batted cap) from boundary polygon. Gate openings where paths cross boundary. Paired dressed granite pillars (2.4m, capstone) at each gate |
 | Barriers | 364 features | Stone walls, iron fence panels (MultiMesh + cast iron shader), hedges (seasonal foliage shader). ConcavePolygonShape3D collision |
-| Landmarks | 3 models | Bethesda Terrace (sandstone arcade + grand staircases + balustrades), Belvedere Castle (octagonal tower + loggia wing + battlements), 30 comfort stations (schist walls + gable roof + doorway surrounds) |
+| Landmarks | 5 models | Bethesda Terrace (sandstone arcade + grand staircases + balustrades), Belvedere Castle (octagonal tower + loggia wing + battlements), Swedish Cottage (Scandinavian log cabin + steep gable + entry porch), The Dairy (Victorian Gothic polychrome + open loggia + ridge cresting), 30 comfort stations (schist walls + gable roof + doorway surrounds) |
 | Furniture | 1,022+ | Lampposts (201), benches (610), trash cans (166), fountains (19), flagpoles (18), water towers (45), iron fences (207 segments) |
 | Statues | 106 positions | 4 photogrammetry scans + Cleopatra's Needle model + 61 stone pedestals, rest labeled |
 | Sports fields | 147 | Tennis, basketball, baseball, soccer, handball |

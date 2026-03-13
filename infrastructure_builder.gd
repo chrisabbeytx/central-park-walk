@@ -907,12 +907,24 @@ func _build_facilities(facilities: Array) -> void:
 	if facilities.is_empty():
 		return
 	var count := 0
+	var model_count := 0
 	var type_colors: Dictionary = {
 		"visitor_center": Color(0.25, 0.50, 0.70, 0.70),
 		"facility":       Color(0.50, 0.45, 0.35, 0.70),
 		"building":       Color(0.55, 0.50, 0.42, 0.70),
 		"dining":         Color(0.70, 0.45, 0.25, 0.70),
 	}
+
+	# Named facility GLB models — keyword in facility name → GLB file
+	var facility_glbs: Dictionary = {
+		"swedish cottage": { "file": "cp_swedish_cottage.glb", "rot": PI },
+		"dairy": { "file": "cp_dairy.glb", "rot": PI },
+	}
+
+	# Load stone material for facility models
+	var rw_alb: ImageTexture = _loader._load_tex("res://textures/rock_wall_diff.jpg")
+	var rw_nrm: ImageTexture = _loader._load_tex("res://textures/rock_wall_nrm.jpg")
+	var rw_rgh: ImageTexture = _loader._load_tex("res://textures/rock_wall_rgh.jpg")
 
 	for fac in facilities:
 		var name_: String = fac.get("name", "")
@@ -928,12 +940,52 @@ func _build_facilities(facilities: Array) -> void:
 		var ty: float = _loader._terrain_y(x, z)
 		var col: Color = type_colors.get(ftype, Color(0.5, 0.5, 0.5, 0.70))
 
-		# Label
+		# Check for named facility model
+		var name_lower := name_.to_lower()
+		var placed_model := false
+		for key in facility_glbs:
+			if name_lower.contains(key):
+				var def_: Dictionary = facility_glbs[key]
+				var glb_file: String = def_["file"]
+				var abs_path := ProjectSettings.globalize_path("res://models/furniture/" + glb_file)
+				if not FileAccess.file_exists(abs_path):
+					break
+				var gltf_doc := GLTFDocument.new()
+				var gltf_state := GLTFState.new()
+				if gltf_doc.append_from_file(abs_path, gltf_state) != OK:
+					break
+				var root: Node3D = gltf_doc.generate_scene(gltf_state)
+				if root == null:
+					break
+				root.position = Vector3(x, ty, z)
+				root.rotation.y = float(def_.get("rot", 0.0))
+				root.name = name_.replace(" ", "_").replace("&", "and")
+				# Apply stone material
+				var default_mat: Material = _loader._make_stone_material(
+					rw_alb, rw_nrm, rw_rgh, Color(0.55, 0.52, 0.46))
+				var stack: Array = [root]
+				while not stack.is_empty():
+					var n: Node = stack.pop_back()
+					if n is MeshInstance3D:
+						var mi := n as MeshInstance3D
+						if mi.mesh:
+							for si in range(mi.mesh.get_surface_count()):
+								mi.mesh.surface_set_material(si, default_mat)
+					for c in n.get_children():
+						stack.append(c)
+				_loader.add_child(root)
+				placed_model = true
+				model_count += 1
+				print("  Facility model '%s' placed at (%.0f, %.1f, %.0f)" % [name_, x, ty, z])
+				break
+
+		# Label (always, even with model — label floats above)
 		if not name_.is_empty():
+			var label_h := 4.0 if not placed_model else 12.0
 			var label := Label3D.new()
 			label.text = name_
 			label.font_size = 28
-			label.position = Vector3(x, ty + 4.0, z)
+			label.position = Vector3(x, ty + label_h, z)
 			label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 			label.modulate = col
 			label.outline_modulate = Color(0.05, 0.05, 0.05, 0.50)
@@ -942,7 +994,7 @@ func _build_facilities(facilities: Array) -> void:
 			label.pixel_size = 0.012
 			_loader.add_child(label)
 		count += 1
-	print("  Facilities: %d placed" % count)
+	print("  Facilities: %d placed (%d with 3D models)" % [count, model_count])
 
 
 # ---------------------------------------------------------------------------
