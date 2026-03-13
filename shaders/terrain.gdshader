@@ -71,6 +71,9 @@ uniform sampler2D structure_mask : filter_linear, repeat_disable;
 // Used for dappled sunlight through tree canopy — Central Park's signature light.
 uniform sampler2D canopy_map : filter_linear, repeat_disable;
 
+// Morning dew: set by main.gd based on time of day (dawn→mid-morning)
+uniform float dew_amount = 0.0;
+
 varying vec3 world_pos;
 
 #include "res://shaders/include/hash_noise.gdshaderinc"
@@ -934,6 +937,29 @@ void fragment() {
 				ALBEDO += vec3(0.05) * intensity * snow_amt;
 			}
 		}
+	}
+
+	// --- Morning dew: water droplets on grass at dawn (4:30-8:30 AM) ---
+	// Dew forms overnight on clear mornings, creating millions of tiny droplets
+	// that catch the first light as the sun rises over Manhattan's east side
+	if (dew_amount > 0.01 && !is_dirt && slope < 0.20) {
+		float dew = dew_amount;
+		// Dew forms more on open flat grass, less on slopes and rock
+		dew *= terrain_n.y;  // less on slopes
+		dew *= (1.0 - rock_blend);  // none on rock
+		// Individual droplet sparkle at fine scale
+		float dew_sparkle = hash2(floor(world_pos.xz * 18.0));
+		float sparkle_mask = step(0.55, dew_sparkle) * dew;
+		// Broad dew film: reduces roughness, increases specular across grass
+		ROUGHNESS = mix(ROUGHNESS, 0.15, dew * 0.4);
+		SPECULAR = mix(SPECULAR, 0.45, dew * 0.35);
+		// Droplet sparkle: bright pinpoints where dew catches sunrise
+		if (sparkle_mask > 0.01) {
+			SPECULAR = mix(SPECULAR, 0.80, sparkle_mask * 0.5);
+			ROUGHNESS = mix(ROUGHNESS, 0.05, sparkle_mask * 0.3);
+		}
+		// Dew-wet grass is slightly more vivid (water on surface deepens color)
+		ALBEDO *= mix(1.0, 1.08, dew * 0.3);
 	}
 
 	// --- Atmospheric distance fade — terrain dissolves into haze ---
