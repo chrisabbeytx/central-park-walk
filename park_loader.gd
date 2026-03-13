@@ -418,8 +418,10 @@ func _make_curb_material() -> Material:
 # ---------------------------------------------------------------------------
 func _generate_canopy_map(data: Array) -> ImageTexture:
 	const CANOPY_RES := 2048
-	var img := Image.create(CANOPY_RES, CANOPY_RES, false, Image.FORMAT_L8)
-	img.fill(Color(0, 0, 0, 1))
+	# Use raw byte array for speed — Image.get_pixel/set_pixel is slow in hot loops
+	var buf := PackedByteArray()
+	buf.resize(CANOPY_RES * CANOPY_RES)
+	buf.fill(0)
 
 	var half := _hm_world_size * 0.5
 	var cell_m := _hm_world_size / float(CANOPY_RES)
@@ -433,27 +435,31 @@ func _generate_canopy_map(data: Array) -> ImageTexture:
 		var px := int((wx + half) / cell_m)
 		var pz := int((wz + half) / cell_m)
 		var pr := int(ceil(cr / cell_m))  # radius in pixels
+		if pr < 1:
+			pr = 1
+		var r_sq := float(pr * pr)
+		var inv_r := 1.0 / float(pr)
 
-		# Stamp a soft circle (Gaussian-ish falloff)
-		for dy in range(-pr, pr + 1):
-			var iy := pz + dy
-			if iy < 0 or iy >= CANOPY_RES:
-				continue
-			for dx in range(-pr, pr + 1):
-				var ix := px + dx
-				if ix < 0 or ix >= CANOPY_RES:
-					continue
-				var dist_sq := float(dx * dx + dy * dy)
-				var r_sq := float(pr * pr)
+		# Stamp a soft circle (quadratic falloff) directly on byte buffer
+		var y0 := maxi(pz - pr, 0)
+		var y1 := mini(pz + pr, CANOPY_RES - 1)
+		var x0 := maxi(px - pr, 0)
+		var x1 := mini(px + pr, CANOPY_RES - 1)
+		for iy in range(y0, y1 + 1):
+			var dy := iy - pz
+			var dy2 := float(dy * dy)
+			var row := iy * CANOPY_RES
+			for ix in range(x0, x1 + 1):
+				var dx := ix - px
+				var dist_sq := dy2 + float(dx * dx)
 				if dist_sq > r_sq:
 					continue
-				# Soft falloff: dense at center, thin at edges
-				var t := sqrt(dist_sq) / float(pr)
-				var intensity := 1.0 - t * t  # quadratic falloff
-				var existing := img.get_pixel(ix, iy).r
-				var new_val := minf(existing + intensity * 0.7, 1.0)
-				img.set_pixel(ix, iy, Color(new_val, new_val, new_val, 1.0))
+				var t := sqrt(dist_sq) * inv_r
+				var intensity := int((1.0 - t * t) * 178.0)  # 0.7 * 255 ≈ 178
+				var idx := row + ix
+				buf[idx] = mini(buf[idx] + intensity, 255)
 
+	var img := Image.create_from_data(CANOPY_RES, CANOPY_RES, false, Image.FORMAT_L8, buf)
 	var tex := ImageTexture.create_from_image(img)
 	print("Canopy map: %d trees → %d×%d coverage texture" % [data.size(), CANOPY_RES, CANOPY_RES])
 	return tex
