@@ -862,14 +862,18 @@ func _build_amenities(amenities: Array) -> void:
 # ---------------------------------------------------------------------------
 func _build_gardens() -> void:
 	var label_count := 0
+	var border_verts := PackedVector3Array()
+	var border_normals := PackedVector3Array()
+	var border_count := 0
+
+	const BORDER_H := 0.15  # 15cm tall stone border
+	const BORDER_W := 0.08  # 8cm wide
+
 	for zone in _loader.landuse_zones:
 		if zone.get("type", "") != "garden":
 			continue
 		var pts: Array = zone.get("points", [])
-		if pts.size() < 4:
-			continue
-		var name_: String = zone.get("name", "")
-		if name_.is_empty():
+		if pts.size() < 3:
 			continue
 
 		var n: int = pts.size()
@@ -883,21 +887,82 @@ func _build_gardens() -> void:
 		if not _loader._in_boundary(cx, cz):
 			continue
 
-		var ty: float = _loader._terrain_y(cx, cz)
-		var label := Label3D.new()
-		label.text = name_
-		label.font_size = 24
-		label.position = Vector3(cx, ty + 3.0, cz)
-		label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-		label.modulate = Color(0.30, 0.55, 0.25, 0.65)
-		label.outline_modulate = Color(0.05, 0.08, 0.03, 0.45)
-		label.outline_size = 4
-		label.no_depth_test = false
-		label.pixel_size = 0.011
-		_loader.add_child(label)
-		label_count += 1
+		# Named gardens get labels
+		var name_: String = zone.get("name", "")
+		if not name_.is_empty():
+			var ty: float = _loader._terrain_y(cx, cz)
+			var label := Label3D.new()
+			label.text = name_
+			label.font_size = 24
+			label.position = Vector3(cx, ty + 3.0, cz)
+			label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+			label.modulate = Color(0.30, 0.55, 0.25, 0.65)
+			label.outline_modulate = Color(0.05, 0.08, 0.03, 0.45)
+			label.outline_size = 4
+			label.no_depth_test = false
+			label.pixel_size = 0.011
+			_loader.add_child(label)
+			label_count += 1
 
-	print("  Gardens: %d labeled (hedge geometry removed — needs Blender models)" % label_count)
+		# Build low stone border along polygon perimeter
+		for pi in pts.size():
+			var p0x: float = float(pts[pi][0])
+			var p0z: float = float(pts[pi][1])
+			var ni: int = (pi + 1) % pts.size()
+			var p1x: float = float(pts[ni][0])
+			var p1z: float = float(pts[ni][1])
+
+			var dx: float = p1x - p0x
+			var dz: float = p1z - p0z
+			var seg_len: float = sqrt(dx * dx + dz * dz)
+			if seg_len < 0.3:
+				continue
+
+			# Perpendicular for border width
+			var nx: float = -dz / seg_len * BORDER_W
+			var nz: float = dx / seg_len * BORDER_W
+
+			var y0: float = _loader._terrain_y(p0x, p0z)
+			var y1: float = _loader._terrain_y(p1x, p1z)
+
+			# Outer edge
+			var o0 := Vector3(p0x + nx, y0, p0z + nz)
+			var o1 := Vector3(p1x + nx, y1, p1z + nz)
+			# Inner edge
+			var i0 := Vector3(p0x - nx, y0, p0z - nz)
+			var i1 := Vector3(p1x - nx, y1, p1z - nz)
+			# Top versions
+			var o0t := Vector3(o0.x, o0.y + BORDER_H, o0.z)
+			var o1t := Vector3(o1.x, o1.y + BORDER_H, o1.z)
+			var i0t := Vector3(i0.x, i0.y + BORDER_H, i0.z)
+			var i1t := Vector3(i1.x, i1.y + BORDER_H, i1.z)
+
+			# Top face
+			border_verts.append_array(PackedVector3Array([i0t, o0t, i1t, i1t, o0t, o1t]))
+			for _j in 6: border_normals.append(Vector3.UP)
+
+			# Outer face
+			var out_n := Vector3(nx / BORDER_W, 0.0, nz / BORDER_W)
+			border_verts.append_array(PackedVector3Array([o0, o1, o0t, o0t, o1, o1t]))
+			for _j in 6: border_normals.append(out_n)
+
+		border_count += 1
+
+	# Create single combined mesh for all garden borders
+	if not border_verts.is_empty():
+		var rw_alb: ImageTexture = _loader._load_tex("res://textures/rock_wall_diff.jpg")
+		var rw_nrm: ImageTexture = _loader._load_tex("res://textures/rock_wall_nrm.jpg")
+		var rw_rgh: ImageTexture = _loader._load_tex("res://textures/rock_wall_rgh.jpg")
+		var mat: Material = _loader._make_stone_material(rw_alb, rw_nrm, rw_rgh,
+			Color(0.58, 0.55, 0.48))
+		var mesh: ArrayMesh = _loader._make_mesh(border_verts, border_normals)
+		mesh.surface_set_material(0, mat)
+		var mi := MeshInstance3D.new()
+		mi.mesh = mesh
+		mi.name = "GardenBorders"
+		_loader.add_child(mi)
+
+	print("  Gardens: %d labeled, %d with stone borders (%d verts)" % [label_count, border_count, border_verts.size()])
 
 
 # ---------------------------------------------------------------------------
