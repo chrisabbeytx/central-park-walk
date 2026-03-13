@@ -2308,7 +2308,61 @@ func _build_sports_equipment(landuse: Array) -> void:
 		_loader._spawn_multimesh(backstop_mesh, null, backstop_xforms, "BaseballBackstops")
 	if not hoop_xforms.is_empty() and hoop_mesh:
 		_loader._spawn_multimesh(hoop_mesh, null, hoop_xforms, "BasketballHoops")
-	print("  Sports equipment: %d backstops, %d hoops" % [backstop_xforms.size(), hoop_xforms.size()])
+	# Tennis nets
+	var net_path := ProjectSettings.globalize_path("res://models/furniture/cp_tennis_net.glb")
+	var net_mesh: Mesh = null
+	var nt_meshes: Dictionary = _loader._load_glb_meshes(net_path)
+	for mname in nt_meshes:
+		net_mesh = nt_meshes[mname] as Mesh
+		break
+	var net_xforms: Array = []
+
+	if net_mesh:
+		for zone in landuse:
+			if str(zone.get("type", "")) != "pitch":
+				continue
+			var sport2: String = str(zone.get("sport", ""))
+			if sport2 != "tennis":
+				continue
+			var pts2: Array = zone.get("points", [])
+			if pts2.size() < 4:
+				continue
+
+			var cx2 := 0.0
+			var cz2 := 0.0
+			for pt in pts2:
+				cx2 += float(pt[0])
+				cz2 += float(pt[1])
+			cx2 /= float(pts2.size())
+			cz2 /= float(pts2.size())
+
+			var cy2: float = _loader._terrain_y(cx2, cz2)
+
+			# Find short axis (net runs along short axis at center)
+			var e0x2: float = float(pts2[1][0]) - float(pts2[0][0])
+			var e0z2: float = float(pts2[1][1]) - float(pts2[0][1])
+			var e1x2: float = float(pts2[2][0]) - float(pts2[1][0])
+			var e1z2: float = float(pts2[2][1]) - float(pts2[1][1])
+			var l0: float = sqrt(e0x2 * e0x2 + e0z2 * e0z2)
+			var l1: float = sqrt(e1x2 * e1x2 + e1z2 * e1z2)
+
+			# Short axis direction = net direction
+			var short_dx: float
+			var short_dz: float
+			if l0 < l1:
+				short_dx = e0x2; short_dz = e0z2
+			else:
+				short_dx = e1x2; short_dz = e1z2
+			var short_l: float = sqrt(short_dx * short_dx + short_dz * short_dz)
+			if short_l < 0.1:
+				continue
+			var yaw: float = atan2(short_dx, short_dz)
+			net_xforms.append(Transform3D(Basis(Vector3.UP, yaw), Vector3(cx2, cy2, cz2)))
+
+	if not net_xforms.is_empty() and net_mesh:
+		_loader._spawn_multimesh(net_mesh, null, net_xforms, "TennisNets")
+
+	print("  Sports equipment: %d backstops, %d hoops, %d tennis nets" % [backstop_xforms.size(), hoop_xforms.size(), net_xforms.size()])
 
 
 # ---------------------------------------------------------------------------
