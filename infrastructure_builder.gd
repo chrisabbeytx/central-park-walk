@@ -920,11 +920,14 @@ func _build_facilities(facilities: Array) -> void:
 		"swedish cottage": { "file": "cp_swedish_cottage.glb", "rot": PI },
 		"dairy": { "file": "cp_dairy.glb", "rot": PI },
 		"chess": { "file": "cp_chess_house.glb", "rot": 0.0 },
-		"boathouse": { "file": "cp_boathouse.glb", "rot": PI * 0.5 },
+		"loeb boathouse": { "file": "cp_boathouse.glb", "rot": PI * 0.5 },
+		"kerbs boathouse": { "file": "cp_boathouse.glb", "rot": PI * 0.5 },
 		"delacorte": { "file": "cp_delacorte.glb", "rot": PI },
 		"tavern": { "file": "cp_tavern.glb", "rot": PI },
 		"wollman": { "file": "cp_wollman_rink.glb", "rot": 0.0 },
 		"dana": { "file": "cp_discovery_center.glb", "rot": PI },
+		"gate house": { "file": "cp_gate_house.glb", "rot": 0.0 },
+		"summerstage": { "file": "cp_summerstage.glb", "rot": PI },
 	}
 
 	# Load stone material for facility models
