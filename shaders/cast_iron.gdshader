@@ -9,6 +9,7 @@ uniform float base_metallic = 0.45;
 global uniform float rain_wetness;
 global uniform float snow_cover;
 global uniform float season_t;
+global uniform vec3 sky_reflect_color;
 
 varying vec3 world_pos;
 varying vec3 world_nrm;
@@ -92,5 +93,18 @@ void fragment() {
 		ALBEDO = mix(ALBEDO, vec3(0.90, 0.91, 0.94), snow_amt * 0.6);
 		ROUGHNESS = mix(ROUGHNESS, 0.85, snow_amt);
 		METALLIC = mix(METALLIC, 0.0, snow_amt);
+	}
+
+	// Aerial perspective
+	float iron_dist = length(world_pos - INV_VIEW_MATRIX[3].xyz);
+	float iron_aerial = smoothstep(80.0, 300.0, iron_dist);
+	if (iron_aerial > 0.01) {
+		float il = dot(ALBEDO, vec3(0.2126, 0.7152, 0.0722));
+		ALBEDO = mix(ALBEDO, vec3(il), iron_aerial * 0.25);
+		float sky_l = dot(sky_reflect_color, vec3(0.2126, 0.7152, 0.0722));
+		vec3 haze = mix(vec3(0.58, 0.56, 0.52), sky_reflect_color * 0.8 + vec3(0.20), 0.35);
+		float night_f = smoothstep(0.15, 0.02, sky_l);
+		haze = mix(haze, vec3(0.14, 0.10, 0.06), night_f * 0.6);
+		ALBEDO = mix(ALBEDO, haze, iron_aerial * 0.25);
 	}
 }

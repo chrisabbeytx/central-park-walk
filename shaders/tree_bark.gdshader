@@ -7,6 +7,7 @@ uniform int bark_style = 0;
 global uniform float rain_wetness;
 global uniform float snow_cover;
 global uniform float season_t;
+global uniform vec3 sky_reflect_color;
 
 varying vec3 world_pos;
 varying vec3 world_nrm;
@@ -202,4 +203,17 @@ void fragment() {
 		}
 	}
 
+	// Aerial perspective: desaturate + cool shift + haze blend at distance.
+	float bark_dist = length(tree_base - INV_VIEW_MATRIX[3].xyz);
+	float bark_aerial = smoothstep(60.0, 300.0, bark_dist);
+	if (bark_aerial > 0.01) {
+		float bl = dot(ALBEDO, vec3(0.2126, 0.7152, 0.0722));
+		ALBEDO = mix(ALBEDO, vec3(bl), bark_aerial * 0.30);
+		ALBEDO = mix(ALBEDO, ALBEDO * vec3(0.94, 0.96, 1.04), bark_aerial);
+		float sky_l = dot(sky_reflect_color, vec3(0.2126, 0.7152, 0.0722));
+		vec3 haze = mix(vec3(0.58, 0.56, 0.52), sky_reflect_color * 0.8 + vec3(0.20), 0.35);
+		float night_f = smoothstep(0.15, 0.02, sky_l);
+		haze = mix(haze, vec3(0.14, 0.10, 0.06), night_f * 0.6);
+		ALBEDO = mix(ALBEDO, haze, bark_aerial * 0.30);
+	}
 }

@@ -7,6 +7,7 @@ uniform float base_roughness = 0.88;
 global uniform float rain_wetness;
 global uniform float snow_cover;
 global uniform float season_t;
+global uniform vec3 sky_reflect_color;
 
 #include "res://shaders/include/hash_noise.gdshaderinc"
 
@@ -99,4 +100,16 @@ void fragment() {
 		ROUGHNESS = mix(ROUGHNESS, 0.95, algae * 0.2);
 	}
 
+	// Aerial perspective
+	float wood_dist = length(world_pos - INV_VIEW_MATRIX[3].xyz);
+	float wood_aerial = smoothstep(80.0, 300.0, wood_dist);
+	if (wood_aerial > 0.01) {
+		float wl = dot(ALBEDO, vec3(0.2126, 0.7152, 0.0722));
+		ALBEDO = mix(ALBEDO, vec3(wl), wood_aerial * 0.25);
+		float sky_l = dot(sky_reflect_color, vec3(0.2126, 0.7152, 0.0722));
+		vec3 haze = mix(vec3(0.58, 0.56, 0.52), sky_reflect_color * 0.8 + vec3(0.20), 0.35);
+		float night_f = smoothstep(0.15, 0.02, sky_l);
+		haze = mix(haze, vec3(0.14, 0.10, 0.06), night_f * 0.6);
+		ALBEDO = mix(ALBEDO, haze, wood_aerial * 0.25);
+	}
 }

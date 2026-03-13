@@ -8,6 +8,7 @@ global uniform vec2 wind_vec;
 global uniform float snow_cover;
 global uniform float season_t;
 global uniform float rain_wetness;
+global uniform vec3 sky_reflect_color;
 
 #include "res://shaders/include/hash_noise.gdshaderinc"
 
@@ -303,6 +304,25 @@ void fragment() {
 		sss_strength = mix(sss_strength, 1.2, v_blossom);  // petals are very translucent
 	}
 	BACKLIGHT = backlight_col * sss_strength;
+
+	// Aerial perspective: desaturate + cool shift + haze blend at distance.
+	// Matches terrain, grass, and facade distance fog for visual coherence.
+	vec3 leaf_world = (MODEL_MATRIX * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+	float leaf_dist = length(leaf_world - INV_VIEW_MATRIX[3].xyz);
+	float leaf_aerial = smoothstep(60.0, 300.0, leaf_dist);
+	if (leaf_aerial > 0.01) {
+		// Desaturate
+		float al = dot(ALBEDO, vec3(0.2126, 0.7152, 0.0722));
+		ALBEDO = mix(ALBEDO, vec3(al), leaf_aerial * 0.30);
+		// Cool shift
+		ALBEDO = mix(ALBEDO, ALBEDO * vec3(0.94, 0.96, 1.04), leaf_aerial);
+		// Haze blend — match facade shader's atmospheric haze
+		float sky_l = dot(sky_reflect_color, vec3(0.2126, 0.7152, 0.0722));
+		vec3 haze = mix(vec3(0.58, 0.56, 0.52), sky_reflect_color * 0.8 + vec3(0.20), 0.35);
+		float night_f = smoothstep(0.15, 0.02, sky_l);
+		haze = mix(haze, vec3(0.14, 0.10, 0.06), night_f * 0.6);
+		ALBEDO = mix(ALBEDO, haze, leaf_aerial * 0.30);
+	}
 
 	// Feed continuous alpha to alpha_to_coverage (4x MSAA).
 	// Depth prepass already wrote depth for fragments above 0.15 threshold.

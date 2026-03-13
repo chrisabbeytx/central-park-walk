@@ -8,6 +8,7 @@ uniform vec4 tint : source_color = vec4(1.0);
 global uniform float rain_wetness;
 global uniform float snow_cover;
 global uniform float season_t;
+global uniform vec3 sky_reflect_color;
 
 varying vec3 world_pos;
 varying vec3 world_nrm;
@@ -167,4 +168,17 @@ void fragment() {
 		}
 	}
 
+	// Aerial perspective: desaturate + cool shift + haze blend at distance
+	float stone_dist = length(world_pos - INV_VIEW_MATRIX[3].xyz);
+	float stone_aerial = smoothstep(80.0, 350.0, stone_dist);
+	if (stone_aerial > 0.01) {
+		float sl = dot(ALBEDO, vec3(0.2126, 0.7152, 0.0722));
+		ALBEDO = mix(ALBEDO, vec3(sl), stone_aerial * 0.25);
+		ALBEDO = mix(ALBEDO, ALBEDO * vec3(0.94, 0.96, 1.04), stone_aerial);
+		float sky_l = dot(sky_reflect_color, vec3(0.2126, 0.7152, 0.0722));
+		vec3 haze = mix(vec3(0.58, 0.56, 0.52), sky_reflect_color * 0.8 + vec3(0.20), 0.35);
+		float night_f = smoothstep(0.15, 0.02, sky_l);
+		haze = mix(haze, vec3(0.14, 0.10, 0.06), night_f * 0.6);
+		ALBEDO = mix(ALBEDO, haze, stone_aerial * 0.25);
+	}
 }
