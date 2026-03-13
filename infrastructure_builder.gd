@@ -2141,6 +2141,75 @@ func _build_reservoir_fence(water: Array) -> void:
 
 
 # ---------------------------------------------------------------------------
+# Playground equipment — swing sets + play structures at playground zones
+# ---------------------------------------------------------------------------
+func _build_playground_equipment(landuse: Array) -> void:
+	var swing_path := ProjectSettings.globalize_path("res://models/furniture/cp_swing_set.glb")
+	var play_path := ProjectSettings.globalize_path("res://models/furniture/cp_play_structure.glb")
+
+	var swing_mesh: Mesh = null
+	var play_mesh: Mesh = null
+
+	var sw_meshes: Dictionary = _loader._load_glb_meshes(swing_path)
+	for mname in sw_meshes:
+		swing_mesh = sw_meshes[mname] as Mesh
+		break
+
+	var pl_meshes: Dictionary = _loader._load_glb_meshes(play_path)
+	for mname in pl_meshes:
+		play_mesh = pl_meshes[mname] as Mesh
+		break
+
+	if swing_mesh == null and play_mesh == null:
+		return
+
+	var swing_xforms: Array = []
+	var play_xforms: Array = []
+	var rng := RandomNumberGenerator.new()
+
+	for zone in landuse:
+		if str(zone.get("type", "")) != "playground":
+			continue
+		var pts: Array = zone.get("points", [])
+		if pts.size() < 3:
+			continue
+
+		# Compute centroid
+		var cx := 0.0
+		var cz := 0.0
+		for pt in pts:
+			cx += float(pt[0])
+			cz += float(pt[1])
+		cx /= float(pts.size())
+		cz /= float(pts.size())
+
+		if not _loader._in_boundary(cx, cz):
+			continue
+
+		rng.seed = int(cx * 73856.0 + cz * 19349.0) & 0x7FFFFFFF
+		var yaw: float = rng.randf() * TAU
+		var cy: float = _loader._terrain_y(cx, cz)
+
+		# Place swing set offset from center
+		if swing_mesh:
+			var sx: float = cx + cos(yaw) * 4.0
+			var sz: float = cz + sin(yaw) * 4.0
+			var sy: float = _loader._terrain_y(sx, sz)
+			swing_xforms.append(Transform3D(Basis(Vector3.UP, yaw), Vector3(sx, sy, sz)))
+
+		# Place play structure at center
+		if play_mesh:
+			var py: float = cy
+			play_xforms.append(Transform3D(Basis(Vector3.UP, yaw + PI * 0.5), Vector3(cx, py, cz)))
+
+	if not swing_xforms.is_empty() and swing_mesh:
+		_loader._spawn_multimesh(swing_mesh, null, swing_xforms, "SwingSets")
+	if not play_xforms.is_empty() and play_mesh:
+		_loader._spawn_multimesh(play_mesh, null, play_xforms, "PlayStructures")
+	print("  Playground equipment: %d swing sets, %d play structures" % [swing_xforms.size(), play_xforms.size()])
+
+
+# ---------------------------------------------------------------------------
 # Bridle path posts — split-rail wooden fence along horseback riding trails
 # ---------------------------------------------------------------------------
 func _build_bridle_posts(paths: Array) -> void:

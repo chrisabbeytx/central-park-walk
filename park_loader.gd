@@ -1067,6 +1067,7 @@ func _ready() -> void:
 	_infrastructure_builder._build_park_signs(paths)
 	_infrastructure_builder._build_reservoir_fence(water)
 	_infrastructure_builder._build_bridle_posts(paths)
+	_infrastructure_builder._build_playground_equipment(landuse_zones)
 	print("  statues+amenities: %d ms" % (Time.get_ticks_msec() - _tp)); _tp = Time.get_ticks_msec()
 	_infrastructure_builder._build_barriers(barriers)
 	print("  barriers: %d ms" % (Time.get_ticks_msec() - _tp)); _tp = Time.get_ticks_msec()
