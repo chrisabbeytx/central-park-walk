@@ -2425,8 +2425,32 @@ def main() -> None:
                 # Dilate by ~10m (16 cells at 0.61m/cell) — buffer zone around structures
                 # prevents DSM rooftop heights from bleeding into nearby terrain
                 struct_mask = (surface_arr == 5) | (surface_arr == 6)
+
+                # Add landmark footprints — 3D models need flat terrain underneath.
+                # Same as buildings: use DEM (bare earth) so the model provides geometry.
+                HALF = WORLD_SIZE / 2.0
+                landmark_footprints = [
+                    # (cx, cz, half_w, half_d) — world coords, half-extents
+                    (-457, 995, 35, 20),    # Bethesda Terrace + arcade
+                    (-480, 1020, 20, 15),   # Bethesda upper terrace / road
+                ]
+                for lx, lz, hw, hd in landmark_footprints:
+                    # Convert world coords to pixel coords
+                    px0 = int((lx - hw + HALF) / WORLD_SIZE * ATLAS_RES)
+                    px1 = int((lx + hw + HALF) / WORLD_SIZE * ATLAS_RES)
+                    pz0 = int((lz - hd + HALF) / WORLD_SIZE * ATLAS_RES)
+                    pz1 = int((lz + hd + HALF) / WORLD_SIZE * ATLAS_RES)
+                    px0 = max(0, min(px0, ATLAS_RES - 1))
+                    px1 = max(0, min(px1, ATLAS_RES - 1))
+                    pz0 = max(0, min(pz0, ATLAS_RES - 1))
+                    pz1 = max(0, min(pz1, ATLAS_RES - 1))
+                    struct_mask[pz0:pz1+1, px0:px1+1] = True
+                lm_cells = sum(1 for lx, lz, hw, hd in landmark_footprints
+                               for _ in range(int(hw * hd * 4 / (WORLD_SIZE/ATLAS_RES)**2)))
+                print(f"  Added {len(landmark_footprints)} landmark footprints to structure mask")
+
                 struct_count = int(struct_mask.sum())
-                print(f"  Structure cells (buildings+bridges): {struct_count:,}")
+                print(f"  Structure cells (buildings+bridges+landmarks): {struct_count:,}")
 
                 # Dilate to create buffer zone around structures
                 dilated = binary_dilation(struct_mask, iterations=16)
