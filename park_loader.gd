@@ -1210,6 +1210,33 @@ func _build_bridge_models() -> void:
 			extent_major = maxf(extent_major, proj_major)
 			extent_minor = maxf(extent_minor, proj_minor)
 
+		# Apply stone/iron materials based on bridge type
+		var rw_alb: ImageTexture = _load_tex("res://textures/rock_wall_diff.jpg")
+		var rw_nrm: ImageTexture = _load_tex("res://textures/rock_wall_nrm.jpg")
+		var rw_rgh: ImageTexture = _load_tex("res://textures/rock_wall_rgh.jpg")
+		var bridge_mat: Material
+		if bname == "Bow Bridge" or bname == "Balcony Bridge":
+			# Cast iron bridges — dark gray metal
+			var iron_sh: Shader = _get_shader("cast_iron", "res://shaders/cast_iron.gdshader")
+			var iron_mat := ShaderMaterial.new()
+			iron_mat.shader = iron_sh
+			iron_mat.set_shader_parameter("iron_color", Vector3(0.18, 0.20, 0.22))
+			bridge_mat = iron_mat
+		else:
+			# Stone arches — Manhattan schist gray
+			bridge_mat = _make_stone_material(rw_alb, rw_nrm, rw_rgh,
+				Color(0.45, 0.44, 0.42))
+		var mat_stack: Array = [root]
+		while not mat_stack.is_empty():
+			var n: Node = mat_stack.pop_back()
+			if n is MeshInstance3D:
+				var mi := n as MeshInstance3D
+				if mi.mesh:
+					for si in range(mi.mesh.get_surface_count()):
+						mi.mesh.surface_set_material(si, bridge_mat)
+			for c in n.get_children():
+				mat_stack.append(c)
+
 		# Position at deck height, rotated to match outline principal axis
 		# Blender bridge runs along Y → in Godot that's Z axis
 		# angle is the principal axis direction in XZ plane
