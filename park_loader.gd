@@ -1062,7 +1062,9 @@ func _ready() -> void:
 	_infrastructure_builder._build_maintenance_yard()
 	_infrastructure_builder._build_dana_pier()
 	_infrastructure_builder._build_stone_weirs()
-	_infrastructure_builder._build_bethesda_arcade()
+	# Bethesda Arcade disabled — terrace model already includes barrel vault passage.
+	# Separate arcade model at (-480,1020) created duplicate overlapping geometry.
+	#_infrastructure_builder._build_bethesda_arcade()
 	_infrastructure_builder._build_conservatory_fountains()
 	_infrastructure_builder._build_rustic_bridges()
 	_infrastructure_builder._build_dog_run_fences(landuse_zones)

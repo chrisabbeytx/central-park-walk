@@ -188,8 +188,13 @@ bpy.ops.object.join()
 obj = bpy.context.active_object
 obj.name = "BethesdaArcade"
 
+# Fix Y-up → Z-up: script built with Y as height (wrong — Blender is Z-up).
+# Rotate 90° around X so the GLTF exporter maps Y→up correctly.
+obj.rotation_euler = (math.pi/2, 0, 0)
+bpy.ops.object.transform_apply(rotation=True)
+
 out_path = "/home/chris/central-park-walk/models/furniture/cp_bethesda_arcade.glb"
-bpy.ops.export_scene.gltf(filepath=out_path, export_format='GLB')
+bpy.ops.export_scene.gltf(filepath=out_path, export_format='GLB', use_selection=True, export_apply=True)
 vcount = len(obj.data.vertices)
 fcount = len(obj.data.polygons)
 print(f"Exported Bethesda Arcade to {out_path} ({vcount} verts, {fcount} faces)")
