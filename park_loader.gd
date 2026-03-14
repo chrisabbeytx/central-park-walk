@@ -1076,6 +1076,7 @@ func _ready() -> void:
 	_infrastructure_builder._build_balustrades()
 	_infrastructure_builder._build_drive_waste_bins(paths)
 	_infrastructure_builder._build_retaining_walls(paths)
+	_infrastructure_builder._build_bollards()
 	print("  statues+amenities: %d ms" % (Time.get_ticks_msec() - _tp)); _tp = Time.get_ticks_msec()
 	_infrastructure_builder._build_barriers(barriers)
 	print("  barriers: %d ms" % (Time.get_ticks_msec() - _tp)); _tp = Time.get_ticks_msec()

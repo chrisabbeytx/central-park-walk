@@ -3396,3 +3396,76 @@ func _build_retaining_walls(paths: Array) -> void:
 	mi.name = "RetainingWalls"
 	_loader.add_child(mi)
 	print("  Retaining walls: %d segments (%d verts)" % [wall_count, verts.size()])
+
+
+# ---------------------------------------------------------------------------
+# Bollards — cast iron posts at park entrances and drive restrictions
+# ---------------------------------------------------------------------------
+func _build_bollards() -> void:
+	var glb_path := ProjectSettings.globalize_path("res://models/furniture/cp_bollard.glb")
+	if not FileAccess.file_exists(glb_path):
+		return
+	var meshes: Dictionary = _loader._load_glb_meshes(glb_path)
+	var mesh: Mesh = null
+	for mname in meshes:
+		mesh = meshes[mname] as Mesh
+		break
+	if mesh == null:
+		return
+
+	# Apply cast iron material
+	var iron_sh: Shader = _loader._get_shader("cast_iron", "res://shaders/cast_iron.gdshader")
+	if iron_sh:
+		var mat := ShaderMaterial.new()
+		mat.shader = iron_sh
+		mat.set_shader_parameter("iron_color", Vector3(0.06, 0.06, 0.07))
+		mat.set_shader_parameter("base_roughness", 0.60)
+		mat.set_shader_parameter("base_metallic", 0.85)
+		for si in mesh.get_surface_count():
+			mesh.surface_set_material(si, mat)
+
+	# Bollard positions at park gate entrances — rows of 3-5 bollards
+	# across path width. Gate positions from boundary_builder gate data.
+	var gate_positions: Array = [
+		# South gates
+		[-835, 1812, 0.0],    # Merchants' Gate (Columbus Circle)
+		[-680, 1872, PI*0.5], # Scholars' Gate (60th/5th Ave)
+		[-545, 1830, 0.0],    # Artists' Gate (59th/6th Ave)
+		# West side
+		[-855, 1550, PI*0.5], # Women's Gate (72nd/CPW)
+		[-880, 1170, PI*0.5], # Hunters' Gate (81st/CPW)
+		[-850, 770, PI*0.5],  # Mariners' Gate (85th/CPW)
+		[-810, 340, PI*0.5],  # Gate of All Saints (96th/CPW)
+		[-700, -250, PI*0.5], # Boys' Gate (100th/CPW)
+		[-620, -900, PI*0.5], # Strangers' Gate (106th/CPW)
+		# East side
+		[700, 1570, PI*0.5],  # Inventors' Gate (72nd/5th)
+		[560, 1170, PI*0.5],  # Engineers' Gate (90th/5th)
+		[400, 770, PI*0.5],   # Miners' Gate (79th/5th)
+		[180, -250, PI*0.5],  # Woodmen's Gate (96th/5th)
+		# North
+		[-250, -1850, 0.0],   # Farmers' Gate (110th/5th)
+		[-500, -1880, 0.0],   # Warriors' Gate (110th/CPW)
+	]
+
+	var xforms: Array = []
+	const BOLLARD_SPACING := 1.2  # 1.2m between bollards
+	const BOLLARDS_PER_GATE := 5  # row of 5 bollards
+
+	for gp in gate_positions:
+		var gx: float = float(gp[0])
+		var gz: float = float(gp[1])
+		var yaw: float = float(gp[2])
+		# Direction perpendicular to path for row placement
+		var row_dx := sin(yaw)
+		var row_dz := cos(yaw)
+		for bi in BOLLARDS_PER_GATE:
+			var offset: float = (float(bi) - float(BOLLARDS_PER_GATE - 1) * 0.5) * BOLLARD_SPACING
+			var bx: float = gx + row_dx * offset
+			var bz: float = gz + row_dz * offset
+			var by: float = _loader._terrain_y(bx, bz)
+			xforms.append(Transform3D(Basis(Vector3.UP, yaw), Vector3(bx, by, bz)))
+
+	if not xforms.is_empty():
+		_loader._spawn_multimesh(mesh, null, xforms, "Bollards")
+	print("  Bollards: %d at %d gate entrances" % [xforms.size(), gate_positions.size()])
