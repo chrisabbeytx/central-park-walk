@@ -3579,3 +3579,145 @@ func _build_info_kiosks() -> void:
 	if not xforms.is_empty():
 		_loader._spawn_multimesh(mesh, null, xforms, "InfoKiosks")
 	print("  Info kiosks: %d placed" % xforms.size())
+
+
+# ---------------------------------------------------------------------------
+# Storm drain grates — flush with pavement on drives
+# ---------------------------------------------------------------------------
+func _build_drain_grates(paths: Array) -> void:
+	var glb_path := ProjectSettings.globalize_path("res://models/furniture/cp_drain_grate.glb")
+	if not FileAccess.file_exists(glb_path):
+		return
+	var meshes: Dictionary = _loader._load_glb_meshes(glb_path)
+	var mesh: Mesh = null
+	for mname in meshes:
+		mesh = meshes[mname] as Mesh
+		break
+	if mesh == null:
+		return
+
+	# Apply cast iron material
+	var iron_sh: Shader = _loader._get_shader("cast_iron", "res://shaders/cast_iron.gdshader")
+	if iron_sh:
+		var mat := ShaderMaterial.new()
+		mat.shader = iron_sh
+		mat.set_shader_parameter("iron_color", Vector3(0.10, 0.10, 0.11))
+		mat.set_shader_parameter("base_roughness", 0.70)
+		mat.set_shader_parameter("base_metallic", 0.85)
+		for si in mesh.get_surface_count():
+			mesh.surface_set_material(si, mat)
+
+	const SPACING := 80.0    # one grate every ~80m along drives
+	const PATH_OFFSET := 4.0 # at road edge (gutter)
+	var xforms: Array = []
+
+	for path in paths:
+		var hw: String = str(path.get("highway", ""))
+		if hw != "primary" and hw != "secondary":
+			continue
+		var pts: Array = path.get("points", [])
+		if pts.size() < 2:
+			continue
+
+		var dist := 20.0
+		for pi in range(pts.size() - 1):
+			var ax: float = float(pts[pi][0])
+			var az: float = float(pts[pi][2]) if len(pts[pi]) > 2 else float(pts[pi][1])
+			var bx: float = float(pts[pi + 1][0])
+			var bz: float = float(pts[pi + 1][2]) if len(pts[pi + 1]) > 2 else float(pts[pi + 1][1])
+			var sdx: float = bx - ax
+			var sdz: float = bz - az
+			var seg_len: float = sqrt(sdx * sdx + sdz * sdz)
+			if seg_len < 0.1:
+				continue
+
+			while dist < seg_len:
+				var t: float = dist / seg_len
+				var wx: float = ax + sdx * t
+				var wz: float = az + sdz * t
+				if not _loader._in_boundary(wx, wz):
+					dist += SPACING
+					continue
+				var px: float = -sdz / seg_len
+				var pz: float = sdx / seg_len
+				var mx: float = wx + px * PATH_OFFSET
+				var mz: float = wz + pz * PATH_OFFSET
+				var my: float = _loader._terrain_y(mx, mz) + 0.005
+				var yaw: float = atan2(sdx, sdz)
+				xforms.append(Transform3D(Basis(Vector3.UP, yaw), Vector3(mx, my, mz)))
+				dist += SPACING
+			dist -= seg_len
+
+	if not xforms.is_empty():
+		_loader._spawn_multimesh(mesh, null, xforms, "DrainGrates")
+	print("  Drain grates: %d placed" % xforms.size())
+
+
+# ---------------------------------------------------------------------------
+# Bicycle racks — inverted-U racks near facilities and entrances
+# ---------------------------------------------------------------------------
+func _build_bike_racks() -> void:
+	var glb_path := ProjectSettings.globalize_path("res://models/furniture/cp_bike_rack.glb")
+	if not FileAccess.file_exists(glb_path):
+		return
+	var meshes: Dictionary = _loader._load_glb_meshes(glb_path)
+	var mesh: Mesh = null
+	for mname in meshes:
+		mesh = meshes[mname] as Mesh
+		break
+	if mesh == null:
+		return
+
+	# Bike rack clusters at facilities, playgrounds, and major entrances
+	# Each entry: [x, z, yaw, count] — count = racks in a row
+	var clusters: Array = [
+		# Near Bethesda
+		[-460, 1040, 0.0, 4],
+		# Loeb Boathouse
+		[-320, 850, PI*0.5, 3],
+		# Tavern on the Green
+		[-850, 1420, PI, 3],
+		# Belvedere Castle
+		[-280, 640, 0.0, 2],
+		# Tennis Center
+		[-560, -80, PI*0.5, 4],
+		# Conservatory Garden
+		[1100, -1150, 0.0, 3],
+		# Columbus Circle entrance
+		[-830, 1800, PI*0.5, 5],
+		# 72nd/5th Ave entrance
+		[690, 1560, 0.0, 4],
+		# Dana Discovery Center
+		[-200, -1700, PI, 3],
+		# North Meadow Rec Center
+		[300, -1400, PI*0.5, 3],
+		# Wollman Rink
+		[-100, 1680, 0.0, 3],
+		# Central Park Zoo
+		[450, 1720, PI*0.5, 4],
+		# Heckscher Playground
+		[-500, 1750, 0.0, 3],
+		# Great Lawn area
+		[-100, 100, PI*0.5, 2],
+	]
+
+	var xforms: Array = []
+	const RACK_SPACING := 1.2  # 1.2m between racks in a row
+
+	for cl in clusters:
+		var base_x: float = float(cl[0])
+		var base_z: float = float(cl[1])
+		var yaw: float = float(cl[2])
+		var count: int = int(cl[3])
+		var row_dx := sin(yaw)
+		var row_dz := cos(yaw)
+		for i in count:
+			var offset: float = (float(i) - float(count - 1) * 0.5) * RACK_SPACING
+			var bx: float = base_x + row_dx * offset
+			var bz: float = base_z + row_dz * offset
+			var by: float = _loader._terrain_y(bx, bz)
+			xforms.append(Transform3D(Basis(Vector3.UP, yaw), Vector3(bx, by, bz)))
+
+	if not xforms.is_empty():
+		_loader._spawn_multimesh(mesh, null, xforms, "BikeRacks")
+	print("  Bike racks: %d at %d locations" % [xforms.size(), clusters.size()])
