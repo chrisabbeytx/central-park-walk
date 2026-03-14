@@ -3469,3 +3469,113 @@ func _build_bollards() -> void:
 	if not xforms.is_empty():
 		_loader._spawn_multimesh(mesh, null, xforms, "Bollards")
 	print("  Bollards: %d at %d gate entrances" % [xforms.size(), gate_positions.size()])
+
+
+# ---------------------------------------------------------------------------
+# Emergency call boxes — blue-light phones along paths
+# ---------------------------------------------------------------------------
+func _build_call_boxes(paths: Array) -> void:
+	var glb_path := ProjectSettings.globalize_path("res://models/furniture/cp_call_box.glb")
+	if not FileAccess.file_exists(glb_path):
+		return
+	var meshes: Dictionary = _loader._load_glb_meshes(glb_path)
+	var mesh: Mesh = null
+	for mname in meshes:
+		mesh = meshes[mname] as Mesh
+		break
+	if mesh == null:
+		return
+
+	const SPACING := 250.0   # one call box every ~250m along drives
+	const PATH_OFFSET := 2.5 # offset from path center
+	var xforms: Array = []
+
+	for path in paths:
+		var hw: String = str(path.get("highway", ""))
+		if hw != "primary" and hw != "secondary":
+			continue
+		var pts: Array = path.get("points", [])
+		if pts.size() < 2:
+			continue
+
+		var dist := 100.0  # start offset
+		for pi in range(pts.size() - 1):
+			var ax: float = float(pts[pi][0])
+			var az: float = float(pts[pi][2]) if len(pts[pi]) > 2 else float(pts[pi][1])
+			var bx: float = float(pts[pi + 1][0])
+			var bz: float = float(pts[pi + 1][2]) if len(pts[pi + 1]) > 2 else float(pts[pi + 1][1])
+			var sdx: float = bx - ax
+			var sdz: float = bz - az
+			var seg_len: float = sqrt(sdx * sdx + sdz * sdz)
+			if seg_len < 0.1:
+				continue
+
+			while dist < seg_len:
+				var t: float = dist / seg_len
+				var wx: float = ax + sdx * t
+				var wz: float = az + sdz * t
+				if not _loader._in_boundary(wx, wz):
+					dist += SPACING
+					continue
+				var px: float = -sdz / seg_len
+				var pz: float = sdx / seg_len
+				var mx: float = wx + px * PATH_OFFSET
+				var mz: float = wz + pz * PATH_OFFSET
+				var my: float = _loader._terrain_y(mx, mz)
+				var yaw: float = atan2(-px, -pz)  # face path
+				xforms.append(Transform3D(Basis(Vector3.UP, yaw), Vector3(mx, my, mz)))
+				dist += SPACING
+			dist -= seg_len
+
+	if not xforms.is_empty():
+		_loader._spawn_multimesh(mesh, null, xforms, "EmergencyCallBoxes")
+	print("  Emergency call boxes: %d placed" % xforms.size())
+
+
+# ---------------------------------------------------------------------------
+# Info kiosks — wayfinding map panels at major intersections
+# ---------------------------------------------------------------------------
+func _build_info_kiosks() -> void:
+	var glb_path := ProjectSettings.globalize_path("res://models/furniture/cp_info_kiosk.glb")
+	if not FileAccess.file_exists(glb_path):
+		return
+	var meshes: Dictionary = _loader._load_glb_meshes(glb_path)
+	var mesh: Mesh = null
+	for mname in meshes:
+		mesh = meshes[mname] as Mesh
+		break
+	if mesh == null:
+		return
+
+	# Known kiosk locations at major park entrances and junctions
+	var kiosk_positions: Array = [
+		# South entrances
+		[-835, 1815, PI],       # Columbus Circle
+		[-680, 1870, PI*0.5],   # 5th Ave/60th
+		[-540, 1835, PI],       # Artists' Gate
+		# Major intersections
+		[-480, 1050, 0.0],      # Bethesda Terrace
+		[-650, 950, PI*0.25],   # Cherry Hill
+		[-265, 620, PI*0.5],    # Belvedere Castle
+		[-100, 170, 0.0],       # Great Lawn east
+		[-550, -50, PI*0.5],    # Tennis Center
+		# North
+		[200, -1100, 0.0],      # near Conservatory Garden
+		[-200, -1550, PI],      # near North Meadow
+		[-400, -1850, 0.0],     # Harlem Meer
+		# East side
+		[700, 1570, PI*0.5],    # Inventors' Gate / 72nd
+		[400, 770, PI*0.5],     # Engineers' Gate area
+	]
+
+	var xforms: Array = []
+	for kp in kiosk_positions:
+		var kx: float = float(kp[0])
+		var kz: float = float(kp[1])
+		var yaw: float = float(kp[2])
+		var ky: float = _loader._terrain_y(kx, kz)
+		xforms.append(Transform3D(Basis(Vector3.UP, yaw), Vector3(kx, ky, kz)))
+
+	if not xforms.is_empty():
+		_loader._spawn_multimesh(mesh, null, xforms, "InfoKiosks")
+	print("  Info kiosks: %d placed" % xforms.size())
