@@ -49,6 +49,7 @@ HIGHWAY_WIDTH = {
 TERRAIN_Z   = 15           # zoom level matching download_terrain.py
 TERRAIN_DIR = "terrain_tiles"
 LIDAR_DEM   = "lidar_data/central_park_dem_8k.tif"  # Bare earth DEM — clean ground level, no tree/structure peaks
+LIDAR_DSM   = "lidar_data/central_park_dsm_enhanced_8k.tif"  # DSM with tree canopy masked — reveals rock outcrops, retaining walls, steps
 GRID_W      = 8192         # heightmap output resolution (~0.6 m/cell)
 GRID_H      = 8192
 ATLAS_RES   = 8192         # world atlas / boundary / landuse grid — matches heightmap (0.61 m/cell)
@@ -74,30 +75,30 @@ def latlon_to_tile(lat: float, lon: float, z: int) -> tuple[int, int]:
 # ---------------------------------------------------------------------------
 # Terrain heightmap – LiDAR DEM (preferred) or Terrarium PNG tiles (fallback)
 # ---------------------------------------------------------------------------
-def build_height_grid_lidar() -> tuple[list, float, float] | tuple[None, float, float]:
+def _load_lidar_raster(path, label="LiDAR raster"):
+    """Load a LiDAR GeoTIFF → 2D float64 numpy array at GRID_W×GRID_H.
+
+    Handles GDAL loading, US Survey Feet → metres conversion, nodata fill,
+    resampling, and light smoothing. Returns None if unavailable.
     """
-    Read the bare earth LiDAR DEM (8K) and return:
-        (flat_grid, min_elev, origin_height)
-    Elevation values are in metres (converted from US Survey Feet).
-    Returns (None, 0, 0) if file missing or GDAL unavailable.
-    """
-    if not os.path.exists(LIDAR_DEM):
-        return None, 0.0, 0.0
+    if not os.path.exists(path):
+        print(f"  {label}: file not found ({path})", file=sys.stderr)
+        return None
     try:
         from osgeo import gdal
         import numpy as np
     except ImportError:
-        print("  GDAL/numpy not available – skipping LiDAR DEM", file=sys.stderr)
-        return None, 0.0, 0.0
+        print(f"  GDAL/numpy not available – skipping {label}", file=sys.stderr)
+        return None
 
-    ds = gdal.Open(LIDAR_DEM)
+    ds = gdal.Open(path)
     if ds is None:
-        return None, 0.0, 0.0
+        return None
     band = ds.GetRasterBand(1)
     nodata = band.GetNoDataValue()
     data = band.ReadAsArray()
     rows, cols = data.shape
-    print(f"  LiDAR DEM: {cols}×{rows} pixels, nodata={nodata}")
+    print(f"  {label}: {cols}×{rows} pixels, nodata={nodata}")
 
     # Values are in US Survey Feet → convert to metres
     valid_mask = data != nodata if nodata is not None else np.ones_like(data, dtype=bool)
@@ -142,6 +143,21 @@ def build_height_grid_lidar() -> tuple[list, float, float] | tuple[None, float, 
     except ImportError:
         print(f"  scipy not available, skipping smooth")
 
+    ds = None
+    return elev_m
+
+
+def build_height_grid_lidar() -> tuple[list, float, float] | tuple[None, float, float]:
+    """
+    Read the bare earth LiDAR DEM (8K) and return:
+        (flat_grid, min_elev, origin_height)
+    Elevation values are in metres (converted from US Survey Feet).
+    Returns (None, 0, 0) if file missing or GDAL unavailable.
+    """
+    elev_m = _load_lidar_raster(LIDAR_DEM, "LiDAR DEM (bare earth)")
+    if elev_m is None:
+        return None, 0.0, 0.0
+
     W, H = GRID_W, GRID_H
     grid = elev_m.flatten().tolist()
     min_elev = min(grid)
@@ -149,7 +165,6 @@ def build_height_grid_lidar() -> tuple[list, float, float] | tuple[None, float, 
 
     print(f"  Final: min={min_elev:.2f} m  max={max(grid):.2f} m  "
           f"origin_above_min={origin_height:.2f} m")
-    ds = None
     return grid, min_elev, origin_height
 
 
@@ -2391,6 +2406,90 @@ def main() -> None:
     prebake_boundary_mask(boundary_pts)
     prebake_water_grids(water_out, terrain, boundary_pts)
     if have_terrain:
+        # --- DEM/DSM hybrid terrain ---
+        # Rock outcrops, retaining walls, natural stone steps are captured by DSM
+        # but smoothed away by bare-earth DEM. Blend both: DEM under buildings/bridges
+        # (where 3D models provide geometry), DSM everywhere else.
+        if os.path.exists(LIDAR_DSM) and surface_arr is not None:
+            import numpy as np
+            from scipy.ndimage import binary_dilation, gaussian_filter
+            print("\n--- DEM/DSM hybrid terrain ---")
+            dsm_raw = _load_lidar_raster(LIDAR_DSM, "LiDAR DSM (structure-enhanced)")
+            if dsm_raw is not None:
+                # Normalize DSM with same min_elev as DEM so heights are compatible
+                dsm_arr = (dsm_raw - min_elev).astype(np.float32)
+                dsm_arr = np.maximum(dsm_arr, 0.0)
+                del dsm_raw
+
+                # Build DEM-priority mask: 1.0 where we want DEM (buildings + bridges)
+                # Dilate by ~10m (16 cells at 0.61m/cell) — buffer zone around structures
+                # prevents DSM rooftop heights from bleeding into nearby terrain
+                struct_mask = (surface_arr == 5) | (surface_arr == 6)
+                struct_count = int(struct_mask.sum())
+                print(f"  Structure cells (buildings+bridges): {struct_count:,}")
+
+                # Dilate to create buffer zone around structures
+                dilated = binary_dilation(struct_mask, iterations=16)
+                dilated_count = int(dilated.sum())
+                print(f"  After 10m dilation: {dilated_count:,} cells")
+                del struct_mask
+
+                # Gaussian feather for smooth transition (~3m = 5 cells)
+                dem_priority = gaussian_filter(dilated.astype(np.float32), sigma=5.0)
+                dem_priority = np.clip(dem_priority, 0.0, 1.0)
+                del dilated
+
+                # Blend: DEM under structures, DSM elsewhere
+                hybrid_arr = hm_arr * dem_priority + dsm_arr * (1.0 - dem_priority)
+
+                # Statistics
+                diff = hybrid_arr - hm_arr
+                changed = np.abs(diff) > 0.1  # >10cm difference
+                if changed.any():
+                    print(f"  Hybrid: {changed.sum():,} cells differ >10cm from bare-earth DEM")
+                    print(f"  Height delta range: {diff[changed].min():.2f}m to {diff[changed].max():.2f}m "
+                          f"(mean {diff[changed].mean():.2f}m)")
+                else:
+                    print(f"  Hybrid: no significant height differences found")
+                del diff, changed, dem_priority, dsm_arr
+
+                # Replace heightmap array
+                hm_arr = hybrid_arr.astype(np.float32)
+
+                # Re-write heightmap.bin with hybrid values
+                flat_hybrid = hm_arr.flatten()
+                origin_h = float(flat_hybrid[(GRID_H // 2) * GRID_W + GRID_W // 2])
+                with open("heightmap.bin", "wb") as fh:
+                    fh.write(struct.pack("<II", GRID_W, GRID_H))
+                    fh.write(struct.pack("<f", WORLD_SIZE))
+                    fh.write(struct.pack("<f", origin_h))
+                    fh.write(flat_hybrid.tobytes())
+                print(f"  Re-wrote heightmap.bin (hybrid DEM/DSM)")
+
+                # Re-write heightmap_gpu.bin
+                hm_min_h = float(hm_arr.min())
+                hm_max_h = float(hm_arr.max())
+                hm_range = max(hm_max_h - hm_min_h, 0.01)
+                TEX_RES = ATLAS_RES
+                sx = (GRID_W - 1) / (TEX_RES - 1)
+                sz = (GRID_H - 1) / (TEX_RES - 1)
+                xi_src = np.clip(np.round(np.arange(TEX_RES) * sx).astype(int), 0, GRID_W - 1)
+                zi_src = np.clip(np.round(np.arange(TEX_RES) * sz).astype(int), 0, GRID_H - 1)
+                arr4k = hm_arr[np.ix_(zi_src, xi_src)]
+                norm = np.clip((arr4k - hm_min_h) / hm_range, 0.0, 1.0)
+                h16 = (norm * 65535.0).astype(np.uint16)
+                rg8 = np.empty((TEX_RES, TEX_RES, 2), dtype=np.uint8)
+                rg8[:, :, 0] = (h16 >> 8).astype(np.uint8)
+                rg8[:, :, 1] = (h16 & 0xFF).astype(np.uint8)
+                with open("heightmap_gpu.bin", "wb") as fh:
+                    fh.write(struct.pack("<II", TEX_RES, TEX_RES))
+                    fh.write(struct.pack("<ff", hm_min_h, hm_max_h))
+                    fh.write(rg8.tobytes())
+                print(f"  Re-wrote heightmap_gpu.bin (hybrid DEM/DSM)")
+                del flat_hybrid, arr4k, norm, h16, rg8
+        else:
+            print("  DSM not available — using bare-earth DEM only")
+
         prebake_terrain_mesh(hm_arr, boundary_pts, surface_arr)
 
 
