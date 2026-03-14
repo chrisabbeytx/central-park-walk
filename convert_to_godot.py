@@ -2426,13 +2426,16 @@ def main() -> None:
                 # prevents DSM rooftop heights from bleeding into nearby terrain
                 struct_mask = (surface_arr == 5) | (surface_arr == 6)
 
-                # Add landmark footprints — 3D models need flat terrain underneath.
-                # Same as buildings: use DEM (bare earth) so the model provides geometry.
+                # Add landmark terrain carveouts — only flatten where interior
+                # space must be clear (plazas, passages). The surrounding hillside
+                # stays as DSM so terrain wraps around the building naturally.
+                # AAA approach: building is built INTO the hillside, not ON flat ground.
                 HALF = WORLD_SIZE / 2.0
                 landmark_footprints = [
                     # (cx, cz, half_w, half_d) — world coords, half-extents
-                    (-457, 995, 35, 20),    # Bethesda Terrace + arcade
-                    (-480, 1020, 20, 15),   # Bethesda upper terrace / road
+                    # Bethesda lower terrace plaza — flat open space south of arcade.
+                    # Only the plaza floor, NOT the hillside behind/beside the building.
+                    (-457, 970, 30, 18),
                 ]
                 for lx, lz, hw, hd in landmark_footprints:
                     # Convert world coords to pixel coords
