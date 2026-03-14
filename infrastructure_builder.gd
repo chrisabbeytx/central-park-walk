@@ -578,6 +578,10 @@ func _build_statues(statues: Array) -> void:
 		"duke ellington memorial": { "file": "cp_duke_ellington.glb", "height": 7.6 },
 		"the falconer": { "file": "cp_falconer.glb", "height": 4.0 },
 		"samuel f. b. morse": { "file": "cp_morse.glb", "height": 4.5 },
+		"josé martí": { "file": "cp_jose_marti.glb", "height": 6.0 },
+		"josé de san martín": { "file": "cp_san_martin.glb", "height": 7.0 },
+		"group of bears": { "file": "cp_group_of_bears.glb", "height": 1.0 },
+		"romeo and juliet": { "file": "cp_romeo_juliet.glb", "height": 2.0 },
 	}
 	var cache_dir := "res://cache/statues/"
 	var abs_cache_dir := ProjectSettings.globalize_path(cache_dir)
