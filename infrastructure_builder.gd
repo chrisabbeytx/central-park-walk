@@ -1310,6 +1310,9 @@ func _build_bethesda_terrace() -> void:
 	# Blender +Y = south → glTF -Z. Our park +Z = south. Rotate 180° around Y.
 	root.position = Vector3(tx, ty, tz)
 	root.rotation.y = PI
+	# Scale X to match real terrace width — model is 50m but real terrace
+	# spans ~61m (200ft). DSM terrain shows staircases wider apart than model.
+	root.scale.x = 1.24
 	root.name = "BethesdaTerrace"
 
 	# Apply stone material to all mesh surfaces
