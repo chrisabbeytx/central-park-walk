@@ -3845,3 +3845,70 @@ func _build_curb_ramps(paths: Array) -> void:
 	if not xforms.is_empty():
 		_loader._spawn_multimesh(mesh, null, xforms, "CurbRamps")
 	print("  Curb ramps: %d placed" % xforms.size())
+
+
+# ---------------------------------------------------------------------------
+# Decorative stone urns — classical vases at formal terraces
+# ---------------------------------------------------------------------------
+func _build_stone_urns() -> void:
+	var glb_path := ProjectSettings.globalize_path("res://models/furniture/cp_stone_urn.glb")
+	if not FileAccess.file_exists(glb_path):
+		return
+	var meshes: Dictionary = _loader._load_glb_meshes(glb_path)
+	var mesh: Mesh = null
+	for mname in meshes:
+		mesh = meshes[mname] as Mesh
+		break
+	if mesh == null:
+		return
+
+	# Apply stone material
+	var rw_alb: ImageTexture = _loader._load_tex("res://textures/rock_wall_diff.jpg")
+	var rw_nrm: ImageTexture = _loader._load_tex("res://textures/rock_wall_nrm.jpg")
+	var rw_rgh: ImageTexture = _loader._load_tex("res://textures/rock_wall_rgh.jpg")
+	var stone_mat: Material = _loader._make_stone_material(
+		rw_alb, rw_nrm, rw_rgh, Color(0.62, 0.60, 0.56))
+	for si in mesh.get_surface_count():
+		mesh.surface_set_material(si, stone_mat)
+
+	# Stone urn positions at formal terraces and gardens
+	var urn_positions: Array = [
+		# Bethesda Terrace — pairs flanking each staircase
+		[-465, 1030],  [-495, 1030],   # east wing
+		[-465, 1010],  [-495, 1010],   # center
+		[-510, 1035],  [-450, 1035],   # flanking
+		# Bethesda Terrace upper level
+		[-475, 995],   [-485, 995],
+		# Cherry Hill
+		[-540, 940],   [-560, 940],
+		# Conservatory Garden — Italian section
+		[1090, -1200], [1110, -1200],
+		[1090, -1230], [1110, -1230],
+		[1090, -1260], [1110, -1260],
+		# Conservatory Garden — French section
+		[1050, -1120], [1080, -1120],
+		[1050, -1150], [1080, -1150],
+		# Belvedere Castle terrace
+		[-250, 605],   [-280, 605],
+		# Wisteria Pergola
+		[-550, 850],   [-530, 850],
+		[-550, 870],   [-530, 870],
+		# Naumburg Bandshell flanking
+		[-560, 1300],  [-580, 1300],
+		# Mall / Literary Walk entrance
+		[-575, 1480],  [-610, 1480],
+	]
+
+	var xforms: Array = []
+	for up in urn_positions:
+		var ux: float = float(up[0])
+		var uz: float = float(up[1])
+		var uy: float = _loader._terrain_y(ux, uz)
+		var rng := RandomNumberGenerator.new()
+		rng.seed = int(ux * 53.0 + uz * 179.0) & 0x7FFFFFFF
+		var yaw := rng.randf() * TAU
+		xforms.append(Transform3D(Basis(Vector3.UP, yaw), Vector3(ux, uy, uz)))
+
+	if not xforms.is_empty():
+		_loader._spawn_multimesh(mesh, null, xforms, "StoneUrns")
+	print("  Stone urns: %d placed" % xforms.size())
