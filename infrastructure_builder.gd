@@ -3778,3 +3778,70 @@ func _build_tree_pit_grates(trees: Array) -> void:
 	if not xforms.is_empty():
 		_loader._spawn_multimesh(mesh, null, xforms, "TreePitGrates")
 	print("  Tree pit grates: %d placed" % xforms.size())
+
+
+# ---------------------------------------------------------------------------
+# Curb ramps — ADA accessible crossings where paths meet drives
+# ---------------------------------------------------------------------------
+func _build_curb_ramps(paths: Array) -> void:
+	var glb_path := ProjectSettings.globalize_path("res://models/furniture/cp_curb_ramp.glb")
+	if not FileAccess.file_exists(glb_path):
+		return
+	var meshes: Dictionary = _loader._load_glb_meshes(glb_path)
+	var mesh: Mesh = null
+	for mname in meshes:
+		mesh = meshes[mname] as Mesh
+		break
+	if mesh == null:
+		return
+
+	# Find intersections between drives and pedestrian paths
+	# by checking where footway/path endpoints are near primary/secondary
+	var drive_cells: Dictionary = {}  # grid cell → true
+	const CELL_SIZE := 8.0
+	for path in paths:
+		var hw: String = str(path.get("highway", ""))
+		if hw != "primary" and hw != "secondary":
+			continue
+		var pts: Array = path.get("points", [])
+		for pt in pts:
+			var px: float = float(pt[0])
+			var pz: float = float(pt[2]) if len(pt) > 2 else float(pt[1])
+			var ck := "%d_%d" % [int(floorf(px / CELL_SIZE)), int(floorf(pz / CELL_SIZE))]
+			drive_cells[ck] = true
+
+	var xforms: Array = []
+	var placed: Dictionary = {}  # dedup
+
+	for path in paths:
+		var hw: String = str(path.get("highway", ""))
+		if hw != "footway" and hw != "path" and hw != "pedestrian":
+			continue
+		var pts: Array = path.get("points", [])
+		if pts.size() < 2:
+			continue
+		# Check endpoints for proximity to drives
+		for ep_idx in [0, pts.size() - 1]:
+			var ex: float = float(pts[ep_idx][0])
+			var ez: float = float(pts[ep_idx][2]) if len(pts[ep_idx]) > 2 else float(pts[ep_idx][1])
+			if not _loader._in_boundary(ex, ez):
+				continue
+			var ck := "%d_%d" % [int(floorf(ex / CELL_SIZE)), int(floorf(ez / CELL_SIZE))]
+			if not drive_cells.has(ck):
+				continue
+			# Dedup within 5m
+			var dk := "%d_%d" % [int(ex / 5.0), int(ez / 5.0)]
+			if placed.has(dk):
+				continue
+			placed[dk] = true
+			var ey: float = _loader._terrain_y(ex, ez)
+			# Orient perpendicular to path direction
+			var other_idx: int = 1 if ep_idx == 0 else pts.size() - 2
+			var ox: float = float(pts[other_idx][0])
+			var oz: float = float(pts[other_idx][2]) if len(pts[other_idx]) > 2 else float(pts[other_idx][1])
+			var yaw: float = atan2(ex - ox, ez - oz)
+			xforms.append(Transform3D(Basis(Vector3.UP, yaw), Vector3(ex, ey, ez)))
+
+	if not xforms.is_empty():
+		_loader._spawn_multimesh(mesh, null, xforms, "CurbRamps")
+	print("  Curb ramps: %d placed" % xforms.size())
