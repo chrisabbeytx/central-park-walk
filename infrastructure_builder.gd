@@ -2129,6 +2129,43 @@ func _build_park_signs(paths: Array) -> void:
 		gate_label_count += 1
 	print("  Gate labels: %d named entrances" % gate_label_count)
 
+	# Named path labels at midpoints of major park paths
+	var path_label_count := 0
+	var labeled_paths: Dictionary = {}  # dedup by name
+	for path in paths:
+		var pname: String = str(path.get("name", ""))
+		if pname.is_empty():
+			continue
+		var hw: String = str(path.get("highway", ""))
+		if hw in ["secondary", "tertiary", "residential", "service"]:
+			continue  # skip roads
+		if pname in labeled_paths:
+			continue
+		var pts: Array = path.get("points", [])
+		if pts.size() < 5:
+			continue
+		# Use midpoint
+		var mid: int = pts.size() / 2
+		var mx: float = float(pts[mid][0])
+		var mz: float = float(pts[mid][2]) if len(pts[mid]) > 2 else float(pts[mid][1])
+		if not _loader._in_boundary(mx, mz):
+			continue
+		var my: float = _loader._terrain_y(mx, mz)
+		var label := Label3D.new()
+		label.text = pname
+		label.font_size = 22
+		label.position = Vector3(mx, my + 2.5, mz)
+		label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+		label.modulate = Color(0.50, 0.45, 0.35, 0.55)
+		label.outline_modulate = Color(0.08, 0.06, 0.04, 0.40)
+		label.outline_size = 4
+		label.no_depth_test = false
+		label.pixel_size = 0.01
+		_loader.add_child(label)
+		labeled_paths[pname] = true
+		path_label_count += 1
+	print("  Path labels: %d named paths" % path_label_count)
+
 
 # ---------------------------------------------------------------------------
 # Reservoir fence — tall chain-link around JKO Reservoir running track
