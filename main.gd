@@ -1876,8 +1876,8 @@ func _setup_lamp_lights() -> void:
 		var mm: MultiMesh = mmi.multimesh
 		for i in mm.instance_count:
 			var xf: Transform3D = mm.get_instance_transform(i)
-			# Lantern sits at ~3.5m above base
-			_lamp_positions.append(xf.origin + Vector3(0, 3.5, 0))
+			# Luminaire globe center at ~3.9m above base (Type B = 4.14m total)
+			_lamp_positions.append(xf.origin + Vector3(0, 3.9, 0))
 	print("Lamp lights: %d lamppost positions extracted, pool of %d lights" % [
 		_lamp_positions.size(), LAMP_LIGHT_COUNT])
 

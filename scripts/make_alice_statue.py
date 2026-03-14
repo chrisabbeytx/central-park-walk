@@ -141,6 +141,11 @@ bpy.ops.object.join()
 obj = bpy.context.active_object
 obj.name = "AliceStatue"
 
+# Fix orientation: scripts use Y-up, Blender is Z-up
+import math
+obj.rotation_euler = (math.pi/2, 0, 0)
+bpy.ops.object.transform_apply(rotation=True)
+
 out_path = "/home/chris/central-park-walk/models/furniture/cp_alice_statue.glb"
 bpy.ops.export_scene.gltf(filepath=out_path, export_format='GLB')
 vcount = len(obj.data.vertices)

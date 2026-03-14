@@ -107,6 +107,10 @@ bpy.ops.object.select_all(action='SELECT')
 bpy.ops.object.join()
 bpy.context.active_object.name = "Columbus"
 
+# Fix orientation: scripts use Y-up, Blender is Z-up
+bpy.context.active_object.rotation_euler = (math.pi/2, 0, 0)
+bpy.ops.object.transform_apply(rotation=True)
+
 outdir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                       "models", "furniture")
 os.makedirs(outdir, exist_ok=True)
