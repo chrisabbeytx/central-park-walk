@@ -1917,6 +1917,42 @@ func _build_bethesda_arcade() -> void:
 	root.position = Vector3(ax, ay, az)
 	root.rotation.y = PI * 0.05  # slight rotation matching terrace alignment
 	root.name = "BethesdaArcade"
+
+	# Apply stone materials — Minton tile vault, sandstone walls, brownstone trim
+	var rw_alb: ImageTexture = _loader._load_tex("res://textures/rock_wall_diff.jpg")
+	var rw_nrm: ImageTexture = _loader._load_tex("res://textures/rock_wall_nrm.jpg")
+	var rw_rgh: ImageTexture = _loader._load_tex("res://textures/rock_wall_rgh.jpg")
+	var mat_map: Dictionary = {}
+	mat_map["Sandstone"] = _loader._make_stone_material(rw_alb, rw_nrm, rw_rgh,
+		Color(0.72, 0.65, 0.52))
+	mat_map["Brownstone"] = _loader._make_stone_material(rw_alb, rw_nrm, rw_rgh,
+		Color(0.42, 0.32, 0.24))
+	mat_map["VaultTile"] = _loader._make_stone_material(rw_alb, rw_nrm, rw_rgh,
+		Color(0.82, 0.72, 0.55))
+	mat_map["StairStone"] = _loader._make_stone_material(rw_alb, rw_nrm, rw_rgh,
+		Color(0.60, 0.56, 0.48))
+	var default_mat: Material = mat_map["Sandstone"]
+	var stack: Array = [root]
+	while not stack.is_empty():
+		var n: Node = stack.pop_back()
+		if n is MeshInstance3D:
+			var mi := n as MeshInstance3D
+			if mi.mesh:
+				for si in range(mi.mesh.get_surface_count()):
+					var surf_mat := mi.mesh.surface_get_material(si)
+					var applied := false
+					if surf_mat:
+						var mname: String = surf_mat.resource_name
+						for key in mat_map:
+							if mname.contains(key):
+								mi.mesh.surface_set_material(si, mat_map[key])
+								applied = true
+								break
+					if not applied:
+						mi.mesh.surface_set_material(si, default_mat)
+		for c in n.get_children():
+			stack.append(c)
+
 	_loader.add_child(root)
 	print("  Bethesda Arcade placed at (%.0f, %.1f, %.0f)" % [ax, ay, az])
 
