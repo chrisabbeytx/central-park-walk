@@ -3232,3 +3232,167 @@ func _build_balustrades() -> void:
 	if not xforms.is_empty():
 		_loader._spawn_multimesh(mesh, null, xforms, "Balustrades")
 	print("  Balustrades: %d sections at formal terraces" % xforms.size())
+
+
+# ---------------------------------------------------------------------------
+# Drive-side waste bins — wire mesh trash cans along loop drives
+# ---------------------------------------------------------------------------
+func _build_drive_waste_bins(paths: Array) -> void:
+	var glb_path := ProjectSettings.globalize_path("res://models/furniture/cp_wire_trash_can.glb")
+	if not FileAccess.file_exists(glb_path):
+		return
+	var meshes: Dictionary = _loader._load_glb_meshes(glb_path)
+	var mesh: Mesh = null
+	for mname in meshes:
+		mesh = meshes[mname] as Mesh
+		break
+	if mesh == null:
+		return
+
+	const BIN_SPACING := 120.0  # one bin every ~120m along drives
+	const PATH_OFFSET := 3.5    # 3.5m from path center (at edge of drive)
+	var xforms: Array = []
+
+	for path in paths:
+		var hw: String = str(path.get("highway", ""))
+		# Only along drives (primary=East/West Drive, secondary=transverses)
+		if hw != "primary" and hw != "secondary":
+			continue
+		var pts: Array = path.get("points", [])
+		if pts.size() < 2:
+			continue
+
+		var dist := 60.0  # start offset to stagger from mile markers
+		for pi in range(pts.size() - 1):
+			var ax: float = float(pts[pi][0])
+			var az: float = float(pts[pi][2]) if len(pts[pi]) > 2 else float(pts[pi][1])
+			var bx: float = float(pts[pi + 1][0])
+			var bz: float = float(pts[pi + 1][2]) if len(pts[pi + 1]) > 2 else float(pts[pi + 1][1])
+			var sdx: float = bx - ax
+			var sdz: float = bz - az
+			var seg_len: float = sqrt(sdx * sdx + sdz * sdz)
+			if seg_len < 0.1:
+				continue
+
+			while dist < seg_len:
+				var t: float = dist / seg_len
+				var wx: float = ax + sdx * t
+				var wz: float = az + sdz * t
+				if not _loader._in_boundary(wx, wz):
+					dist += BIN_SPACING
+					continue
+				# Perpendicular offset to edge
+				var px: float = -sdz / seg_len
+				var pz: float = sdx / seg_len
+				var mx: float = wx + px * PATH_OFFSET
+				var mz: float = wz + pz * PATH_OFFSET
+				var my: float = _loader._terrain_y(mx, mz)
+				var yaw: float = atan2(px, pz)  # face away from path
+				xforms.append(Transform3D(Basis(Vector3.UP, yaw), Vector3(mx, my, mz)))
+				dist += BIN_SPACING
+			dist -= seg_len
+
+	if not xforms.is_empty():
+		_loader._spawn_multimesh(mesh, null, xforms, "DriveWasteBins")
+	print("  Drive waste bins: %d placed" % xforms.size())
+
+
+# ---------------------------------------------------------------------------
+# Retaining walls — low stone walls along steep terrain grade changes
+# ---------------------------------------------------------------------------
+func _build_retaining_walls(paths: Array) -> void:
+	## Detect steep terrain grade changes alongside paths and build
+	## low Manhattan schist retaining walls to hold the grade.
+	var rw_alb: ImageTexture = _loader._load_tex("res://textures/rock_wall_diff.jpg")
+	var rw_nrm: ImageTexture = _loader._load_tex("res://textures/rock_wall_nrm.jpg")
+	var rw_rgh: ImageTexture = _loader._load_tex("res://textures/rock_wall_rgh.jpg")
+	var mat: Material = _loader._make_stone_material(rw_alb, rw_nrm, rw_rgh,
+		Color(0.48, 0.46, 0.42))
+
+	var verts := PackedVector3Array()
+	var normals := PackedVector3Array()
+	var wall_count := 0
+
+	const CHECK_DIST := 3.0    # metres from path center to check
+	const MIN_DROP := 0.6      # minimum grade drop to trigger wall (0.6m)
+	const WALL_THICK := 0.30   # wall thickness
+	const SAMPLE_STEP := 4.0   # sample every 4m along path
+
+	for path in paths:
+		var hw: String = str(path.get("highway", ""))
+		if hw == "steps" or hw == "bridleway":
+			continue  # skip staircases and bridle paths
+		var pts: Array = path.get("points", [])
+		if pts.size() < 2:
+			continue
+
+		for pi in range(pts.size() - 1):
+			var ax: float = float(pts[pi][0])
+			var az: float = float(pts[pi][2]) if len(pts[pi]) > 2 else float(pts[pi][1])
+			var bx: float = float(pts[pi + 1][0])
+			var bz: float = float(pts[pi + 1][2]) if len(pts[pi + 1]) > 2 else float(pts[pi + 1][1])
+			var sdx: float = bx - ax
+			var sdz: float = bz - az
+			var seg_len: float = sqrt(sdx * sdx + sdz * sdz)
+			if seg_len < 1.0:
+				continue
+			var ndx := sdx / seg_len
+			var ndz := sdz / seg_len
+			# Perpendicular
+			var px := -ndz
+			var pz := ndx
+
+			var dist := 0.0
+			while dist < seg_len:
+				var t: float = dist / seg_len
+				var wx: float = ax + sdx * t
+				var wz: float = az + sdz * t
+				if not _loader._in_boundary(wx, wz):
+					dist += SAMPLE_STEP
+					continue
+				var wy: float = _loader._terrain_y(wx, wz)
+
+				# Check both sides for grade drop
+				for side_val in [-1.0, 1.0]:
+					var side: float = float(side_val)
+					var cx: float = wx + px * CHECK_DIST * side
+					var cz: float = wz + pz * CHECK_DIST * side
+					var cy: float = _loader._terrain_y(cx, cz)
+					var drop: float = wy - cy
+					if drop < MIN_DROP:
+						continue
+					# Clamp wall height
+					var wall_h: float = clampf(drop, MIN_DROP, 2.5)
+					# Wall at the edge, facing outward
+					var wall_x: float = wx + px * (CHECK_DIST - 0.5) * side
+					var wall_z: float = wz + pz * (CHECK_DIST - 0.5) * side
+					var wall_y: float = _loader._terrain_y(wall_x, wall_z)
+					var out_nx := px * side
+					var out_nz := pz * side
+					var half_w := SAMPLE_STEP * 0.5
+					# Wall face (4m wide segment)
+					var fl := Vector3(wall_x - ndx * half_w, wall_y, wall_z - ndz * half_w)
+					var fr := Vector3(wall_x + ndx * half_w, wall_y, wall_z + ndz * half_w)
+					var tl := Vector3(fl.x, wall_y + wall_h, fl.z)
+					var tr := Vector3(fr.x, wall_y + wall_h, fr.z)
+					var face_n := Vector3(out_nx, 0, out_nz)
+					verts.append_array(PackedVector3Array([fl, tl, fr, fr, tl, tr]))
+					for _j in 6: normals.append(face_n)
+					# Top face
+					var tl2 := Vector3(fl.x - out_nx * WALL_THICK, tl.y, fl.z - out_nz * WALL_THICK)
+					var tr2 := Vector3(fr.x - out_nx * WALL_THICK, tr.y, fr.z - out_nz * WALL_THICK)
+					verts.append_array(PackedVector3Array([tl, tl2, tr, tr, tl2, tr2]))
+					for _j in 6: normals.append(Vector3.UP)
+					wall_count += 1
+				dist += SAMPLE_STEP
+
+	if verts.is_empty():
+		return
+
+	var mesh: ArrayMesh = _loader._make_mesh(verts, normals)
+	mesh.surface_set_material(0, mat)
+	var mi := MeshInstance3D.new()
+	mi.mesh = mesh
+	mi.name = "RetainingWalls"
+	_loader.add_child(mi)
+	print("  Retaining walls: %d segments (%d verts)" % [wall_count, verts.size()])
